@@ -93,7 +93,8 @@ inline ruvia::task<ruvia::redis_value> readRedisReply(
     config.command_timeout_ = std::chrono::seconds(2);
     ruvia::redis_client client(loop, config);
     co_await client.connect();
-    auto value = co_await client.command("FIXTURE");
+    const auto redis = client.handle();
+    auto value = co_await redis.command("FIXTURE");
     ruvia::redis_value owned(value, ruvia::redis_value::allocator_type(resource));
     co_await client.shutdown();
     co_return owned;

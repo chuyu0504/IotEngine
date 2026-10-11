@@ -24,10 +24,6 @@
     "hiredis",
     "libpq",
     "libsrtp",
-    {
-      "name": "ngtcp2",
-      "default-features": false
-    },
     "openssl",
     "protobuf",
     "pugixml",

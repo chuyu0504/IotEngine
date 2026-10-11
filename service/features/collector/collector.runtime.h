@@ -56,6 +56,7 @@ class CollectorWorker final {
           scope_(workerHandle_, ruvia::task_scope_options{ .resource_ = &resource_ }),
           scheduler_(loop_.io_context()),
           redisClient_(std::move(redisClient)),
+          redisBlocking_(redisClient_->handle()),
           redis_(redisClient_->with_options({.timeout_ = std::chrono::seconds(30)})),
           engine_(protocols()),
           tcp_(
@@ -1629,7 +1630,7 @@ class CollectorWorker final {
                 )
             );
             auto batches = co_await message::redis::readGroupManyBlockingUntil(
-                *redisClient_,
+                redisBlocking_,
                 streams,
                 collectorGroup(),
                 consumer_,
@@ -2078,6 +2079,7 @@ class CollectorWorker final {
     ruvia::task_scope scope_;
     DeadlineScheduler scheduler_;
     std::unique_ptr<ruvia::redis_client> redisClient_;
+    ruvia::redis_handle redisBlocking_;
     ruvia::redis_handle redis_;
     ProtocolEngine engine_;
     TcpTransport tcp_;

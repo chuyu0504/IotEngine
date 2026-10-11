@@ -15,6 +15,7 @@
 #include <utility>
 
 #include <ruvia/web/http_client_handle.h>
+#include <ruvia/web/streaming.h>
 #include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"

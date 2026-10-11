@@ -158,29 +158,31 @@ ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
     ruvia::redis_client redis(loop, redisConfig);
     co_await database.connect();
     co_await redis.connect();
-    for (int index = 0; index != 2000; ++index) {
-        const auto* before = request.resource()->allocate(1, 1);
-        {
-            auto operation = database.query("SELECT ?", std::string(2048, char('a' + index % 26)));
-            (void)operation;
-        }
-        {
-            auto operation = redis.command("SET", "key", std::string(2048, char('a' + index % 26)));
-            (void)operation;
-        }
-        const auto* after = request.resource()->allocate(1, 1);
-        check(adjacent(before, after), "long lived operation advanced request arena");
-    }
-    const auto* before = request.resource()->allocate(1, 1);
-    (void)request.resource()->allocate(2048, 1);
-    const auto* after = request.resource()->allocate(1, 1);
-    check(!adjacent(before, after), "arena probe missed an injected request allocation");
     {
-        const auto retained = co_await database.query("SELECT $1", std::string(2048, 'r'));
+        const auto databaseHandle = database.handle();
+        const auto redisHandle = redis.handle();
+        for (int index = 0; index != 2000; ++index) {
+            const auto* before = request.resource()->allocate(1, 1);
+            {
+                auto operation = databaseHandle.query("SELECT ?", std::string(2048, char('a' + index % 26)));
+                (void)operation;
+            }
+            {
+                auto operation = redisHandle.command("SET", "key", std::string(2048, char('a' + index % 26)));
+                (void)operation;
+            }
+            const auto* after = request.resource()->allocate(1, 1);
+            check(adjacent(before, after), "long lived operation advanced request arena");
+        }
+        const auto* before = request.resource()->allocate(1, 1);
+        (void)request.resource()->allocate(2048, 1);
+        const auto* after = request.resource()->allocate(1, 1);
+        check(!adjacent(before, after), "arena probe missed an injected request allocation");
+        const auto retained = co_await databaseHandle.query("SELECT $1", std::string(2048, 'r'));
         check(retained.front()["value"].value() == std::string(2048, 'r'),
             "retained DB result changed");
         for (int index = 0; index != 100; ++index) {
-            const auto transient = co_await database.query("SELECT $1", std::string(2048, 'x'));
+            const auto transient = co_await databaseHandle.query("SELECT $1", std::string(2048, 'x'));
             check(transient.front()[0].value()->size() == 2048, "DB result value mismatch");
             check(retained.front()["value"].value() == std::string(2048, 'r'),
                 "later DB query invalidated a retained result");
@@ -278,7 +280,8 @@ ruvia::task<void> verifyHttpRequest(ruvia::event_loop loop, std::uint16_t port) 
     ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http,
         .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = std::chrono::seconds(5)});
     {
-        auto response = co_await client.send({.target_ = "/operation-memory"});
+        const auto http = client.handle();
+        auto response = co_await http.send({.target_ = "/operation-memory"});
         const auto body = co_await response.body().read_all();
         check(response.status() == ruvia::http_status::ok &&
             std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) ==

@@ -18,8 +18,10 @@
 #include <vector>
 
 #include <ruvia/core/channel.h>
+#include <ruvia/core/timer.h>
 #include <ruvia/web/controller.h>
 #include <ruvia/web/model_json.h>
+#include <ruvia/web/streaming.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"

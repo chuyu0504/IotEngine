@@ -7,6 +7,7 @@
 #include <utility>
 
 #include <ruvia/web/context.h>
+#include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/db/db_handle.h>
 #include <ruvia/web/redis/redis_handle.h>
 

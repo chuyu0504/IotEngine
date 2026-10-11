@@ -137,15 +137,18 @@ private:
 
 ruvia::task<void> verifyPublicIp(ruvia::event_loop loop, std::uint16_t port, Origin& origin) {
     ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s});
-    for (int scenario = 0; scenario != 7; ++scenario) {
-        origin.scenario = scenario;
-        const auto before = origin.requests.load();
-        auto response = co_await client.send({.target_ = "/test/ip"});
-        require(response.status().value() == 200, "public IP handler failed");
-        const auto body = co_await response.body().read_all();
-        const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1" : "";
-        require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == expected, "public IP response validation failed");
-        require(origin.requests.load() == before + 1, "cached query reached upstream again");
+    {
+        const auto http = client.handle();
+        for (int scenario = 0; scenario != 7; ++scenario) {
+            origin.scenario = scenario;
+            const auto before = origin.requests.load();
+            auto response = co_await http.send({.target_ = "/test/ip"});
+            require(response.status().value() == 200, "public IP handler failed");
+            const auto body = co_await response.body().read_all();
+            const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1" : "";
+            require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == expected, "public IP response validation failed");
+            require(origin.requests.load() == before + 1, "cached query reached upstream again");
+        }
     }
     co_await client.shutdown();
 }
@@ -167,7 +170,7 @@ int main() {
             .get_http_client({.alias_ = "link-public-ip", .config_ = {
                 .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(),
                 .request_timeout_ = 2s, .max_response_bytes_ = 64U * 1024U,
-                .protocol_ = ruvia::http_client_protocol::http1_only, .user_agent_ = "curl/8.0"}})
+                .user_agent_ = "curl/8.0"}})
             .on_start([&] { ready.set_value(); });
         serving = std::thread([&] {
             try { app.run(); }

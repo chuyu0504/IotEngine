@@ -654,7 +654,6 @@ void configureServer(
             .host_ = "ip.sb",
             .port_ = 80,
             .max_response_bytes_ = 64U * 1024U,
-            .protocol_ = ruvia::http_client_protocol::http1_only,
             .user_agent_ = "curl/8.0",
         }})
         .on_start(std::move(applicationStart))
@@ -707,7 +706,6 @@ int main(int argc, char* argv[]) {
                                                       .connection_count_ = 64,
                                                       .request_timeout_ = std::nullopt,
                                                       .max_response_bytes_ = 2U * 1024U * 1024U,
-                                                      .protocol_ = ruvia::http_client_protocol::http1_only,
                                                   } });
         }
         const auto budget = workerBudget(app.env(), gb28181);
