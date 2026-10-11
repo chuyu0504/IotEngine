@@ -77,11 +77,11 @@ flowchart LR
 
 ### 既有配置
 
-HTTP 与存储保留原有字段映射，`reportTemplate` 用于准确回显上报模板。新增可选 `commands` 数组，最多 32 条，每条包含 `id`（UUID）、`name`、`topic`、`template` 和 `requiredPointIds`。控制专用属性的 `field` 为空。没有修改历史迁移或设备绑定。
+HTTP 与存储保留原有字段映射，`reportTemplate` 用于准确回显上报模板。可选 `commands` 数组最多 32 条，每条包含 `id`（UUID）、`name`、`topic`、`template` 和 `requiredPointIds`。控制专用属性的 `field` 为空。
 
 既有 `commandTopic` / `commandTemplate` 配置及不传消息 ID 的下发方式继续生效；可无歧义还原的单条 JSON 控制配置在页面编辑保存时转成一条具名消息，保留属性 UUID，并清空旧字段。新旧控制配置不得同时非空。使用 `commands` 的配置下发时必须提供所选 `mqttMessageId`，设备详情的 `commandOperations` 返回该 ID 和每个属性的 `required`；幂等比较包含消息 ID，复用同一幂等键下发其他消息会被拒绝。外部调用者应先读取设备操作列表，再切换新配置。
 
-文本、二进制、批量记录路径、旧 `$values` 控制模板等无法通过页面无损表达的配置会明确提示不能编辑，不自动覆盖；其既有 API 与运行协议仍保留。测试覆盖旧单消息运行、旧 JSON 配置回显、新消息保存往返及 Redis 指令中消息选择的传递。
+文本、二进制、批量记录路径、旧 `$values` 控制模板等无法通过页面无损表达的配置会明确提示不能编辑，不自动覆盖；其既有 API 与运行协议仍保留。
 
 ## Topic 与设备识别
 
@@ -176,14 +176,10 @@ Topic 层号、文本列号、二进制偏移均从 `0` 开始。`+` 独占一�
 - 单帧剩余长度最多 1 MiB；单消息最多 256 条记录；模板最多 256 点位；在途报文最多 256，待处理接收帧累计最多 16 MiB。超过限制会拒绝处理。
 - MQTT 只接入平台 Collector，不增加 EdgeNode 固件协议，不改变已部署固件契约。
 
-## Ruvia 与验证
+## 测试
 
-Ruvia 固定为 `66cd98f6380801ca056b9d2d94dd177be2aa4b3b`。依赖通过 CMake FetchContent 获取，Ruvia 统一构建 OpenSSL 4，额外依赖版本和源码哈希见 `ports/cmake/dependencies.cmake`。HTTP 二进制响应使用公开的 `bytes()`。
+后端测试 `mqtt-protocol`、`mqtt-transport`、`mqtt-configuration` 覆盖帧、QoS、设备路由、配置、预览、三种负载格式、指令编码、真实 TCP Broker、重连、域名和连接归属。
 
-新增后端测试 `mqtt-protocol`、`mqtt-transport`、`mqtt-configuration`，覆盖帧、QoS、设备路由、配置、预览、三种负载格式、指令编码、真实 TCP Broker、重连、域名和连接归属。
+`tests/mqtt-integration.ts` 在独立本地 PostgreSQL/TimescaleDB、Redis 和 API 实例中验证管理接口、预览鉴权、两设备共享 Topic、批量遥测、设备时间、数值换算、多点模板合并为一条消息与一个命令记录，以及 Broker 确认；连接参数使用 `architecture-fixture.ts` 的本地环境变量契约。
 
-在独立本地 PostgreSQL/TimescaleDB、Redis 和 API 实例中运行 `tests/mqtt-integration.ts`，验证管理接口、预览鉴权、两设备共享 Topic、批量遥测、设备时间、数值换算、多点模板合并为一条消息与一个命令记录，以及 Broker 确认。连接参数使用现有 `architecture-fixture.ts` 的本地环境变量契约。
-
-设备管理浏览器验证覆盖绑定回显与保存、实时点位更新、只读点位不进入控制表单、数字/布尔/文本同消息下发，以及 Broker 确认提示；使用真实 API、Collector、MQTT TCP 连接、PostgreSQL/TimescaleDB 和 Redis，不以接口模拟响应代替。
-
-`tests/mqtt-migration-integration.ts` 按既有迁移测试约定运行各阶段，验证 `0052_mqtt_client` 的新库、重启、旧库升级、重复执行、漂移拒绝和失败回滚。仅用于已停止业务进程的可丢弃本地数据库。
+`tests/mqtt-migration-integration.ts` 按迁移测试约定运行各阶段，验证 `0052_mqtt_client` 的新库、重启、旧库升级、重复执行、漂移拒绝和失败回滚，仅用于已停止业务进程的可丢弃本地数据库。

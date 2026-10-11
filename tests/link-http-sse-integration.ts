@@ -53,13 +53,12 @@ try {
     const list = await created;
     assert.equal(list.total,1);
     link = list.list[0].id;
-    const detail = await request('GET',`/v1/link/${link}`);
+    const detail = list.list[0];
     assert.equal(detail.created_by,admin);
     assert.equal(detail.endpoint.port,59888);
     assert.equal(detail.endpoint.mode,'TCP Server');
     assert.equal((await db`SELECT count(*)::int AS n FROM outbox_event WHERE aggregate_type='link' AND aggregate_id=${link} AND action='created'`)[0].n,1);
     assert((await request('GET','/v1/link/enums')).protocols.includes('Modbus'));
-    assert(!(await request('GET','/v1/link/options')).some((item: {id:string})=>item.id===link));
     await request('PUT',`/v1/link/${link}`,{},10001);
     await request('PUT',`/v1/link/${link}`,{...configuration,name:''},15002);
     await request('PUT',`/v1/link/${link}`,{...configuration,protocol:'invalid'},10001);
@@ -69,9 +68,10 @@ try {
     assert.equal((await renamed).list[0].name,`${tag}_updated`);
     await subscription.close();
     await request('PUT',`/v1/link/${link}/debug`,{enabled:true});
-    assert.equal((await request('GET',`/v1/link/${link}`)).debug_enabled,true);
     const debugSubscription = await subscribe(`/v1/link/events?keyword=${tag}&debugLinkId=${link}`);
-    assert.equal((await snapshot(debugSubscription)).list[0].id, link);
+    const debugLinks = await snapshot(debugSubscription);
+    assert.equal(debugLinks.list[0].id, link);
+    assert.equal(debugLinks.list[0].debug_enabled, true);
     assert.deepEqual(await snapshot(debugSubscription, 'packets'),[]);
     const debugPush = snapshot(debugSubscription, 'packets');
     await redis.send('HSET',[`iot:debug:v4:acquisition:${acquisition}`,'state','completed','started_at_ms','1000']);

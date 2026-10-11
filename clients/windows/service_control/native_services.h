@@ -11,8 +11,6 @@ struct WindowsServiceSnapshot {
 };
 WindowsServiceSnapshot capture(const std::wstring& name);
 void restore(const std::wstring& name, const WindowsServiceSnapshot& snapshot);
-bool exists(const std::wstring& name);
-bool isRunning(const std::wstring& name);
 void validateExisting(const std::wstring& name, const std::wstring& expectedBinaryPath);
 void ensureStopped(const std::wstring& name);
 void installOrUpdate(const std::wstring& name, const std::wstring& display, const std::wstring& binary, bool delayed, const std::vector<std::wstring>& dependencies);

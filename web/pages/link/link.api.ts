@@ -33,8 +33,6 @@ export const queryList = (params?: Link.Query, signal?: AbortSignal) =>
     });
 export const getEnums = (signal?: AbortSignal) =>
     request.get<Link.Enums>('/v1/link/enums', { signal });
-export const getOptions = (signal?: AbortSignal) =>
-    request.get<Link.Option[]>('/v1/link/options', { signal });
 export const getPublicIp = (signal?: AbortSignal) =>
     request.get<{ ip: string }>('/v1/link/public-ip', { signal });
 export const create = (data: Link.SaveDto) =>

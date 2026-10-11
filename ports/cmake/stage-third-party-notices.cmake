@@ -12,7 +12,7 @@ file(WRITE "${DESTINATION}/THIRD_PARTY_NOTICES.md" [=[
 # iot-engine 第三方依赖与发布说明
 
 本文件随 CI 二进制制品发布。`licenses/` 目录包含构建时实际安装或拉取的第三方许可证
-原文；版本以本制品对应提交中的 `CMakeLists.txt`、`ports/cmake/dependencies.cmake`、`bun.lock` 和
+原文；版本以本制品对应提交中的 `CMakeLists.txt`、`vcpkg.json`、`bun.lock` 和
 `.github/workflows/build.yml` 为准。
 
 ## 后端边界
@@ -28,7 +28,7 @@ file(WRITE "${DESTINATION}/THIRD_PARTY_NOTICES.md" [=[
 | OpenSSL | TLS、HMAC | 静态，Apache-2.0 |
 | pugixml | SIP XML | 静态，MIT |
 | Protobuf / nanopb schema | 边缘节点线协议 | BSD 类 / zlib 类许可证 |
-| spdlog、fmt、Asio、hiredis、libpq、Brotli、zlib、zstd 等 | 日志与 Ruvia 传递依赖 | 许可证原文由构建脚本从 FetchContent 源码树收集 |
+| spdlog、fmt、Asio、hiredis、libpq、Brotli、zlib、zstd 等 | 日志与 Ruvia 传递依赖 | 许可证原文由构建脚本从 vcpkg 安装树收集 |
 
 ZLMediaKit 的 C++ API、独立 Server/Player/Test 可执行面、MySQL、Python 和调试分配器
 没有进入 iot-engine。FAAC、FFmpeg、HLS、MP4、RTP Proxy、SRT、SCTP、WebRTC、
@@ -44,21 +44,32 @@ OpenSSL、x264 和 VideoStack 媒体能力均在配置阶段做强制校验。
 内部部署仍应保留本文件和 `licenses/`，以便准确追溯制品使用的依赖与构建边界。
 ]=])
 
-include("${DEPENDENCY_BUILD_DIR}/third-party-sources.cmake")
-foreach(record IN LISTS IOT_THIRD_PARTY_SOURCES)
-    string(REPLACE "|" ";" fields "${record}")
-    list(GET fields 0 name)
-    list(GET fields 1 source)
-    file(GLOB_RECURSE candidates LIST_DIRECTORIES FALSE
-        "${source}/LICENSE*" "${source}/LICENCE*" "${source}/COPYING*" "${source}/COPYRIGHT*")
-    if(NOT candidates)
-        message(FATAL_ERROR "No source license files found for ${name}: ${source}")
+function(stage_license name relative_path)
+    set(source "${DEPENDENCY_BUILD_DIR}/${relative_path}")
+    if(NOT EXISTS "${source}")
+        message(FATAL_ERROR "Required third-party license is missing: ${source}")
     endif()
-    foreach(license IN LISTS candidates)
-        file(RELATIVE_PATH relative "${source}" "${license}")
-        set(destination "${LICENSE_DESTINATION}/${name}/${relative}")
-        get_filename_component(directory "${destination}" DIRECTORY)
-        file(MAKE_DIRECTORY "${directory}")
-        file(COPY_FILE "${license}" "${destination}" ONLY_IF_DIFFERENT)
-    endforeach()
+    file(COPY_FILE "${source}" "${LICENSE_DESTINATION}/${name}.txt"
+         ONLY_IF_DIFFERENT)
+endfunction()
+
+stage_license("ruvia" "_deps/ruvia-src/LICENSE")
+stage_license("nanopb" "_deps/nanopb-src/LICENSE.txt")
+stage_license("faac" "_deps/faac_source-src/COPYING")
+stage_license("zlmediakit" "_deps/zlmediakit-src/LICENSE")
+stage_license("zltoolkit" "_deps/zlmediakit-src/3rdpart/ZLToolKit/LICENSE")
+stage_license("jsoncpp" "_deps/zlmediakit-src/3rdpart/jsoncpp/LICENSE")
+
+file(GLOB vcpkg_copyrights
+    LIST_DIRECTORIES FALSE
+    "${DEPENDENCY_BUILD_DIR}/vcpkg_installed/*/share/*/copyright")
+if(NOT vcpkg_copyrights)
+    message(FATAL_ERROR "No vcpkg license files found in ${DEPENDENCY_BUILD_DIR}")
+endif()
+foreach(copyright IN LISTS vcpkg_copyrights)
+    get_filename_component(package_directory "${copyright}" DIRECTORY)
+    get_filename_component(package_name "${package_directory}" NAME)
+    file(COPY_FILE "${copyright}"
+         "${LICENSE_DESTINATION}/vcpkg-${package_name}.txt"
+         ONLY_IF_DIFFERENT)
 endforeach()

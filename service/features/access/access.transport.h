@@ -22,7 +22,7 @@
 
 #include <vector>
 
-#include <ruvia/core/Task.h>
+#include <ruvia/core/task.h>
 
 
 namespace service::access {

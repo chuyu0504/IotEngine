@@ -8,11 +8,11 @@
 #include <string>
 #include <thread>
 
-#include <ruvia/core/EventLoopPool.h>
-#include <ruvia/web/App.h>
-#include <ruvia/web/HttpClient.h>
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/web/app.h>
+#include <ruvia/web/http_client.h>
 
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/controller.h>
 #include "service/modules/link/link.service.h"
 
 using namespace std::chrono_literals;
@@ -116,14 +116,14 @@ class Origin final {
 
 } // namespace
 
-class PublicIpTestController final : public ruvia::Controller<PublicIpTestController> {
+class PublicIpTestController final : public ruvia::controller<PublicIpTestController> {
 public:
     RUVIA_CONTROLLER_GROUP("/test")
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/ip", ip);
     RUVIA_ROUTES_END
 private:
-    ruvia::Task<ruvia::HttpResponse> ip(ruvia::Context& context) {
+    ruvia::task<ruvia::http_response> ip(ruvia::context& context) {
         const auto owner = std::this_thread::get_id();
         service::link::LinkService service;
         const auto first = co_await service.publicIp(context);
@@ -135,14 +135,14 @@ private:
     }
 };
 
-ruvia::Task<void> verifyPublicIp(ruvia::EventLoop loop, std::uint16_t port, Origin& origin) {
-    ruvia::HttpClient client(loop, {.scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = port, .requestTimeout = 5s});
+ruvia::task<void> verifyPublicIp(ruvia::event_loop loop, std::uint16_t port, Origin& origin) {
+    ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s});
     for (int scenario = 0; scenario != 7; ++scenario) {
         origin.scenario = scenario;
         const auto before = origin.requests.load();
-        auto response = co_await client.send({.target = "/test/ip"});
+        auto response = co_await client.send({.target_ = "/test/ip"});
         require(response.status().value() == 200, "public IP handler failed");
-        const auto body = co_await response.body().readAll();
+        const auto body = co_await response.body().read_all();
         const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1" : "";
         require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == expected, "public IP response validation failed");
         require(origin.requests.load() == before + 1, "cached query reached upstream again");
@@ -162,13 +162,13 @@ int main() {
         reservation.close();
         std::promise<void> ready;
         auto started = ready.get_future();
-        app.blockingPool(nullptr).listen({.address = "127.0.0.1", .http = port})
-            .server({.worker_count = 2})
-            .httpClient({.alias = "link-public-ip", .config = {
-                .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(),
-                .requestTimeout = 2s, .maxResponseBytes = 64U * 1024U,
-                .protocol = ruvia::HttpClientProtocol::kHttp1Only, .userAgent = "curl/8.0"}})
-            .onStart([&] { ready.set_value(); });
+        app.get_blocking_pool(nullptr).listen({.address_ = "127.0.0.1", .http_ = port})
+            .server({.worker_count_ = 2})
+            .get_http_client({.alias_ = "link-public-ip", .config_ = {
+                .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(),
+                .request_timeout_ = 2s, .max_response_bytes_ = 64U * 1024U,
+                .protocol_ = ruvia::http_client_protocol::http1_only, .user_agent_ = "curl/8.0"}})
+            .on_start([&] { ready.set_value(); });
         serving = std::thread([&] {
             try { app.run(); }
             catch (...) {
@@ -178,7 +178,7 @@ int main() {
         });
         require(started.wait_for(10s) == std::future_status::ready, "test app startup timed out");
         started.get();
-        ruvia::EventLoopPool pool({.loopCount = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
         pool.loop(0).start(verifyPublicIp(pool.loop(0), port, origin)).get();
         pool.stop();

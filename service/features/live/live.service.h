@@ -12,14 +12,14 @@ namespace service::live {
 inline constexpr std::string_view kChanges = service::message::live::kChanges;
 
 template <typename Redis>
-ruvia::Task<void> publish(const Redis& redis, std::string_view topic) {
+ruvia::task<void> publish(const Redis& redis, std::string_view topic) {
     const std::vector<std::string> args{
         "XADD", std::string(kChanges), "MAXLEN", "~", "100000", "*",
         std::string(service::message::live::kSchemaVersionField),
         std::string(service::message::live::kSchemaVersion),
         std::string(service::message::live::kTopicField), std::string(topic)};
     const auto reply = co_await service::message::redis::command(redis, args);
-    if (reply.kind() != ruvia::RedisValue::Kind::kString)
+    if (reply.kind() != ruvia::redis_value::kind_type::string)
         service::message::redis::throwValue("XADD live change", reply);
 }
 

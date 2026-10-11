@@ -11,7 +11,7 @@ namespace service::packet_log {
 class DebugPacketService {
   public:
     template <typename Redis>
-    static ruvia::Task<void> finishAcquisition(const Redis& redis, std::string_view acquisitionId,
+    static ruvia::task<void> finishAcquisition(const Redis& redis, std::string_view acquisitionId,
         std::string_view state) {
         if (acquisitionId.empty() || (state != "success" && state != "partial" && state != "failed"))
             throw std::invalid_argument("invalid acquisition completion");
@@ -27,12 +27,12 @@ return 1
         const std::string key = std::string(DebugAcquisitionStorage::prefix) + std::string(acquisitionId);
         const std::vector<std::string_view> keys{key}, args{state};
         const auto result = co_await redis.eval(script, keys, args);
-        if (result.kind() == ruvia::RedisValue::Kind::kError)
+        if (result.kind() == ruvia::redis_value::kind_type::error)
             message::redis::throwValue("finish debug acquisition", result);
         co_await service::live::publish(redis, "packet-debug");
     }
     template <typename Redis>
-    static ruvia::Task<void> recordPacket(const Redis& redis, service::common::UuidV7Generator& uuidGenerator, std::string_view linkId,
+    static ruvia::task<void> recordPacket(const Redis& redis, service::common::UuidV7Generator& uuidGenerator, std::string_view linkId,
         std::string_view deviceId, std::string_view direction, std::string_view source,
         std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time,
         bool captureLink, bool captureDevice, std::string_view eventId = {},
@@ -211,12 +211,12 @@ return changed and 1 or 0
         // Preserve decimal and 64-bit numeric text while merging per-response values in Redis.
         std::vector<std::string> parsedFields;
         if (!parsedJson.empty()) {
-            const auto decoded = ruvia::JsonValue::parse(parsedJson);
+            const auto decoded = ruvia::json_value::parse(parsedJson);
             if (!decoded) throw std::invalid_argument("invalid debug parsed JSON");
-            const auto values = decoded->get<ruvia::JsonValue>("values");
-            if (!values || !values->isObject()) throw std::invalid_argument("invalid debug parsed values");
-            const bool valid = values->forEachField(
-                [&](std::string_view name, const ruvia::JsonValue& value) {
+            const auto values = decoded->get<ruvia::json_value>("values");
+            if (!values || !values->is_object()) throw std::invalid_argument("invalid debug parsed values");
+            const bool valid = values->for_each_field(
+                [&](std::string_view name, const ruvia::json_value& value) {
                     parsedFields.push_back("parsed_value:" + std::string(name));
                     parsedFields.emplace_back(value.view());
                     return true;
@@ -239,17 +239,17 @@ return changed and 1 or 0
                 status == "transport_only" ? "not_applicable" : direction == "RX" ? "pending" : "not_applicable";
             const auto acquisitionState = status == "acquisition_success" ? "success" :
                 status == "acquisition_partial" ? "partial" : status == "acquisition_failed" ? "failed" : "running";
-            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::columnName<"acquisition_id">(), acquisitionId, DebugPacketHash::columnName<"link_id">(), linkId, DebugPacketHash::columnName<"device_id">(), deviceId,
-                DebugPacketHash::columnName<"direction">(), direction, DebugPacketHash::columnName<"source">(), source, DebugPacketHash::columnName<"address">(), address,
-                DebugPacketHash::columnName<"edge_node_id">(), edgeNodeId, DebugPacketHash::columnName<"edge_node_name">(), edgeNodeName,
-                DebugPacketHash::columnName<"payload_hex">(), hex, DebugPacketHash::columnName<"time_ms">(), timestamp, DebugPacketHash::columnName<"offset">(), offsetText,
-                DebugPacketHash::columnName<"event_id">(), stableId, DebugPacketHash::columnName<"transport_status">(), transportStatus, DebugPacketHash::columnName<"response_status">(), responseStatus,
-                DebugPacketHash::columnName<"parse_status">(), parseStatus, DebugPacketHash::columnName<"reason">(), reason, DebugPacketHash::columnName<"reply_to_packet_id">(), replyToPacketId,
-                DebugPacketHash::columnName<"parsed_json">(), parsedJson,
+            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::column_name<"acquisition_id">(), acquisitionId, DebugPacketHash::column_name<"link_id">(), linkId, DebugPacketHash::column_name<"device_id">(), deviceId,
+                DebugPacketHash::column_name<"direction">(), direction, DebugPacketHash::column_name<"source">(), source, DebugPacketHash::column_name<"address">(), address,
+                DebugPacketHash::column_name<"edge_node_id">(), edgeNodeId, DebugPacketHash::column_name<"edge_node_name">(), edgeNodeName,
+                DebugPacketHash::column_name<"payload_hex">(), hex, DebugPacketHash::column_name<"time_ms">(), timestamp, DebugPacketHash::column_name<"offset">(), offsetText,
+                DebugPacketHash::column_name<"event_id">(), stableId, DebugPacketHash::column_name<"transport_status">(), transportStatus, DebugPacketHash::column_name<"response_status">(), responseStatus,
+                DebugPacketHash::column_name<"parse_status">(), parseStatus, DebugPacketHash::column_name<"reason">(), reason, DebugPacketHash::column_name<"reply_to_packet_id">(), replyToPacketId,
+                DebugPacketHash::column_name<"parsed_json">(), parsedJson,
                 "acquisition_state", acquisitionState, "update_only", updateOnly ? "1" : "0"};
             for (const auto& field : parsedFields) args.push_back(field);
             const auto result = co_await redis.eval(script, keys, args);
-            if (result.kind() == ruvia::RedisValue::Kind::kError)
+            if (result.kind() == ruvia::redis_value::kind_type::error)
                 message::redis::throwValue("append debug packet", result);
         }
         co_await service::live::publish(redis, "packet-debug");

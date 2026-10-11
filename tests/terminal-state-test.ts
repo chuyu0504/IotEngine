@@ -2,11 +2,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 
-const gateway = readFileSync(
-    new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url),
-    'utf8'
-);
-const state = readFileSync(
+const terminalService = readFileSync(
     new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url),
     'utf8'
 );
@@ -15,11 +11,11 @@ function lua(source: string, marker: string) {
     if (!match) throw new Error(`Missing production Lua: ${marker}`);
     return match[1];
 }
-const refresh = lua(state, 'kRefreshScript');
-const failTerminal = lua(state, 'kFailScript');
-const inputAck = lua(gateway, 'static ruvia::Task<void> saveTerminalDataAck(');
-const output = lua(gateway, 'static ruvia::Task<void> saveTerminalData(');
-const enqueueInput = lua(state, 'static ruvia::Task<void> enqueueInput(');
+const refresh = lua(terminalService, 'kRefreshScript');
+const failTerminal = lua(terminalService, 'kFailScript');
+const inputAck = lua(terminalService, 'static ruvia::task<void> saveTerminalDataAck(');
+const output = lua(terminalService, 'static ruvia::task<void> saveTerminalData(');
+const enqueueInput = lua(terminalService, 'static ruvia::task<void> enqueueInput(');
 let server: ReturnType<typeof Bun.spawn> | undefined;
 let redis: InstanceType<typeof Bun.RedisClient>;
 

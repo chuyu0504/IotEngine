@@ -19,10 +19,10 @@ void require(bool condition, std::string_view message) {
         throw std::runtime_error(std::string(message));
 }
 
-std::string compileSql(const ruvia::DbQuery& query) {
-    auto statement = query.compile(ruvia::DbDriver::kPostgreSql,
+std::string compileSql(const ruvia::db_query& query) {
+    auto statement = query.compile(ruvia::db_driver::postgresql,
                                    std::pmr::new_delete_resource(),
-                                   ruvia::DbParameterMode::kLiteral);
+                                   ruvia::db_parameter_mode::literal);
     return std::string(statement.sql());
 }
 

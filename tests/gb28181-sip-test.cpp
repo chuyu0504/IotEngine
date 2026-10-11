@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/timestamp.h"
 #include "service/features/gb28181/device/device.runtime.h"
@@ -378,7 +378,7 @@ void verifySipRegistrationGeneration(
     );
 }
 
-void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, ZlmSdk& zlm, const ruvia::EventLoop& loop, asio::io_context& clientContext) {
+void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, ZlmSdk& zlm, const ruvia::event_loop& loop, asio::io_context& clientContext) {
     server->stop();
     server.reset();
 
@@ -425,8 +425,8 @@ void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std:
 }
 
 void verifyDualUdpWorkerOwnership(const SipConfig& baseSip, const MediaConfig& media, ZlmSdk& zlm) {
-    ruvia::EventLoopPool dualPool(
-        ruvia::EventLoopPoolOptions{ .loopCount = 2, .queue_capacity = 128 }
+    ruvia::event_loop_pool dualPool(
+        ruvia::event_loop_pool_options{ .loop_count_ = 2, .queue_capacity_ = 128 }
     );
     dualPool.start();
 
@@ -705,39 +705,12 @@ std::string inviteOkWithCSeqMethod(const SipMessage& invite, std::string_view cs
         "Content-Length: 0\r\n\r\n";
 }
 
-std::string recordInfoMessage(std::string_view sn, std::string_view deviceId) {
-    const auto body =
-        "<?xml version=\"1.0\"?>\r\n"
-        "<Response><CmdType>RecordInfo</CmdType><SN>" +
-        std::string(sn) + "</SN><DeviceID>" + std::string(deviceId) +
-        "</DeviceID><SumNum>1</SumNum><RecordList Num=\"1\"><Item>"
-        "<DeviceID>34020000001320000001</DeviceID>"
-        "<Name>bad-sn-record</Name>"
-        "<FilePath>/record/bad-sn.mp4</FilePath>"
-        "<Address>record</Address>"
-        "<StartTime>2026-07-29T08:40:45Z</StartTime>"
-        "<EndTime>2026-07-29T08:41:45Z</EndTime>"
-        "<Type>time</Type>"
-        "</Item></RecordList></Response>";
-    return "MESSAGE sip:34020000002000000001@3402000000 SIP/2.0\r\n"
-           "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bK-record-info\r\n"
-           "From: <sip:" +
-        std::string(deviceId) +
-        "@3402000000>;tag=record-info\r\n"
-        "To: <sip:34020000002000000001@3402000000>\r\n"
-        "Call-ID: gb28181-record-info-test\r\n"
-        "CSeq: 20 MESSAGE\r\n"
-        "Content-Type: Application/MANSCDP+xml\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) + "\r\n\r\n" + body;
-}
-
 } // namespace
 
 int main() {
     service::common::UuidV7Generator uuidGenerator;
-    ruvia::EventLoopPool pool(
-        ruvia::EventLoopPoolOptions{ .loopCount = 1, .queue_capacity = 128 }
+    ruvia::event_loop_pool pool(
+        ruvia::event_loop_pool_options{ .loop_count_ = 1, .queue_capacity_ = 128 }
     );
     std::shared_ptr<SipServer> server;
     std::unique_ptr<DeviceRegistry> devices;
@@ -785,14 +758,10 @@ int main() {
         );
         observed.upsertRegistration("device", "127.0.0.1:5060");
         observed.updateCatalog("device", {});
-        observed.updateRecords("device", {});
-        require(observed.updateMapping("device", "00000000-0000-7000-8000-000000000001"), "GB28181 device mapping update failed");
         observed.markOffline("device");
         require(changes == std::vector<DeviceChange>{
                                DeviceChange::Status,
                                DeviceChange::Catalog,
-                               DeviceChange::Records,
-                               DeviceChange::Mapping,
                                DeviceChange::Status,
                            },
                 "GB28181 projection changes were not classified");
@@ -1145,57 +1114,6 @@ int main() {
                                     },
                     "GB28181 shared preview viewer count did not follow 1-2-1-0");
         }
-
-        require(server->queryRecords("34020000001320000001", "34020000001320000001", "2026-07-29T08:40:45Z", "2026-07-29T08:41:45Z"), "GB28181 record query was not sent");
-        const auto recordQuery =
-            receiveSipMatching(
-                [&udp, &udpRemote](auto& buffer, std::error_code& error) {
-                    return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
-                },
-                [](const SipMessage& message) {
-                    return message.method == "MESSAGE" &&
-                        xmlValue(message.body, "CmdType") == "RecordInfo";
-                },
-                std::chrono::seconds(3)
-            );
-        require(recordQuery.has_value(), "GB28181 record query was not received");
-        const auto recordSn = xmlValue(recordQuery->body, "SN");
-        require(!recordSn.empty(), "GB28181 record query did not include SN");
-        const auto badRecordInfo =
-            recordInfoMessage(recordSn + "x", "spoofed-record-device");
-        udp.send_to(asio::buffer(badRecordInfo), serverUdp);
-        const auto badRecordAck =
-            receiveSipMatching(
-                [&udp, &udpRemote](auto& buffer, std::error_code& error) {
-                    return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
-                },
-                [](const SipMessage& message) {
-                    return message.statusCode == 200;
-                },
-                std::chrono::seconds(3)
-            );
-        require(badRecordAck.has_value(), "GB28181 malformed RecordInfo was not acknowledged");
-        const auto afterBadRecord =
-            devices->findDevice("34020000001320000001");
-        require(afterBadRecord.has_value() && afterBadRecord->records.empty(), "GB28181 RecordInfo accepted a non-decimal SN for a pending query");
-
-        const auto goodRecordInfo =
-            recordInfoMessage(recordSn, "spoofed-record-device");
-        udp.send_to(asio::buffer(goodRecordInfo), serverUdp);
-        const auto goodRecordAck =
-            receiveSipMatching(
-                [&udp, &udpRemote](auto& buffer, std::error_code& error) {
-                    return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
-                },
-                [](const SipMessage& message) {
-                    return message.statusCode == 200;
-                },
-                std::chrono::seconds(3)
-            );
-        require(goodRecordAck.has_value(), "GB28181 valid RecordInfo was not acknowledged");
-        const auto afterGoodRecord =
-            devices->findDevice("34020000001320000001");
-        require(afterGoodRecord.has_value() && afterGoodRecord->records.size() == 1, "GB28181 valid RecordInfo did not consume the pending query");
 
         devices->upsertRegistration(
             "bad-port-device",

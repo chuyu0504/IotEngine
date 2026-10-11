@@ -30,8 +30,8 @@ void requireNoUnsafeParsing(std::string_view source) {
             "link service still executes a raw SQL string");
     require(source.find("transaction.execute(\"") == std::string_view::npos,
             "link service still executes a raw transaction SQL string");
-    require(source.find("ruvia::DbQuery") != std::string_view::npos,
-            "link service does not use the public DbQuery API");
+    require(source.find("ruvia::db_query") != std::string_view::npos,
+            "link service does not use the public db_query API");
     require(source.find("LinkEntity") != std::string_view::npos,
             "link service does not use its ORM entity");
     require(source.find("c.pool()") != std::string_view::npos,

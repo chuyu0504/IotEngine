@@ -235,17 +235,6 @@ export function useReplaceDeviceGroupShares() {
         invalidateKeys: [shareKeys.all, deviceKeys.all, groupKeys.all],
     });
 }
-export function useDeviceGroupTree(
-    options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
-) {
-    return useQuery({
-        queryKey: [...groupKeys.all, 'tree'],
-        queryFn: ({ signal }) => api.getDeviceGroups(signal).then(buildDeviceGroupTree),
-        ...options,
-        refetchInterval: false,
-        refetchOnWindowFocus: false,
-    });
-}
 export function useDeviceGroupTreeWithCount(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>,
     debugDeviceId?: string,

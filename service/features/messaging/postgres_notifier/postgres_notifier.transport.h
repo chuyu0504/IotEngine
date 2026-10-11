@@ -5,13 +5,13 @@
 #include <mutex>
 #include <thread>
 
-#include <ruvia/web/db/DbTypes.h>
+#include <ruvia/web/db/db_types.h>
 
 namespace service::message::outbox {
 
 class PostgresNotifier final {
 public:
-    PostgresNotifier(ruvia::DbConfig config, std::function<void()> wake);
+    PostgresNotifier(ruvia::db_config config, std::function<void()> wake);
     ~PostgresNotifier();
 
     PostgresNotifier(const PostgresNotifier&) = delete;
@@ -24,7 +24,7 @@ public:
 private:
     void run(std::stop_token stopToken);
 
-    ruvia::DbConfig config_;
+    ruvia::db_config config_;
     std::function<void()> wake_;
     std::atomic_bool connected_{false};
     std::mutex lifecycleMutex_;

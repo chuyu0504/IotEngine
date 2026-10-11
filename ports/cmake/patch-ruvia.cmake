@@ -1,0 +1,20 @@
+if(NOT DEFINED SOURCE_DIR)
+    message(FATAL_ERROR "SOURCE_DIR is required")
+endif()
+
+# Clang cannot deduce wait() before its definition in this coroutine template.
+# Await the same worker signal directly; no API or shutdown semantics change.
+set(source_file "${SOURCE_DIR}/ruvia-web/src/client/client_close_state.h")
+file(READ "${source_file}" content)
+string(REPLACE "\r\n" "\n" content "${content}")
+string(SHA256 source_hash "${content}")
+if(source_hash STREQUAL "a23e7ad2cbb05780d4cb4426086a27d27cf98748a4efc9276312d0aad75f499e")
+    return()
+endif()
+if(NOT source_hash STREQUAL "5a748a7580c73e0e0428992df750886a9612d7c6a30d8e6008403c525570cbab")
+    message(FATAL_ERROR "Unexpected pinned Ruvia client_close_state source: ${source_hash}")
+endif()
+set(original "        while (!complete_) {\n            co_await wait();\n        }")
+set(patched "        while (!complete_) {\n            co_await signal_.wait();\n        }")
+string(REPLACE "${original}" "${patched}" content "${content}")
+file(WRITE "${source_file}" "${content}")

@@ -56,15 +56,15 @@ try {
         WHERE c.table_schema='public' AND c.constraint_type='PRIMARY KEY'`;
     const primaryKeys = new Set(primaryRows.map((row: any) => `${row.table_name}.${row.column_name}`));
     const inferredTypes: Record<string, string> = {
-        'std::pmr::string': 'kText', 'ruvia::String': 'kText', bool: 'kBoolean',
-        'std::int16_t': 'kSmallInt', 'std::int32_t': 'kInteger', 'std::int64_t': 'kBigInt',
-        float: 'kReal', double: 'kDouble',
+        'std::pmr::string': 'text', 'ruvia::string': 'text', bool: 'boolean',
+        'std::int16_t': 'small_int', 'std::int32_t': 'integer', 'std::int64_t': 'big_int',
+        float: 'real', double: 'double_value',
     };
     const databaseTypes: Record<string, string> = {
-        text: 'kText', varchar: 'kVarchar', int2: 'kSmallInt', int4: 'kInteger', int8: 'kBigInt',
-        bool: 'kBoolean', float4: 'kReal', float8: 'kDouble', numeric: 'kNumeric',
-        uuid: 'kUuid', json: 'kJson', jsonb: 'kJsonb', inet: 'kInet',
-        timestamptz: 'kTimestampTz', timestamp: 'kTimestamp', date: 'kDate', bytea: 'kBytea',
+        text: 'text', varchar: 'varchar', int2: 'small_int', int4: 'integer', int8: 'big_int',
+        bool: 'boolean', float4: 'real', float8: 'double_value', numeric: 'numeric',
+        uuid: 'uuid', json: 'json', jsonb: 'jsonb', inet: 'inet',
+        timestamptz: 'timestamp_tz', timestamp: 'timestamp', date: 'date', bytea: 'bytea',
     };
     for await (const file of new Bun.Glob('service/**/*.entity.h').scan('.')) {
         const source = await Bun.file(file).text();
@@ -82,9 +82,9 @@ try {
                 const issue = (message: string) => findings.push({ file, entity, column, issue: message });
                 if (!actual) { issue(`missing physical column ${table}.${column}`); continue; }
                 checkedColumns++;
-                if (primaryKeys.has(`${table}.${column}`) !== /\.primaryKey\s*=\s*true/.test(options))
+                if (primaryKeys.has(`${table}.${column}`) !== /\.primary_key_\s*=\s*true/.test(options))
                     issue(`primary key differs: database=${primaryKeys.has(`${table}.${column}`)}`);
-                const entityType = /\.dataType\s*=\s*ruvia::DbDataType::(\w+)/.exec(options)?.[1]
+                const entityType = /\.data_type_\s*=\s*ruvia::db_data_type::(\w+)/.exec(options)?.[1]
                     ?? inferredTypes[valueType];
                 const databaseType = databaseTypes[actual.udt_name];
                 if (databaseType && entityType !== databaseType)
@@ -92,27 +92,27 @@ try {
                 else if (!databaseType && actual.data_type !== 'USER-DEFINED')
                     issue(`unsupported physical type audit: ${actual.udt_name}`);
                 if (actual.udt_name === 'numeric' && actual.numeric_precision !== null) {
-                    const precision = Number(/\.precision\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
-                    const scale = Number(/\.scale\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
+                    const precision = Number(/\.precision_\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
+                    const scale = Number(/\.scale_\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
                     if (precision !== Number(actual.numeric_precision) || scale !== Number(actual.numeric_scale))
                         issue(`numeric precision differs: database=${actual.numeric_precision},${actual.numeric_scale}`);
                 }
-                if ((actual.is_nullable === 'YES') !== /\.nullable\s*=\s*true/.test(options))
+                if ((actual.is_nullable === 'YES') !== /\.nullable_\s*=\s*true/.test(options))
                     issue(`nullable differs: database=${actual.is_nullable}`);
-                if (actual.column_default !== null && !/\.defaultExpression\s*=/.test(options)
-                    && !/\.generated\s*=\s*true/.test(options))
+                if (actual.column_default !== null && !/\.default_expression_\s*=/.test(options)
+                    && !/\.generated_\s*=\s*true/.test(options))
                     issue(`missing default metadata: ${actual.column_default}`);
-                const declaredDefault = /\.defaultExpression\s*=\s*ruvia::FixedString\{\s*("(?:\\.|[^"\\])*")\s*\}/.exec(options);
+                const declaredDefault = /\.default_expression_\s*=\s*ruvia::fixed_string\{\s*("(?:\\.|[^"\\])*")\s*\}/.exec(options);
                 if (declaredDefault) {
                     const expression: string = JSON.parse(declaredDefault[1]);
                     if (actual.column_default === null) issue(`unexpected default metadata: ${expression}`);
                     else defaults.push({ file, entity, column, expression, actual: actual.column_default,
                         type: String(sqlTypes.get(`${table}.${column}`)) });
-                } else if (/\.defaultExpression\s*=/.test(options)) {
+                } else if (/\.default_expression_\s*=/.test(options)) {
                     issue('unsupported default expression declaration');
                 }
                 if (actual.character_maximum_length !== null) {
-                    const length = Number(/\.length\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
+                    const length = Number(/\.length_\s*=\s*(\d+)/.exec(options)?.[1] ?? 0);
                     if (length !== Number(actual.character_maximum_length))
                         issue(`length differs: database=${actual.character_maximum_length}, entity=${length}`);
                 }

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include <ruvia/web/Model.h>
+#include <ruvia/web/model.h>
 
 struct StreamStatus {
     std::string app;
@@ -35,10 +35,10 @@ struct OpenRtpServerResult {
 };
 
 RUVIA_MODEL(WebRtcResponseModel,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(type, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(sdp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(msg, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(type, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(sdp, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(msg, ruvia::string));
 
 struct MediaServerPorts {
     std::uint16_t http{ 0 };

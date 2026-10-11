@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
-import { openSnapshotSubscription } from './sse-fixture';
-const subscribe = (bearer: string) => openSnapshotSubscription('/v1/auth/me/events', bearer);
+import { openSnapshotSubscription, type SnapshotSubscription } from './sse-fixture';
 
 const sql = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
@@ -27,7 +26,7 @@ async function request(method: string, path: string, body?: unknown, bearer = to
     return result;
 }
 
-let stream: Awaited<ReturnType<typeof subscribe>> | undefined;
+let stream: SnapshotSubscription | undefined;
 try {
     await request('POST', '/v1/roles', { name: tag, code: tag, permissions: [] });
     const [role] = await sql`SELECT id FROM sys_role WHERE code=${tag}`;
@@ -38,15 +37,6 @@ try {
     assert.equal((await request('GET', '/v1/auth/me', undefined, login.token)).data.id, user.id);
     const refreshed = (await request('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token })).data;
     assert.equal(refreshed.user.id, user.id);
-    stream = await subscribe(refreshed.token);
-    const initial = await stream.next();
-    assert.equal(initial.event, 'snapshot');
-    assert.equal(JSON.parse(initial.data).data.id, user.id);
-    await request('PUT', `/v1/users/${user.id}`, { nickname: 'changed by HTTP' });
-    const change = await stream.next();
-    assert.equal(change.event, 'snapshot');
-    assert.equal(JSON.parse(change.data).data.nickname, 'changed by HTTP');
-    await stream.close();
     stream = await openSnapshotSubscription('/v1/device/events', refreshed.token, { includeUser: true });
     const initialChannels = new Map<string, any>();
     for (let count = 0; count < 4; count++) {
@@ -80,8 +70,8 @@ try {
     await stream.expectQuiet();
     await stream.close();
     console.log('PASS page SSE shares user profile, permission changes and scoped queries without an extra auth connection');
-    stream = await subscribe(token(user.id, 2));
-    assert.equal((await stream.next()).event, 'snapshot');
+    stream = await openSnapshotSubscription('/v1/device/events', token(user.id, 2), { includeUser: true });
+    for (let count = 0; count < 4; count++) assert.notEqual((await stream.next()).event, 'error');
     // The 15-second verifier tolerance plus the next 15-second check can
     // exceed 20 seconds. Comment heartbeats do not dispatch business events.
     const expired = await stream.next(40000);
@@ -90,7 +80,7 @@ try {
     await stream.close();
     stream = undefined;
     await request('POST', '/v1/auth/logout', undefined, refreshed.token);
-    console.log('PASS HTTP login/refresh/me/logout, SSE initial snapshot, change-driven update and token expiry without heartbeat events');
+    console.log('PASS HTTP login/refresh/me/logout, shared user SSE channel snapshot and token expiry without heartbeat events');
 } finally {
     await stream?.close();
     await sql`DELETE FROM sys_user_role WHERE user_id IN (SELECT id FROM sys_user WHERE username=${tag})`;

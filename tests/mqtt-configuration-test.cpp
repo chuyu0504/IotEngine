@@ -14,7 +14,7 @@ constexpr std::string_view kPoint = "00000000-0000-7000-8000-000000000001";
 
 service::protocol::MqttPreviewResult preview(std::string_view config, std::string_view topic, std::string_view payload, std::string_view code = "") {
     const auto raw = "{\"config\":" + std::string(config) + ",\"topic\":" + service::utils::jsonQuoted(topic) + ",\"payload\":" + service::utils::jsonQuoted(payload) + ",\"deviceCode\":" + service::utils::jsonQuoted(code) + ",\"timezone\":\"+08:00\"}";
-    const auto body = ruvia::fromJson<service::protocol::MqttPreviewBody>(raw);
+    const auto body = ruvia::from_json<service::protocol::MqttPreviewBody>(raw);
     require(body.has_value(), "preview body did not parse");
     return service::protocol::ProtocolService::previewMqtt(*body);
 }
@@ -91,11 +91,11 @@ void testTemplates() {
 
     const std::string report = " {\"code\":\"$deviceCode\",\"temperature\":\"$point:温度\",\"at\":\"$time\",\"constant\":42} ";
     const auto metadata = configuration("\"reportTemplate\":" + service::utils::jsonQuoted(report) + ",", "");
-    const auto typed = ruvia::fromJson<service::protocol::MqttConfig>(metadata);
+    const auto typed = ruvia::from_json<service::protocol::MqttConfig>(metadata);
     require(typed && typed->get<"reportTemplate">() && typed->get<"reportTemplate">()->view() == report, "report template metadata was dropped or normalized");
-    const auto serializedText = ruvia::toJson(*typed);
-    const auto serialized = ruvia::JsonValue::parse(serializedText);
-    const auto storedReport = serialized ? serialized->get<ruvia::String>("reportTemplate") : std::nullopt;
+    const auto serializedText = ruvia::to_json(*typed);
+    const auto serialized = ruvia::json_value::parse(serializedText);
+    const auto storedReport = serialized ? serialized->get<ruvia::string>("reportTemplate") : std::nullopt;
     require(storedReport && storedReport->view() == report, "preview serialization lost report template");
     const auto metadataResult = preview(metadata, "devices", R"({"temperature":8})", "D001");
     require(metadataResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "report metadata altered canonical preview");
@@ -144,9 +144,9 @@ void testMultipleControlMessages() {
     const auto first = command(firstId, "设置温度", "commands/{deviceCode}", R"({"set":"$point:温度"})", required);
     const auto second = command(secondId, "温度校准", "calibrate/{deviceCode}", R"({"calibrate":"$point:温度"})", "[]");
     const auto valid = configuration("\"commands\":[" + first + "," + second + "],", R"(,"writable":true)");
-    const auto parsed = ruvia::fromJson<service::protocol::MqttConfig>(valid);
+    const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
     require(parsed && parsed->get<"commands">() && parsed->get<"commands">()->size() == 2, "multiple command configuration lost");
-    const auto encoded = ruvia::toJson(*parsed);
+    const auto encoded = ruvia::to_json(*parsed);
     require(encoded.find("requiredPointIds") != std::string::npos && encoded.find("templateText") == std::string::npos, "command wire field names changed");
     const auto previewed = preview(valid, "devices", R"({"temperature":8})", "D001");
     require(previewed.get<"records">()[0].get<"points">().size() == 1, "multiple commands changed reports");

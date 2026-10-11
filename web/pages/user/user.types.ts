@@ -58,7 +58,6 @@ interface UpdateUserDto {
 }
 export namespace User {
     export type Status = UserStatus;
-    export type Role = UserRole;
     export type Option = UserOption;
     export type Item = UserItem;
     export type Query = UserQuery;

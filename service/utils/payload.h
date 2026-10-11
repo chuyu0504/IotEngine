@@ -155,13 +155,13 @@ inline std::optional<std::int64_t> payloadTimestamp(const PayloadScalar& value, 
 inline std::vector<std::string> payloadRecords(std::string_view input, std::string_view format, std::string_view recordsPath, std::string_view recordDelimiter, std::size_t recordLength) {
     std::vector<std::string> result;
     if (format == "json") {
-        const auto parsed = ruvia::JsonValue::parse(input);
+        const auto parsed = ruvia::json_value::parse(input);
         const auto records = parsed ? jsonField(*parsed, recordsPath) : std::nullopt;
         if (!records) {
             throw std::invalid_argument("JSON 无效或记录路径不存在");
         }
-        if (records->isArray()) {
-            (void)records->forEachElement([&](const auto& record) {
+        if (records->is_array()) {
+            (void)records->for_each_element([&](const auto& record) {
                 if (result.size() >= 256) {
                     throw std::invalid_argument("单条消息最多 256 条设备记录");
                 }
@@ -200,7 +200,7 @@ inline std::vector<std::string> payloadRecords(std::string_view input, std::stri
 class PayloadRecord {
   public:
     PayloadRecord(std::string_view input, std::string_view format, std::string_view delimiter)
-        : input_(input), format_(format), json_(format == "json" ? ruvia::JsonValue::parse(input) : std::nullopt) {
+        : input_(input), format_(format), json_(format == "json" ? ruvia::json_value::parse(input) : std::nullopt) {
         if (format == "text") {
             columns_ = splitPayload(input, delimiter);
         }
@@ -212,14 +212,14 @@ class PayloadRecord {
             if (!value) {
                 return std::nullopt;
             }
-            if (value->isString()) {
-                return PayloadScalar{ std::string(value->get<ruvia::String>()->view()) };
+            if (value->is_string()) {
+                return PayloadScalar{ std::string(value->get<ruvia::string>()->view()) };
             }
-            if (value->isBoolean()) {
-                return PayloadScalar{ value->get<ruvia::Bool>()->value };
+            if (value->is_boolean()) {
+                return PayloadScalar{ value->get<ruvia::bool_value>()->value_ };
             }
-            if (value->isNumber()) {
-                return PayloadScalar{ value->get<ruvia::Double>()->value };
+            if (value->is_number()) {
+                return PayloadScalar{ value->get<ruvia::double_value>()->value_ };
             }
             return std::nullopt;
         }
@@ -260,7 +260,7 @@ class PayloadRecord {
 
   private:
     std::string_view input_, format_;
-    std::optional<ruvia::JsonValue> json_;
+    std::optional<ruvia::json_value> json_;
     std::vector<std::string_view> columns_;
 };
 

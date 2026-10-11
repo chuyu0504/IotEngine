@@ -14,8 +14,8 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/web/Model.h>
-#include <ruvia/web/ModelJson.h>
+#include <ruvia/web/model.h>
+#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -158,192 +158,99 @@ inline bool completeOwnerToken(std::string_view token) {
 // module keeps its HTTP DTOs independent and only parses the wire shape.
 RUVIA_MODEL(
     ControlRequest,
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(action, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("start_time", startTime, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("end_time", endTime, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(pan, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double)
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(pan, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(tilt, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(zoom, ruvia::double_value)
 );
 
 RUVIA_MODEL(
     MediaPortsJson,
-    RUVIA_OPTIONAL_FIELD(http, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(https, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(rtsps, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(rtmps, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(rtc, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64)
+    RUVIA_OPTIONAL_FIELD(http, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(https, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtsps, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtmps, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtc, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(srt, ruvia::int64)
 );
 
 RUVIA_MODEL(
     MediaCapabilitiesJson,
-    RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(hls, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(mp4, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(sctp, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(x264, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(tls, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
+    RUVIA_OPTIONAL_FIELD(faac, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(hls, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(mp4, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(srt, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(sctp, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(x264, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(tls, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value)
 );
 
 RUVIA_MODEL(
     HealthJson,
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(service, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(started, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(error, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(service, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(started, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(error, ruvia::string),
     RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPortsJson),
     RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilitiesJson)
 );
 
 RUVIA_MODEL(
-    SipConfigJson,
-    RUVIA_OPTIONAL_FIELD(domain, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(host, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("public_ip", publicIp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(transport, ruvia::String)
-);
-
-RUVIA_MODEL(
     ChannelJson,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool)
-);
-
-RUVIA_MODEL(
-    RecordJson,
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("file_path", filePath, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(address, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("start_time", startTime, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("end_time", endTime, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(type, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String)
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::bool_value)
 );
 
 RUVIA_MODEL(
     DeviceJson,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(channels, ruvia::BoxedArray<ChannelJson>),
-    RUVIA_OPTIONAL_FIELD(records, ruvia::BoxedArray<RecordJson>)
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(channels, ruvia::boxed_array<ChannelJson>)
 );
 
-RUVIA_MODEL(DeviceListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<DeviceJson>));
-
-RUVIA_MODEL(
-    StreamJson,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(app, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(stream, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(schema, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64)
-);
-
-RUVIA_MODEL(StreamListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<StreamJson>));
-
-RUVIA_MODEL(
-    PlayUrlsJson,
-    RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(hls, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(webrtc, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String)
-);
-
-RUVIA_MODEL(
-    PreviewStartJson,
-    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(ssrc, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrlsJson)
-);
-
-RUVIA_MODEL(
-    PreviewStopJson,
-    RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::Bool)
-);
-
-RUVIA_MODEL(
-    ActionJson,
-    RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(action, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(pan, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
-);
+RUVIA_MODEL(DeviceListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::boxed_array<DeviceJson>));
 
 inline std::optional<ControlRequest> parseRequest(
     std::string_view body,
     std::pmr::memory_resource* resource
 ) {
-    return ruvia::fromJson<ControlRequest>(body, { .resource = resource });
+    return ruvia::from_json<ControlRequest>(body, { .resource_ = resource });
 }
 
 inline constexpr std::string_view kHealthOperation{ "health" };
-inline constexpr std::string_view kSipConfigOperation{ "config.sip" };
 inline constexpr std::string_view kDevicesOperation{ "devices" };
-inline constexpr std::string_view kDeviceOperation{ "device" };
-inline constexpr std::string_view kStreamsOperation{ "streams" };
-inline constexpr std::string_view kStreamOperation{ "stream" };
 inline constexpr std::string_view kCatalogOperation{ "catalog" };
 inline constexpr std::string_view kRenameDeviceOperation{ "rename_device" };
 inline constexpr std::string_view kRenameChannelOperation{ "rename_channel" };
-inline constexpr std::string_view kMapOperation{ "map" };
-inline constexpr std::string_view kUnmapOperation{ "unmap" };
 inline constexpr std::string_view kPreviewStartOperation{ "preview.start" };
 inline constexpr std::string_view kPreviewStopOperation{ "preview.stop" };
 inline constexpr std::string_view kPreviewHeartbeatOperation{
@@ -351,14 +258,12 @@ inline constexpr std::string_view kPreviewHeartbeatOperation{
 };
 inline constexpr std::string_view kPtzOperation{ "ptz" };
 inline constexpr std::string_view kPtzPositionOperation{ "ptz.position" };
-inline constexpr std::string_view kRecordsOperation{ "records" };
-inline constexpr std::string_view kPlaybackStartOperation{ "playback.start" };
 inline constexpr std::string_view kRecordingOperation{ "recording" };
 inline constexpr std::string_view kRecordingStartOperation{ "recording.start" };
 inline constexpr std::string_view kRecordingStopOperation{ "recording.stop" };
 
 inline std::string successJson(const auto& model, std::pmr::memory_resource* resource) {
-    const auto encoded = ruvia::toJson(model, { .resource = resource });
+    const auto encoded = ruvia::to_json(model, { .resource_ = resource });
     std::string result{ "{\"code\":0,\"message\":\"ok\",\"data\":" };
     result.append(encoded.data(), encoded.size());
     result.push_back('}');
@@ -404,10 +309,6 @@ inline std::string projectionChangeName(DeviceChange change) {
             return "status";
         case DeviceChange::Catalog:
             return "catalog";
-        case DeviceChange::Records:
-            return "records";
-        case DeviceChange::Mapping:
-            return "mapping";
         case DeviceChange::DeviceName:
             return "device_name";
         case DeviceChange::ChannelName:
@@ -430,16 +331,14 @@ deviceProjectionFields(const Device& device, DeviceChange change, std::size_t ow
         { "manufacturer", device.manufacturer },
         { "remote_address", device.remoteAddress },
         { "registration_source", device.registrationSource },
-        { "mapped_device_id", device.mappedDeviceId },
         { "online", device.online ? "1" : "0" },
         { "last_seen_at", service::common::utcTimestamp(device.lastSeen) },
         { "session_generation", std::to_string(device.sessionGeneration) },
         { "owner_index", std::to_string(owner) },
         { "owner_token", std::string(ownerToken) },
         { "channel_count", std::to_string(device.channels.size()) },
-        { "record_count", std::to_string(device.records.size()) },
     };
-    fields.reserve(fields.size() + device.channels.size() * 6U + device.records.size() * 8U);
+    fields.reserve(fields.size() + device.channels.size() * 6U);
     for (std::size_t index = 0; index < device.channels.size(); ++index) {
         const auto& channel = device.channels[index];
         const auto prefix = "channel." + std::to_string(index) + ".";
@@ -449,18 +348,6 @@ deviceProjectionFields(const Device& device, DeviceChange change, std::size_t ow
         fields.emplace_back(prefix + "manufacturer", channel.manufacturer);
         fields.emplace_back(prefix + "online", channel.online ? "1" : "0");
         fields.emplace_back(prefix + "ptz_type", std::to_string(channel.ptzType));
-    }
-    for (std::size_t index = 0; index < device.records.size(); ++index) {
-        const auto& record = device.records[index];
-        const auto prefix = "record." + std::to_string(index) + ".";
-        fields.emplace_back(prefix + "device_id", record.deviceId);
-        fields.emplace_back(prefix + "name", record.name);
-        fields.emplace_back(prefix + "file_path", record.filePath);
-        fields.emplace_back(prefix + "address", record.address);
-        fields.emplace_back(prefix + "start_time", record.startTime);
-        fields.emplace_back(prefix + "end_time", record.endTime);
-        fields.emplace_back(prefix + "type", record.type);
-        fields.emplace_back(prefix + "recorder_id", record.recorderId);
     }
     return fields;
 }
@@ -503,12 +390,6 @@ inline std::optional<DeviceChange> projectionDeviceChange(std::string_view value
     if (value == "catalog") {
         return DeviceChange::Catalog;
     }
-    if (value == "records") {
-        return DeviceChange::Records;
-    }
-    if (value == "mapping") {
-        return DeviceChange::Mapping;
-    }
     if (value == "device_name") {
         return DeviceChange::DeviceName;
     }
@@ -541,7 +422,6 @@ inline Device deviceFromProjection(const service::message::StreamMessage& messag
     device.manufacturer = std::string(message.get("manufacturer"));
     device.remoteAddress = std::string(message.get("remote_address"));
     device.registrationSource = std::string(message.get("registration_source"));
-    device.mappedDeviceId = std::string(message.get("mapped_device_id"));
     device.online = projectionBoolean(message.get("online"));
     if (const auto lastSeen = service::common::parseUtcTimestamp(
             message.get("last_seen_at")
@@ -574,23 +454,6 @@ inline Device deviceFromProjection(const service::message::StreamMessage& messag
         }
         device.channels.push_back(std::move(channel));
     }
-
-    const auto recordCount =
-        projectionCount(message.get("record_count"), "record_count");
-    device.records.reserve(recordCount);
-    for (std::size_t index = 0; index < recordCount; ++index) {
-        const auto prefix = "record." + std::to_string(index) + ".";
-        RecordItem record;
-        record.deviceId = std::string(message.get(prefix + "device_id"));
-        record.name = std::string(message.get(prefix + "name"));
-        record.filePath = std::string(message.get(prefix + "file_path"));
-        record.address = std::string(message.get(prefix + "address"));
-        record.startTime = std::string(message.get(prefix + "start_time"));
-        record.endTime = std::string(message.get(prefix + "end_time"));
-        record.type = std::string(message.get(prefix + "type"));
-        record.recorderId = std::string(message.get(prefix + "recorder_id"));
-        device.records.push_back(std::move(record));
-    }
     return device;
 }
 
@@ -619,21 +482,21 @@ inline StreamStatus streamFromProjection(const service::message::StreamMessage& 
 
 namespace service::gb28181::control_protocol {
 
-inline std::string requiredText(const std::optional<ruvia::String>& value, std::string_view message) {
+inline std::string requiredText(const std::optional<ruvia::string>& value, std::string_view message) {
     if (!value || value->empty()) {
         service::common::fail(10001, std::string(message), 400);
     }
     return std::string(value->view());
 }
 
-inline std::int64_t requiredInteger(const std::optional<ruvia::Int64>& value, std::string_view message) {
+inline std::int64_t requiredInteger(const std::optional<ruvia::int64>& value, std::string_view message) {
     if (!value) {
         service::common::fail(10001, std::string(message), 400);
     }
     return static_cast<std::int64_t>(*value);
 }
 
-inline double requiredFinite(const std::optional<ruvia::Double>& value, std::string_view name, double minimum, double maximum) {
+inline double requiredFinite(const std::optional<ruvia::double_value>& value, std::string_view name, double minimum, double maximum) {
     if (!value || !std::isfinite(static_cast<double>(*value)) ||
         static_cast<double>(*value) < minimum ||
         static_cast<double>(*value) > maximum) {
@@ -680,7 +543,7 @@ inline std::pair<std::string, std::string> splitRemoteAddress(std::string_view a
 namespace service::gb28181::control_protocol {
 
 inline MediaPortsJson mediaPortsJson(std::pmr::memory_resource* resource, const MediaServerPorts& ports) {
-    MediaPortsJson result(ruvia::ModelOptions{.resource = resource});
+    MediaPortsJson result(ruvia::model_options{.resource_ = resource});
     result.set<"http">(ports.http)
         .set<"https">(ports.https)
         .set<"rtsp">(ports.rtsp)
@@ -696,7 +559,7 @@ inline MediaCapabilitiesJson mediaCapabilitiesJson(
     std::pmr::memory_resource* resource,
     const MediaCapabilities& capabilities
 ) {
-    MediaCapabilitiesJson result(ruvia::ModelOptions{.resource = resource});
+    MediaCapabilitiesJson result(ruvia::model_options{.resource_ = resource});
     result.set<"faac">(capabilities.faac)
         .set<"ffmpeg">(capabilities.ffmpeg)
         .set<"hls">(capabilities.hls)
@@ -712,19 +575,8 @@ inline MediaCapabilitiesJson mediaCapabilitiesJson(
     return result;
 }
 
-inline SipConfigJson sipConfigJson(std::pmr::memory_resource* resource, std::string_view domain, std::string_view id, std::string_view host, std::string_view publicIp, std::int64_t port, std::string_view transport) {
-    SipConfigJson result(ruvia::ModelOptions{.resource = resource});
-    result.set<"domain">(domain)
-        .set<"id">(id)
-        .set<"host">(host)
-        .set<"publicIp">(publicIp)
-        .set<"port">(port)
-        .set<"transport">(transport);
-    return result;
-}
-
 inline ChannelJson channelJson(std::pmr::memory_resource* resource, const Channel& channel) {
-    ChannelJson result(ruvia::ModelOptions{.resource = resource});
+    ChannelJson result(ruvia::model_options{.resource_ = resource});
     result.set<"id">(channel.id)
         .set<"name">(channel.displayName())
         .set<"reportedName">(channel.name)
@@ -736,35 +588,16 @@ inline ChannelJson channelJson(std::pmr::memory_resource* resource, const Channe
     return result;
 }
 
-inline RecordJson recordJson(std::pmr::memory_resource* resource, const RecordItem& record) {
-    RecordJson result(ruvia::ModelOptions{.resource = resource});
-    result.set<"deviceId">(record.deviceId)
-        .set<"name">(record.name)
-        .set<"filePath">(record.filePath)
-        .set<"address">(record.address)
-        .set<"startTime">(record.startTime)
-        .set<"endTime">(record.endTime)
-        .set<"type">(record.type)
-        .set<"recorderId">(record.recorderId);
-    return result;
-}
-
 inline DeviceJson deviceJson(std::pmr::memory_resource* resource, const Device& device) {
     const auto [remoteIp, remotePort] = control_protocol::splitRemoteAddress(device.remoteAddress);
-    ruvia::BoxedArray<ChannelJson> channels(
-        ruvia::ModelOptions{ .resource = resource }
+    ruvia::boxed_array<ChannelJson> channels(
+        ruvia::model_options{ .resource_ = resource }
     );
     for (const auto& channel : device.channels) {
         channels.emplace(channelJson(resource, channel));
     }
-    ruvia::BoxedArray<RecordJson> records(
-        ruvia::ModelOptions{ .resource = resource }
-    );
-    for (const auto& record : device.records) {
-        records.emplace(recordJson(resource, record));
-    }
 
-    DeviceJson result(ruvia::ModelOptions{.resource = resource});
+    DeviceJson result(ruvia::model_options{.resource_ = resource});
     result.set<"id">(device.id)
         .set<"name">(device.displayName())
         .set<"reportedName">(device.name)
@@ -774,24 +607,9 @@ inline DeviceJson deviceJson(std::pmr::memory_resource* resource, const Device& 
         .set<"remoteIp">(remoteIp)
         .set<"remotePort">(remotePort)
         .set<"registrationSource">(device.registrationSource)
-        .set<"mappedDeviceId">(device.mappedDeviceId)
         .set<"lastSeenAt">(service::common::utcTimestamp(device.lastSeen))
         .set<"online">(device.online)
-        .set<"channels">(std::move(channels))
-        .set<"records">(std::move(records));
-    return result;
-}
-
-inline StreamJson streamJson(std::pmr::memory_resource* resource, const StreamStatus& stream) {
-    StreamJson result(ruvia::ModelOptions{.resource = resource});
-    result.set<"id">(
-              StreamStatus::identity(stream.app, stream.stream, stream.schema)
-    )
-        .set<"app">(stream.app)
-        .set<"stream">(stream.stream)
-        .set<"schema">(stream.schema)
-        .set<"online">(stream.online)
-        .set<"readerCount">(stream.readerCount);
+        .set<"channels">(std::move(channels));
     return result;
 }
 

@@ -19,7 +19,7 @@ namespace service::gb28181 {
 
 
 
-void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
+void GbProjectionRuntime::start(ruvia::web_worker_handle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
     {
         std::lock_guard lock(lifecycleMutex_);
         if (running_.load()) {
@@ -49,12 +49,12 @@ void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex worker
     stopped_ = stopped->get_future().share();
     const auto state = state_;
     const auto posted = worker_.post(
-        [this, ready, stopped, state](ruvia::WebWorkerContext& context)
-            -> ruvia::Task<void> {
+        [this, ready, stopped, state](ruvia::web_worker_context& context)
+            -> ruvia::task<void> {
             bool readySet = false;
             try {
-                const auto redis = context.redis().withOptions(
-                    { .stopToken = state->stop.token() }
+                const auto redis = context.redis().with_options(
+                    { .stop_token_ = state->stop.token() }
                 );
                 co_await service::message::redis::ensureGroup(
                     redis,
@@ -82,7 +82,7 @@ void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex worker
         }
     );
     if (!posted.accepted()) {
-        state->stop.requestStop();
+        state->stop.request_stop();
         running_.store(false);
         std::lock_guard lock(lifecycleMutex_);
         worker_ = {};
@@ -96,7 +96,7 @@ void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex worker
     try {
         future.get();
     } catch (...) {
-        state->stop.requestStop();
+        state->stop.request_stop();
         if (stopped_.valid()) {
             stopped_.wait();
         }
@@ -121,7 +121,7 @@ void GbProjectionRuntime::stop() noexcept {
         stopped = stopped_;
     }
     if (state) {
-        state->stop.requestStop();
+        state->stop.request_stop();
     }
     if (stopped.valid()) {
         stopped.wait();
@@ -132,11 +132,11 @@ void GbProjectionRuntime::stop() noexcept {
     stopped_ = {};
 }
 
-ruvia::Task<void>
-GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared_ptr<State>& state) {
+ruvia::task<void>
+GbProjectionRuntime::consume(ruvia::web_worker_context& context, const std::shared_ptr<State>& state) {
     const auto stop =
-        ruvia::combineStopTokens(context.stopToken(), state->stop.token());
-    const auto redis = context.redis().withOptions({ .stopToken = stop });
+        ruvia::combine_stop_tokens(context.get_stop_token(), state->stop.token());
+    const auto redis = context.redis().with_options({ .stop_token_ = stop });
     const std::string stream(control_protocol::stream::kProjection);
     const auto group = control_protocol::stream::kProjectionGroup;
     const auto consumer = service::runtime::instanceId() + ":service:" +
@@ -144,7 +144,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
     const std::vector<std::string> streams{ stream };
     auto nextReconcile = std::chrono::steady_clock::now();
 
-    while (!stop.stopRequested()) {
+    while (!stop.stop_requested()) {
         bool retry = false;
         std::string failure;
         try {
@@ -165,12 +165,12 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                 batches = co_await service::message::redis::readGroupMany(redis, streams, group, consumer, ">", 64);
             }
             if (batches.empty()) {
-                (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(100), stop);
+                (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(100), stop);
                 continue;
             }
             for (const auto& batch : batches) {
                 for (const auto& message : batch.messages) {
-                    if (stop.stopRequested()) {
+                    if (stop.stop_requested()) {
                         break;
                     }
                     const auto projectionId = message.get("projection_id");
@@ -295,23 +295,23 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                 }
             }
         } catch (const std::exception& error) {
-            if (stop.stopRequested()) {
+            if (stop.stop_requested()) {
                 break;
             }
             retry = true;
             failure = error.what();
         } catch (...) {
-            if (stop.stopRequested()) {
+            if (stop.stop_requested()) {
                 break;
             }
             retry = true;
         }
-        if (retry && !stop.stopRequested()) {
+        if (retry && !stop.stop_requested()) {
             if (!failure.empty()) {
                 LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: "
                          << failure;
             }
-            (void)co_await ruvia::sleepFor(
+            (void)co_await ruvia::sleep_for(
                 context.worker(),
                 std::chrono::milliseconds(250),
                 stop
@@ -321,7 +321,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
     co_return;
 }
 
-CollectorRuntime::CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, AppConfig config, ruvia::EventLoop loop, ruvia::RedisHandle redis, OwnerIndex index, OwnerIndex count)
+CollectorRuntime::CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, AppConfig config, ruvia::event_loop loop, ruvia::redis_handle redis, OwnerIndex index, OwnerIndex count)
     : uuidGenerator_(uuidGenerator), config_(std::move(config)),
       loop_(std::move(loop)),
       worker_(loop_.handle()),
@@ -362,7 +362,7 @@ std::string CollectorRuntime::streamOwnerToken(const StreamStatus& stream) {
 }
 
 CollectorRuntime::~CollectorRuntime() {
-    // A TaskScope owns coroutine frames that capture this object.  Releasing
+    // A task_scope owns coroutine frames that capture this object.  Releasing
     // the object while they are still active would turn a failed shutdown
     // into a use-after-free, so make lifecycle misuse fail closed.
     if (started_.load() || sdkRegistered_ || scope_.size() != 0 || projectionScope_.size() != 0) {
@@ -371,7 +371,7 @@ CollectorRuntime::~CollectorRuntime() {
 }
 
 void CollectorRuntime::requireCurrentLoop() const {
-    if (!loop_.valid() || !worker_.valid() || !loop_.isCurrent()) {
+    if (!loop_.valid() || !worker_.valid() || !loop_.is_current()) {
         throw std::logic_error(
             "GB28181 CollectorRuntime operation must run on its owning loop"
         );
@@ -394,6 +394,10 @@ void CollectorRuntime::registerSdkRoute() {
                 return;
             }
             streams_.updateStreamChanged(app, stream, schema, online, readerCount);
+            // Shared previews are reused only while their media stream is online.
+            if (sip_) {
+                sip_->markStreamOnline(stream, online);
+            }
         };
     callbacks.onRtpDetached = [this](std::string stream) {
         if (stopping_.load() || !sip_) {
@@ -416,7 +420,7 @@ void CollectorRuntime::unregisterSdkRoute() noexcept {
     sdkRegistered_ = false;
 }
 
-ruvia::Task<void> CollectorRuntime::initialize() {
+ruvia::task<void> CollectorRuntime::initialize() {
     requireCurrentLoop();
     if (started_.load()) {
         co_return;
@@ -450,10 +454,6 @@ ruvia::Task<void> CollectorRuntime::initialize() {
     }
     if (config_.media.logLevel < 0 || config_.media.logLevel > 4) {
         throw std::runtime_error("ZLM log level must be between 0 and 4");
-    }
-    if (config_.sip.deviceTimezoneOffsetMinutes < -24 * 60 ||
-        config_.sip.deviceTimezoneOffsetMinutes > 24 * 60) {
-        throw std::runtime_error("GB28181 device timezone offset is invalid");
     }
     if (!sdkSupervisor().started()) {
         throw std::runtime_error(
@@ -490,7 +490,7 @@ ruvia::Task<void> CollectorRuntime::initialize() {
             }
         });
         sip_->setPreviewClosedHandler([this](const std::string& sessionId) {
-            if (!projectionScope_.stopRequested()) {
+            if (!projectionScope_.stop_requested()) {
                 projectionScope_.spawn(releasePreview(sessionId));
             }
         });
@@ -509,14 +509,14 @@ ruvia::Task<void> CollectorRuntime::initialize() {
     co_return;
 }
 
-ruvia::Task<void> CollectorRuntime::shutdown() {
+ruvia::task<void> CollectorRuntime::shutdown() {
     requireCurrentLoop();
     if (scopeJoined_) {
         co_return;
     }
     stopping_.store(true);
     started_.store(false);
-    scope_.requestStop();
+    scope_.request_stop();
     if (sip_) {
         sip_->stop();
     }
@@ -535,9 +535,9 @@ ruvia::Task<void> CollectorRuntime::shutdown() {
     }
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (projectionDrainRunning_ && std::chrono::steady_clock::now() < until) {
-        (void)co_await ruvia::sleepFor(worker_, std::chrono::milliseconds(20));
+        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(20));
     }
-    projectionScope_.requestStop();
+    projectionScope_.request_stop();
     try {
         co_await projectionScope_.join();
     } catch (...) {
@@ -581,7 +581,7 @@ void CollectorRuntime::enqueueStreamProjection(const StreamStatus& stream) {
 }
 
 void CollectorRuntime::enqueueBarrier(ProjectionCompletion completion, std::uint64_t after) {
-    if (!acceptingProjection_ || projectionScope_.stopRequested()) {
+    if (!acceptingProjection_ || projectionScope_.stop_requested()) {
         completion(false);
         return;
     }
@@ -592,26 +592,26 @@ void CollectorRuntime::enqueueBarrier(ProjectionCompletion completion, std::uint
     }
 }
 
-ruvia::Task<bool> CollectorRuntime::waitForProjection(ruvia::StopToken stop, std::uint64_t after) {
-    auto [completion, receiver] = ruvia::makeOneShot<bool>(worker_);
-    auto shared = std::make_shared<ruvia::OneShotCompletion<bool>>(std::move(completion));
+ruvia::task<bool> CollectorRuntime::waitForProjection(ruvia::stop_token stop, std::uint64_t after) {
+    auto [completion, receiver] = ruvia::make_one_shot<bool>(worker_);
+    auto shared = std::make_shared<ruvia::one_shot_completion<bool>>(std::move(completion));
     enqueueBarrier([shared](bool success) {
         (void)shared->complete(success);
     },
                    after);
-    auto result = co_await receiver.waitFor(std::chrono::seconds(30), stop);
-    co_return result.hasValue() && std::move(result).takeValue();
+    auto result = co_await receiver.wait_for(std::chrono::seconds(30), stop);
+    co_return result.has_value() && std::move(result).take_value();
 }
 
-ruvia::Task<bool> CollectorRuntime::persistProjection(
+ruvia::task<bool> CollectorRuntime::persistProjection(
     std::vector<service::message::StreamField> fields,
     std::string projectionId
 ) {
     fields.push_back({ "projection_id", projectionId });
-    const auto redis = redis_.withOptions({ .timeout = std::chrono::seconds(3), .stopToken = projectionScope_.stopToken() });
+    const auto redis = redis_.with_options({ .timeout_ = std::chrono::seconds(3), .stop_token_ = projectionScope_.get_stop_token() });
     std::string projectionOrder;
     std::string currentEntryId;
-    while (!projectionScope_.stopRequested()) {
+    while (!projectionScope_.stop_requested()) {
         bool retry = false;
         std::string failure;
         try {
@@ -638,15 +638,15 @@ ruvia::Task<bool> CollectorRuntime::persistProjection(
             // failures.  In particular, an XADD may have committed while its
             // response was lost; the sent marker or the local IDs then make
             // the next attempt recoverable without a duplicate event.
-            if (!projectionScope_.stopRequested()) {
+            if (!projectionScope_.stop_requested()) {
                 if (!failure.empty()) {
                     LOG_WARN << "[GB28181] projection awaits durable storage: "
                              << failure;
                 }
-                (void)co_await ruvia::sleepFor(
+                (void)co_await ruvia::sleep_for(
                     worker_,
                     std::chrono::milliseconds(250),
-                    projectionScope_.stopToken()
+                    projectionScope_.get_stop_token()
                 );
             }
             continue;
@@ -654,12 +654,12 @@ ruvia::Task<bool> CollectorRuntime::persistProjection(
         // Incremental projections must remain in actor order. A caller may
         // time out, but this queue cannot publish the next snapshot until the
         // preceding DB commit has a definitive receipt (or loses ownership).
-        (void)co_await ruvia::sleepFor(worker_, std::chrono::milliseconds(20), projectionScope_.stopToken());
+        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(20), projectionScope_.get_stop_token());
     }
     co_return false;
 }
 
-ruvia::Task<void> CollectorRuntime::publishDevice(const Device& device, DeviceChange change, std::string_view ownerToken, std::string_view projectionId) {
+ruvia::task<void> CollectorRuntime::publishDevice(const Device& device, DeviceChange change, std::string_view ownerToken, std::string_view projectionId) {
     const auto key = control_protocol::stream::owner(device.id);
     const auto current = devices_.findDevice(device.id);
     if (current && (current->sessionGeneration != device.sessionGeneration || (device.online && !current->online))) {
@@ -680,7 +680,7 @@ ruvia::Task<void> CollectorRuntime::publishDevice(const Device& device, DeviceCh
     }
 }
 
-ruvia::Task<void> CollectorRuntime::publishStream(const StreamStatus& stream, std::string_view ownerToken, std::string_view projectionId) {
+ruvia::task<void> CollectorRuntime::publishStream(const StreamStatus& stream, std::string_view ownerToken, std::string_view projectionId) {
     const auto identity = StreamStatus::identity(stream.app, stream.stream, stream.schema);
     const auto key = control_protocol::stream::owner(identity);
     if (stream.online && !(co_await retainOwner(key, std::string(ownerToken), {}, stream.stream))) {
@@ -697,16 +697,16 @@ ruvia::Task<void> CollectorRuntime::publishStream(const StreamStatus& stream, st
     }
 }
 
-ruvia::Task<void> CollectorRuntime::refreshOwnerLeases() {
+ruvia::task<void> CollectorRuntime::refreshOwnerLeases() {
     requireCurrentLoop();
-    while (!scope_.stopRequested()) {
-        const auto sleep = co_await ruvia::sleepFor(
+    while (!scope_.stop_requested()) {
+        const auto sleep = co_await ruvia::sleep_for(
             worker_,
             std::chrono::seconds(5),
-            scope_.stopToken()
+            scope_.get_stop_token()
         );
-        if (sleep == ruvia::TimerSleepResult::kStopRequested ||
-            scope_.stopRequested()) {
+        if (sleep == ruvia::timer_sleep_result::stop_requested ||
+            scope_.stop_requested()) {
             break;
         }
 
@@ -744,7 +744,7 @@ ruvia::Task<void> CollectorRuntime::refreshOwnerLeases() {
     co_return;
 }
 
-ruvia::Task<void> CollectorRuntime::clearOwnerLeases() {
+ruvia::task<void> CollectorRuntime::clearOwnerLeases() {
     requireCurrentLoop();
     std::vector<std::pair<std::string, std::string>> leases;
     leases.reserve(ownerLeases_.size());
@@ -767,7 +767,7 @@ ruvia::Task<void> CollectorRuntime::clearOwnerLeases() {
     co_return;
 }
 
-ruvia::Task<bool> CollectorRuntime::retainOwner(
+ruvia::task<bool> CollectorRuntime::retainOwner(
     std::string key,
     std::string token,
     std::string deviceId,
@@ -811,7 +811,7 @@ ruvia::Task<bool> CollectorRuntime::retainOwner(
     auto current = ownerLeases_.find(key);
     const bool localStillValid =
         !hasLocal || (current != ownerLeases_.end() && current->second.token == previousToken);
-    if (!retained || now >= localDeadline || now >= previousDeadline || !localStillValid || scope_.stopRequested()) {
+    if (!retained || now >= localDeadline || now >= previousDeadline || !localStillValid || scope_.stop_requested()) {
         if (hasLocal && current != ownerLeases_.end() && current->second.token == previousToken) {
             expireOwnerLease(key, previousToken);
         } else if (sip_ && !stopping_.load()) {
@@ -889,7 +889,7 @@ bool CollectorRuntime::ownsLocal(std::string_view key, std::string_view token) c
         found->second.expiresAt > std::chrono::steady_clock::now();
 }
 
-ruvia::Task<void> CollectorRuntime::releaseOwner(std::string key, std::string token) {
+ruvia::task<void> CollectorRuntime::releaseOwner(std::string key, std::string token) {
     requireCurrentLoop();
     if (key.empty() || token.empty()) {
         co_return;
@@ -907,7 +907,7 @@ ruvia::Task<void> CollectorRuntime::releaseOwner(std::string key, std::string to
     co_return;
 }
 
-ruvia::Task<void> CollectorRuntime::renewOwnerLease(std::string key, std::string token) {
+ruvia::task<void> CollectorRuntime::renewOwnerLease(std::string key, std::string token) {
     requireCurrentLoop();
     const auto found = ownerLeases_.find(key);
     if (found == ownerLeases_.end() || found->second.token != token) {
@@ -955,7 +955,7 @@ ruvia::Task<void> CollectorRuntime::renewOwnerLease(std::string key, std::string
 }
 
 void CollectorRuntime::armOwnerLeaseTimer(std::string key) {
-    if (!loop_.valid() || !loop_.isCurrent()) {
+    if (!loop_.valid() || !loop_.is_current()) {
         return;
     }
     const auto found = ownerLeases_.find(key);
@@ -964,7 +964,7 @@ void CollectorRuntime::armOwnerLeaseTimer(std::string key) {
     }
     auto& lease = found->second;
     if (!lease.timer) {
-        lease.timer = std::make_unique<asio::steady_timer>(loop_.ioContext());
+        lease.timer = std::make_unique<asio::steady_timer>(loop_.io_context());
     }
     lease.timer->expires_at(lease.expiresAt);
     const auto timerToken = lease.token;
@@ -987,7 +987,7 @@ void CollectorRuntime::armOwnerLeaseTimer(std::string key) {
 }
 
 void CollectorRuntime::expireOwnerLease(std::string key, std::string token) {
-    if (!loop_.valid() || !loop_.isCurrent()) {
+    if (!loop_.valid() || !loop_.is_current()) {
         return;
     }
     const auto found = ownerLeases_.find(key);
@@ -1029,9 +1029,9 @@ void CollectorRuntime::invalidateOwnerTarget(const std::string& key, const std::
     }
 }
 
-ruvia::Task<void> CollectorRuntime::drainProjection() {
+ruvia::task<void> CollectorRuntime::drainProjection() {
     requireCurrentLoop();
-    while (!projectionQueue_.empty() && !projectionScope_.stopRequested()) {
+    while (!projectionQueue_.empty() && !projectionScope_.stop_requested()) {
         auto event = std::move(projectionQueue_.front());
         projectionQueue_.pop_front();
         bool retry = false;
@@ -1057,7 +1057,7 @@ ruvia::Task<void> CollectorRuntime::drainProjection() {
             }
         } catch (const std::exception& error) {
             retry = true;
-            if (!projectionScope_.stopRequested()) {
+            if (!projectionScope_.stop_requested()) {
                 LOG_WARN << "[GB28181] projection awaits durable storage: " << error.what();
             }
         } catch (...) {
@@ -1077,20 +1077,20 @@ ruvia::Task<void> CollectorRuntime::drainProjection() {
         }
         if (retry) {
             projectionQueue_.push_front(std::move(event));
-            (void)co_await ruvia::sleepFor(worker_, std::chrono::milliseconds(250), projectionScope_.stopToken());
+            (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), projectionScope_.get_stop_token());
         }
     }
     projectionDrainRunning_ = false;
 }
 
-ruvia::Task<void> CollectorRuntime::controlLoop() {
+ruvia::task<void> CollectorRuntime::controlLoop() {
     requireCurrentLoop();
     const auto stream = control_protocol::stream::control(index_, service::runtime::instanceId());
     const auto group = control_protocol::stream::kControlGroup;
     const auto consumer = ownerToken_;
-    const auto redis = redis_.withOptions({ .stopToken = scope_.stopToken() });
+    const auto redis = redis_.with_options({ .stop_token_ = scope_.get_stop_token() });
     const std::vector<std::string> streams{ stream };
-    while (!scope_.stopRequested()) {
+    while (!scope_.stop_requested()) {
         bool failed = false;
         try {
             static constexpr std::string_view groupScript = R"lua(
@@ -1104,7 +1104,7 @@ return 1
             const std::string_view groupKeys[]{ stream };
             const std::string_view groupArgs[]{ group };
             const auto initialized = co_await redis.eval(groupScript, groupKeys, groupArgs);
-            if (initialized.kind() != ruvia::RedisValue::Kind::kInteger) {
+            if (initialized.kind() != ruvia::redis_value::kind_type::integer) {
                 service::message::redis::throwValue("GB28181 control group", initialized);
             }
 
@@ -1127,7 +1127,7 @@ return 1
                 stream,
                 group,
                 consumer,
-                scope_.stopToken(),
+                scope_.get_stop_token(),
                 std::chrono::milliseconds(1000),
                 32
             );
@@ -1136,17 +1136,17 @@ return 1
             }
         } catch (const std::exception& error) {
             failed = true;
-            if (!scope_.stopRequested()) {
+            if (!scope_.stop_requested()) {
                 LOG_WARN << "[GB28181] control consumer: " << error.what();
             }
         }
         if (failed) {
-            (void)co_await ruvia::sleepFor(worker_, std::chrono::milliseconds(250), scope_.stopToken());
+            (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), scope_.get_stop_token());
         }
     }
 }
 
-ruvia::Task<void> CollectorRuntime::handleControl(
+ruvia::task<void> CollectorRuntime::handleControl(
     const service::message::StreamMessage& message
 ) {
     requireCurrentLoop();
@@ -1181,7 +1181,7 @@ ruvia::Task<void> CollectorRuntime::handleControl(
         result = "{\"code\":" + std::to_string(code) + ",\"message\":" +
             service::utils::jsonQuoted(reason) + "}";
     };
-    const auto redis = redis_.withOptions({ .timeout = std::chrono::seconds(3), .stopToken = scope_.stopToken() });
+    const auto redis = redis_.with_options({ .timeout_ = std::chrono::seconds(3), .stop_token_ = scope_.get_stop_token() });
     const auto cached = co_await GbControlService::loadControlResult(redis, resultKey);
     if (cached) {
         status = cached->status;
@@ -1200,14 +1200,14 @@ ruvia::Task<void> CollectorRuntime::handleControl(
         } else {
             claimOwner = token;
             const auto cancelled = co_await GbControlService::controlCancelled(redis, cancelKey);
-            if (cancelled || scope_.stopRequested() || deadlineMs <= nowMs() || !ownsLocal(key, token)) {
+            if (cancelled || scope_.stop_requested() || deadlineMs <= nowMs() || !ownsLocal(key, token)) {
                 fail(408, "GB28181 command cancelled or ownership expired while claiming");
             } else {
                 try {
                     const auto beforeProjection = projectionSequence_;
                     activeControlProjection_ = beforeProjection;
-                    result = co_await execute(operation, payload, scope_.stopToken());
-                    if (!(co_await waitForProjection(scope_.stopToken(), beforeProjection))) {
+                    result = co_await execute(operation, payload, scope_.get_stop_token());
+                    if (!(co_await waitForProjection(scope_.get_stop_token(), beforeProjection))) {
                         throw std::runtime_error("GB28181 projection was not durably confirmed");
                     }
                     status = "ok";
@@ -1222,24 +1222,24 @@ ruvia::Task<void> CollectorRuntime::handleControl(
     }
     // Preserve the completed result in this coroutine across Redis failures;
     // retry only its durable reply and acknowledgement, never the SDK action.
-    while (!scope_.stopRequested()) {
+    while (!scope_.stop_requested()) {
         bool saved = false;
         try {
             co_await GbControlService::publishReplyAndAcknowledge(redis, replyStream, control_protocol::stream::control(index_, service::runtime::instanceId()), control_protocol::stream::kControlGroup, message.id, requestId, operation, status, result, resultKey, claimKey, claimOwner);
             saved = true;
         } catch (const std::exception& error) {
-            if (!scope_.stopRequested()) {
+            if (!scope_.stop_requested()) {
                 LOG_WARN << "[GB28181] completed result awaits Redis: " << error.what();
             }
         }
         if (saved) {
             co_return;
         }
-        (void)co_await ruvia::sleepFor(worker_, std::chrono::milliseconds(250), scope_.stopToken());
+        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), scope_.get_stop_token());
     }
 }
 
-ruvia::Task<void> CollectorRuntime::retainPreview(const SipPreviewStartResult& preview) {
+ruvia::task<void> CollectorRuntime::retainPreview(const SipPreviewStartResult& preview) {
     const auto device = devices_.findDevice(preview.deviceId);
     if (!device || !device->online) {
         (void)sip_->stopPreview(preview.sessionId);
@@ -1267,7 +1267,7 @@ ruvia::Task<void> CollectorRuntime::retainPreview(const SipPreviewStartResult& p
     }
 }
 
-ruvia::Task<void> CollectorRuntime::releasePreview(std::string sessionId) {
+ruvia::task<void> CollectorRuntime::releasePreview(std::string sessionId) {
     const auto found = previewOwners_.find(sessionId);
     if (found == previewOwners_.end()) {
         co_return;
@@ -1277,13 +1277,13 @@ ruvia::Task<void> CollectorRuntime::releasePreview(std::string sessionId) {
     co_await releaseOwner(control_protocol::stream::sessionOwner(sessionId), token);
 }
 
-ruvia::Task<std::string>
-CollectorRuntime::execute(std::string operation, std::string payload, ruvia::StopToken stop) {
+ruvia::task<std::string>
+CollectorRuntime::execute(std::string operation, std::string payload, ruvia::stop_token stop) {
     requireCurrentLoop();
     if (!started_.load()) {
         throw std::runtime_error("GB28181 Collector is not started");
     }
-    if (stopping_.load() || stop.stopRequested()) {
+    if (stopping_.load() || stop.stop_requested()) {
         throw std::runtime_error("GB28181 operation was cancelled");
     }
     if (!sip_) {
@@ -1320,17 +1320,6 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
             throw std::runtime_error("GB28181 device or channel does not exist");
         }
         co_return control_protocol::operationJson("通道名称已更新");
-    }
-    if (operation == control_protocol::kMapOperation ||
-        operation == control_protocol::kUnmapOperation) {
-        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto mapped = operation == control_protocol::kUnmapOperation
-            ? std::string{}
-            : control_protocol::requiredText(input.get<"mappedDeviceId">(), "映射设备编号不能为空");
-        if (!devices_.updateMapping(id, mapped)) {
-            throw std::runtime_error("GB28181 device does not exist");
-        }
-        co_return control_protocol::jsonAction(true, id);
     }
     if (operation == control_protocol::kPreviewStartOperation) {
         const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
@@ -1385,25 +1374,6 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
             channel
         );
     }
-    if (operation == control_protocol::kRecordsOperation) {
-        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto start = control_protocol::requiredText(input.get<"startTime">(), "开始时间不能为空");
-        const auto end = control_protocol::requiredText(input.get<"endTime">(), "结束时间不能为空");
-        co_return control_protocol::jsonAction(sip_->queryRecords(id, channel, start, end), id, channel);
-    }
-    if (operation == control_protocol::kPlaybackStartOperation) {
-        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto start = control_protocol::requiredText(input.get<"startTime">(), "开始时间不能为空");
-        const auto end = control_protocol::requiredText(input.get<"endTime">(), "结束时间不能为空");
-        const auto result = sip_->startPlayback(id, channel, start, end);
-        if (!result) {
-            throw std::runtime_error("GB28181 device or channel unavailable");
-        }
-        co_await retainPreview(*result);
-        co_return control_protocol::jsonPreviewStart(*result);
-    }
     if (operation == control_protocol::kRecordingOperation ||
         operation == control_protocol::kRecordingStartOperation ||
         operation == control_protocol::kRecordingStopOperation) {
@@ -1411,7 +1381,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
         ZlmSdk::OwnerScope owner(index_);
         auto& sdk = sdkSupervisor().sdk();
         if (operation == control_protocol::kRecordingOperation) {
-            co_return control_protocol::jsonAction(sdk.isMp4Recording(streamId));
+            co_return control_protocol::jsonData(sdk.isMp4Recording(streamId) ? "{\"recording\":true}" : "{\"recording\":false}");
         }
         const auto changed = operation == control_protocol::kRecordingStartOperation
             ? sdk.startMp4Recording(streamId)
@@ -1419,11 +1389,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
         co_return control_protocol::jsonAction(changed);
     }
     if (operation == control_protocol::kHealthOperation ||
-        operation == control_protocol::kSipConfigOperation ||
-        operation == control_protocol::kDevicesOperation ||
-        operation == control_protocol::kDeviceOperation ||
-        operation == control_protocol::kStreamsOperation ||
-        operation == control_protocol::kStreamOperation) {
+        operation == control_protocol::kDevicesOperation) {
         throw std::runtime_error(
             "GB28181 queries must be served from the Service projection"
         );

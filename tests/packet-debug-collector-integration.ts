@@ -15,7 +15,7 @@ async function toggle(scope:string,id:string,enabled:boolean) {
 async function until(condition:()=>Promise<boolean>,reason:string) {
     const deadline=Date.now()+20000;while(Date.now()<deadline){if(await condition())return;await Bun.sleep(50);}throw Error(reason);
 }
-async function snapshot(path: string) {
+async function snapshot(path: string, eventName?: string) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
@@ -28,9 +28,11 @@ async function snapshot(path: string) {
             pending+=decoder.decode(part.value,{stream:true});
             let end;
             while((end=pending.indexOf('\n\n'))>=0) {
-                const data=pending.slice(0,end).split('\n').find(line=>line.startsWith('data:'));
+                const lines=pending.slice(0,end).split('\n');
+                const data=lines.find(line=>line.startsWith('data:'));
+                const event=lines.find(line=>line.startsWith('event:'))?.slice(6).trim();
                 pending=pending.slice(end+2);
-                if(data) return JSON.parse(data.slice(5)).data;
+                if(data && (eventName===undefined || event===eventName)) return JSON.parse(data.slice(5)).data;
             }
         }
     } finally {clearTimeout(timeout);controller.abort();}
@@ -92,7 +94,7 @@ try {
         assert.equal(response.storage_status,undefined);
         assert.equal(response.history_id,undefined);
     }
-    const packets=await snapshot(`/v1/device/${device1}/debug/packets`);
+    const packets=await snapshot(`/v1/device/events?debugDeviceId=${device1}`,'packets');
     const round = packets.find((entry: {id:string})=>entry.id===parsed.acquisition_id);
     assert(round);
     assert.equal(round.state, 'success');
@@ -121,7 +123,7 @@ try {
     await until(async()=>requests>=secondBarrier,'normal sampling stopped');
     assert.equal(await length('link',link),stopped,'packets continued after both switches closed');
     assert((await db`SELECT 1 FROM device_data WHERE device_id=${device1} LIMIT 1`).length,'debug switch broke history persistence');
-    const denied=await fetch(`${apiBase}/v1/device/${device1}/debug/packets`,{headers:{Accept:'text/event-stream'}});
+    const denied=await fetch(`${apiBase}/v1/device/events?debugDeviceId=${device1}`,{headers:{Accept:'text/event-stream'}});
     assert.equal(denied.status,401);
     console.log('PASS direct Modbus: TX/RX, sibling isolation, link override, manual close, connection continuity and unchanged history');
 } finally {

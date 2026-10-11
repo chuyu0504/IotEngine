@@ -15,7 +15,7 @@ return id
 )lua";
 
 template <typename Redis>
-ruvia::Task<std::string> addAndWake(
+ruvia::task<std::string> addAndWake(
     const Redis& redis,
     std::string_view stream,
     const std::vector<StreamField>& fields,
@@ -44,7 +44,7 @@ ruvia::Task<std::string> addAndWake(
     const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
     const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
     const auto reply = co_await redis.eval(kAddAndWakeScript, keys, arguments);
-    if (reply.kind() != RedisValue::Kind::kString) {
+    if (reply.kind() != redis_value::kind_type::string) {
         throwValue("atomic XADD/wake", reply);
     }
     co_return std::string(reply.string());
@@ -75,12 +75,12 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
 }
 
 template <typename Redis>
-ruvia::Task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, WorkerStreamTask task) {
+ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, WorkerStreamTask task) {
     (void)co_await add(redis, workerWakeStream(workerIndex, service::runtime::instanceId()), { { "task", std::string(workerStreamTaskName(task)) } }, kWorkerWakeCapacity);
 }
 
 template <typename Redis>
-ruvia::Task<std::string> publishAndWake(
+ruvia::task<std::string> publishAndWake(
     const Redis& redis,
     std::string_view stream,
     const std::vector<StreamField>& fields,
@@ -96,7 +96,7 @@ ruvia::Task<std::string> publishAndWake(
 }
 
 template <typename Redis>
-ruvia::Task<bool> publishAllAndAcknowledge(
+ruvia::task<bool> publishAllAndAcknowledge(
     const Redis& redis,
     std::span<const StreamPublication> publications,
     std::string_view inputStream,
@@ -199,14 +199,14 @@ return 1
     }
     const std::vector<std::string_view> arguments(ownedArguments.begin(), ownedArguments.end());
     const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != RedisValue::Kind::kInteger) {
+    if (reply.kind() != redis_value::kind_type::integer) {
         throwValue("atomic XPENDING/XADD/XACK/XDEL", reply);
     }
     co_return reply.integer() == 1;
 }
 
 template <typename Redis>
-ruvia::Task<bool> publishAndAcknowledge(
+ruvia::task<bool> publishAndAcknowledge(
     const Redis& redis,
     std::string_view outputStream,
     const std::vector<StreamField>& outputFields,

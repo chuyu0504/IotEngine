@@ -10,7 +10,7 @@
 #include <vector>
 #include <map>
 #include <optional>
-#include <ruvia/web/ModelObject.h>
+#include <ruvia/web/model_object.h>
 #include "service/utils/crypto.h"
 
 #include "service/common/message.h"
@@ -58,8 +58,8 @@ class AcquisitionCycle final {
         combined.rawPacketIds.insert(combined.rawPacketIds.end(), response.parsed.rawPacketIds.begin(),
                                      response.parsed.rawPacketIds.end());
         const auto readFields = [](std::string_view json, auto visit) {
-            const auto object = ruvia::JsonValue::parse(json);
-            if (!object || !object->forEachField([&](std::string_view name, const ruvia::JsonValue& value) {
+            const auto object = ruvia::json_value::parse(json);
+            if (!object || !object->for_each_field([&](std::string_view name, const ruvia::json_value& value) {
                 return visit(name, value.view());
             }))
                 throw std::runtime_error("invalid acquisition values");
@@ -389,7 +389,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
                 "command_invalid: SL651 command requires every element in the function");
     }
     if (device.protocol == "MQTT") {
-        const auto config = ruvia::fromJson<mqtt::Config>(device.calculationConfig);
+        const auto config = ruvia::from_json<mqtt::Config>(device.calculationConfig);
         if (!config) throw std::invalid_argument("command_invalid: MQTT configuration is invalid");
         const auto& commands = config->get<"commands">();
         if (commands) {

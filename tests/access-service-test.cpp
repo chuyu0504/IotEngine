@@ -37,26 +37,26 @@ void requireNoUnsafeParsers(std::string_view source) {
 }
 
 void requireStrictPresentFieldTypes(std::string_view source) {
-    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::String,") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::string,") != std::string_view::npos,
             "access request does not validate optional string fields through Model");
-    require(source.find("RUVIA_OPTIONAL_FIELD(timeoutSeconds, ruvia::Int64,") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(timeoutSeconds, ruvia::int64,") != std::string_view::npos,
             "access request does not validate optional integer fields through Model");
     require(source.find(
-                "const auto scopes = payload.get<ruvia::Array<ruvia::String>>(\"scopes\")") ==
+                "const auto scopes = payload.get<ruvia::array<ruvia::string>>(\"scopes\")") ==
                 std::string_view::npos,
             "access key update ignores present non-array scopes");
     require(source.find(
-                "const auto accessKeyId = payload.get<ruvia::String>(\"accessKeyId\")") ==
+                "const auto accessKeyId = payload.get<ruvia::string>(\"accessKeyId\")") ==
                 std::string_view::npos,
             "webhook update ignores present non-string accessKeyId");
     require(source.find(
-                "const auto events = payload.get<ruvia::Array<ruvia::String>>(\"eventTypes\")") ==
+                "const auto events = payload.get<ruvia::array<ruvia::string>>(\"eventTypes\")") ==
                 std::string_view::npos,
             "webhook update ignores present non-array eventTypes");
-    require(source.find("RUVIA_OPTIONAL_FIELD(skipTlsVerify, ruvia::Bool)") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(skipTlsVerify, ruvia::bool_value)") != std::string_view::npos,
             "webhook TLS verification flag is not strictly parsed as boolean");
     for (const auto field : {"expiresAt", "remark", "secret"}) {
-        require(source.find(std::string("payload.isPresent<\"") + field + "\">()") != std::string_view::npos,
+        require(source.find(std::string("payload.is_present<\"") + field + "\">()") != std::string_view::npos,
                 "nullable update field lost its original input presence");
     }
 }
@@ -70,42 +70,42 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 }
 
 void requireAccessQueriesUseOrm(std::string_view source) {
-    require(source.find("catalog.caseWhen(") != std::string_view::npos &&
-                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::columnName<\"skip_tls_verify\">(), \"webhook\")") !=
+    require(source.find("catalog.case_when(") != std::string_view::npos &&
+                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::column_name<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos &&
                 source.find("skip_tls_verify::text") == std::string_view::npos,
             "stored webhook TLS verification flag is parsed ambiguously");
-    require(source.find("#include <ruvia/web/db/DbQuery.h>") != std::string_view::npos,
-            "access feature service does not include the pinned DbQuery API");
+    require(source.find("#include <ruvia/web/db/db_query.h>") != std::string_view::npos,
+            "access feature service does not include the pinned db_query API");
     require(source.find("R\"sql") == std::string_view::npos &&
                 source.find("transaction.query(\"") == std::string_view::npos &&
                 source.find("context.db().query(\"") == std::string_view::npos &&
                 source.find("context.db().execute(\"") == std::string_view::npos,
             "access feature service still embeds raw SQL");
     require(source.find("transaction.query(advisoryLock)") != std::string_view::npos,
-            "access session refresh does not use a DbQuery advisory lock");
+            "access session refresh does not use a db_query advisory lock");
     require(source.find("snapshot.filter(") != std::string_view::npos &&
-                source.find(".joinFunction(ruvia::DbJoinType::kCross") !=
+                source.find(".join_function(ruvia::db_join_type::cross") !=
                     std::string_view::npos,
             "access projections lost aggregate FILTER or LATERAL JSON semantics");
-    require(source.find("catalog.caseWhen(") != std::string_view::npos &&
-                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::columnName<\"skip_tls_verify\">(), \"webhook\")") !=
+    require(source.find("catalog.case_when(") != std::string_view::npos &&
+                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::column_name<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos,
             "access webhook projection does not preserve boolean CASE semantics");
-    require(source.find(".distinctOn({latest.column(\"webhook_id\", \"incoming\")})") !=
+    require(source.find(".distinct_on({latest.column(\"webhook_id\", \"incoming\")})") !=
                 std::string_view::npos &&
-                source.find(".distinctOn({latestUsage.column(\"access_key_id\", \"incoming\")})") !=
+                source.find(".distinct_on({latestUsage.column(\"access_key_id\", \"incoming\")})") !=
                     std::string_view::npos,
             "access batch persistence lost DISTINCT ON selection");
     require(source.find(".with(\"updated\", updated)") != std::string_view::npos &&
                 source.find(".with(\"usage_updated\", usageUpdated)") !=
                     std::string_view::npos,
             "access batch persistence lost data-changing CTEs");
-    require(source.find(".onConflict({.columns = {\"id\"}, .doNothing = true})") !=
+    require(source.find(".on_conflict({.columns_ = {\"id\"}, .do_nothing_ = true})") !=
                 std::string_view::npos,
             "access batch persistence lost idempotent ON CONFLICT handling");
 }

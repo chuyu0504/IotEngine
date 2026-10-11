@@ -13,12 +13,9 @@ import {
     configureNetwork,
     createEdgeGroup,
     createEdgeVpnPeer,
-    createEdgeVpnRoute,
-    createVpnNetwork,
     DebugOperationError,
     deleteDtuChannel,
     deleteEdgeGroup,
-    deleteEdgeVpnRoute,
     deleteEnrollment,
     edgeDebugConnection,
     getDtuChannels,
@@ -682,12 +679,6 @@ export const useEdgeVpn = (scope: Edge.EventScope, enabled: boolean) => {
     };
 };
 const vpnInvalidations = [edgeVpnQueryKeys.all, edgeQueryKeys.all];
-export const useVpnNetworkCreate = () =>
-    useMutationWithMessage({
-        mutationFn: createVpnNetwork,
-        successMessage: '默认 iot-server VPN 网络已就绪',
-        invalidateKeys: vpnInvalidations,
-    });
 export const useEdgeVpnPeerCreate = () =>
     useMutationWithMessage({
         mutationFn: createEdgeVpnPeer,
@@ -706,23 +697,11 @@ export const useEdgeVpnPeerRevoke = () =>
         successMessage: 'VPN Peer 已撤销',
         invalidateKeys: vpnInvalidations,
     });
-export const useEdgeVpnRouteCreate = () =>
-    useMutationWithMessage({
-        mutationFn: createEdgeVpnRoute,
-        successMessage: 'VPN 路由已保存并下发',
-        invalidateKeys: vpnInvalidations,
-    });
 export const useEdgeVpnRouteUpdate = () =>
     useMutationWithMessage({
         mutationFn: ({ id, data }: { id: string; data: Partial<EdgeVpn.RouteDto> }) =>
             updateEdgeVpnRoute(id, data),
         successMessage: '虚拟网段已更新，正在下发配置',
-        invalidateKeys: vpnInvalidations,
-    });
-export const useEdgeVpnRouteDelete = () =>
-    useMutationWithMessage({
-        mutationFn: deleteEdgeVpnRoute,
-        successMessage: 'VPN 路由已删除',
         invalidateKeys: vpnInvalidations,
     });
 

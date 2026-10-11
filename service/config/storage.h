@@ -11,8 +11,8 @@
 #include <string_view>
 #include <utility>
 
-#include <ruvia/web/Dotenv.h>
-#include <ruvia/web/db/DbSchema.h>
+#include <ruvia/web/dotenv.h>
+#include <ruvia/web/db/db_schema.h>
 
 namespace service::config {
 
@@ -78,7 +78,7 @@ inline void validateDeviceDataStoragePolicy(const DeviceDataStoragePolicy& polic
     }
 }
 
-inline DeviceDataStoragePolicy deviceDataStoragePolicy(const ruvia::Env& env) {
+inline DeviceDataStoragePolicy deviceDataStoragePolicy(const ruvia::env& env) {
     DeviceDataStoragePolicy policy;
     if (const auto value = env.get("DEVICE_DATA_COMPRESSION_POLICY_ENABLED"))
         policy.compressionEnabled =
@@ -96,7 +96,7 @@ inline DeviceDataStoragePolicy deviceDataStoragePolicy(const ruvia::Env& env) {
     return policy;
 }
 
-inline ruvia::DbMigration
+inline ruvia::db_migration
 deviceDataStoragePolicyMigration(const DeviceDataStoragePolicy& policy) {
     validateDeviceDataStoragePolicy(policy);
 
@@ -106,29 +106,29 @@ deviceDataStoragePolicyMigration(const DeviceDataStoragePolicy& policy) {
     migrationId += "_after_" + std::to_string(policy.compressionAfterHours);
     migrationId += "_mutable_" + std::to_string(policy.mutableWindowHours);
 
-    ruvia::DbSchema schema({.driver = ruvia::DbDriver::kPostgreSql});
-    ruvia::DbQuery cleanup;
+    ruvia::db_schema schema({.driver_ = ruvia::db_driver::postgresql});
+    ruvia::db_query cleanup;
     const auto migrationPrefix = cleanup.value(
         "runtime_device_data_storage_policy_");
-    cleanup.deleteFrom("sys_schema_migrations")
+    cleanup.delete_from("sys_schema_migrations")
         .where(cleanup.call("starts_with",
             {cleanup.column("migration_id"), migrationPrefix}));
     schema.execute(cleanup);
 
-    ruvia::DbQuery expressions;
-    const std::array chunkIntervalArguments{ruvia::DbNamedArgument{
+    ruvia::db_query expressions;
+    const std::array chunkIntervalArguments{ruvia::db_named_argument{
         "hours", expressions.value(policy.chunkIntervalHours)}};
     const auto chunkInterval = expressions.call("make_interval",
-        std::span<const ruvia::DbQuery::Expr>{}, chunkIntervalArguments);
-    schema.removeCompressionPolicy("device_data", true);
-    schema.setChunkTimeInterval("device_data", chunkInterval);
+        std::span<const ruvia::db_query::expr_type>{}, chunkIntervalArguments);
+    schema.remove_compression_policy("device_data", true);
+    schema.set_chunk_time_interval("device_data", chunkInterval);
 
     if (policy.compressionEnabled) {
-        const std::array compressionAfterArguments{ruvia::DbNamedArgument{
+        const std::array compressionAfterArguments{ruvia::db_named_argument{
             "hours", expressions.value(policy.compressionAfterHours)}};
         const auto compressionAfter = expressions.call("make_interval",
-            std::span<const ruvia::DbQuery::Expr>{}, compressionAfterArguments);
-        schema.addCompressionPolicy("device_data", compressionAfter, true);
+            std::span<const ruvia::db_query::expr_type>{}, compressionAfterArguments);
+        schema.add_compression_policy("device_data", compressionAfter, true);
     }
 
     auto migrations = schema.compile(migrationId);

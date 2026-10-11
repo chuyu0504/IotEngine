@@ -91,19 +91,15 @@ try {
 
     const health = await request('GET','/v1/gb28181/health');
     assert.equal(health.enabled,true);
-    assert.equal((await request('GET','/v1/gb28181/config/sip')).domain,realm);
-    assert((await request('GET','/v1/gb28181/devices')).items.some((item:{id:string})=>item.id===device));
-    assert(Array.isArray((await request('GET','/v1/gb28181/streams')).items));
     const deviceSubscription = await subscribe('/v1/gb28181/devices/events');
     assert((await snapshot(deviceSubscription)).items.some((item: {id: string}) => item.id === device));
     for (const [path,data] of [
         [`/v1/gb28181/devices/${device}/channels/${device}/ptz/left`,{speed:'80'}],
         [`/v1/gb28181/devices/${device}/channels/${device}/ptz/invalid`,{speed:80}],
         [`/v1/gb28181/devices/${device}/channels/${device}/ptz/position/set`,{pan:361,tilt:0,zoom:1}],
-        [`/v1/gb28181/devices/${device}/channels/${device}/records/query`,{start_time:'invalid',end_time:'2026-01-01T00:00:00Z'}],
         ['/v1/gb28181/previews/%20/stop',undefined],
     ] as const) await request('POST',path,data,10001);
-    await request('GET',`/v1/gb28181/devices/${'x'.repeat(129)}`,undefined,10001);
+    await request('POST',`/v1/gb28181/devices/${'x'.repeat(129)}/catalog/query`,undefined,10001);
     assert.equal((await request('POST',`/v1/gb28181/devices/${device}/catalog/query`)).sent,true);
     assert.equal((await request('POST',`/v1/gb28181/devices/${device}/channels/${device}/ptz/left`,{speed:80})).speed,80);
     await until(async()=>inbox.find(frame=>frame.startsWith('MESSAGE ') && frame.includes('<PTZCmd>')), 'HTTP PTZ must reach original SIP transport');
@@ -118,7 +114,7 @@ try {
     let changedDevice = (await snapshot(deviceSubscription)).items.find((item: {id: string}) => item.id === device);
     while (changedDevice?.custom_name !== 'Committed worker name') changedDevice = (await snapshot(deviceSubscription)).items.find((item: {id: string}) => item.id === device);
     await deviceSubscription.close();
-    assert.equal((await fetch(`${apiBase}/v1/gb28181/devices`)).status,401);
+    assert.equal((await fetch(`${apiBase}/v1/gb28181/health`)).status,401);
     console.log('PASS HTTP rename routes to connection owner and returns after persistence; SSE change is visible');
     const preview = await request('POST',`/v1/gb28181/devices/${device}/channels/${device}/preview/start`);
     assert(preview.sent && preview.session_id && preview.stream_id);
@@ -144,27 +140,27 @@ try {
             (await redis.get(`iot:gb28181:projection:done:${projection}`)) ?? undefined,
             `${change} projection must commit and acknowledge`), '1');
     }
-    await projectList('catalog', ['channel_count','2','record_count','0',
+    await projectList('catalog', ['channel_count','2',
         'channel.0.id','channel-1','channel.0.name',"Camera's entrance",'channel.0.online','1',
         'channel.0.manufacturer','测试厂商','channel.0.ptz_type','1',
         'channel.1.id','channel-2','channel.1.name','Second channel','channel.1.online','0','channel.1.ptz_type','0']);
     assert.equal((await db`SELECT count(*)::int AS count FROM gb28181_channel WHERE device_id=${device}`)[0].count,2);
     await db`UPDATE gb28181_channel SET custom_name='Operator name' WHERE device_id=${device} AND id='channel-1'`;
-    await projectList('catalog', ['channel_count','1','record_count','0',
+    await projectList('catalog', ['channel_count','1',
         'channel.0.id','channel-1','channel.0.name','Updated channel','channel.0.online','1','channel.0.ptz_type','1']);
     const channels = await db`SELECT name,custom_name FROM gb28181_channel WHERE device_id=${device}`;
     assert.equal(channels.length,1);
     assert.equal(channels[0].name,'Updated channel');
     assert.equal(channels[0].custom_name,'Operator name');
-    await projectList('records', ['channel_count','0','record_count','1',
-        'record.0.device_id','channel-1','record.0.name',"Camera's recording",'record.0.file_path','record.mp4',
-        'record.0.address','Gate','record.0.start_time','2026-09-15T00:00:00Z',
-        'record.0.end_time','2026-09-15T01:00:00Z','record.0.type','all','record.0.recorder_id','recorder-1']);
-    const records = await db`SELECT name,recorder_id FROM gb28181_record WHERE device_id=${device}`;
-    assert.equal(records.length,1);
-    assert.equal(records[0].name,"Camera's recording");
-    assert.equal(records[0].recorder_id,'recorder-1');
-    console.log('PASS nonempty catalog and recording projections commit, remove stale channels and preserve operator names');
+    const retiredProjection = randomUUID();
+    await redis.send('XADD',['iot:gb28181:projection','*',
+        'projection_id',retiredProjection,'owner_token',owner!, 'schema_version','1',
+        'event_type','gb28181.device','change','records','device_id',device,
+        'name','Camera','online','1','last_seen_at',new Date().toISOString(),'channel_count','0']);
+    assert.equal(await until(async () =>
+        (await redis.get(`iot:gb28181:projection:done:${retiredProjection}`)) ?? undefined,
+        'retired records projection must be acknowledged'), '0', 'retired records projection must not be applied');
+    console.log('PASS nonempty catalog projections commit, remove stale channels and preserve operator names; retired change kinds are dropped');
 
     const ownerMatch = /^(.*):collector:(\d+):session:/.exec(owner!);
     assert(ownerMatch);
@@ -220,7 +216,7 @@ try {
             'projection_id',projectionId,'owner_token',owner!,
             'schema_version','1','event_type','gb28181.device','change','device_name',
             'device_id',device,'name',device,'custom_name','Stale retried name',
-            'online','1','last_seen_at',new Date().toISOString(),'channel_count','0','record_count','0']) as string;
+            'online','1','last_seen_at',new Date().toISOString(),'channel_count','0']) as string;
         originalOrder = entry;
         await transaction`UPDATE gb28181_device SET custom_name='Newer committed name',
             projection_cursor=split_part(${entry},'-',1)::numeric*18446744073709551616+
@@ -243,7 +239,7 @@ try {
         'projection_id',projectionId,'owner_token',owner!,
         'schema_version','1','event_type','gb28181.device','change','device_name',
         'device_id',device,'name',device,'custom_name','Expired receipt stale replay',
-        'online','1','last_seen_at',new Date().toISOString(),'channel_count','0','record_count','0'];
+        'online','1','last_seen_at',new Date().toISOString(),'channel_count','0'];
     const replay = await redis.send('EVAL', [publishLua,'2','iot:gb28181:projection',
         `iot:gb28181:projection:sent:${projectionId}`,originalOrder,originalOrder,...replayFields]) as string[];
     assert.equal(replay[0], originalOrder);

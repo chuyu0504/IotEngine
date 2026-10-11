@@ -13,7 +13,7 @@ int main() {
         input.observedAtMs=123;input.occurredAtMs=456;
         input.valuesJson=R"({"values":{"n":{"value":12.5,"unit":"C"},"b":{"value":true},"s":{"value":"0012"},"nil":{"value":null},"text":{"value":"\"type\":\"JPEG\""}}})";
         service::telemetry::contract::normalize(input);
-        const auto decoded=ruvia::JsonValue::parse(input.valuesJson);
+        const auto decoded=ruvia::json_value::parse(input.valuesJson);
         require(decoded.has_value(),"normalized telemetry is invalid JSON");
         require(input.eventKind=="sample","text accidentally classified as media");
         require(input.valuesJson.find("\"model\":null")!=std::string::npos,"absent model provenance was fabricated");

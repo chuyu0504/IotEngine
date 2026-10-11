@@ -57,11 +57,4 @@ void createProtectedDirectory(const fs::path& path, bool usersRead, bool current
     applyAcl(path, descriptor.value);
     for (const auto& entry : fs::recursive_directory_iterator(path)) applyAcl(entry.path(), descriptor.value);
 }
-void deleteOwnedDirectory(const fs::path& path, const fs::path& parent) {
-    const auto target = fs::absolute(path).lexically_normal();
-    const auto base = fs::absolute(parent).lexically_normal();
-    if (target == base || target.parent_path() != base) throw std::runtime_error("拒绝删除预期目录之外的路径。");
-    checkTree(target);
-    fs::remove_all(target);
-}
 }

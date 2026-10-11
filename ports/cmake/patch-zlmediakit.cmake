@@ -63,54 +63,6 @@ require_pinned_revision(
 # carrying an unreviewed compatibility patch forward.
 set(MEDIA_SERVER_ROOT "${SOURCE_DIR}/3rdpart/media-server")
 
-patch_pinned_source(
-    "${SOURCE_DIR}/3rdpart/ZLToolKit/src/Util/SSLUtil.cpp"
-    "X509_NAME *name = X509_get_subject_name(cer);"
-    "const X509_NAME *name = X509_get_subject_name(cer);"
-    "ZLToolKit OpenSSL 4 certificate subject constness")
-
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "#include <cstdio>"
-    "#include <memory>\n#include <cstdio>"
-    "ZLMediaKit DTLS certificate subject RAII header")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "X509_NAME* certName{ nullptr };"
-    "std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> certName(nullptr, X509_NAME_free);"
-    "ZLMediaKit own mutable DTLS certificate subject")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "certName = X509_get_subject_name(certificate);"
-    "certName.reset(X509_NAME_new());"
-    "ZLMediaKit allocate DTLS certificate subject")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "X509_get_subject_name() failed"
-    "X509_NAME_new() failed"
-    "ZLMediaKit DTLS subject allocation diagnostic")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "certName, \"O\","
-    "certName.get(), \"O\","
-    "ZLMediaKit DTLS organization subject field")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "certName, \"CN\","
-    "certName.get(), \"CN\","
-    "ZLMediaKit DTLS common name subject field")
-patch_pinned_source(
-    "${SOURCE_DIR}/webrtc/DtlsTransport.cpp"
-    "ret = X509_set_issuer_name(certificate, certName);"
-    [=[ret = X509_set_subject_name(certificate, certName.get());
-        if (ret == 0)
-        {
-            LOG_OPENSSL_ERROR("X509_set_subject_name() failed");
-            goto error;
-        }
-        ret = X509_set_issuer_name(certificate, certName.get());]=]
-    "ZLMediaKit install DTLS subject and issuer through OpenSSL setters")
-
 # IceTransport's global token subscribes before config.cpp's std::string
 # broadcast names have necessarily been initialized. Initialize the listener
 # with the function-local shared owner, after application startup, instead.

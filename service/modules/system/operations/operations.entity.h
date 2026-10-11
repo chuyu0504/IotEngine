@@ -1,11 +1,11 @@
 #pragma once
-#include <ruvia/web/db/DbEntity.h>
-#include <ruvia/web/redis/RedisEntity.h>
+#include <ruvia/web/db/db_entity.h>
+#include <ruvia/web/redis/redis_entity.h>
 #include "service/common/message.h"
 namespace service::system {
 RUVIA_REDIS_ENTITY(WorkerSnapshotEntity, service::message::worker_metrics::kSnapshotTable,
-    RUVIA_REDIS_COLUMN(id, ruvia::String, ruvia::RedisColumnOptions{.primaryKey = true}),
-    RUVIA_REDIS_COLUMN(metrics, ruvia::String),
+    RUVIA_REDIS_COLUMN(id, ruvia::string, ruvia::redis_column_options{.primary_key_ = true}),
+    RUVIA_REDIS_COLUMN(metrics, ruvia::string),
     RUVIA_REDIS_COLUMN(ready, bool),
-    RUVIA_REDIS_COLUMN(health, ruvia::String));
+    RUVIA_REDIS_COLUMN(health, ruvia::string));
 }

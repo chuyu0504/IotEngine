@@ -19,16 +19,15 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/OneShot.h>
-#include <ruvia/core/Task.h>
-#include <ruvia/core/TaskScope.h>
-#include <ruvia/core/Timer.h>
-#include <ruvia/web/WebWorker.h>
-#include <ruvia/web/db/Db.h>
+#include <ruvia/core/one_shot.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/task_scope.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
+#include <ruvia/web/db/db.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -53,7 +52,7 @@ class WebhookRuntime final {
 
     ~WebhookRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -71,7 +70,7 @@ class WebhookRuntime final {
         auto readiness = ready->get_future();
         stopped_ = stopped->get_future().share();
         const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::WebWorkerContext& context) {
+            [this, ready, stopped](ruvia::web_worker_context& context) {
                 return run(context, workerIndex_, ready, stopped);
             }
         );
@@ -96,7 +95,7 @@ class WebhookRuntime final {
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext&) -> ruvia::Task<void> {
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                                                 service::message::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Webhook
                                                 );
@@ -133,7 +132,7 @@ class WebhookRuntime final {
         Event
     };
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
             std::map<std::string, StreamKind, std::less<>> streamKinds;
@@ -164,7 +163,7 @@ class WebhookRuntime final {
             static constexpr auto kPendingRecoveryInterval =
                 std::chrono::milliseconds(5000);
             auto nextRecoverySweep = std::chrono::steady_clock::now();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 std::vector<message::redis::StreamBatch> batches;
                 bool readFailed = false;
                 bool groupMissing = false;
@@ -191,7 +190,7 @@ class WebhookRuntime final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.stopToken().stopRequested()) {
+                    if (!running_.load() || context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "open webhook stream read failed: " << error.what() << '\n';
@@ -201,7 +200,7 @@ class WebhookRuntime final {
                         std::string_view::npos;
                 }
                 if (readFailed && running_.load() &&
-                    !context.stopToken().stopRequested()) {
+                    !context.get_stop_token().stop_requested()) {
                     try {
                         if (groupMissing) {
                             for (const auto& streamName : streams) {
@@ -218,11 +217,11 @@ class WebhookRuntime final {
                                   << ensureError.what() << '\n';
                     }
                 }
-                if (!running_.load() || context.stopToken().stopRequested()) {
+                if (!running_.load() || context.get_stop_token().stop_requested()) {
                     break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     continue;
                 }
                 if (recovering && batches.empty()) {
@@ -232,7 +231,7 @@ class WebhookRuntime final {
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Webhook,
-                        context.stopToken(),
+                        context.get_stop_token(),
                         kPendingRecoveryInterval
                     );
                     continue;
@@ -356,7 +355,7 @@ class WebhookRuntime final {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                 }
             }
         } catch (...) {
@@ -393,7 +392,7 @@ class WebhookRuntime final {
         bool blocked{ false };
     };
 
-    ruvia::Task<void> deliverCaptured(ruvia::WebWorkerContext& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http, DeliveryAttempt& attempt) {
+    ruvia::task<void> deliverCaptured(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http, DeliveryAttempt& attempt) {
         try {
             co_await deliver(context, message, catalog, http);
             attempt.succeeded = true;
@@ -404,8 +403,8 @@ class WebhookRuntime final {
         }
     }
 
-    ruvia::Task<void> deliverEvents(
-        ruvia::WebWorkerContext& context,
+    ruvia::task<void> deliverEvents(
+        ruvia::web_worker_context& context,
         std::string_view sourceStream,
         const std::vector<message::StreamMessage>& messages,
         const Catalog& catalog,
@@ -443,9 +442,9 @@ class WebhookRuntime final {
             }
 
             std::vector<DeliveryAttempt> attempts(selected.size());
-            ruvia::TaskScope scope(
+            ruvia::task_scope scope(
                 context.worker(),
-                ruvia::TaskScopeOptions{ .resource = context.pool() }
+                ruvia::task_scope_options{ .resource_ = context.pool() }
             );
             for (std::size_t index = 0; index < selected.size(); ++index) {
                 const auto messageIndex = selected[index]->indexes[selected[index]->next];
@@ -479,7 +478,7 @@ class WebhookRuntime final {
         }
     }
 
-    ruvia::Task<void> deliver(ruvia::WebWorkerContext& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http) {
+    ruvia::task<void> deliver(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http) {
         const auto eventType = message.get("event_type");
         const auto deviceId = message.get("device_id");
         if (!service::message::supportedEvent(eventType) || !service::common::isUuid(deviceId)) {
@@ -514,9 +513,9 @@ class WebhookRuntime final {
         }
         for (std::size_t offset = 0; offset < targets.size(); offset += kTargetConcurrency) {
             const auto end = std::min(targets.size(), offset + kTargetConcurrency);
-            ruvia::TaskScope scope(
+            ruvia::task_scope scope(
                 context.worker(),
-                ruvia::TaskScopeOptions{ .resource = context.pool() }
+                ruvia::task_scope_options{ .resource_ = context.pool() }
             );
             for (auto index = offset; index < end; ++index) {
                 scope.spawn(deliverTarget(context, http, *targets[index], delivery));
@@ -525,7 +524,7 @@ class WebhookRuntime final {
         }
     }
 
-    ruvia::Task<void> deliverTarget(ruvia::WebWorkerContext& context, WebhookHttpClient& http, const Target& target, const Delivery& delivery) {
+    ruvia::task<void> deliverTarget(ruvia::web_worker_context& context, WebhookHttpClient& http, const Target& target, const Delivery& delivery) {
         const auto requestTimestamp = service::common::utcTimestampNow();
         auto headers = parseHeaders(target.headers);
         headers.emplace_back("X-IOT-Event", delivery.eventType);
@@ -538,16 +537,16 @@ class WebhookRuntime final {
         WebhookHttpResponse response;
         try {
             const auto url = parseWebhookUrl(target.url);
-            auto [completion, receiver] = ruvia::makeOneShot<WebhookHttpResponse>(context.worker());
-            auto shared = std::make_shared<ruvia::OneShotCompletion<WebhookHttpResponse>>(
+            auto [completion, receiver] = ruvia::make_one_shot<WebhookHttpResponse>(context.worker());
+            auto shared = std::make_shared<ruvia::one_shot_completion<WebhookHttpResponse>>(
                 std::move(completion)
             );
             http.post(url, WebhookHttpClient::request(url, delivery.body, headers), std::chrono::seconds(target.timeout), target.skipTlsVerify, [shared](WebhookHttpResponse result) mutable {
                 (void)shared->complete(std::move(result));
             });
             auto outcome = co_await receiver.wait();
-            if (outcome.hasValue()) {
-                response = std::move(outcome).takeValue();
+            if (outcome.has_value()) {
+                response = std::move(outcome).take_value();
             } else {
                 response.error = "Webhook request was cancelled";
             }
@@ -565,11 +564,11 @@ class WebhookRuntime final {
 
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {
         std::vector<std::pair<std::string, std::string>> result;
-        const auto object = ruvia::JsonValue::parse(json);
-        if (!object || !object->isObject()) return result;
-        (void)object->forEachField(
-            [&](std::string_view name, const ruvia::JsonValue&) {
-                const auto value = object->get<ruvia::String>(name);
+        const auto object = ruvia::json_value::parse(json);
+        if (!object || !object->is_object()) return result;
+        (void)object->for_each_field(
+            [&](std::string_view name, const ruvia::json_value&) {
+                const auto value = object->get<ruvia::string>(name);
                 if (value) {
                     validateWebhookHeader(name, value->view(), true);
                     result.emplace_back(name, value->view());
@@ -580,7 +579,7 @@ class WebhookRuntime final {
         return result;
     }
 
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;

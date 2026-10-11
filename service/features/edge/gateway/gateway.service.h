@@ -13,8 +13,8 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/core/Task.h>
-#include <ruvia/web/db/DbQuery.h>
+#include <ruvia/core/task.h>
+#include <ruvia/web/db/db_query.h>
 
 #include "service/common/http.h"
 #include "service/features/edge/gateway/gateway.types.h"
@@ -25,18 +25,18 @@ namespace service::edge::gateway {
 
 class GatewayService final {
   public:
-    static ruvia::Task<EnrollmentRecord> loadEnrollment(ruvia::Context& c,
+    static ruvia::task<EnrollmentRecord> loadEnrollment(ruvia::context& c,
         std::string_view imei, std::string_view pendingNodeId = {}) {
         const auto value = co_await c.redis().get(service::message::edge::authKey(imei));
         if (value) {
             const auto record = EnrollmentRecord::decode(std::string_view(value->data(), value->size()));
             if (record) co_return *record;
         }
-        co_return EnrollmentRecord{pendingNodeId.empty() ? c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next() :
+        co_return EnrollmentRecord{pendingNodeId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next() :
                                    std::string(pendingNodeId), "pending"};
     }
 
-    static ruvia::Task<void> saveLogResult(ruvia::Context& c, std::string_view nodeId, const pb::LogResult& result) {
+    static ruvia::task<void> saveLogResult(ruvia::context& c, std::string_view nodeId, const pb::LogResult& result) {
         if (result.request_id().size() != 16) {
             co_return;
         }
@@ -45,9 +45,9 @@ class GatewayService final {
             co_return;
         }
         const auto id = protocol::uuidText(result.request_id());
-        ruvia::RedisSetOptions options;
-        options.expiration =
-            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        ruvia::redis_set_options options;
+        options.expiration_ =
+            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = LogResultRecord::responseKey(id);
         co_await c.redis().set(key, record.protobufBytes, std::move(options));
         co_await service::live::publish(c.redis(), key);
@@ -58,7 +58,7 @@ class GatewayService final {
         }
     }
 
-    static ruvia::Task<void> saveLogLevelResult(ruvia::Context& c, const pb::LogLevelResult& result) {
+    static ruvia::task<void> saveLogLevelResult(ruvia::context& c, const pb::LogLevelResult& result) {
         if (result.request_id().size() != 16) {
             co_return;
         }
@@ -67,9 +67,9 @@ class GatewayService final {
             co_return;
         }
         const auto id = protocol::uuidText(result.request_id());
-        ruvia::RedisSetOptions options;
-        options.expiration =
-            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        ruvia::redis_set_options options;
+        options.expiration_ =
+            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = LogResultRecord::levelKey(id);
         co_await c.redis().set(key, record.protobufBytes, std::move(options));
         co_await service::live::publish(c.redis(), key);
@@ -77,14 +77,14 @@ class GatewayService final {
 
 
     template <typename Context>
-    static ruvia::Task<std::int64_t> databaseTimeMilliseconds(Context& context) {
-        ruvia::DbQuery sample(context.pool());
+    static ruvia::task<std::int64_t> databaseTimeMilliseconds(Context& context) {
+        ruvia::db_query sample(context.pool());
         const auto epochMilliseconds = sample.cast(
             sample.call("floor", {sample.binary(
-                sample.extract(ruvia::DbDatePart::kEpoch, sample.call("clock_timestamp")),
-                ruvia::DbBinaryOperator::kMultiply, sample.value(std::int64_t{1000}))}),
-            ruvia::DbDataType::kBigInt);
-        sample.select(sample.cast(epochMilliseconds, ruvia::DbDataType::kText));
+                sample.extract(ruvia::db_date_part::epoch, sample.call("clock_timestamp")),
+                ruvia::db_binary_operator::multiply, sample.value(std::int64_t{1000}))}),
+            ruvia::db_data_type::big_int);
+        sample.select(sample.cast(epochMilliseconds, ruvia::db_data_type::text));
         const auto rows = co_await context.db().query(sample);
         if (rows.empty())
             throw std::runtime_error("PostgreSQL clock sample is unavailable");
@@ -100,32 +100,32 @@ class GatewayService final {
     }
 
     template <typename Context>
-    static ruvia::Task<std::optional<std::int64_t>> claimCommand(
+    static ruvia::task<std::optional<std::int64_t>> claimCommand(
         Context& context, std::string_view operationId, std::string_view nodeId) {
-        ruvia::DbQuery claim(context.pool());
-        using Binary = ruvia::DbBinaryOperator;
+        ruvia::db_query claim(context.pool());
+        using Binary = ruvia::db_binary_operator;
         const auto deadlineMs = claim.cast(
             claim.call("floor", {claim.binary(
-                claim.extract(ruvia::DbDatePart::kEpoch,
-                    claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"deadline">(), "a")),
-                Binary::kMultiply, claim.value(1000))}),
-            ruvia::DbDataType::kBigInt);
-        claim.update(service::edge::gateway::persistence::CommandAttemptEntity::tableName(), "a")
-            .set(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"sent_at">(), claim.call("now"))
-            .updateFrom(service::edge::gateway::persistence::CommandOperationEntity::tableName(), "o")
-            .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a"), Binary::kEqual,
-                claim.cast(claim.value(operationId), ruvia::DbDataType::kUuid)))
-            .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandOperationEntity::columnName<"id">(), "o"), Binary::kEqual,
-                claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a")))
-            .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"node_id">(), "a"), Binary::kEqual,
+                claim.extract(ruvia::db_date_part::epoch,
+                    claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"deadline">(), "a")),
+                Binary::multiply, claim.value(1000))}),
+            ruvia::db_data_type::big_int);
+        claim.update(service::edge::gateway::persistence::CommandAttemptEntity::table_name(), "a")
+            .set(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"sent_at">(), claim.call("now"))
+            .update_from(service::edge::gateway::persistence::CommandOperationEntity::table_name(), "o")
+            .and_where(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a"), Binary::equal,
+                claim.cast(claim.value(operationId), ruvia::db_data_type::uuid)))
+            .and_where(claim.binary(claim.column(service::edge::gateway::persistence::CommandOperationEntity::column_name<"id">(), "o"), Binary::equal,
+                claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a")))
+            .and_where(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"node_id">(), "a"), Binary::equal,
                 claim.value(nodeId)))
-            .andWhere(claim.unary(ruvia::DbUnaryOperator::kIsNull,
-                claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"sent_at">(), "a")))
-            .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"deadline">(), "a"), Binary::kGreater,
+            .and_where(claim.unary(ruvia::db_unary_operator::is_null,
+                claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"sent_at">(), "a")))
+            .and_where(claim.binary(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"deadline">(), "a"), Binary::greater,
                 claim.call("now")))
-            .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandOperationEntity::columnName<"status">(), "o"), Binary::kIn,
+            .and_where(claim.binary(claim.column(service::edge::gateway::persistence::CommandOperationEntity::column_name<"status">(), "o"), Binary::in,
                 claim.list({claim.value("DISPATCHING"), claim.value("AWAITING_RESULT")})))
-            .returning({claim.cast(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a"), ruvia::DbDataType::kText), deadlineMs});
+            .returning({claim.cast(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a"), ruvia::db_data_type::text), deadlineMs});
         const auto claimed = co_await context.db().query(claim);
         if (claimed.empty())
             co_return std::nullopt;
@@ -157,24 +157,24 @@ class GatewayService final {
     }
 
     template <typename Context>
-    static ruvia::Task<std::optional<FirmwareSource>> loadFirmwareSource(
+    static ruvia::task<std::optional<FirmwareSource>> loadFirmwareSource(
         Context& context, std::string_view requestId, std::string_view nodeId) {
-        ruvia::DbQuery firmware(context.pool());
-        using Binary = ruvia::DbBinaryOperator;
-        firmware.select({firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::columnName<"storage_path">(), "firmware"),
-                         firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::columnName<"size_bytes">(), "firmware")})
-            .from(service::edge::gateway::persistence::EdgeTaskEntity::tableName(), "task")
-            .join(ruvia::DbJoinType::kInner, service::edge::gateway::persistence::EdgeFirmwareEntity::tableName(),
+        ruvia::db_query firmware(context.pool());
+        using Binary = ruvia::db_binary_operator;
+        firmware.select({firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::column_name<"storage_path">(), "firmware"),
+                         firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::column_name<"size_bytes">(), "firmware")})
+            .from(service::edge::gateway::persistence::EdgeTaskEntity::table_name(), "task")
+            .join(ruvia::db_join_type::inner, service::edge::gateway::persistence::EdgeFirmwareEntity::table_name(),
                 firmware.binary(
-                    firmware.cast(firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::columnName<"id">(), "firmware"), ruvia::DbDataType::kText),
-                    Binary::kEqual,
-                    firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::columnName<"request">(), "task"), Binary::kJsonGetText,
+                    firmware.cast(firmware.column(service::edge::gateway::persistence::EdgeFirmwareEntity::column_name<"id">(), "firmware"), ruvia::db_data_type::text),
+                    Binary::equal,
+                    firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::column_name<"request">(), "task"), Binary::json_get_text,
                         firmware.value("firmware_id"))), "firmware")
-            .andWhere(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::columnName<"id">(), "task"), Binary::kEqual,
-                firmware.cast(firmware.value(requestId), ruvia::DbDataType::kUuid)))
-            .andWhere(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::columnName<"node_id">(), "task"), Binary::kEqual,
-                firmware.cast(firmware.value(nodeId), ruvia::DbDataType::kUuid)))
-            .andWhere(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::columnName<"task_type">(), "task"), Binary::kEqual,
+            .and_where(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::column_name<"id">(), "task"), Binary::equal,
+                firmware.cast(firmware.value(requestId), ruvia::db_data_type::uuid)))
+            .and_where(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::column_name<"node_id">(), "task"), Binary::equal,
+                firmware.cast(firmware.value(nodeId), ruvia::db_data_type::uuid)))
+            .and_where(firmware.binary(firmware.column(service::edge::gateway::persistence::EdgeTaskEntity::column_name<"task_type">(), "task"), Binary::equal,
                 firmware.value("firmware")))
             .limit(1);
         const auto rows = co_await context.db().query(firmware);

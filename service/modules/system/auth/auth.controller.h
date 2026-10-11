@@ -1,54 +1,42 @@
 #pragma once
 
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/controller.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
-#include "service/middleware/live.h"
 #include "service/modules/system/auth/auth.types.h"
 #include "service/modules/system/auth/auth.service.h"
 
 namespace service::auth {
 
-class AuthController final : public ruvia::Controller<AuthController> {
+class AuthController final : public ruvia::controller<AuthController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/auth")
     RUVIA_ROUTES_BEGIN
-    RUVIA_POST("/login", login, ruvia::JsonBody<LoginBody>);
-    RUVIA_POST("/refresh", refresh, ruvia::JsonBody<RefreshBody>);
+    RUVIA_POST("/login", login, ruvia::json_body<LoginBody>);
+    RUVIA_POST("/refresh", refresh, ruvia::json_body<RefreshBody>);
     RUVIA_POST("/logout", logout);
     RUVIA_GET("/me", me, service::middleware::AuthMiddleware);
-    RUVIA_GET_SSE("/me/events", userEvents, service::middleware::AuthMiddleware);
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<ruvia::HttpResponse> login(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> login(ruvia::context& c) {
 
         co_return c.json(service::common::ok<LoginResponse>(
             c, co_await authService().login(c, c.req().validated<LoginBody>())));
     }
-    ruvia::Task<ruvia::HttpResponse> refresh(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> refresh(ruvia::context& c) {
 
         co_return c.json(service::common::ok<LoginResponse>(
             c, co_await authService().refresh(c, c.req().validated<RefreshBody>())));
     }
-    ruvia::Task<ruvia::HttpResponse> logout(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> logout(ruvia::context& c) {
         co_return c.json(service::common::operation(c, "退出成功"));
     }
-    ruvia::Task<ruvia::HttpResponse> me(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> me(ruvia::context& c) {
         const auto principal = service::middleware::requireAuth(c);
         co_return c.json(service::common::ok<CurrentUserResponse>(
             c, co_await authService().current(c, principal.userId)));
-    }
-    ruvia::Task<void> userEvents(ruvia::Context& c) {
-        auto query = [&c](service::middleware::RequestContext& snapshot) -> ruvia::Task<std::string> {
-            const auto principal = service::middleware::requireAuth(c);
-            co_return service::live::json(service::common::ok<CurrentUserResponse>(
-                snapshot, co_await authService().current(snapshot, principal.userId)));
-        };
-        co_await service::live::serveSnapshots(c, "auth", service::middleware::requireAuth(c).userId, query, [&c] {
-            (void)service::middleware::requireAuth(c);
-        });
     }
 };
 

@@ -413,11 +413,6 @@ export const buildRegisterGroupSections = (
         };
     });
 };
-/** 生成唯一 ID（兼容非安全上下文） */
-export const generateId = (): string =>
-    '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
-        (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
-    );
 /**
  * S7 协议配置
  */
@@ -550,10 +545,6 @@ export const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.C
 export const getS7DeviceTypeFormValues = (data?: Protocol.Item): DeviceTypeFormValues => {
     const config = data?.config as S7.Config | undefined;
     const plcModel = config?.plcModel ?? 'S7-1200';
-    const numberOrDefault = (value: unknown, fallback: number) => {
-        const numericValue = Number(value);
-        return Number.isFinite(numericValue) ? numericValue : fallback;
-    };
     return {
         deviceType: data?.name ?? '',
         plcModel,

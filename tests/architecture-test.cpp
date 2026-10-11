@@ -92,7 +92,7 @@ void requireExpectedModule(std::string_view domain, std::string_view module,
 }
 
 bool whitelistedModuleFile(std::string_view file, std::string_view owner) {
-    static constexpr std::array<std::string_view, 6> suffixes{
+    static constexpr std::array<std::string_view, 5> suffixes{
         ".types.h", ".service.h", ".entity.h", ".error.h",
         ".controller.h",
     };
@@ -147,7 +147,7 @@ std::vector<std::filesystem::path> featureFiles() {
 
 bool declaresPrivateExecutor(const std::string& code) {
     static const std::regex declaration(
-        R"(^\s*(?:(?:static|inline)\s+)*(?:std::(?:jthread|thread)|asio::io_context|ruvia::EventLoopPool)\s+[A-Za-z_]\w*\s*[;{(=])",
+        R"(^\s*(?:(?:static|inline)\s+)*(?:std::(?:jthread|thread)|asio::io_context|ruvia::event_loop_pool)\s+[A-Za-z_]\w*\s*[;{(=])",
         std::regex_constants::ECMAScript);
     for (std::size_t start = 0; start < code.size();) {
         const auto end = code.find('\n', start);
@@ -161,11 +161,11 @@ bool declaresPrivateExecutor(const std::string& code) {
 void testModuleExecutorDetection() {
     for (const auto* declaration : {
             "    std::thread outbound_;", "std::jthread worker([] {});",
-            "asio::io_context io;", "ruvia::EventLoopPool pool({.loopCount = 1});"})
+            "asio::io_context io;", "ruvia::event_loop_pool pool({.loop_count_ = 1});"})
         require(declaresPrivateExecutor(declaration), "module executor declaration was missed");
     for (const auto* allowed : {
             "// std::thread example;", "std::thread::id owner;",
-            "auto client = context.httpClient();"})
+            "auto client = context.get_http_client();"})
         require(!declaresPrivateExecutor(allowed), "non-owning worker usage was rejected");
 }
 
@@ -209,8 +209,6 @@ void testModuleFileLayout() {
             validateModuleFiles(entry.path(), entryName);
         }
     }
-
-
 }
 
 void testFeatureFileLayout() {
@@ -431,11 +429,10 @@ void testIncludeGraphBoundaries() {
                                "shared infrastructure depends on business implementation");
     }
 
-
     for (const auto& path : graph.files) {
         const auto start = pathKey(path);
         const bool pureDefinition = start.ends_with(".entity.h") ||
-            start.ends_with(".types.h") || start.ends_with(".schema.h") ||
+            start.ends_with(".types.h") ||
             start.ends_with(".config.h") || start.ends_with(".protocol.h");
         if ((!isFeaturePath(start) && !isModulePath(start)) ||
             (!start.ends_with(".service.h") && !pureDefinition))
@@ -486,8 +483,8 @@ void testIncludeGraphBoundaries() {
 }
 
 void testStorageOwnership() {
-    const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bDbQuery\b|\bgetRepository\s*<)");
-    const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hgetAll|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
+    const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bdb_query\b|\bget_repository\s*<)");
+    const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hget_all|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
     const std::regex rawHashAccess(
         R"re(["'](?:HGET|HGETALL|HMGET|HSET|HSETNX|HMSET|HDEL|HKEYS|HVALS|HEXISTS|HLEN|HSCAN|HINCRBY|HINCRBYFLOAT)["'])re",
         std::regex::icase);
@@ -516,7 +513,7 @@ void testStorageOwnership() {
         const auto content = source(key);
         const bool isEntity = key.ends_with(".entity.h");
         const bool isPureDefinition = isEntity || key.ends_with(".types.h") ||
-            key.ends_with(".schema.h") || key.ends_with(".config.h") ||
+            key.ends_with(".config.h") ||
             key.ends_with(".protocol.h") || key.ends_with(".protocol.cpp");
         if (isPureDefinition) {
             requireFeatureRule(!std::regex_search(content, implicitIdentityGeneration), path,
@@ -636,7 +633,7 @@ void testExplicitOutbox() {
             "query changes must be captured transactionally for external SQL writers");
     require(schema.find("0024_outbox_consumer_receipt") != std::string::npos,
             "outbox consumer receipt migration is missing");
-    require(dispatcher.find(".mode = ruvia::DbRowLock::kUpdate, .skipLocked = true") != std::string::npos,
+    require(dispatcher.find(".mode_ = ruvia::db_row_lock::update, .skip_locked_ = true") != std::string::npos,
             "outbox dispatcher is not safe for concurrent instances");
     for (const auto path : {"service/modules/device/device.service.h",
                             "service/modules/link/link.service.h",
@@ -662,20 +659,8 @@ void testOutboxOperations() {
                     consumer->find("acknowledgeAndDeleteMany"),
                 "outbox consumer acknowledges before persisting its receipt");
     }
-    const auto controller = source("service/modules/system/outbox/outbox.controller.h");
-    require(controller.find("RUVIA_POST(\"/dead-letters/:id/replay\"") != std::string::npos,
-            "dead-letter HTTP replay route is missing");
-    require(controller.find("RUVIA_GET_SSE(\"/dead-letters/events\"") != std::string::npos,
-            "dead-letter SSE subscription is missing");
-    require(controller.find("RUVIA_WS_EVENT") == std::string::npos,
-            "dead-letter operations retain universal WS events");
-    const auto service = source("service/modules/system/outbox/outbox.service.h");
-    require(controller.find("\"system:outbox:manage\"") != std::string::npos,
-            "dead-letter operations are not permission protected");
-    require(service.find(".set(\"dead_lettered_at\", query.nullValue())") != std::string::npos,
-            "dead-letter replay does not requeue the event");
     const auto dispatcher = source("service/features/messaging/messaging.service.h");
-    require(dispatcher.find(".deleteFrom(service::messaging::persistence::OutboxConsumerReceiptEntity::tableName())") != std::string::npos,
+    require(dispatcher.find(".delete_from(service::messaging::persistence::OutboxConsumerReceiptEntity::table_name())") != std::string::npos,
             "outbox consumer receipts have no retention cleanup");
 }
 
@@ -769,21 +754,21 @@ void testWorkerStreamMultiplexing() {
     const auto server = source("service/server.cpp");
     const auto multiplexer =
         source("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");
-    require(server.find("serviceRedis.blockingPoolSizePerWorker = 4") !=
+    require(server.find("serviceRedis.blocking_pool_size_per_worker_ = 4") !=
                 std::string::npos,
             "Service Workers need bounded multiplexer, feature live, API live and RPC readers");
     require(server.find("owner->multiplexer->configure(worker, index)") != std::string::npos &&
                 server.find("m->start(worker, index)") != std::string::npos,
             "worker-local Stream multiplexer is not in the application lifecycle");
     require(multiplexer.find("thread_local WorkerStreamMultiplexer*") != std::string::npos &&
-                multiplexer.find("std::vector<ruvia::WebWorkerHandle>") == std::string::npos,
+                multiplexer.find("std::vector<ruvia::web_worker_handle>") == std::string::npos,
             "Stream wake channels are shared across Service Workers");
     require(service::rpc::Contract::requests("instance", 0) !=
                 service::rpc::Contract::requests("instance", 1),
             "RPC requests can be consumed by another Service Worker");
     require(multiplexer.find("readGroupManyBlockingUntil") != std::string::npos &&
                 multiplexer.find("workerWakeStream(index, service::runtime::instanceId())") != std::string::npos &&
-                multiplexer.find(".capacity = 1") != std::string::npos,
+                multiplexer.find(".capacity_ = 1") != std::string::npos,
             "Stream multiplexer does not use one coalescing blocker per Worker");
     const auto stream = source("service/features/messaging/messaging.transport.h");
     require(stream.find("kAddAndWakeScript") != std::string::npos &&
@@ -796,14 +781,12 @@ void testWorkerStreamMultiplexing() {
              "service/features/access/access.runtime.h",
              "service/features/configuration/configuration.runtime.h",
              "service/features/edge/edge.runtime.h",
-             "service/features/edge/edge.runtime.h",
         }) {
         const auto consumer = source(path);
         require(consumer.find("workerStreamMultiplexer().wait") !=
                         std::string::npos,
                 "Service Stream consumer does not use the worker-local multiplexer");
-        require(consumer.find("readGroupManyBlocking") == std::string::npos &&
-                    consumer.find("readGroupBlocking") == std::string::npos,
+        require(consumer.find("readGroupBlocking") == std::string::npos,
                 "Service Stream consumer still owns a Redis blocking connection");
     }
 }

@@ -24,9 +24,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/EventLoopPool.h>
-#include <ruvia/core/Task.h>
-#include <ruvia/core/TaskScope.h>
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/task_scope.h>
 
 #include "service/middleware/log.h"
 #include "service/features/packet_log/packet_log.transport.h"
@@ -36,7 +36,7 @@
 #include "service/features/telemetry/derived/derived.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
-#include <ruvia/web/redis/RedisClient.h>
+#include <ruvia/web/redis/redis_client.h>
 #include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/mc/mc.protocol.h"
 #include "service/features/collector/fins/fins.protocol.h"
@@ -51,16 +51,16 @@ namespace service::collector {
 
 class CollectorWorker final {
   public:
-    CollectorWorker(ruvia::EventLoop loop, std::unique_ptr<ruvia::RedisClient> redisClient, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
+    CollectorWorker(ruvia::event_loop loop, std::unique_ptr<ruvia::redis_client> redisClient, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
-          scope_(workerHandle_, ruvia::TaskScopeOptions{ .resource = &resource_ }),
-          scheduler_(loop_.ioContext()),
+          scope_(workerHandle_, ruvia::task_scope_options{ .resource_ = &resource_ }),
+          scheduler_(loop_.io_context()),
           redisClient_(std::move(redisClient)),
-          redis_(redisClient_->withOptions({.timeout = std::chrono::seconds(30)})),
+          redis_(redisClient_->with_options({.timeout_ = std::chrono::seconds(30)})),
           engine_(protocols()),
           tcp_(
               uuidGenerator_,
-              loop_.ioContext(),
+              loop_.io_context(),
               scheduler_,
               workerIndex,
               workerCount,
@@ -89,7 +89,7 @@ class CollectorWorker final {
                   releaseTargetLease(std::move(linkId), std::move(targetId), std::move(connectionId));
               }
           ),
-          gb28181_(uuidGenerator_, std::move(gb28181), loop_, redisClient_->withOptions({}), workerIndex, workerCount),
+          gb28181_(uuidGenerator_, std::move(gb28181), loop_, redisClient_->with_options({}), workerIndex, workerCount),
           workerIndex_(workerIndex), workerCount_(workerCount),
           consumer_("collector-" + std::to_string(workerIndex)) {}
 
@@ -105,7 +105,7 @@ class CollectorWorker final {
         }
     }
 
-    [[nodiscard]] ruvia::Task<void> shutdown() {
+    [[nodiscard]] ruvia::task<void> shutdown() {
         if (shutdownStarted_) {
             co_return;
         }
@@ -126,7 +126,7 @@ class CollectorWorker final {
             co_await gb28181_.shutdown();
         } catch (...) {
         }
-        scope_.requestStop();
+        scope_.request_stop();
         try {
             co_await scope_.join();
         } catch (...) {
@@ -406,11 +406,11 @@ class CollectorWorker final {
         return service::runtime::instanceId() + ":worker:" + std::to_string(workerIndex_) + ":" + std::string(connectionId);
     }
 
-    ruvia::Task<void> claimTarget(std::string linkId, std::string targetId, std::string connectionId, std::function<void(bool)> completed) {
+    ruvia::task<void> claimTarget(std::string linkId, std::string targetId, std::string connectionId, std::function<void(bool)> completed) {
         bool claimed = false;
         const auto began = std::chrono::steady_clock::now();
         try {
-            claimed = co_await ownership::retainTarget(redis_.withOptions({ .timeout = std::chrono::seconds(3) }), linkId, targetId, targetLeaseOwner(connectionId));
+            claimed = co_await ownership::retainTarget(redis_.with_options({ .timeout_ = std::chrono::seconds(3) }), linkId, targetId, targetLeaseOwner(connectionId));
             if (claimed && !stopping_ && std::chrono::steady_clock::now() - began < kTargetLeaseValidity &&
                 !targetLeases_.contains({ linkId, targetId })) {
                 targetLeases_.insert_or_assign({ linkId, targetId }, connectionId);
@@ -420,9 +420,9 @@ class CollectorWorker final {
                 co_await ownership::releaseTarget(redis_, linkId, targetId, targetLeaseOwner(connectionId));
             }
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("target_claim_failed: ") + error.what();
+            LOG_WARN << "[Collector] target_claim_failed: " << error.what();
         } catch (...) {
-            lastCoordinatorError_ = "target_claim_failed: unknown error";
+            LOG_WARN << "[Collector] target_claim_failed: unknown error";
         }
         if (stopping_ && claimed) {
             const auto current = targetLeases_.find({ linkId, targetId });
@@ -453,25 +453,25 @@ class CollectorWorker final {
         scope_.spawn(releaseTargetLeaseAsync(std::move(linkId), std::move(targetId), std::move(connectionId)));
     }
 
-    ruvia::Task<void> releaseTargetLeaseAsync(std::string linkId, std::string targetId, std::string connectionId) {
+    ruvia::task<void> releaseTargetLeaseAsync(std::string linkId, std::string targetId, std::string connectionId) {
         try {
             co_await ownership::releaseTarget(redis_, linkId, targetId, targetLeaseOwner(connectionId));
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("target_release_failed: ") + error.what();
+            LOG_WARN << "[Collector] target_release_failed: " << error.what();
         } catch (...) {
-            lastCoordinatorError_ = "target_release_failed: unknown error";
+            LOG_WARN << "[Collector] target_release_failed: unknown error";
         }
     }
 
-    ruvia::Task<void> renewTargetLease(ClientTargetKey target, std::string connectionId) {
+    ruvia::task<void> renewTargetLease(ClientTargetKey target, std::string connectionId) {
         bool retained = false;
         const auto began = std::chrono::steady_clock::now();
         try {
-            retained = co_await ownership::renewTarget(redis_.withOptions({ .timeout = std::chrono::seconds(3) }), target.first, target.second, targetLeaseOwner(connectionId));
+            retained = co_await ownership::renewTarget(redis_.with_options({ .timeout_ = std::chrono::seconds(3) }), target.first, target.second, targetLeaseOwner(connectionId));
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("target_renew_failed: ") + error.what();
+            LOG_WARN << "[Collector] target_renew_failed: " << error.what();
         } catch (...) {
-            lastCoordinatorError_ = "target_renew_failed: unknown error";
+            LOG_WARN << "[Collector] target_renew_failed: unknown error";
         }
         if (stopping_) {
             co_return;
@@ -521,7 +521,7 @@ class CollectorWorker final {
         targetLeaseDeadlines_.insert_or_assign(connectionId, TargetLeaseDeadline{ token, began + kTargetLeaseValidity });
     }
 
-    ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
+    ruvia::task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
         try {
             co_await gb28181_.initialize();
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
@@ -566,7 +566,7 @@ class CollectorWorker final {
     }
 
     void recoverClaimedMessages(std::string error) {
-        lastCoordinatorError_ = std::move(error);
+        LOG_WARN << "[Collector] " << error;
         // A successful XREADGROUP can assign messages to this consumer before a broken
         // connection prevents the reply from reaching us. Every local stream must therefore
         // drain its own PEL after either a blocking or non-blocking read fails.
@@ -580,7 +580,7 @@ class CollectorWorker final {
         scheduleTick(kFailureDelay);
     }
 
-    ruvia::Task<void> tick() {
+    ruvia::task<void> tick() {
         try {
             bool handled = co_await consumeConfig();
             handled = co_await consumeControl() || handled;
@@ -610,7 +610,7 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<bool> consumeConfig() {
+    ruvia::task<bool> consumeConfig() {
         const auto stream = configStream();
         const auto group = configGroup();
         const auto messages = co_await readAvailable(stream, group, configRecovering_, 16);
@@ -640,7 +640,7 @@ class CollectorWorker final {
             if (version != loadedConfigVersion_ || config::signature(snapshot) != config::signature(loadedSnapshot_)) {
                 const auto plan = engine_.planReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
-                engine_.reload(snapshot, plan.affectedLinks);
+                engine_.reloadRetainingSessions(snapshot);
                 auto sessionRefreshes =
                     engine_.refreshClientSessions(plan.refreshClientSessions);
                 std::erase_if(sessionRefreshes, [this](const auto& refresh) {
@@ -682,7 +682,7 @@ class CollectorWorker final {
         co_return changed || !messages.empty();
     }
 
-    ruvia::Task<bool> consumeCommand(bool high) {
+    ruvia::task<bool> consumeCommand(bool high) {
         const auto stream = commandStream(high);
         auto& recovering = high ? highRecovering_ : normalRecovering_;
         const auto messages =
@@ -814,7 +814,7 @@ class CollectorWorker final {
         co_return true;
     }
 
-    ruvia::Task<bool> consumeControl() {
+    ruvia::task<bool> consumeControl() {
         const auto stream = controlStream();
         const auto messages =
             co_await readAvailable(stream, collectorGroup(), controlRecovering_, 32);
@@ -828,7 +828,7 @@ class CollectorWorker final {
         co_return !messages.empty();
     }
 
-    ruvia::Task<void> captureDebug(std::string_view linkId, std::string_view connectionId,
+    ruvia::task<void> captureDebug(std::string_view linkId, std::string_view connectionId,
         std::string_view address, std::string_view direction, std::span<const std::uint8_t> bytes,
         std::int64_t timestamp, std::string_view knownDevice = {}, bool deviceOnly = false,
         std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {},
@@ -855,7 +855,7 @@ class CollectorWorker final {
                 selected && selected->debugEnabled, eventId, status, reason, parsedJson, replyToPacketId,
                 false, 0, acquisitionId);
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();
+            LOG_WARN << "[Collector] debug_packet_failed: " << error.what();
         }
     }
 
@@ -934,7 +934,7 @@ class CollectorWorker final {
         scope_.spawn(drainIngress());
     }
 
-    ruvia::Task<void> drainIngress() {
+    ruvia::task<void> drainIngress() {
         while (!stopping_ && !ingressWork_.empty()) {
             auto work = std::move(ingressWork_.front());
             ingressWork_.pop_front();
@@ -944,7 +944,7 @@ class CollectorWorker final {
                     : message::connectionEventFields(*work.connectionEvent);
                 (void)co_await message::redis::add(redis_, ingressStream(), fields, kRawIngressCapacity);
             } catch (const std::exception& error) {
-                lastCoordinatorError_ = std::string("raw_ingress_publish_failed: ") + error.what();
+                LOG_WARN << "[Collector] raw_ingress_publish_failed: " << error.what();
                 if (work.packet) {
                     const auto deviceCodes = deviceCodesForConnection(work.packet->connectionId);
                     service::packet_log::write(
@@ -961,7 +961,7 @@ class CollectorWorker final {
         ingressDraining_ = false;
     }
 
-    ruvia::Task<bool> consumeIngress() {
+    ruvia::task<bool> consumeIngress() {
         if (ingressConsuming_) {
             co_return false;
         }
@@ -1158,7 +1158,7 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<bool> consumeEgress() {
+    ruvia::task<bool> consumeEgress() {
         if (egressWritePending_) {
             co_return false;
         }
@@ -1288,7 +1288,7 @@ class CollectorWorker final {
         co_return true;
     }
 
-    ruvia::Task<void> finishDebugResponse(std::string_view connectionId, bool success,
+    ruvia::task<void> finishDebugResponse(std::string_view connectionId, bool success,
         std::string_view reason = {}, std::string_view commandId = {}) {
         const auto found = debugPendingSends_.find(std::string(connectionId));
         if (found == debugPendingSends_.end() ||
@@ -1300,7 +1300,7 @@ class CollectorWorker final {
             context.messageId, success ? "success" : "failed", reason, {}, context.replyToPacketId, context.acquisitionId);
     }
 
-    ruvia::Task<void> completeEgress(std::string entryId, bool success, EgressLogContext egressLog) {
+    ruvia::task<void> completeEgress(std::string entryId, bool success, EgressLogContext egressLog) {
         const auto pending = debugPendingSends_.find(egressLog.connectionId);
         // A response may arrive before the send callback; never overwrite its final status.
         if (!egressLog.awaitResponse || (pending != debugPendingSends_.end() && pending->second.messageId == egressLog.messageId)) {
@@ -1330,7 +1330,7 @@ class CollectorWorker final {
                 co_await message::redis::acknowledgeAndDelete(redis_, stream, group, entryId);
             }
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("socket_egress_complete_failed: ") + error.what();
+            LOG_WARN << "[Collector] socket_egress_complete_failed: " << error.what();
             egressRecovering_ = true;
         }
         egressWritePending_ = false;
@@ -1343,7 +1343,7 @@ class CollectorWorker final {
         scope_.spawn(applyActions(std::move(connectionId), std::move(actions), disconnected, std::move(reason)));
     }
 
-    ruvia::Task<void> applyActions(std::string connectionId, std::vector<ProtocolAction> actions, bool disconnected = false, std::string reason = {}, std::string replyToPacketId = {}, std::string replyAcquisitionId = {}) {
+    ruvia::task<void> applyActions(std::string connectionId, std::vector<ProtocolAction> actions, bool disconnected = false, std::string reason = {}, std::string replyToPacketId = {}, std::string replyAcquisitionId = {}) {
         // A closed socket must stop being routable before potentially slow command-result
         // publication. Otherwise one Redis failure can leave an offline device advertised as
         // online indefinitely.
@@ -1500,10 +1500,10 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<void> restoreDerived(const ProtocolAction& action) {
+    ruvia::task<void> restoreDerived(const ProtocolAction& action) {
         const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == action.deviceId; });
         if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return;
-        const auto configuration = ruvia::JsonValue::parse(device->calculationConfig);
+        const auto configuration = ruvia::json_value::parse(device->calculationConfig);
         if (!configuration || service::common::orderDerivedPoints(*configuration).empty()) co_return;
         const std::string config = device->calculationConfig;
         message::ParsedDeviceMessage parsed;
@@ -1517,7 +1517,7 @@ class CollectorWorker final {
         co_await expireDerived(std::move(parsed), action.connectionId, config);
     }
 
-    ruvia::Task<bool> calculateDerived(message::ParsedDeviceMessage& parsed, const std::string& connectionId) {
+    ruvia::task<bool> calculateDerived(message::ParsedDeviceMessage& parsed, const std::string& connectionId) {
         const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
         if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return false;
         const std::string config = device->calculationConfig;
@@ -1546,7 +1546,7 @@ class CollectorWorker final {
         derivedDeadlines_[id] = {connection, token};
     }
 
-    ruvia::Task<void> expireDerived(message::ParsedDeviceMessage parsed, std::string connectionId, std::string config) {
+    ruvia::task<void> expireDerived(message::ParsedDeviceMessage parsed, std::string connectionId, std::string config) {
         if (stopping_) co_return;
         const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
         if (device == loadedSnapshot_.devices.end() || device->calculationConfig != config) co_return;
@@ -1561,7 +1561,7 @@ class CollectorWorker final {
             const auto result = co_await service::telemetry::derived::DerivedService::append(redis_, config, parsed, true);
             scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), result.nextDeadline);
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = std::string("derived_expiry_failed: ") + error.what();
+            LOG_WARN << "[Collector] derived_expiry_failed: " << error.what();
             scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), message::utcNowMilliseconds() + 1000);
         }
     }
@@ -1611,7 +1611,7 @@ class CollectorWorker final {
         protocolDeadlines_.erase(current);
     }
 
-    ruvia::Task<void> waitForWork() {
+    ruvia::task<void> waitForWork() {
         try {
             const std::vector<std::string> streams{
                 configStream(),
@@ -1633,7 +1633,7 @@ class CollectorWorker final {
                 streams,
                 collectorGroup(),
                 consumer_,
-                scope_.stopToken(),
+                scope_.get_stop_token(),
                 until,
                 1
             );
@@ -1655,7 +1655,7 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<std::vector<message::StreamMessage>>
+    ruvia::task<std::vector<message::StreamMessage>>
     readAvailable(std::string_view stream, std::string_view group, bool& recovering, std::size_t count) {
         if (auto ready = readyMessages_.find(stream); ready != readyMessages_.end()) {
             auto messages = std::move(ready->second);
@@ -1694,7 +1694,7 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<void> applySessionRefresh(ProtocolSessionRefresh refresh) {
+    ruvia::task<void> applySessionRefresh(ProtocolSessionRefresh refresh) {
         std::set<std::string, std::less<>> nextDeviceCodes;
         for (const auto& action : refresh.startedActions) {
             if (action.kind == ProtocolActionKind::BindDevice) {
@@ -1717,7 +1717,7 @@ class CollectorWorker final {
         co_await applyActions(refresh.connectionId, std::move(refresh.startedActions));
     }
 
-    ruvia::Task<void> cleanupConnection(std::string_view connectionId, std::string_view reason) {
+    ruvia::task<void> cleanupConnection(std::string_view connectionId, std::string_view reason) {
         // Retained input samples still expire after transport closes. Their
         // bounded deadlines stay with this Worker and release themselves when
         // no valid inputs/window samples remain; no socket or payload is kept.
@@ -1730,10 +1730,9 @@ class CollectorWorker final {
             routes_.erase(bound);
         }
         connectionEpochs_.erase(std::string(connectionId));
-        (void)reason;
     }
 
-    ruvia::Task<void> failPendingForConnection(std::string_view connectionId, std::string_view reason) {
+    ruvia::task<void> failPendingForConnection(std::string_view connectionId, std::string_view reason) {
         std::vector<std::string> commandIds;
         for (const auto& [commandId, pending] : pendingCommands_) {
             if (pending.task.connectionId == connectionId) {
@@ -1747,7 +1746,7 @@ class CollectorWorker final {
         }
     }
 
-    ruvia::Task<void> bindRouteIfConnected(const ProtocolAction& action) {
+    ruvia::task<void> bindRouteIfConnected(const ProtocolAction& action) {
         const auto connected = connectionEpochs_.find(action.connectionId);
         if (connected == connectionEpochs_.end()) {
             co_return;
@@ -1764,7 +1763,7 @@ class CollectorWorker final {
         routes_[action.connectionId].insert(action.deviceId);
     }
 
-    ruvia::Task<void> bindRoute(const ProtocolAction& action, std::uint64_t sessionEpoch) {
+    ruvia::task<void> bindRoute(const ProtocolAction& action, std::uint64_t sessionEpoch) {
         const auto connection = networkConnections_.find(action.connectionId);
         if (connection == networkConnections_.end()) {
             co_return;
@@ -1794,7 +1793,7 @@ class CollectorWorker final {
         );
     }
 
-    ruvia::Task<void> finishCommand(std::string_view commandId, bool success, std::string_view reason) {
+    ruvia::task<void> finishCommand(std::string_view commandId, bool success, std::string_view reason) {
         if (commandId.empty()) {
             co_return;
         }
@@ -1870,7 +1869,7 @@ class CollectorWorker final {
         pendingCommands_.erase(std::string(commandId));
     }
 
-    ruvia::Task<bool> retryCommand(std::string_view stream, std::string_view entryId, message::ProtocolTask task, std::string_view reason) {
+    ruvia::task<bool> retryCommand(std::string_view stream, std::string_view entryId, message::ProtocolTask task, std::string_view reason) {
         if (service::command::retryableFailure(reason) && task.attempt < task.maxAttempts) {
             ++task.attempt;
             const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
@@ -1897,7 +1896,7 @@ class CollectorWorker final {
         co_return false;
     }
 
-    ruvia::Task<void> failUndeliverable(std::string_view stream, std::string_view entryId, std::string_view commandId, const message::ProtocolTask& task, std::string_view reason) {
+    ruvia::task<void> failUndeliverable(std::string_view stream, std::string_view entryId, std::string_view commandId, const message::ProtocolTask& task, std::string_view reason) {
         if (co_await retryCommand(stream, entryId, task, reason)) {
             co_return;
         }
@@ -1937,7 +1936,7 @@ class CollectorWorker final {
         return fields;
     }
 
-    ruvia::Task<void> publishLinkEvent(LinkState state) {
+    ruvia::task<void> publishLinkEvent(LinkState state) {
         (void)co_await message::redis::publish(
             redis_,
             linkEventStream(),
@@ -1946,7 +1945,7 @@ class CollectorWorker final {
         );
     }
 
-    ruvia::Task<bool> consumeLinkEvent() {
+    ruvia::task<bool> consumeLinkEvent() {
         const auto stream = linkEventStream();
         const auto group = linkEventGroup();
         const auto messages =
@@ -1993,7 +1992,7 @@ class CollectorWorker final {
                  { "completed_at_ms", completedAt } };
     }
 
-    ruvia::Task<void> deadLetterAndAcknowledge(
+    ruvia::task<void> deadLetterAndAcknowledge(
         const message::StreamMessage& streamMessage,
         std::string_view reason,
         std::string_view detail,
@@ -2014,7 +2013,7 @@ class CollectorWorker final {
         );
     }
 
-    ruvia::Task<void> finalizeCommand(std::string_view inputStream, std::string_view inputEntryId, std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
+    ruvia::task<void> finalizeCommand(std::string_view inputStream, std::string_view inputEntryId, std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
         auto resultFields = commandResultFields(commandId, task, success, reason);
         const auto resultStream = commandResultStream();
         if (success) {
@@ -2073,13 +2072,13 @@ class CollectorWorker final {
     static constexpr std::size_t kDeadLetterCapacity = 1000;
 
     service::common::UuidV7Generator uuidGenerator_;
-    ruvia::EventLoop loop_;
-    ruvia::WorkerHandle workerHandle_;
+    ruvia::event_loop loop_;
+    ruvia::worker_handle workerHandle_;
     std::pmr::unsynchronized_pool_resource resource_;
-    ruvia::TaskScope scope_;
+    ruvia::task_scope scope_;
     DeadlineScheduler scheduler_;
-    std::unique_ptr<ruvia::RedisClient> redisClient_;
-    ruvia::RedisHandle redis_;
+    std::unique_ptr<ruvia::redis_client> redisClient_;
+    ruvia::redis_handle redis_;
     ProtocolEngine engine_;
     TcpTransport tcp_;
     service::gb28181::CollectorRuntime gb28181_;
@@ -2100,7 +2099,6 @@ class CollectorWorker final {
     std::map<std::string, std::string, std::less<>> broadcastParents_;
     std::map<std::string, std::vector<message::StreamMessage>, std::less<>> readyMessages_;
     DeadlineScheduler::Token tickToken_ = 0;
-    std::string lastCoordinatorError_;
     std::string loadedConfigVersion_;
     std::string desiredConfigVersion_;
     std::chrono::steady_clock::time_point nextOwnershipRefresh_{};
@@ -2125,8 +2123,7 @@ class CollectorWorker final {
 } // namespace service::collector
 
 #include <atomic>
-#include <thread>
-#include <ruvia/web/redis/Redis.h>
+#include <ruvia/web/redis/redis.h>
 
 namespace service::collector {
 
@@ -2138,21 +2135,21 @@ class CollectorWorkerPool final {
 
     ~CollectorWorkerPool() { stop(); }
 
-    void start(ruvia::RedisConfig redisConfig, std::size_t workerCount, AppConfig gb28181) {
+    void start(ruvia::redis_config redisConfig, std::size_t workerCount, AppConfig gb28181) {
         if (running_.exchange(true)) {
             return;
         }
         workerCount = std::max<std::size_t>(1, workerCount);
-        redisConfig.poolSizePerWorker = 1;
-        redisConfig.blockingPoolSizePerWorker = 2;
-        redisConfig.commandTimeout = std::nullopt;
+        redisConfig.pool_size_per_worker_ = 1;
+        redisConfig.blocking_pool_size_per_worker_ = 2;
+        redisConfig.command_timeout_ = std::nullopt;
         try {
-            pool_ = std::make_unique<ruvia::EventLoopPool>(
-                ruvia::EventLoopPoolOptions{ .loopCount = workerCount, .queue_capacity = 8192 }
+            pool_ = std::make_unique<ruvia::event_loop_pool>(
+                ruvia::event_loop_pool_options{ .loop_count_ = workerCount, .queue_capacity_ = 8192 }
             );
             workers_.resize(workerCount);
             pool_->start();
-            std::vector<ruvia::RootTask<std::unique_ptr<CollectorWorker>>> initializing;
+            std::vector<ruvia::root_task<std::unique_ptr<CollectorWorker>>> initializing;
             initializing.reserve(workerCount);
             for (std::size_t index = 0; index < workerCount; ++index) {
                 initializing.push_back(pool_->loop(index).start(createWorker(pool_->loop(index), redisConfig, index, workerCount, gb28181)));
@@ -2191,7 +2188,7 @@ class CollectorWorkerPool final {
             workers_.clear();
             return;
         }
-        std::vector<ruvia::RootTask<void>> stopped;
+        std::vector<ruvia::root_task<void>> stopped;
         stopped.reserve(workers_.size());
         for (std::size_t index = 0; index < workers_.size(); ++index) {
             if (workers_[index]) stopped.push_back(pool_->loop(index).start(shutdownWorker(std::move(workers_[index]))));
@@ -2211,31 +2208,26 @@ class CollectorWorkerPool final {
         pool_.reset();
     }
 
-    [[nodiscard]] static std::size_t defaultWorkerCount() noexcept {
-        const auto cpu = std::max(2U, std::thread::hardware_concurrency());
-        return std::max<std::size_t>(1, cpu / 2U);
-    }
-
   private:
-    static ruvia::Task<std::unique_ptr<CollectorWorker>> createWorker(ruvia::EventLoop loop, ruvia::RedisConfig config, std::size_t index, std::size_t count, AppConfig gb28181) {
-        auto redis = std::make_unique<ruvia::RedisClient>(loop, config);
+    static ruvia::task<std::unique_ptr<CollectorWorker>> createWorker(ruvia::event_loop loop, ruvia::redis_config config, std::size_t index, std::size_t count, AppConfig gb28181) {
+        auto redis = std::make_unique<ruvia::redis_client>(loop, config);
         co_await redis->connect();
         co_return std::make_unique<CollectorWorker>(std::move(loop), std::move(redis), index, count, std::move(gb28181));
     }
 
-    static ruvia::Task<void> shutdownWorker(std::unique_ptr<CollectorWorker> worker) {
+    static ruvia::task<void> shutdownWorker(std::unique_ptr<CollectorWorker> worker) {
         std::exception_ptr failure;
         try {
             co_await worker->shutdown();
         } catch (...) {
             failure = std::current_exception();
         }
-        // Redis handle 和客户端均在所属 EventLoop 上释放，先于线程停止。
+        // Redis handle 和客户端均在所属 event_loop 上释放，先于线程停止。
         worker.reset();
         if (failure) std::rethrow_exception(failure);
     }
 
-    std::unique_ptr<ruvia::EventLoopPool> pool_;
+    std::unique_ptr<ruvia::event_loop_pool> pool_;
     std::vector<std::unique_ptr<CollectorWorker>> workers_;
     std::atomic_bool running_{ false };
 };

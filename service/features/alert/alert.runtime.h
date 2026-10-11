@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Task.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/task.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
@@ -31,7 +31,7 @@ public:
   AlertBootstrap &operator=(const AlertBootstrap &) = delete;
   ~AlertBootstrap() { stop(); }
 
-  void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex,
+  void start(ruvia::web_worker_handle worker, std::size_t workerIndex,
              std::size_t serviceWorkerCount) {
     if (running_.exchange(true))
       return;
@@ -49,7 +49,7 @@ public:
     auto readiness = ready->get_future();
     stopped_ = stopped->get_future().share();
     const auto posted =
-        worker_.post([this, ready, stopped](ruvia::WebWorkerContext &context) {
+        worker_.post([this, ready, stopped](ruvia::web_worker_context &context) {
           return run(context, ready, stopped);
         });
     if (!posted.accepted()) {
@@ -77,7 +77,7 @@ public:
   }
 
 private:
-  ruvia::Task<void> run(ruvia::WebWorkerContext &context,
+  ruvia::task<void> run(ruvia::web_worker_context &context,
                         std::shared_ptr<std::promise<void>> ready,
                         std::shared_ptr<std::promise<void>> stopped) {
     try {
@@ -96,7 +96,7 @@ private:
     }
   }
 
-  ruvia::WebWorkerHandle worker_;
+  ruvia::web_worker_handle worker_;
   std::shared_future<void> stopped_;
   std::size_t workerIndex_ = 0;
   std::size_t serviceWorkerCount_ = 0;

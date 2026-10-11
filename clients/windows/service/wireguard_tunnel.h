@@ -9,7 +9,6 @@ public:
     // public key first, private key second
     virtual std::pair<std::string, std::string> generateKeys() = 0;
     virtual bool running() = 0;
-    virtual Json diagnostics() { return {{"adapterUp",running()},{"linkState","Unknown"}}; }
     virtual void stop() = 0;
     virtual void apply(const Json& config, const std::string& privateKey) = 0;
 };

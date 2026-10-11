@@ -40,20 +40,6 @@ void StreamRegistry::updateViewerCount(const std::string& stream, int viewerCoun
     }
 }
 
-std::optional<StreamStatus> StreamRegistry::findStream(const std::string& stream) const {
-    std::optional<StreamStatus> match;
-    for (const auto& [_, status] : streams_) {
-        if (StreamStatus::identity(status.app, status.stream, status.schema) == stream)
-            return status;
-        if (status.stream != stream)
-            continue;
-        if (match)
-            return std::nullopt;
-        match = status;
-    }
-    return match;
-}
-
 std::vector<StreamStatus> StreamRegistry::listStreams() const {
     std::vector<StreamStatus> result;
     result.reserve(streams_.size());

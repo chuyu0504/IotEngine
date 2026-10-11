@@ -443,7 +443,7 @@ async function callPrepareRpc(stream: string) {
     }
 }
 
-async function openLiveStream(path: string) {
+async function openLiveStream(path: string, eventName: string) {
     const controller = new AbortController();
     const response = await fetch(`${apiBase}${path}`, {
         headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
@@ -472,7 +472,7 @@ async function openLiveStream(path: string) {
             for (;;) {
                 if (streamError) throw streamError;
                 const index = events.findIndex((event) => {
-                    if (event.event !== 'snapshot') return false;
+                    if (event.event !== eventName) return false;
                     try {
                         return predicate(JSON.parse(event.data));
                     } catch {
@@ -859,8 +859,8 @@ try {
     }
     console.log('PASS online DEL of every worker-local RPC stream recovers its consumer');
 
-    liveStreams.push(await openLiveStream('/v1/device/realtime'));
-    liveStreams.push(await openLiveStream('/v1/device/realtime'));
+    liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
+    liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
     await Promise.all(liveStreams.map((stream) => stream.next()));
     const liveGroups = await liveGroupNames();
     const apiGroups = liveGroups.filter((name) => name.startsWith('api-live:'));

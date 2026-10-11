@@ -80,19 +80,19 @@ std::string timeoutSeconds(std::optional<std::chrono::milliseconds> timeout) {
     return std::to_string(seconds > 1 ? seconds : 1);
 }
 
-PGconn *connect(const ruvia::DbConfig &config, std::stop_token stopToken) {
-    const std::string port = config.port ? std::to_string(*config.port) : "5432";
-    const std::string connectTimeout = timeoutSeconds(config.connectTimeout);
+PGconn *connect(const ruvia::db_config &config, std::stop_token stopToken) {
+    const std::string port = config.port_ ? std::to_string(*config.port_) : "5432";
+    const std::string connectTimeout = timeoutSeconds(config.connect_timeout_);
     const char *keywords[] = {"host", "port", "user", "password", "dbname", "application_name",
                               "connect_timeout", "keepalives_idle", "keepalives_interval",
                               "keepalives_count", nullptr};
-    const char *values[] = {config.host.c_str(), port.c_str(), config.username.c_str(),
-                            config.password.c_str(), config.database.c_str(), "iot-engine-outbox-listener",
+    const char *values[] = {config.host_.c_str(), port.c_str(), config.username_.c_str(),
+                            config.password_.c_str(), config.database_.c_str(), "iot-engine-outbox-listener",
                             connectTimeout.empty() ? nullptr : connectTimeout.c_str(), "60", "10", "3", nullptr};
     PGconn *connection = PQconnectStartParams(keywords, values, 0);
     if (!connection)
         return nullptr;
-    const auto timeout = config.connectTimeout.value_or(std::chrono::seconds(5));
+    const auto timeout = config.connect_timeout_.value_or(std::chrono::seconds(5));
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {
         const PostgresPollingStatusType status = PQconnectPoll(connection);
@@ -177,7 +177,7 @@ void waitBeforeRetry(std::chrono::milliseconds delay, std::stop_token stopToken)
 
 } // namespace
 
-PostgresNotifier::PostgresNotifier(ruvia::DbConfig config, std::function<void()> wake)
+PostgresNotifier::PostgresNotifier(ruvia::db_config config, std::function<void()> wake)
     : config_(std::move(config)), wake_(std::move(wake)) {}
 
 PostgresNotifier::~PostgresNotifier() { stop(); }

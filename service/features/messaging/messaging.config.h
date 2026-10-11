@@ -9,7 +9,6 @@ struct Policy final {
     std::int64_t oldestAgeAlertMs{ 300000 };
     std::int64_t deadLetterAlertThreshold{ 1 };
     std::int64_t receiptRetentionDays{ 30 };
-    std::int64_t replayCounterRetentionDays{ 30 };
 };
 
 } // namespace service::message::outbox

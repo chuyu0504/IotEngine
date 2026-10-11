@@ -6,9 +6,9 @@
 #include <string_view>
 #include <utility>
 
-#include <ruvia/web/Context.h>
-#include <ruvia/web/db/DbHandle.h>
-#include <ruvia/web/redis/RedisHandle.h>
+#include <ruvia/web/context.h>
+#include <ruvia/web/db/db_handle.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 namespace service::middleware {
 
@@ -17,43 +17,43 @@ namespace service::middleware {
 // snapshots release their model storage after each event.
 class RequestContext {
   public:
-    RequestContext(ruvia::Context& connection, std::string actorId)
-        : RequestContext(connection, std::move(actorId), connection.stopToken()) {}
+    RequestContext(ruvia::context& connection, std::string actorId)
+        : RequestContext(connection, std::move(actorId), connection.get_stop_token()) {}
 
-    RequestContext(ruvia::Context& connection, std::string actorId, ruvia::StopToken cancellation)
+    RequestContext(ruvia::context& connection, std::string actorId, ruvia::stop_token cancellation)
         : userId(std::move(actorId)), stop(std::move(cancellation)), connection_(connection), memory_(connection.pool()) {}
 
-    auto db() const { return connection_.db().withOptions({ .stopToken = stop }); }
+    auto db() const { return connection_.db().with_options({ .stop_token_ = stop }); }
 
-    auto redis() const { return connection_.redis().withOptions({ .stopToken = stop }); }
+    auto redis() const { return connection_.redis().with_options({ .stop_token_ = stop }); }
 
     auto pool() const { return connection_.pool(); }
 
     auto arena() { return &memory_; }
 
-    auto httpClient(std::string_view alias) const { return connection_.httpClient(alias).withOptions({ .stopToken = stop }); }
+    auto get_http_client(std::string_view alias) const { return connection_.get_http_client(alias).with_options({ .stop_token_ = stop }); }
 
     auto worker() const { return connection_.worker(); }
 
     template <typename State>
-    State& workerState() const { return connection_.workerState<State>(); }
+    State& worker_state() const { return connection_.worker_state<State>(); }
 
-    auto stopToken() const { return stop; }
+    auto get_stop_token() const { return stop; }
 
     const auto& env() const { return connection_.env(); }
 
     std::string userId;
-    ruvia::StopToken stop;
+    ruvia::stop_token stop;
 
   private:
-    ruvia::Context& connection_;
+    ruvia::context& connection_;
     std::pmr::monotonic_buffer_resource memory_;
 };
 
 // Bound by authentication middleware for this request only. The query runs
 // on the connection's Worker and owns no cross-request mutable state.
 struct AuthenticatedUserSnapshot {
-    std::function<ruvia::Task<std::string>(RequestContext&)> query;
+    std::function<ruvia::task<std::string>(RequestContext&)> query;
 };
 
 } // namespace service::middleware

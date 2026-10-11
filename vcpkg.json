@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "iot-engine",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "asio",
+    "brotli",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avfilter",
+        "avformat",
+        "gpl",
+        "openssl",
+        "srt",
+        "swresample",
+        "swscale",
+        "version3",
+        "x264"
+      ]
+    },
+    "hiredis",
+    "libpq",
+    "libsrtp",
+    {
+      "name": "ngtcp2",
+      "default-features": false
+    },
+    "openssl",
+    "protobuf",
+    "pugixml",
+    "spdlog",
+    "usrsctp",
+    "x264",
+    "zlib",
+    "zstd"
+  ]
+}

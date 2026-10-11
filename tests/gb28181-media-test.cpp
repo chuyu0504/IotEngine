@@ -12,7 +12,7 @@
 #include <type_traits>
 #include <vector>
 
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/uuid.h"
 #include "service/middleware/log.h"
@@ -36,7 +36,7 @@ bool waitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
     return predicate();
 }
 
-ruvia::Task<OpenRtpServerResult> openOwnedRtp(std::size_t owner) {
+ruvia::task<OpenRtpServerResult> openOwnedRtp(std::size_t owner) {
     service::common::UuidV7Generator uuidGenerator;
     ZlmSdk::OwnerScope scope(owner);
     auto result = sdkSupervisor().sdk().openRtpServer("callback-device", "channel", "2000000001", uuidGenerator.next());
@@ -44,7 +44,7 @@ ruvia::Task<OpenRtpServerResult> openOwnedRtp(std::size_t owner) {
     co_return std::move(*result);
 }
 
-ruvia::Task<void> closeOwnedRtp(std::size_t owner, std::string stream) {
+ruvia::task<void> closeOwnedRtp(std::size_t owner, std::string stream) {
     ZlmSdk::OwnerScope scope(owner);
     (void)sdkSupervisor().sdk().closeRtpServer(stream);
     sdkSupervisor().unregisterCollector(owner);
@@ -54,7 +54,7 @@ ruvia::Task<void> closeOwnedRtp(std::size_t owner, std::string stream) {
 void verifySdkCallbackOwners(const MediaConfig& config) {
     std::array<std::atomic_int, 2> received{};
     std::atomic_int crossed{ 0 };
-    ruvia::EventLoopPool pool({ .loopCount = 2, .queue_capacity = 64 });
+    ruvia::event_loop_pool pool({ .loop_count_ = 2, .queue_capacity_ = 64 });
     sdkSupervisor().configure(config);
     sdkSupervisor().start();
     pool.start();
@@ -67,7 +67,7 @@ void verifySdkCallbackOwners(const MediaConfig& config) {
             opened[index] = loop.start(openOwnedRtp(index)).get();
             SdkSupervisor::CollectorCallbacks callbacks;
             callbacks.onStreamChanged = [&, index, loop, expected = opened[index].streamId](std::string, std::string stream, std::string, bool online, int) {
-                if (!loop.isCurrent() || stream != expected) {
+                if (!loop.is_current() || stream != expected) {
                     ++crossed;
                 }
                 if (online) {

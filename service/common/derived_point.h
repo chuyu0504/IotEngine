@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include <ruvia/web/Model.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/uuid.h"
 #include "service/utils/expression.h"
@@ -37,35 +37,35 @@ struct DerivedPoint {
 };
 
 RUVIA_MODEL(DerivedPointInputConfig,
-    RUVIA_OPTIONAL_FIELD(alias, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(pointId, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(alias, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(pointId, ruvia::string));
 
 RUVIA_MODEL(DerivedPointUnitRuleConfig,
-    RUVIA_OPTIONAL_FIELD(condition, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(condition, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::string));
 
 RUVIA_MODEL(DerivedPointConfig,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unitMode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unitRules, ruvia::Array<DerivedPointUnitRuleConfig>),
-    RUVIA_OPTIONAL_FIELD(sourceAlias, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(kind, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(expression, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(valueType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(inputs, ruvia::Array<DerivedPointInputConfig>),
-    RUVIA_OPTIONAL_FIELD(windowSeconds, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(visible, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unitMode, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unitRules, ruvia::array<DerivedPointUnitRuleConfig>),
+    RUVIA_OPTIONAL_FIELD(sourceAlias, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(kind, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(expression, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(valueType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(inputs, ruvia::array<DerivedPointInputConfig>),
+    RUVIA_OPTIONAL_FIELD(windowSeconds, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value));
 
 // Shared configuration contract; no runtime state or I/O.
-inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& config) {
-    const auto raw = config.get<ruvia::JsonValue>("derivedPoints");
+inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::json_value& config) {
+    const auto raw = config.get<ruvia::json_value>("derivedPoints");
     if (!raw) {
         return {};
     }
-    if (!raw->isArray()) {
+    if (!raw->is_array()) {
         throw std::invalid_argument("derivedPoints 必须是数组");
     }
     std::vector<DerivedPoint> points;
@@ -81,37 +81,37 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
         }
         return std::string(value->view());
     };
-    const auto integer = [](const std::optional<ruvia::Int64>& value, bool present, std::string_view key, std::int64_t fallback, std::int64_t minimum) {
+    const auto integer = [](const std::optional<ruvia::int64>& value, bool present, std::string_view key, std::int64_t fallback, std::int64_t minimum) {
         if (!present) {
             return fallback;
         }
-        if (!value || value->value < minimum || value->value > 86400) {
+        if (!value || value->value_ < minimum || value->value_ > 86400) {
             throw std::invalid_argument("派生点时间参数无效: " + std::string(key));
         }
-        return value->value;
+        return value->value_;
     };
     std::set<std::string> ids;
-    if (!raw->forEachElement([&](const ruvia::JsonValue& item) {
-            if (!item.isObject() || points.size() == 32) {
+    if (!raw->for_each_element([&](const ruvia::json_value& item) {
+            if (!item.is_object() || points.size() == 32) {
                 throw std::invalid_argument("派生点最多 32 个");
             }
             const auto parsed = item.get<DerivedPointConfig>();
             if (!parsed) {
                 throw std::invalid_argument("派生点字段无效");
             }
-            if (parsed->isPresent<"unit">() && !parsed->get<"unit">()) {
+            if (parsed->is_present<"unit">() && !parsed->get<"unit">()) {
                 throw std::invalid_argument("派生点字段无效: unit");
             }
-            if (parsed->isPresent<"unitMode">() && !parsed->get<"unitMode">()) {
+            if (parsed->is_present<"unitMode">() && !parsed->get<"unitMode">()) {
                 throw std::invalid_argument("派生点字段无效: unitMode");
             }
-            if (parsed->isPresent<"expression">() && !parsed->get<"expression">()) {
+            if (parsed->is_present<"expression">() && !parsed->get<"expression">()) {
                 throw std::invalid_argument("派生点字段无效: expression");
             }
-            if (parsed->isPresent<"sourceAlias">() && !parsed->get<"sourceAlias">()) {
+            if (parsed->is_present<"sourceAlias">() && !parsed->get<"sourceAlias">()) {
                 throw std::invalid_argument("派生点字段无效: sourceAlias");
             }
-            if (parsed->isPresent<"visible">() && !parsed->get<"visible">()) {
+            if (parsed->is_present<"visible">() && !parsed->get<"visible">()) {
                 throw std::invalid_argument("visible 必须是布尔值");
             }
             DerivedPoint point;
@@ -121,7 +121,7 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
             }
             point.name = text(parsed->get<"name">(), "name", 100);
             point.unit = text(parsed->get<"unit">(), "unit", 32, false);
-            if (parsed->isPresent<"unitMode">()) {
+            if (parsed->is_present<"unitMode">()) {
                 point.unitMode = text(parsed->get<"unitMode">(), "unitMode", 16);
             }
             if (point.unitMode != "fixed" && point.unitMode != "conditional") {
@@ -136,8 +136,8 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
                 throw std::invalid_argument("派生点计算类型无效");
             }
             point.expression = text(parsed->get<"expression">(), "expression", 512, point.kind == "expression");
-            point.windowSeconds = integer(parsed->get<"windowSeconds">(), parsed->isPresent<"windowSeconds">(), "windowSeconds", 0, 1);
-            point.maxAgeSeconds = integer(parsed->get<"maxAgeSeconds">(), parsed->isPresent<"maxAgeSeconds">(), "maxAgeSeconds", 300, 1);
+            point.windowSeconds = integer(parsed->get<"windowSeconds">(), parsed->is_present<"windowSeconds">(), "windowSeconds", 0, 1);
+            point.maxAgeSeconds = integer(parsed->get<"maxAgeSeconds">(), parsed->is_present<"maxAgeSeconds">(), "maxAgeSeconds", 300, 1);
             if (const auto& visible = parsed->get<"visible">()) {
                 point.visible = static_cast<bool>(*visible);
             }
@@ -174,7 +174,7 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
                     throw std::invalid_argument("窗口计算的输入点未绑定");
                 }
             }
-            if (parsed->isPresent<"unitRules">()) {
+            if (parsed->is_present<"unitRules">()) {
                 const auto& rules = parsed->get<"unitRules">();
                 if (!rules) {
                     throw std::invalid_argument("单位条件必须是数组");
@@ -205,27 +205,27 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
     return points;
 }
 
-inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::JsonValue& config) {
+inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& config) {
     auto points = decodeDerivedPoints(config);
     std::set<std::string> physical;
-    const auto collect = [&](const ruvia::JsonValue& array) {
-        (void)array.forEachElement([&](const ruvia::JsonValue& value) {
-            if (const auto id = value.get<ruvia::String>("id")) {
+    const auto collect = [&](const ruvia::json_value& array) {
+        (void)array.for_each_element([&](const ruvia::json_value& value) {
+            if (const auto id = value.get<ruvia::string>("id")) {
                 physical.emplace(id->view());
             }
             return true;
         });
     };
     for (auto name : { "registers", "areas", "points" }) {
-        if (auto array = config.get<ruvia::JsonValue>(name)) {
+        if (auto array = config.get<ruvia::json_value>(name)) {
             collect(*array);
         }
     }
-    if (const auto functions = config.get<ruvia::JsonValue>("funcs")) {
-        (void)functions->forEachElement([&](const ruvia::JsonValue& function) {
-            const auto direction = function.get<ruvia::String>("dir");
+    if (const auto functions = config.get<ruvia::json_value>("funcs")) {
+        (void)functions->for_each_element([&](const ruvia::json_value& function) {
+            const auto direction = function.get<ruvia::string>("dir");
             if (direction && direction->view() == "UP") {
-                if (auto elements = function.get<ruvia::JsonValue>("elements")) {
+                if (auto elements = function.get<ruvia::json_value>("elements")) {
                     collect(*elements);
                 }
             }
@@ -263,8 +263,8 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::JsonValue& conf
     for (std::size_t i = 0; i < points.size(); ++i) {
         visit(visit, i);
     }
-    if (const auto visibility = config.get<ruvia::JsonValue>("pointVisibility")) {
-        if (!visibility->isObject() || !visibility->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+    if (const auto visibility = config.get<ruvia::json_value>("pointVisibility")) {
+        if (!visibility->is_object() || !visibility->for_each_field([&](std::string_view id, const ruvia::json_value& raw) {
                 return isUuid(id) && (raw.view() == "true" || raw.view() == "false");
             })) {
             throw std::invalid_argument("点位显示设置必须是标识到布尔值的映射");

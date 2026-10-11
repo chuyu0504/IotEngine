@@ -25,8 +25,8 @@ void requireNoUnsafeParsing(std::string_view source) {
     require(source.find("COALESCE((d.protocol_params->>'online_timeout')::bigint") ==
                 std::string_view::npos,
             "telemetry latest directly casts online_timeout");
-    require(source.find("const auto parsedTimeout = deviceQuery.caseWhen") != std::string_view::npos &&
-                source.find("Op::kRegex, deviceQuery.value(\"^-?[0-9]{1,18}$\")") != std::string_view::npos,
+    require(source.find("const auto parsedTimeout = deviceQuery.case_when") != std::string_view::npos &&
+                source.find("Op::regex, deviceQuery.value(\"^-?[0-9]{1,18}$\")") != std::string_view::npos,
             "telemetry latest does not guard online_timeout casts");
     require(source.find("p.config->>'readInterval'") == std::string_view::npos,
             "telemetry latest still derives online state from readInterval");

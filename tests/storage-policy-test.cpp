@@ -6,7 +6,7 @@
 #include <utility>
 
 #include <asio.hpp>
-#include <ruvia/web/db/DbMigration.h>
+#include <ruvia/web/db/db_migration.h>
 
 #include "service/config/schema.h"
 #include "service/config/storage.h"
@@ -16,21 +16,21 @@ namespace storage = service::config;
 // The public migrator validates the complete plan before attempting a connection.
 // Reserve a non-listening port so that a valid plan deterministically reaches
 // connection failure, while invalid SQL or duplicate IDs still fail validation.
-void validateMigrations(std::span<const ruvia::DbMigration> migrations) {
+void validateMigrations(std::span<const ruvia::db_migration> migrations) {
     asio::io_context io;
     asio::ip::tcp::acceptor reserved(io);
     reserved.open(asio::ip::tcp::v4());
     reserved.bind({asio::ip::address_v4::loopback(), 0});
-    ruvia::DbConfig config;
-    config.driver = ruvia::DbDriver::kPostgreSql;
-    config.tls.mode = ruvia::client_tls_mode::disabled;
-    config.port = reserved.local_endpoint().port();
-    config.connectTimeout = std::chrono::milliseconds(10);
+    ruvia::db_config config;
+    config.driver_ = ruvia::db_driver::postgresql;
+    config.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    config.port_ = reserved.local_endpoint().port();
+    config.connect_timeout_ = std::chrono::milliseconds(10);
     try {
-        (void)ruvia::DbMigrator::migrate(config, migrations);
-    } catch (const ruvia::DbError& error) {
-        if (error.code() == ruvia::DbError::Code::kConnectFailed ||
-            error.code() == ruvia::DbError::Code::kTimeout) return;
+        (void)ruvia::db_migrator::migrate(config, migrations);
+    } catch (const ruvia::db_error& error) {
+        if (error.code() == ruvia::db_error::code_type::connect_failed ||
+            error.code() == ruvia::db_error::code_type::timeout) return;
         throw;
     }
     throw std::runtime_error("reserved database port unexpectedly accepted a connection");
@@ -91,7 +91,7 @@ int main() {
         require(enabled.id().find("_on_chunk_168_after_168_mutable_48") !=
                     std::string::npos,
                 "enabled policy identity is incomplete");
-        require(enabled.atomicity() == ruvia::DbMigrationAtomicity::kTransactional,
+        require(enabled.atomicity() == ruvia::db_migration_atomicity::transactional,
                 "storage policy migration must be transactional");
         require(enabled.sql().starts_with("DO "),
                 "storage policy operations must compile into one transaction");
@@ -122,7 +122,7 @@ int main() {
                     "runtime_device_data_storage_policy_v2_off_"),
                 "disabled policy identity must use the v2 off namespace");
         require(disabledMigration.atomicity() ==
-                    ruvia::DbMigrationAtomicity::kTransactional,
+                    ruvia::db_migration_atomicity::transactional,
                 "disabled storage policy migration must be transactional");
         require(disabledMigration.sql().find("remove_compression_policy") !=
                     std::string::npos,
@@ -153,7 +153,7 @@ int main() {
                     std::string::npos,
                 "alternate policy must clean the shared migration namespace");
 
-        std::vector<ruvia::DbMigration> migrations;
+        std::vector<ruvia::db_migration> migrations;
         migrations.reserve(storage::kSchemaMigrations.size() + 1);
         migrations.insert(migrations.end(), storage::kSchemaMigrations.begin(),
                           storage::kSchemaMigrations.end());
@@ -161,7 +161,7 @@ int main() {
         for (const auto& migration : migrations) {
             try {
                 validateMigrations(
-                    std::span<const ruvia::DbMigration>(&migration, 1));
+                    std::span<const ruvia::db_migration>(&migration, 1));
             } catch (const std::invalid_argument& error) {
                 throw std::runtime_error("invalid migration " +
                                          std::string(migration.id()) + ": " +
@@ -169,13 +169,13 @@ int main() {
             }
         }
         validateMigrations(migrations);
-        const std::vector<ruvia::DbMigration> duplicateMigrations{
-            ruvia::DbMigration({.id = "duplicate", .sql = "SELECT 1"}),
-            ruvia::DbMigration({.id = "DUPLICATE", .sql = "SELECT 2"})};
+        const std::vector<ruvia::db_migration> duplicateMigrations{
+            ruvia::db_migration({.id_ = "duplicate", .sql_ = "SELECT 1"}),
+            ruvia::db_migration({.id_ = "DUPLICATE", .sql_ = "SELECT 2"})};
         requireInvalid([&] { validateMigrations(duplicateMigrations); },
             "public migrator accepted case-insensitive duplicate IDs");
-        const std::vector<ruvia::DbMigration> multiStatementMigration{
-            ruvia::DbMigration({.id = "multiple", .sql = "SELECT 1; SELECT 2"})};
+        const std::vector<ruvia::db_migration> multiStatementMigration{
+            ruvia::db_migration({.id_ = "multiple", .sql_ = "SELECT 1; SELECT 2"})};
         requireInvalid([&] { validateMigrations(multiStatementMigration); },
             "public migrator accepted multiple SQL statements");
         const auto latestValueMigration = std::find_if(

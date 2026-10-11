@@ -1,4 +1,3 @@
-import type { PageParams, PaginatedResult } from '@/types/pagination';
 import type { Link } from '../link/link.types';
 import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
 /**
@@ -20,7 +19,7 @@ export interface DeviceGroupItem {
 /** 设备分组树节点 */
 export interface DeviceGroupTreeItem extends DeviceGroupItem {
     children?: DeviceGroupTreeItem[];
-    /** 分组下的设备数量（treeWithCount 接口返回） */
+    /** 分组下的设备数量（设备事件 groups 快照返回） */
     deviceCount?: number;
 }
 /** 创建设备分组 DTO */
@@ -41,8 +40,6 @@ export interface UpdateDeviceGroupDto {
 }
 /** 设备分组命名空间 */
 export declare namespace DeviceGroup {
-    type Status = DeviceGroupStatus;
-    type Item = DeviceGroupItem;
     type TreeItem = DeviceGroupTreeItem;
     type CreateDto = CreateDeviceGroupDto;
     type UpdateDto = UpdateDeviceGroupDto;
@@ -97,60 +94,6 @@ export interface EdgeConnection {
     serial_stop_bits?: number;
     serial_parity?: SerialParity;
 }
-/** 设备列表项 */
-export interface DeviceItem extends EdgeConnection {
-    id: string;
-    name: string;
-    /** 全局唯一设备编码 */
-    device_code: string;
-    /** 统一链路 ID；中心与边缘采集设备均必有 */
-    link_id: string;
-    /** TCP Client 链路中的目标 ID */
-    target_id?: string;
-    /** 关联协议配置 ID */
-    protocol_config_id: string;
-    /** 启用状态 */
-    status: DeviceStatus;
-    /** 所属分组 ID */
-    group_id?: string | null;
-    /** 在线超时时间（秒），默认 300 秒（5分钟） */
-    online_timeout?: number;
-    /** 是否允许远控（下发指令），默认 true */
-    remote_control?: boolean;
-    /** 读取间隔（秒），来自设备类型配置 */
-    read_interval?: number;
-    /** 历史数据存储策略，来自设备类型配置 */
-    storage_policy?: StoragePolicy;
-    /** 协议配置中的展示要素数量，用于稳定设备卡片布局 */
-    element_count?: number;
-    /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
-    modbus_mode?: ModbusMode;
-    /** Modbus 从站地址（1-247），默认 1 */
-    slave_id?: number;
-    /** 设备时区（用于报文时间解析，默认 +08:00） */
-    timezone?: string;
-    /** 心跳包配置 */
-    heartbeat?: HeartbeatConfig;
-    /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
-    registration?: RegistrationConfig;
-    /** 备注 */
-    remark?: string;
-    created_by?: string;
-    created_at?: string;
-    updated_at?: string;
-    // 关联数据（列表查询时返回）
-    link_name?: string;
-    link_mode?: Link.Mode;
-    link_protocol?: Link.Protocol;
-    protocol_name?: string;
-    protocol_type?: Protocol.Type;
-    // 资源权限
-    can_edit?: boolean;
-    can_delete?: boolean;
-    can_share?: boolean;
-    can_command?: boolean;
-    access_level?: DeviceAccessLevel;
-}
 /** 设备选项（下拉列表） */
 export interface DeviceOption {
     id: string;
@@ -161,12 +104,6 @@ export interface DeviceOption {
     can_share?: boolean;
     can_command?: boolean;
     access_level?: DeviceAccessLevel;
-}
-/** 设备查询参数 */
-export interface DeviceQuery extends PageParams {
-    link_id?: string;
-    protocol_config_id?: string;
-    status?: DeviceStatus;
 }
 /** 创建设备 DTO */
 export interface CreateDeviceDto {
@@ -220,8 +157,7 @@ export interface UpdateDeviceDto {
     registration?: RegistrationConfig;
     remark?: string;
 }
-// ========== 设备静态数据类型（支持 ETag 缓存）==========
-/** 设备静态数据（不包含实时数据，用于 ETag 缓存） */
+/** 设备静态数据（不包含实时数据） */
 export interface DeviceStaticData extends EdgeConnection {
     debug_enabled?: boolean;
     link_debug_enabled?: boolean;
@@ -264,7 +200,7 @@ export interface DeviceStaticData extends EdgeConnection {
     can_command?: boolean;
     access_level?: DeviceAccessLevel;
 }
-/** 设备实时数据（用于轮询） */
+/** 设备实时数据 */
 export interface DeviceRealtimeSnapshot {
     id: string;
     device_code?: string;
@@ -453,62 +389,6 @@ export interface CommandStatusesResult {
     complete: boolean;
     statuses: CommandStatusResult[];
 }
-// ========== 历史数据相关类型 ==========
-/** 历史数据类型 */
-export type HistoryDataType = 'ELEMENT' | 'IMAGE';
-/** 历史设备列表项 */
-export interface HistoryDeviceItem {
-    code: string;
-    name: string;
-    typeName: string;
-}
-/** 指令状态 */
-export type CommandStatus =
-    | 'ACCEPTED'
-    | 'DISPATCHING'
-    | 'AWAITING_RESULT'
-    | 'SUCCEEDED'
-    | 'REJECTED'
-    | 'UNKNOWN'
-    | 'READBACK_MISMATCH'
-    | 'FAILED';
-/** 要素历史记录 */
-export interface ElementRecord {
-    reportTime: string | Date;
-    elements: DeviceElement[];
-    /** 数据方向：UP=上行（设备上报），DOWN=下行（指令下发） */
-    direction?: 'UP' | 'DOWN';
-    /** 应答报文 ID（仅下行指令有，关联的应答记录） */
-    responseId?: string;
-    /** 应答报文解析的要素（仅下行指令有） */
-    responseElements?: DeviceElement[];
-    /** 发送用户 ID（仅下行指令有） */
-    userId?: string;
-    /** 发送用户名（仅下行指令有） */
-    userName?: string;
-    /** 指令状态（仅下行指令有） */
-    status?: CommandStatus;
-    /** 失败原因（仅下行指令失败时有） */
-    failReason?: string;
-}
-/** 图片历史记录 */
-export interface ImageRecord {
-    reportTime: string | Date;
-    size: number;
-    data: string;
-}
-/** 历史数据查询参数 */
-export interface HistoryDataQuery {
-    page?: number;
-    pageSize?: number;
-    keyword?: string;
-    /** 设备 ID */
-    deviceId: string;
-    /** 数据类型 */
-    dataType: HistoryDataType;
-    startTime?: Date;
-    endTime?: Date;
-}
 /** 数据库存储的单个历史测点值 */
 export interface HistoryPointValue {
     name?: string;
@@ -532,72 +412,35 @@ export interface DeviceHistoryQuery {
     startTime: string;
     endTime: string;
 }
-type DeviceModbusMode = ModbusMode;
-type DeviceHeartbeatConfig = HeartbeatConfig;
-type DeviceRegistrationConfig = RegistrationConfig;
 type DeviceCommandOperation = CommandOperation;
 type DeviceCommandOperationElement = CommandOperationElement;
-type DeviceImageOperation = ImageOperation;
-type DeviceImageOperationElement = ImageOperationElement;
-type DeviceAccessLevelType = DeviceAccessLevel;
 type DeviceShareAccessLevelType = DeviceShareAccessLevel;
 type DeviceShareItemType = DeviceShareItem;
 type DeviceShareTargetType = DeviceShareTarget;
 type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
-type DeviceCommandStatus = CommandStatus;
 type DeviceCommandCreateResult = CommandCreateResult;
-type DeviceCommandStatusResult = CommandStatusResult;
 type DeviceCommandStatusesResult = CommandStatusesResult;
 type DeviceHistoryRecord = HistoryRecord;
 type DeviceHistoryPointValue = HistoryPointValue;
 type DeviceHistoryRecordQuery = DeviceHistoryQuery;
-type DeviceEdgeTransport = EdgeTransport;
-type DeviceEdgeMode = EdgeMode;
-type DeviceSerialParity = SerialParity;
 /** 设备模块命名空间 */
 export namespace Device {
-    export type ConnectionState = 'online' | 'offline';
-    export type Status = DeviceStatus;
-    export type ModbusMode = DeviceModbusMode;
-    export type Item = DeviceItem;
     export type Option = DeviceOption;
-    export type Query = DeviceQuery;
     export type CreateDto = CreateDeviceDto;
     export type UpdateDto = UpdateDeviceDto;
-    export type HeartbeatConfig = DeviceHeartbeatConfig;
-    export type RegistrationConfig = DeviceRegistrationConfig;
-    export type EdgeTransport = DeviceEdgeTransport;
-    export type EdgeMode = DeviceEdgeMode;
-    export type SerialParity = DeviceSerialParity;
-    // 静态数据（ETag 缓存）
-    export type StaticData = DeviceStaticData;
-    // 实时快照（轮询）
     export type RealtimeSnapshot = DeviceRealtimeSnapshot;
-    // 合并后的设备概览
     export type Element = DeviceElement;
     export type Overview = DeviceOverview;
     export type Command = CommandPayload;
     export type CommandCreateResult = DeviceCommandCreateResult;
-    export type CommandStatusResult = DeviceCommandStatusResult;
     export type CommandStatusesResult = DeviceCommandStatusesResult;
     export type CommandOperation = DeviceCommandOperation;
     export type CommandOperationElement = DeviceCommandOperationElement;
-    export type ImageOperation = DeviceImageOperation;
-    export type ImageOperationElement = DeviceImageOperationElement;
-    export type AccessLevel = DeviceAccessLevelType;
     export type ShareAccessLevel = DeviceShareAccessLevelType;
     export type ShareItem = DeviceShareItemType;
     export type ShareTarget = DeviceShareTargetType;
     export type ReplaceSharesDto = ReplaceDeviceSharesDtoType;
-    // 历史数据
-    export type HistoryDevice = HistoryDeviceItem;
-    export type HistoryElement = ElementRecord;
-    export type HistoryImage = ImageRecord;
-    export type HistoryQuery = HistoryDataQuery;
     export type HistoryRecord = DeviceHistoryRecord;
     export type HistoryPointValue = DeviceHistoryPointValue;
     export type HistoryRecordQuery = DeviceHistoryRecordQuery;
-    export type CommandStatus = DeviceCommandStatus;
 }
-
-export type DeviceListResult = PaginatedResult<Device.Overview>;

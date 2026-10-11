@@ -32,8 +32,8 @@ void requireNoUnsafeParsing(std::string_view source) {
             "protocol service still executes a raw SQL string");
     require(source.find("transaction.execute(\"") == std::string_view::npos,
             "protocol service still executes a raw transaction SQL string");
-    require(source.find("ruvia::DbQuery") != std::string_view::npos,
-            "protocol service does not use the public DbQuery API");
+    require(source.find("ruvia::db_query") != std::string_view::npos,
+            "protocol service does not use the public db_query API");
     require(source.find("ProtocolConfigEntity") != std::string_view::npos,
             "protocol service does not use its ORM entity");
     require(source.find("c.pool()") != std::string_view::npos,
@@ -56,22 +56,22 @@ void requirePartialModbusUpdateValidation(std::string_view source) {
             "protocol service requires Modbus byteOrder only on create");
     require(source.find("(required && !registers)") != std::string_view::npos,
             "protocol service requires Modbus registers only on create");
-    require(source.find("if (packetValue && (!packetValue->isObject() || !packet))") != std::string_view::npos,
+    require(source.find("if (packetValue && (!packetValue->is_object() || !packet))") != std::string_view::npos,
             "protocol service does not validate Modbus packet objects");
 }
 
 void requireStrictUpdateFieldTypes(std::string_view source) {
-    require(source.find("if (const auto requested = payload.get<ruvia::String>(\"protocol\");") ==
+    require(source.find("if (const auto requested = payload.get<ruvia::string>(\"protocol\");") ==
                 std::string_view::npos,
             "protocol update ignores present non-string protocol fields");
-    require(source.find("if (const auto name = payload.get<ruvia::String>(\"name\"))") ==
+    require(source.find("if (const auto name = payload.get<ruvia::string>(\"name\"))") ==
                 std::string_view::npos,
             "protocol update writes present non-string name fields through SQL");
-    require(source.find("RUVIA_OPTIONAL_FIELD(protocol, ruvia::String") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(protocol, ruvia::string") != std::string_view::npos,
             "protocol update does not declare a typed protocol field");
-    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::String") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::string") != std::string_view::npos,
             "protocol update does not declare a typed name field");
-    require(source.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::String") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::string") != std::string_view::npos,
             "protocol update does not declare a nullable string remark field");
 }
 
@@ -116,16 +116,16 @@ void requireQualifiedJsonArrayValidation(std::string_view source) {
     require(source.find("jsonb_array_elements") ==
                 std::string_view::npos,
             "protocol validation still runs JSON array SQL");
-    require(source.find("ruvia::Array<S7Area>") !=
+    require(source.find("ruvia::array<S7Area>") !=
                 std::string_view::npos,
             "S7 validation does not walk arrays through the JSON API");
-    require(source.find("ruvia::Array<ModbusRegister>") !=
+    require(source.find("ruvia::array<ModbusRegister>") !=
                 std::string_view::npos,
             "Modbus validation does not walk arrays through the JSON API");
 }
 
 void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
-    require(source.find("DbUnaryOperator::kIsNotNull") != std::string_view::npos,
+    require(source.find("db_unary_operator::is_not_null") != std::string_view::npos,
             "protocol update can queue empty edge node IDs");
     require(source.find("protocol edge config sync failed") != std::string_view::npos,
             "protocol update does not isolate edge config sync failures");

@@ -1,5 +1,5 @@
 #pragma once
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/controller.h>
 
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
@@ -7,15 +7,15 @@
 #include "service/modules/command/command.service.h"
 
 namespace service::command {
-class CommandController final : public ruvia::Controller<CommandController> {
+class CommandController final : public ruvia::controller<CommandController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_POST("/:id/commands", create, service::middleware::PermissionMiddleware<"iot:device:command">, ruvia::PathModel<CommandStatusQuery>, ruvia::JsonBody<SubmitCommandBody>);
+    RUVIA_POST("/:id/commands", create, service::middleware::PermissionMiddleware<"iot:device:command">, ruvia::path_model<CommandStatusQuery>, ruvia::json_body<SubmitCommandBody>);
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> create(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& id = c.req().validated<CommandStatusQuery>().get<"id">();
         co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(request, co_await commandService().create(request, id.view(), c.req().validated<SubmitCommandBody>())));

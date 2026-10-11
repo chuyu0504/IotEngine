@@ -109,18 +109,6 @@ export namespace Alert {
         applicable_protocols?: string[];
         protocol_config_id?: string;
     }
-    export interface GroupedRecord {
-        rule_id: string;
-        rule_name: string;
-        device_id: string;
-        device_name: string;
-        severity: Severity;
-        total_count: number;
-        active_count: number;
-        acked_count: number;
-        resolved_count: number;
-        latest_trigger_time: string;
-    }
     export interface ApplyTemplateRequest {
         template_id: string;
         device_ids: string[];

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { databaseUrl, redisUrl, apiBase } from './architecture-fixture';
+import { openSnapshotSubscription } from './sse-fixture';
 
 // 只使用隔离数据库、Redis 和 API；覆盖真实 WebSocket、投影、历史写入。
 const db = new Bun.SQL(databaseUrl);
@@ -81,6 +82,28 @@ async function queryDetails(path: string) {
     const result = await response.json();
     assert.equal(result.code,0);
     return result.data;
+}
+type DebugRound = {
+    id: string;
+    history_id?: unknown;
+    storage_status?: unknown;
+    parsed_json?: unknown;
+    packets: { payload_hex: string; transport_status: string; edge_node_id: string; edge_node_name: string }[];
+};
+async function liveSnapshot<T>(path: string, eventName: string): Promise<T> {
+    const stream = await openSnapshotSubscription(path, token);
+    try {
+        for (;;) {
+            const event = await stream.next();
+            assert.notEqual(event.event, 'error', event.data);
+            if (event.event !== eventName) continue;
+            const reply = JSON.parse(event.data) as { code: number; data: T };
+            assert.equal(reply.code, 0, event.data);
+            return reply.data;
+        }
+    } finally {
+        await stream.close();
+    }
 }
 const baseImei = `99${String(Math.floor(Math.random() * 1e12)).padStart(12, '0')}`;
 let checksum = 0;
@@ -170,7 +193,9 @@ try {
             const view = await queryDetails(`/v1/device/${device}`);
             assert.equal(view.debug_enabled,deviceOn);
             assert.equal(view.link_debug_enabled,linkOn);
-            const linkView = await queryDetails(`/v1/link/${link}`);
+            const links = await liveSnapshot<{ list: { id: string; debug_enabled: boolean }[] }>(`/v1/link/events?keyword=${link}`, 'links');
+            const linkView = links.list.find(item => item.id === link);
+            assert(linkView);
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
             const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(packetId))]);
@@ -184,7 +209,7 @@ try {
             await Bun.sleep(150);
             assert.equal(Number(await redis.send('ZCARD',[key])),before+Number(deviceOn),'link switch must not enable device capture');
             assert.equal(Number(await redis.send('ZCARD',[linkKey])),linkBefore+Number(linkOn),'device switch must not enable link capture');
-            const packets = await queryDetails(`/v1/device/${device}/debug/packets`);
+            const packets = await liveSnapshot<DebugRound[]>(`/v1/device/events?debugDeviceId=${device}`, 'packets');
             assert.equal(packets.length, deviceOn ? before+1 : before);
             if(packets.length) { assert.equal(packets[0].packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].packets[0].transport_status,'received'); }
         }
@@ -249,16 +274,16 @@ try {
             assert.equal(await redis.send('HGET',[key,'payload_hex']),raw[packetIds.indexOf(packetId)].toString('hex').toUpperCase());
             assert.equal(await redis.send('HGET',[key,'history_id']),null);
         }
-        const rounds = await queryDetails(`/v1/device/${device}/debug/packets`);
-        const round = rounds.find((entry: any) => entry.id === report);
+        const rounds = await liveSnapshot<DebugRound[]>(`/v1/device/events?debugDeviceId=${device}`, 'packets');
+        const round = rounds.find(entry => entry.id === report);
         assert(round);
         assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
         for (const packet of round.packets) {
             assert.equal(packet.edge_node_id,node);
             assert.equal(packet.edge_node_name,'调试边缘节点');
         }
-        const linkRounds = await queryDetails(`/v1/link/${link}/debug/packets`);
-        const linkRound = linkRounds.find((entry: any) => entry.id === report);
+        const linkRounds = await liveSnapshot<DebugRound[]>(`/v1/link/events?keyword=${link}&debugLinkId=${link}`, 'packets');
+        const linkRound = linkRounds.find(entry => entry.id === report);
         assert.equal(linkRound,undefined,'device-only debugging must not add a link acquisition');
         assert.equal(round.history_id,undefined);
         assert.equal(round.storage_status,undefined);

@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
 #include "service/features/edge/session/session.service.h"
@@ -34,17 +34,17 @@ class LiveChangeRuntime final {
         }
     }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (serviceWorkerCount == 0 || workerIndex >= serviceWorkerCount) {
             throw std::invalid_argument("live runtime requires a valid Service Worker index");
         }
-        stop_ = std::make_unique<ruvia::StopSource>();
+        stop_ = std::make_unique<ruvia::stop_source>();
         auto ready = std::make_shared<std::promise<void>>();
         auto done = std::make_shared<std::promise<void>>();
         auto started = ready->get_future();
         stopped_ = done->get_future();
         if (!worker.post([this, workerIndex, ready, done](
-                             ruvia::WebWorkerContext& context
+                             ruvia::web_worker_context& context
                          ) {
                        return run(context, workerIndex, ready, done);
                    })
@@ -60,7 +60,7 @@ class LiveChangeRuntime final {
         }
         auto leasesDone = std::make_shared<std::promise<void>>();
         leasesStopped_ = leasesDone->get_future();
-        if (!worker.post([this, leasesDone](ruvia::WebWorkerContext& context) {
+        if (!worker.post([this, leasesDone](ruvia::web_worker_context& context) {
                        return expireSessions(context, leasesDone);
                    })
                  .accepted()) {
@@ -74,7 +74,7 @@ class LiveChangeRuntime final {
         if (!stop_) {
             return;
         }
-        stop_->requestStop();
+        stop_->request_stop();
         if (stopped_.valid()) {
             stopped_.wait();
         }
@@ -87,7 +87,7 @@ class LiveChangeRuntime final {
     ~LiveChangeRuntime() { stop(); }
 
   private:
-    ruvia::Task<void> relayConfigNotifications(ruvia::WebWorkerContext& context) {
+    ruvia::task<void> relayConfigNotifications(ruvia::web_worker_context& context) {
         const auto createdAt = std::to_string(service::message::utcNowMilliseconds());
         for (std::size_t collectorIndex = 0; collectorIndex < collectorWorkerCount_;
              ++collectorIndex) {
@@ -99,48 +99,48 @@ class LiveChangeRuntime final {
                 "10000",
                 "*",
                 "message_id",
-                context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(),
+                context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(),
                 "worker_id",
                 std::to_string(collectorIndex),
                 "created_at_ms",
                 createdAt
             };
             const auto reply = co_await service::message::redis::command(context.redis(), args);
-            if (reply.kind() != ruvia::RedisValue::Kind::kString) {
+            if (reply.kind() != ruvia::redis_value::kind_type::string) {
                 service::message::redis::throwValue("XADD collector config", reply);
             }
         }
     }
 
-    ruvia::Task<void> expireSessions(ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> done) {
-        const auto stop = ruvia::combineStopTokens(context.stopToken(), stop_->token());
-        while (!stop.stopRequested()) {
+    ruvia::task<void> expireSessions(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> done) {
+        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
+        while (!stop.stop_requested()) {
             try {
                 co_await service::edge::session_state::expireSessions(context.redis());
             } catch (const std::exception& error) {
-                if (!stop.stopRequested()) {
+                if (!stop.stop_requested()) {
                     std::cerr << "edge session deadline: " << error.what() << '\n';
                 }
             }
-            (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1), stop);
+            (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), stop);
         }
         done->set_value();
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
         const auto group = "live:" + service::runtime::instanceId();
         const auto consumer = "fanout:" + service::runtime::instanceId() + ":" +
             std::to_string(workerIndex);
         const auto redis = context.redis();
         const std::vector<std::string> streams{ std::string(service::message::live::kChanges) };
-        const auto stop = ruvia::combineStopTokens(context.stopToken(), stop_->token());
+        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
         bool initialized = false;
         try {
             co_await service::message::redis::ensureGroup(redis, streams.front(), group);
             ready->set_value();
             initialized = true;
             bool recovering = true;
-            while (!stop.stopRequested()) {
+            while (!stop.stop_requested()) {
                 bool failed = false;
                 try {
                     if (recovering) {
@@ -202,7 +202,7 @@ class LiveChangeRuntime final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (stop.stopRequested()) {
+                    if (stop.stop_requested()) {
                         break;
                     }
                     std::cerr << "live feature stream: " << error.what() << '\n';
@@ -210,7 +210,7 @@ class LiveChangeRuntime final {
                     recovering = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1));
                 }
             }
         } catch (...) {
@@ -224,7 +224,7 @@ class LiveChangeRuntime final {
         done->set_value();
     }
 
-    std::unique_ptr<ruvia::StopSource> stop_;
+    std::unique_ptr<ruvia::stop_source> stop_;
     std::future<void> stopped_;
     std::future<void> leasesStopped_;
     std::size_t collectorWorkerCount_ = 0;

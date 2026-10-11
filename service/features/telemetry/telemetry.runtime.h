@@ -14,7 +14,7 @@ class PersistenceRuntime final : public TelemetryService {
 
     ~PersistenceRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -35,7 +35,7 @@ class PersistenceRuntime final : public TelemetryService {
                 readiness.push_back(ready->get_future());
                 stopped_.push_back(stopped->get_future().share());
                 const auto posted = worker_.post(
-                    [this, consumer, ready, stopped](ruvia::WebWorkerContext& context) {
+                    [this, consumer, ready, stopped](ruvia::web_worker_context& context) {
                         return run(context, workerIndex_, consumer, ready, stopped);
                     }
                 );
@@ -51,7 +51,7 @@ class PersistenceRuntime final : public TelemetryService {
                 readiness.push_back(ready->get_future());
                 stopped_.push_back(stopped->get_future().share());
                 const auto posted = worker_.post(
-                    [this, alerts, ready, stopped](ruvia::WebWorkerContext& context) {
+                    [this, alerts, ready, stopped](ruvia::web_worker_context& context) {
                         return maintainFreshness(context, workerIndex_, alerts, ready, stopped);
                     }
                 );
@@ -76,7 +76,7 @@ class PersistenceRuntime final : public TelemetryService {
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext&) -> ruvia::Task<void> {
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                                                 for (const auto task : { message::WorkerStreamTask::Telemetry,
                                                                          message::WorkerStreamTask::TelemetryHistory,
                                                                          message::WorkerStreamTask::TelemetryLatest,
@@ -110,8 +110,8 @@ class PersistenceRuntime final : public TelemetryService {
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
     static constexpr std::size_t kBatchSize = 256;
 
-    ruvia::Task<void> maintainFreshness(
-        ruvia::WebWorkerContext& context,
+    ruvia::task<void> maintainFreshness(
+        ruvia::web_worker_context& context,
         std::size_t index,
         bool alerts,
         std::shared_ptr<std::promise<void>> ready,
@@ -120,7 +120,7 @@ class PersistenceRuntime final : public TelemetryService {
         try {
             const auto redis = context.redis();
             ready->set_value();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 bool failed = false;
                 try {
                     std::optional<std::int64_t> deadline;
@@ -148,11 +148,11 @@ class PersistenceRuntime final : public TelemetryService {
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
                         alerts ? service::message::WorkerStreamTask::FreshnessAlerts : service::message::WorkerStreamTask::Freshness,
-                        context.stopToken(),
+                        context.get_stop_token(),
                         wait
                     );
                 } catch (const std::exception& error) {
-                    if (context.stopToken().stopRequested()) {
+                    if (context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "telemetry freshness maintenance failed: " << error.what()
@@ -160,7 +160,7 @@ class PersistenceRuntime final : public TelemetryService {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                 }
             }
         } catch (...) {
@@ -175,7 +175,7 @@ class PersistenceRuntime final : public TelemetryService {
         }
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, Consumer consumerKind, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, Consumer consumerKind, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         const auto group = std::string(kGroup) + ":" + std::string(consumerNames[static_cast<std::size_t>(consumerKind)]);
         const auto wakeTask = static_cast<message::WorkerStreamTask>(static_cast<unsigned>(message::WorkerStreamTask::Telemetry) + static_cast<unsigned>(consumerKind));
         try {
@@ -189,9 +189,9 @@ class PersistenceRuntime final : public TelemetryService {
             static constexpr auto kPendingRecoveryInterval =
                 std::chrono::milliseconds(5000);
             auto nextRecoverySweep = std::chrono::steady_clock::now();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 if (streams.empty()) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1));
                     continue;
                 }
                 std::vector<message::redis::StreamBatch> batches;
@@ -227,7 +227,7 @@ class PersistenceRuntime final : public TelemetryService {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.stopToken().stopRequested()) {
+                    if (!running_.load() || context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "telemetry stream read failed for service worker " << index
@@ -238,7 +238,7 @@ class PersistenceRuntime final : public TelemetryService {
                         std::string_view::npos;
                 }
                 if (groupMissing && running_.load() &&
-                    !context.stopToken().stopRequested()) {
+                    !context.get_stop_token().stop_requested()) {
                     try {
                         co_await message::redis::ensureGroup(
                             redis,
@@ -251,11 +251,11 @@ class PersistenceRuntime final : public TelemetryService {
                                   << index << ": " << ensureError.what() << '\n';
                     }
                 }
-                if (!running_.load() || context.stopToken().stopRequested()) {
+                if (!running_.load() || context.get_stop_token().stop_requested()) {
                     break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     continue;
                 }
                 if (recovering && batches.empty()) {
@@ -266,7 +266,7 @@ class PersistenceRuntime final : public TelemetryService {
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
                         wakeTask,
-                        context.stopToken(),
+                        context.get_stop_token(),
                         kPendingRecoveryInterval
                     );
                     continue;
@@ -295,7 +295,7 @@ class PersistenceRuntime final : public TelemetryService {
                     }
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                 }
             }
         } catch (...) {
@@ -310,7 +310,7 @@ class PersistenceRuntime final : public TelemetryService {
         }
     }
 
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::vector<std::shared_future<void>> stopped_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;

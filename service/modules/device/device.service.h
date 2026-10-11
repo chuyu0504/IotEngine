@@ -18,10 +18,10 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/ModelObject.h>
-#include <ruvia/web/db/Db.h>
-#include <ruvia/web/db/DbQuery.h>
-#include <ruvia/web/redis/Redis.h>
+#include <ruvia/web/model_object.h>
+#include <ruvia/web/db/db.h>
+#include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -40,13 +40,13 @@
 
 namespace service::device {
 
-inline ruvia::DbQuery::Expr andAll(ruvia::DbQuery& query, ruvia::DbQuery::Expr first, ruvia::DbQuery::Expr second) {
-    return query.binary(first, ruvia::DbBinaryOperator::kAnd, second);
+inline ruvia::db_query::expr_type andAll(ruvia::db_query& query, ruvia::db_query::expr_type first, ruvia::db_query::expr_type second) {
+    return query.binary(first, ruvia::db_binary_operator::and_value, second);
 }
 
 template <typename... Expressions>
-inline ruvia::DbQuery::Expr andAll(ruvia::DbQuery& query, ruvia::DbQuery::Expr first, ruvia::DbQuery::Expr second, Expressions... rest) {
-    return query.binary(first, ruvia::DbBinaryOperator::kAnd, andAll(query, second, rest...));
+inline ruvia::db_query::expr_type andAll(ruvia::db_query& query, ruvia::db_query::expr_type first, ruvia::db_query::expr_type second, Expressions... rest) {
+    return query.binary(first, ruvia::db_binary_operator::and_value, andAll(query, second, rest...));
 }
 
 class DeviceAccessService {
@@ -57,36 +57,36 @@ class DeviceAccessService {
     }
 
     template <typename Context>
-    ruvia::Task<DeviceActor> actor(Context& c, std::string_view userId) const {
-        ruvia::DbQuery query(c.pool());
-        const auto roleCode = query.column(service::device::entities::SysRoleEntity::columnName<"code">(), "role");
-        const auto isSuperadmin = query.binary(roleCode, ruvia::DbBinaryOperator::kEqual, query.value("superadmin"));
-        const auto permissions = query.column(service::device::entities::SysRoleEntity::columnName<"permissions">(), "role");
+    ruvia::task<DeviceActor> actor(Context& c, std::string_view userId) const {
+        ruvia::db_query query(c.pool());
+        const auto roleCode = query.column(service::device::entities::SysRoleEntity::column_name<"code">(), "role");
+        const auto isSuperadmin = query.binary(roleCode, ruvia::db_binary_operator::equal, query.value("superadmin"));
+        const auto permissions = query.column(service::device::entities::SysRoleEntity::column_name<"permissions">(), "role");
         const auto hasWildcard = query.binary(
             permissions,
-            ruvia::DbBinaryOperator::kJsonHasKey,
+            ruvia::db_binary_operator::json_has_key,
             textKey(query, "*")
         );
         const auto permission = [&](std::string_view value) {
-            return query.binary(permissions, ruvia::DbBinaryOperator::kJsonHasKey, textKey(query, value));
+            return query.binary(permissions, ruvia::db_binary_operator::json_has_key, textKey(query, value));
         };
         const auto capability = [&](std::string_view value) {
             return query.binary(
-                query.binary(isSuperadmin, ruvia::DbBinaryOperator::kOr, hasWildcard),
-                ruvia::DbBinaryOperator::kOr,
+                query.binary(isSuperadmin, ruvia::db_binary_operator::or_value, hasWildcard),
+                ruvia::db_binary_operator::or_value,
                 permission(value)
             );
         };
-        const auto boolOr = [&](ruvia::DbQuery::Expr expression) {
+        const auto boolOr = [&](ruvia::db_query::expr_type expression) {
             return query.coalesce({ query.aggregate("bool_or", { expression }), boolean(query, false) });
         };
-        query.select({ query.coalesce({ text(query, query.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "department")), query.value("") }), boolOr(isSuperadmin), boolOr(capability("iot:device:edit")), boolOr(capability("iot:device:delete")), boolOr(capability("iot:device:share")), boolOr(capability("iot:device:command")), boolOr(capability("iot:device-group:share")) })
-            .from(service::device::entities::SysUserEntity::tableName(), "actor")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysDepartmentEntity::tableName(), andAll(query, query.binary(query.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "department"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::SysUserEntity::columnName<"department_id">(), "actor")), query.binary(query.column(service::device::entities::SysDepartmentEntity::columnName<"status">(), "department"), ruvia::DbBinaryOperator::kEqual, query.value("enabled")), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::SysDepartmentEntity::columnName<"deleted_at">(), "department"))), "department")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysUserRoleEntity::tableName(), query.binary(query.column(service::device::entities::SysUserRoleEntity::columnName<"user_id">(), "user_role"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::SysUserEntity::columnName<"id">(), "actor")), "user_role")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysRoleEntity::tableName(), andAll(query, query.binary(query.column(service::device::entities::SysRoleEntity::columnName<"id">(), "role"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::SysUserRoleEntity::columnName<"role_id">(), "user_role")), query.binary(query.column(service::device::entities::SysRoleEntity::columnName<"status">(), "role"), ruvia::DbBinaryOperator::kEqual, query.value("enabled")), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::SysRoleEntity::columnName<"deleted_at">(), "role"))), "role")
-            .where(andAll(query, query.binary(query.column(service::device::entities::SysUserEntity::columnName<"id">(), "actor"), ruvia::DbBinaryOperator::kEqual, uuid(query, userId)), query.binary(query.column(service::device::entities::SysUserEntity::columnName<"status">(), "actor"), ruvia::DbBinaryOperator::kEqual, query.value("enabled")), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::SysUserEntity::columnName<"deleted_at">(), "actor"))))
-            .groupBy({ query.column(service::device::entities::SysUserEntity::columnName<"id">(), "actor"), query.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "department") });
+        query.select({ query.coalesce({ text(query, query.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "department")), query.value("") }), boolOr(isSuperadmin), boolOr(capability("iot:device:edit")), boolOr(capability("iot:device:delete")), boolOr(capability("iot:device:share")), boolOr(capability("iot:device:command")), boolOr(capability("iot:device-group:share")) })
+            .from(service::device::entities::SysUserEntity::table_name(), "actor")
+            .join(ruvia::db_join_type::left, service::device::entities::SysDepartmentEntity::table_name(), andAll(query, query.binary(query.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "department"), ruvia::db_binary_operator::equal, query.column(service::device::entities::SysUserEntity::column_name<"department_id">(), "actor")), query.binary(query.column(service::device::entities::SysDepartmentEntity::column_name<"status">(), "department"), ruvia::db_binary_operator::equal, query.value("enabled")), query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::SysDepartmentEntity::column_name<"deleted_at">(), "department"))), "department")
+            .join(ruvia::db_join_type::left, service::device::entities::SysUserRoleEntity::table_name(), query.binary(query.column(service::device::entities::SysUserRoleEntity::column_name<"user_id">(), "user_role"), ruvia::db_binary_operator::equal, query.column(service::device::entities::SysUserEntity::column_name<"id">(), "actor")), "user_role")
+            .join(ruvia::db_join_type::left, service::device::entities::SysRoleEntity::table_name(), andAll(query, query.binary(query.column(service::device::entities::SysRoleEntity::column_name<"id">(), "role"), ruvia::db_binary_operator::equal, query.column(service::device::entities::SysUserRoleEntity::column_name<"role_id">(), "user_role")), query.binary(query.column(service::device::entities::SysRoleEntity::column_name<"status">(), "role"), ruvia::db_binary_operator::equal, query.value("enabled")), query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::SysRoleEntity::column_name<"deleted_at">(), "role"))), "role")
+            .where(andAll(query, query.binary(query.column(service::device::entities::SysUserEntity::column_name<"id">(), "actor"), ruvia::db_binary_operator::equal, uuid(query, userId)), query.binary(query.column(service::device::entities::SysUserEntity::column_name<"status">(), "actor"), ruvia::db_binary_operator::equal, query.value("enabled")), query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::SysUserEntity::column_name<"deleted_at">(), "actor"))))
+            .group_by({ query.column(service::device::entities::SysUserEntity::column_name<"id">(), "actor"), query.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "department") });
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(service::common::kTokenInvalidErrorCode, "用户状态无效", 401);
@@ -105,12 +105,12 @@ class DeviceAccessService {
     }
 
     template <typename Context>
-    ruvia::Task<DeviceActor> requireGroupOwner(Context& c, std::string_view groupId, std::string_view userId) const {
+    ruvia::task<DeviceActor> requireGroupOwner(Context& c, std::string_view groupId, std::string_view userId) const {
         auto currentActor = co_await actor(c, userId);
-        ruvia::DbQuery query(c.pool());
-        query.select(text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">())))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(query, query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, uuid(query, groupId)), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))))
+        ruvia::db_query query(c.pool());
+        query.select(text(query, query.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">())))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(query, query.binary(query.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(query, groupId)), query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -123,13 +123,13 @@ class DeviceAccessService {
     }
 
     template <typename Context>
-    ruvia::Task<DeviceAccessDecision> require(Context& c, std::string_view deviceId, DeviceAccessLevel minimum, std::string_view userId) const {
+    ruvia::task<DeviceAccessDecision> require(Context& c, std::string_view deviceId, DeviceAccessLevel minimum, std::string_view userId) const {
         auto currentActor = co_await actor(c, userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         addScopedDevicesCtes(query, currentActor);
         query.select(query.column("access_rank", "device"))
             .from("scoped_device", "device")
-            .where(query.binary(query.column("id", "device"), ruvia::DbBinaryOperator::kEqual, uuid(query, deviceId)))
+            .where(query.binary(query.column("id", "device"), ruvia::db_binary_operator::equal, uuid(query, deviceId)))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -147,21 +147,21 @@ class DeviceAccessService {
 
     // Append the actor-scoped device relations to a query.  The CTEs are deliberately public
     // so callers can compose their own projection, ordering and pagination without embedding SQL.
-    static void addScopedDevicesCtes(ruvia::DbQuery& query, const DeviceActor& actor) {
-        ruvia::DbQuery shared(query.resource());
-        ruvia::DbQuery sharedRecursive(query.resource());
-        shared.select({ shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "access_grant"), accessLevelRank(shared, shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"access_level">(), "access_grant")) })
-            .from(service::device::entities::DeviceGroupAccessGrantEntity::tableName(), "access_grant")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceGroupEntity::tableName(), andAll(shared, shared.binary(shared.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "granted_group"), ruvia::DbBinaryOperator::kEqual, shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "access_grant")), shared.unary(ruvia::DbUnaryOperator::kIsNull, shared.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "granted_group"))), "granted_group")
-            .where(andAll(shared, shared.binary(shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, uuid(shared, actor.userId)), ruvia::DbBinaryOperator::kOr, shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, nullableUuid(shared, actor.departmentId))), shared.unary(ruvia::DbUnaryOperator::kNot, boolean(shared, actor.superadmin))));
-        sharedRecursive.select({ sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "child"), sharedRecursive.column("access_rank", "shared") })
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "child")
-            .join(ruvia::DbJoinType::kInner, "shared_group_access", sharedRecursive.binary(sharedRecursive.column("group_id", "shared"), ruvia::DbBinaryOperator::kEqual, sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "child")), "shared")
-            .where(sharedRecursive.unary(ruvia::DbUnaryOperator::kIsNull, sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "child")));
-        shared.combine(ruvia::DbSetOperation::kUnion, sharedRecursive);
-        query.with("shared_group_access", shared, { .recursive = true, .columns = { "group_id", "access_rank" } });
+    static void addScopedDevicesCtes(ruvia::db_query& query, const DeviceActor& actor) {
+        ruvia::db_query shared(query.resource());
+        ruvia::db_query sharedRecursive(query.resource());
+        shared.select({ shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "access_grant"), accessLevelRank(shared, shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"access_level">(), "access_grant")) })
+            .from(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), "access_grant")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceGroupEntity::table_name(), andAll(shared, shared.binary(shared.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "granted_group"), ruvia::db_binary_operator::equal, shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "access_grant")), shared.unary(ruvia::db_unary_operator::is_null, shared.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "granted_group"))), "granted_group")
+            .where(andAll(shared, shared.binary(shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "access_grant"), ruvia::db_binary_operator::equal, uuid(shared, actor.userId)), ruvia::db_binary_operator::or_value, shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "access_grant"), ruvia::db_binary_operator::equal, nullableUuid(shared, actor.departmentId))), shared.unary(ruvia::db_unary_operator::not_value, boolean(shared, actor.superadmin))));
+        sharedRecursive.select({ sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "child"), sharedRecursive.column("access_rank", "shared") })
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "child")
+            .join(ruvia::db_join_type::inner, "shared_group_access", sharedRecursive.binary(sharedRecursive.column("group_id", "shared"), ruvia::db_binary_operator::equal, sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "child")), "shared")
+            .where(sharedRecursive.unary(ruvia::db_unary_operator::is_null, sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "child")));
+        shared.combine(ruvia::db_set_operation::union_value, sharedRecursive);
+        query.with("shared_group_access", shared, { .recursive_ = true, .columns_ = { "group_id", "access_rank" } });
 
-        ruvia::DbQuery groupAccess(query.resource());
+        ruvia::db_query groupAccess(query.resource());
         groupAccess.select(
                        { groupAccess.column("group_id"),
                          groupAccess.alias(
@@ -170,143 +170,143 @@ class DeviceAccessService {
                          ) }
         )
             .from("shared_group_access")
-            .groupBy({ groupAccess.column("group_id") });
+            .group_by({ groupAccess.column("group_id") });
         query.with("group_access", groupAccess);
 
-        ruvia::DbQuery deviceAccess(query.resource());
+        ruvia::db_query deviceAccess(query.resource());
         deviceAccess
-            .select({ deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::columnName<"device_id">()), deviceAccess.alias(deviceAccess.aggregate("max", { accessLevelRank(deviceAccess, deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::columnName<"access_level">(), "access_grant")) }), "access_rank") })
-            .from(service::device::entities::DeviceAccessGrantEntity::tableName(), "access_grant")
-            .where(andAll(deviceAccess, deviceAccess.binary(deviceAccess.binary(deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::columnName<"user_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, uuid(deviceAccess, actor.userId)), ruvia::DbBinaryOperator::kOr, deviceAccess.binary(deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::columnName<"department_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, nullableUuid(deviceAccess, actor.departmentId))), deviceAccess.unary(ruvia::DbUnaryOperator::kNot, boolean(deviceAccess, actor.superadmin))))
-            .groupBy({ deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::columnName<"device_id">()) });
+            .select({ deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::column_name<"device_id">()), deviceAccess.alias(deviceAccess.aggregate("max", { accessLevelRank(deviceAccess, deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::column_name<"access_level">(), "access_grant")) }), "access_rank") })
+            .from(service::device::entities::DeviceAccessGrantEntity::table_name(), "access_grant")
+            .where(andAll(deviceAccess, deviceAccess.binary(deviceAccess.binary(deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::column_name<"user_id">(), "access_grant"), ruvia::db_binary_operator::equal, uuid(deviceAccess, actor.userId)), ruvia::db_binary_operator::or_value, deviceAccess.binary(deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::column_name<"department_id">(), "access_grant"), ruvia::db_binary_operator::equal, nullableUuid(deviceAccess, actor.departmentId))), deviceAccess.unary(ruvia::db_unary_operator::not_value, boolean(deviceAccess, actor.superadmin))))
+            .group_by({ deviceAccess.column(service::device::entities::DeviceAccessGrantEntity::column_name<"device_id">()) });
         query.with("device_access", deviceAccess);
 
-        ruvia::DbQuery scoped(query.resource());
+        ruvia::db_query scoped(query.resource());
         const auto owned = scoped.binary(
-            scoped.binary(boolean(scoped, actor.superadmin), ruvia::DbBinaryOperator::kOr, scoped.binary(scoped.column(service::device::entities::DeviceEntity::columnName<"created_by">(), "source"), ruvia::DbBinaryOperator::kEqual, uuid(scoped, actor.userId))),
-            ruvia::DbBinaryOperator::kEqual,
+            scoped.binary(boolean(scoped, actor.superadmin), ruvia::db_binary_operator::or_value, scoped.binary(scoped.column(service::device::entities::DeviceEntity::column_name<"created_by">(), "source"), ruvia::db_binary_operator::equal, uuid(scoped, actor.userId))),
+            ruvia::db_binary_operator::equal,
             boolean(scoped, true)
         );
         const auto inherited = scoped.greatest(
             { scoped.coalesce({ scoped.column("access_rank", "device_access"), integer(scoped, 0) }),
               scoped.coalesce({ scoped.column("access_rank", "group_access"), integer(scoped, 0) }) }
         );
-        scoped.select({ scoped.column("id", "source"), scoped.column("name", "source"), scoped.column("link_id", "source"), scoped.column("protocol_config_id", "source"), scoped.column("group_id", "source"), scoped.column("status", "source"), scoped.column("protocol_params", "source"), scoped.column("remark", "source"), scoped.column("created_by", "source"), scoped.column("created_at", "source"), scoped.column("updated_at", "source"), scoped.column("deleted_at", "source"), scoped.column("protocol_address", "source"), scoped.column("debug_enabled", "source"), scoped.caseWhen({ { owned, integer(scoped, 4) } }, inherited) })
-            .from(service::device::entities::DeviceEntity::tableName(), "source")
-            .join(ruvia::DbJoinType::kLeft, "device_access", scoped.binary(scoped.column("device_id", "device_access"), ruvia::DbBinaryOperator::kEqual, scoped.column(service::device::entities::DeviceEntity::columnName<"id">(), "source")), "device_access")
-            .join(ruvia::DbJoinType::kLeft, "group_access", scoped.binary(scoped.column("group_id", "group_access"), ruvia::DbBinaryOperator::kEqual, scoped.column(service::device::entities::DeviceEntity::columnName<"group_id">(), "source")), "group_access")
-            .where(scoped.unary(ruvia::DbUnaryOperator::kIsNull, scoped.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "source")));
-        query.with("scoped_device", scoped, { .columns = { "id", "name", "link_id", "protocol_config_id", "group_id", "status", "protocol_params", "remark", "created_by", "created_at", "updated_at", "deleted_at", "protocol_address", "debug_enabled", "access_rank" } });
+        scoped.select({ scoped.column("id", "source"), scoped.column("name", "source"), scoped.column("link_id", "source"), scoped.column("protocol_config_id", "source"), scoped.column("group_id", "source"), scoped.column("status", "source"), scoped.column("protocol_params", "source"), scoped.column("remark", "source"), scoped.column("created_by", "source"), scoped.column("created_at", "source"), scoped.column("updated_at", "source"), scoped.column("deleted_at", "source"), scoped.column("protocol_address", "source"), scoped.column("debug_enabled", "source"), scoped.case_when({ { owned, integer(scoped, 4) } }, inherited) })
+            .from(service::device::entities::DeviceEntity::table_name(), "source")
+            .join(ruvia::db_join_type::left, "device_access", scoped.binary(scoped.column("device_id", "device_access"), ruvia::db_binary_operator::equal, scoped.column(service::device::entities::DeviceEntity::column_name<"id">(), "source")), "device_access")
+            .join(ruvia::db_join_type::left, "group_access", scoped.binary(scoped.column("group_id", "group_access"), ruvia::db_binary_operator::equal, scoped.column(service::device::entities::DeviceEntity::column_name<"group_id">(), "source")), "group_access")
+            .where(scoped.unary(ruvia::db_unary_operator::is_null, scoped.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "source")));
+        query.with("scoped_device", scoped, { .columns_ = { "id", "name", "link_id", "protocol_config_id", "group_id", "status", "protocol_params", "remark", "created_by", "created_at", "updated_at", "deleted_at", "protocol_address", "debug_enabled", "access_rank" } });
     }
 
-    static void addVisibleGroupsCtes(ruvia::DbQuery& query, const DeviceActor& actor) {
+    static void addVisibleGroupsCtes(ruvia::db_query& query, const DeviceActor& actor) {
         addScopedDevicesCtes(query, actor);
-        ruvia::DbQuery shared(query.resource());
-        ruvia::DbQuery sharedRecursive(query.resource());
-        shared.select(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "access_grant"))
-            .from(service::device::entities::DeviceGroupAccessGrantEntity::tableName(), "access_grant")
+        ruvia::db_query shared(query.resource());
+        ruvia::db_query sharedRecursive(query.resource());
+        shared.select(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "access_grant"))
+            .from(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), "access_grant")
             .where(shared.binary(
-                shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, uuid(shared, actor.userId)),
-                ruvia::DbBinaryOperator::kOr,
-                shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, nullableUuid(shared, actor.departmentId))
+                shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "access_grant"), ruvia::db_binary_operator::equal, uuid(shared, actor.userId)),
+                ruvia::db_binary_operator::or_value,
+                shared.binary(shared.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "access_grant"), ruvia::db_binary_operator::equal, nullableUuid(shared, actor.departmentId))
             ));
-        sharedRecursive.select(sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "child"))
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "child")
-            .join(ruvia::DbJoinType::kInner, "shared_group_tree", sharedRecursive.binary(sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "parent"), ruvia::DbBinaryOperator::kEqual, sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "child")), "parent")
-            .where(sharedRecursive.unary(ruvia::DbUnaryOperator::kIsNull, sharedRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "child")));
-        shared.combine(ruvia::DbSetOperation::kUnion, sharedRecursive);
-        query.with("shared_group_tree", shared, { .recursive = true, .columns = { "id" } });
+        sharedRecursive.select(sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "child"))
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "child")
+            .join(ruvia::db_join_type::inner, "shared_group_tree", sharedRecursive.binary(sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "parent"), ruvia::db_binary_operator::equal, sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "child")), "parent")
+            .where(sharedRecursive.unary(ruvia::db_unary_operator::is_null, sharedRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "child")));
+        shared.combine(ruvia::db_set_operation::union_value, sharedRecursive);
+        query.with("shared_group_tree", shared, { .recursive_ = true, .columns_ = { "id" } });
 
-        ruvia::DbQuery scopedGroups(query.resource());
+        ruvia::db_query scopedGroups(query.resource());
         scopedGroups.select(scopedGroups.column("group_id", "scoped"))
             .from("scoped_device", "scoped")
-            .where(andAll(scopedGroups, scopedGroups.binary(scopedGroups.column("access_rank", "scoped"), ruvia::DbBinaryOperator::kGreater, integer(scopedGroups, 0)), scopedGroups.unary(ruvia::DbUnaryOperator::kIsNotNull, scopedGroups.column("group_id", "scoped"))));
-        ruvia::DbQuery ownedGroups(query.resource());
-        ownedGroups.select(ownedGroups.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "owned"))
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "owned")
-            .where(andAll(ownedGroups, ownedGroups.unary(ruvia::DbUnaryOperator::kIsNull, ownedGroups.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "owned")), ownedGroups.binary(ownedGroups.binary(boolean(ownedGroups, actor.superadmin), ruvia::DbBinaryOperator::kOr, ownedGroups.binary(ownedGroups.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">(), "owned"), ruvia::DbBinaryOperator::kEqual, uuid(ownedGroups, actor.userId))), ruvia::DbBinaryOperator::kEqual, boolean(ownedGroups, true))));
-        ruvia::DbQuery sharedGroups(query.resource());
+            .where(andAll(scopedGroups, scopedGroups.binary(scopedGroups.column("access_rank", "scoped"), ruvia::db_binary_operator::greater, integer(scopedGroups, 0)), scopedGroups.unary(ruvia::db_unary_operator::is_not_null, scopedGroups.column("group_id", "scoped"))));
+        ruvia::db_query ownedGroups(query.resource());
+        ownedGroups.select(ownedGroups.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "owned"))
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "owned")
+            .where(andAll(ownedGroups, ownedGroups.unary(ruvia::db_unary_operator::is_null, ownedGroups.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "owned")), ownedGroups.binary(ownedGroups.binary(boolean(ownedGroups, actor.superadmin), ruvia::db_binary_operator::or_value, ownedGroups.binary(ownedGroups.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">(), "owned"), ruvia::db_binary_operator::equal, uuid(ownedGroups, actor.userId))), ruvia::db_binary_operator::equal, boolean(ownedGroups, true))));
+        ruvia::db_query sharedGroups(query.resource());
         sharedGroups.select(sharedGroups.column("id", "shared"))
             .from("shared_group_tree", "shared");
-        scopedGroups.combine(ruvia::DbSetOperation::kUnion, ownedGroups)
-            .combine(ruvia::DbSetOperation::kUnion, sharedGroups);
+        scopedGroups.combine(ruvia::db_set_operation::union_value, ownedGroups)
+            .combine(ruvia::db_set_operation::union_value, sharedGroups);
 
-        ruvia::DbQuery parents(query.resource());
-        parents.select(parents.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "parent"))
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "parent")
-            .join(ruvia::DbJoinType::kInner, "visible_group", parents.binary(parents.column("id", "visible"), ruvia::DbBinaryOperator::kEqual, parents.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "parent")), "visible")
-            .where(andAll(parents, parents.unary(ruvia::DbUnaryOperator::kIsNotNull, parents.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "parent")), parents.unary(ruvia::DbUnaryOperator::kIsNull, parents.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "parent"))));
-        scopedGroups.combine(ruvia::DbSetOperation::kUnion, parents);
-        query.with("visible_group", scopedGroups, { .recursive = true, .columns = { "id" } });
+        ruvia::db_query parents(query.resource());
+        parents.select(parents.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "parent"))
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "parent")
+            .join(ruvia::db_join_type::inner, "visible_group", parents.binary(parents.column("id", "visible"), ruvia::db_binary_operator::equal, parents.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "parent")), "visible")
+            .where(andAll(parents, parents.unary(ruvia::db_unary_operator::is_not_null, parents.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "parent")), parents.unary(ruvia::db_unary_operator::is_null, parents.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "parent"))));
+        scopedGroups.combine(ruvia::db_set_operation::union_value, parents);
+        query.with("visible_group", scopedGroups, { .recursive_ = true, .columns_ = { "id" } });
     }
 
-    static ruvia::DbQuery::Expr text(ruvia::DbQuery& query, ruvia::DbQuery::Expr value) {
-        return query.cast(value, ruvia::DbDataType::kText);
+    static ruvia::db_query::expr_type text(ruvia::db_query& query, ruvia::db_query::expr_type value) {
+        return query.cast(value, ruvia::db_data_type::text);
     }
 
-    static ruvia::DbQuery::Expr textKey(ruvia::DbQuery& query, std::string_view value) {
+    static ruvia::db_query::expr_type textKey(ruvia::db_query& query, std::string_view value) {
         return text(query, query.value(value));
     }
 
-    static ruvia::DbQuery::Expr text(ruvia::DbQuery& query, std::string_view value) {
+    static ruvia::db_query::expr_type text(ruvia::db_query& query, std::string_view value) {
         return text(query, query.value(value));
     }
 
-    static ruvia::DbQuery::Expr boolean(ruvia::DbQuery& query, bool value) {
-        return query.cast(query.value(value), ruvia::DbDataType::kBoolean);
+    static ruvia::db_query::expr_type boolean(ruvia::db_query& query, bool value) {
+        return query.cast(query.value(value), ruvia::db_data_type::boolean);
     }
 
-    static ruvia::DbQuery::Expr integer(ruvia::DbQuery& query, std::int64_t value) {
-        return query.cast(query.value(value), ruvia::DbDataType::kInteger);
+    static ruvia::db_query::expr_type integer(ruvia::db_query& query, std::int64_t value) {
+        return query.cast(query.value(value), ruvia::db_data_type::integer);
     }
 
-    static ruvia::DbQuery::Expr uuid(ruvia::DbQuery& query, std::string_view value) {
-        return query.cast(query.value(value), ruvia::DbDataType::kUuid);
+    static ruvia::db_query::expr_type uuid(ruvia::db_query& query, std::string_view value) {
+        return query.cast(query.value(value), ruvia::db_data_type::uuid);
     }
 
-    static ruvia::DbQuery::Expr nullableUuid(ruvia::DbQuery& query, std::string_view value) {
-        return query.cast(query.nullIf(text(query, query.value(value)), text(query, "")), ruvia::DbDataType::kUuid);
+    static ruvia::db_query::expr_type nullableUuid(ruvia::db_query& query, std::string_view value) {
+        return query.cast(query.null_if(text(query, query.value(value)), text(query, "")), ruvia::db_data_type::uuid);
     }
 
-    static ruvia::DbQuery::Expr jsonValue(ruvia::DbQuery& query, ruvia::DbQuery::Expr object, std::string_view key) {
-        return query.binary(object, ruvia::DbBinaryOperator::kJsonGet, textKey(query, key));
+    static ruvia::db_query::expr_type jsonValue(ruvia::db_query& query, ruvia::db_query::expr_type object, std::string_view key) {
+        return query.binary(object, ruvia::db_binary_operator::json_get, textKey(query, key));
     }
 
-    static ruvia::DbQuery::Expr jsonText(ruvia::DbQuery& query, ruvia::DbQuery::Expr object, std::string_view key) {
-        return query.binary(object, ruvia::DbBinaryOperator::kJsonGetText, textKey(query, key));
+    static ruvia::db_query::expr_type jsonText(ruvia::db_query& query, ruvia::db_query::expr_type object, std::string_view key) {
+        return query.binary(object, ruvia::db_binary_operator::json_get_text, textKey(query, key));
     }
 
-    static ruvia::DbQuery::Expr accessLevelRank(ruvia::DbQuery& query, ruvia::DbQuery::Expr level) {
-        return query.caseWhen(
-            { { query.binary(level, ruvia::DbBinaryOperator::kEqual, query.value("operate")),
+    static ruvia::db_query::expr_type accessLevelRank(ruvia::db_query& query, ruvia::db_query::expr_type level) {
+        return query.case_when(
+            { { query.binary(level, ruvia::db_binary_operator::equal, query.value("operate")),
                 integer(query, 2) },
-              { query.binary(level, ruvia::DbBinaryOperator::kEqual, query.value("view")),
+              { query.binary(level, ruvia::db_binary_operator::equal, query.value("view")),
                 integer(query, 1) } },
             integer(query, 0)
         );
     }
 
-    static ruvia::DbQuery::Expr remoteControlEnabled(ruvia::DbQuery& query, ruvia::DbQuery::Expr params) {
+    static ruvia::db_query::expr_type remoteControlEnabled(ruvia::db_query& query, ruvia::db_query::expr_type params) {
         const auto key = textKey(query, "remote_control");
-        const auto hasKey = query.binary(params, ruvia::DbBinaryOperator::kJsonHasKey, key);
+        const auto hasKey = query.binary(params, ruvia::db_binary_operator::json_has_key, key);
         const auto value = query.call(
             "lower",
-            { query.coalesce({ query.binary(params, ruvia::DbBinaryOperator::kJsonGetText, key), query.value("") }) }
+            { query.coalesce({ query.binary(params, ruvia::db_binary_operator::json_get_text, key), query.value("") }) }
         );
-        return query.caseWhen(
+        return query.case_when(
             { { hasKey,
-                query.caseWhen(
-                    { { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("true")),
+                query.case_when(
+                    { { query.binary(value, ruvia::db_binary_operator::equal, query.value("true")),
                         boolean(query, true) },
-                      { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("t")),
+                      { query.binary(value, ruvia::db_binary_operator::equal, query.value("t")),
                         boolean(query, true) },
-                      { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("1")),
+                      { query.binary(value, ruvia::db_binary_operator::equal, query.value("1")),
                         boolean(query, true) },
-                      { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("yes")),
+                      { query.binary(value, ruvia::db_binary_operator::equal, query.value("yes")),
                         boolean(query, true) },
-                      { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("y")),
+                      { query.binary(value, ruvia::db_binary_operator::equal, query.value("y")),
                         boolean(query, true) },
-                      { query.binary(value, ruvia::DbBinaryOperator::kEqual, query.value("on")),
+                      { query.binary(value, ruvia::db_binary_operator::equal, query.value("on")),
                         boolean(query, true) } },
                     boolean(query, false)
                 ) } },
@@ -375,17 +375,11 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<DeviceCommandStatusDto> commandStatus(Context& context, std::string_view commandId) {
-        co_await service::auth::AuthService::requirePermission(context, context.userId, "iot:device:command");
-        co_return co_await readCommandStatus(context, commandId);
-    }
-
-    template <typename Context>
-    ruvia::Task<service::device::DeviceCommandStatusesDto>
+    ruvia::task<service::device::DeviceCommandStatusesDto>
     commandStatuses(Context& context, std::string_view ids) {
         co_await service::auth::AuthService::requirePermission(context, context.userId, "iot:device:command");
-        ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
-            ruvia::ModelOptions{ .resource = context.arena() }
+        ruvia::boxed_array<service::device::DeviceCommandStatusDto> statuses(
+            ruvia::model_options{ .resource_ = context.arena() }
         );
         bool complete = true;
         std::size_t offset = 0, count = 0;
@@ -403,53 +397,53 @@ class DeviceService {
             }
             offset = end + 1;
         }
-        service::device::DeviceCommandStatusesDto result(ruvia::ModelOptions{ .resource = context.arena() });
+        service::device::DeviceCommandStatusesDto result(ruvia::model_options{ .resource_ = context.arena() });
         result.template set<"complete">(complete).template set<"statuses">(std::move(statuses));
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<DevicePageDataDto> list(Context& c) {
+    ruvia::task<DevicePageDataDto> list(Context& c) {
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         selectItemColumns(query);
         query.from("scoped_device", "d")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::LinkEntity::tableName(), query.binary(query.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, query.column("link_id", "d")), "l")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::EdgeNodeEntity::tableName(), query.binary(query.column(service::device::entities::EdgeNodeEntity::columnName<"id">(), "en"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")), "en")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), query.binary(query.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, query.column("id", "d")), "p")
-            .where(query.binary(query.column("access_rank", "d"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(query, 0)))
-            .orderBy(query.column("group_id", "d"), ruvia::DbOrderDirection::kAsc, ruvia::DbNullsOrder::kLast)
-            .addOrderBy(query.column("created_at", "d"))
-            .addOrderBy(query.column("id", "d"));
+            .join(ruvia::db_join_type::left, service::device::entities::LinkEntity::table_name(), query.binary(query.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, query.column("link_id", "d")), "l")
+            .join(ruvia::db_join_type::left, service::device::entities::EdgeNodeEntity::table_name(), query.binary(query.column(service::device::entities::EdgeNodeEntity::column_name<"id">(), "en"), ruvia::db_binary_operator::equal, query.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")), "en")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(), query.binary(query.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, query.column("id", "d")), "p")
+            .where(query.binary(query.column("access_rank", "d"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(query, 0)))
+            .order_by(query.column("group_id", "d"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::last)
+            .add_order_by(query.column("created_at", "d"))
+            .add_order_by(query.column("id", "d"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceItemDto> items(ruvia::ModelOptions{ .resource = c.arena() });
+        ruvia::boxed_array<DeviceItemDto> items(ruvia::model_options{ .resource_ = c.arena() });
         std::map<std::string, DeviceItemDto*, std::less<>> itemsById;
         for (const auto& row : rows) {
-            auto& item = items.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = items.emplace(ruvia::model_options{ .resource_ = c.arena() });
             fillItem(c, item, row, actor);
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DevicePageDataDto result(ruvia::ModelOptions{ .resource = c.arena() });
+        DevicePageDataDto result(ruvia::model_options{ .resource_ = c.arena() });
         result.template set<"list">(std::move(items)).template set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<DeviceRealtimePageDto> realtime(Context& c) {
+    ruvia::task<DeviceRealtimePageDto> realtime(Context& c) {
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
-        const auto executionIsEdge = query.binary(query.column(service::device::entities::LinkEntity::columnName<"execution">(), "l"), ruvia::DbBinaryOperator::kEqual, query.value("edge"));
-        query.select({ DeviceAccessService::text(query, query.column("id", "d")), DeviceAccessService::jsonText(query, query.column("protocol_params", "d"), "device_code"), DeviceAccessService::remoteControlEnabled(query, query.column("protocol_params", "d")), query.column("access_rank", "d"), query.caseWhen({ { executionIsEdge, DeviceAccessService::text(query, query.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")) } }), query.caseWhen({ { executionIsEdge, DeviceAccessService::jsonText(query, query.column(service::device::entities::LinkEntity::columnName<"endpoint">(), "l"), "transport") } }) })
+        const auto executionIsEdge = query.binary(query.column(service::device::entities::LinkEntity::column_name<"execution">(), "l"), ruvia::db_binary_operator::equal, query.value("edge"));
+        query.select({ DeviceAccessService::text(query, query.column("id", "d")), DeviceAccessService::jsonText(query, query.column("protocol_params", "d"), "device_code"), DeviceAccessService::remoteControlEnabled(query, query.column("protocol_params", "d")), query.column("access_rank", "d"), query.case_when({ { executionIsEdge, DeviceAccessService::text(query, query.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")) } }), query.case_when({ { executionIsEdge, DeviceAccessService::jsonText(query, query.column(service::device::entities::LinkEntity::column_name<"endpoint">(), "l"), "transport") } }) })
             .from("scoped_device", "d")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::LinkEntity::tableName(), query.binary(query.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, query.column("link_id", "d")), "l")
-            .where(query.binary(query.column("access_rank", "d"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(query, 0)))
-            .orderBy(query.column("id", "d"));
+            .join(ruvia::db_join_type::left, service::device::entities::LinkEntity::table_name(), query.binary(query.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, query.column("link_id", "d")), "l")
+            .where(query.binary(query.column("access_rank", "d"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(query, 0)))
+            .order_by(query.column("id", "d"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceRealtimeDto> items(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceRealtimeDto> items(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         std::map<std::string, DeviceRealtimeDto*, std::less<>> itemsById;
         for (const auto& row : rows) {
@@ -458,13 +452,13 @@ class DeviceService {
                 DeviceAccessService::rank(row[3].value().value_or(std::string_view{})),
                 row[2].value().value_or(std::string_view{}) == "t"
             );
-            auto& item = items.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = items.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}))
                 .template set<"deviceCode">(row[1].value().value_or(std::string_view{}))
                 .template set<"connected">(false)
                 .template set<"connectionState">("disconnected")
-                .template set<"elements">(ruvia::BoxedArray<DeviceElementDto>(
-                    ruvia::ModelOptions{ .resource = c.arena() }
+                .template set<"elements">(ruvia::boxed_array<DeviceElementDto>(
+                    ruvia::model_options{ .resource_ = c.arena() }
                 ))
                 .template set<"canEdit">(capabilities.canEdit)
                 .template set<"canDelete">(capabilities.canDelete)
@@ -480,28 +474,28 @@ class DeviceService {
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DeviceRealtimePageDto result(ruvia::ModelOptions{ .resource = c.arena() });
+        DeviceRealtimePageDto result(ruvia::model_options{ .resource_ = c.arena() });
         result.template set<"list">(std::move(items)).template set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<DeviceItemDto> detail(Context& c, std::string_view id) {
+    ruvia::task<DeviceItemDto> detail(Context& c, std::string_view id) {
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         selectItemColumns(query);
         query.from("scoped_device", "d")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::LinkEntity::tableName(), query.binary(query.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, query.column("link_id", "d")), "l")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::EdgeNodeEntity::tableName(), query.binary(query.column(service::device::entities::EdgeNodeEntity::columnName<"id">(), "en"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")), "en")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), query.binary(query.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, query.column("id", "d")), "p")
-            .where(andAll(query, query.binary(query.column("id", "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(query, id)), query.binary(query.column("access_rank", "d"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(query, 0))))
+            .join(ruvia::db_join_type::left, service::device::entities::LinkEntity::table_name(), query.binary(query.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, query.column("link_id", "d")), "l")
+            .join(ruvia::db_join_type::left, service::device::entities::EdgeNodeEntity::table_name(), query.binary(query.column(service::device::entities::EdgeNodeEntity::column_name<"id">(), "en"), ruvia::db_binary_operator::equal, query.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")), "en")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(), query.binary(query.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, query.column("id", "d")), "p")
+            .where(andAll(query, query.binary(query.column("id", "d"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(query, id)), query.binary(query.column("access_rank", "d"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(query, 0))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(18001, "设备不存在", 404);
         }
-        DeviceItemDto item(ruvia::ModelOptions{ .resource = c.arena() });
+        DeviceItemDto item(ruvia::model_options{ .resource_ = c.arena() });
         fillItem(c, item, rows.front(), actor);
         std::map<std::string, DeviceItemDto*, std::less<>> itemById{ { std::string(id), &item } };
         co_await fillLatest(c, itemById);
@@ -510,7 +504,7 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> history(Context& c, std::string_view id, const DeviceHistoryQuery& body) {
+    ruvia::task<std::string> history(Context& c, std::string_view id, const DeviceHistoryQuery& body) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::view, c.userId);
         const auto start = body.template get<"startTime">().view();
         const auto end = body.template get<"endTime">().view();
@@ -534,17 +528,17 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceOptionDto>> options(Context& c) {
+    ruvia::task<ruvia::boxed_array<DeviceOptionDto>> options(Context& c) {
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         query.select({ DeviceAccessService::text(query, query.column("id")), query.column("name"), DeviceAccessService::jsonText(query, query.column("protocol_params"), "device_code"), DeviceAccessService::remoteControlEnabled(query, query.column("protocol_params")), query.column("access_rank") })
             .from("scoped_device")
-            .where(andAll(query, query.binary(query.column("access_rank"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(query, 0)), query.binary(query.column("status"), ruvia::DbBinaryOperator::kEqual, query.value("enabled"))))
-            .orderBy(query.column("name"));
+            .where(andAll(query, query.binary(query.column("access_rank"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(query, 0)), query.binary(query.column("status"), ruvia::db_binary_operator::equal, query.value("enabled"))))
+            .order_by(query.column("name"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceOptionDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceOptionDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
@@ -552,7 +546,7 @@ class DeviceService {
                 DeviceAccessService::rank(row[4].value().value_or(std::string_view{})),
                 row[3].value().value_or(std::string_view{}) == "t"
             );
-            auto& item = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}))
                 .template set<"name">(row[1].value().value_or(std::string_view{}))
                 .template set<"deviceCode">(row[2].value().value_or(std::string_view{}))
@@ -566,8 +560,8 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<void> create(Context& c, const CreateDeviceBody& input) {
-        auto transaction = co_await c.db().beginTransaction();
+    ruvia::task<void> create(Context& c, const CreateDeviceBody& input) {
+        auto transaction = co_await c.db().begin_transaction();
         const auto& body = input;
         std::string resolvedLinkId = str(body.template get<"linkId">());
         if (body.template get<"edgeConnection">()) {
@@ -579,15 +573,15 @@ class DeviceService {
         co_await validate(c, transaction, resolvedLinkId, body, true);
         co_await ensureUnique(c, transaction, resolvedLinkId, body, std::nullopt);
         co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::nullopt);
-        const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const std::string name(body.template get<"name">().view());
         const std::string deviceCode(body.template get<"deviceCode">().view());
         const std::string linkId = resolvedLinkId;
-        ruvia::DbQuery channelQuery(c.pool());
+        ruvia::db_query channelQuery(c.pool());
         channelQuery
-            .select(channelQuery.coalesce({ DeviceAccessService::text(channelQuery, channelQuery.column(service::device::entities::LinkEntity::columnName<"edge_node_id">())), channelQuery.value("") }))
-            .from(service::device::entities::LinkEntity::tableName())
-            .where(andAll(channelQuery, channelQuery.binary(channelQuery.column(service::device::entities::LinkEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(channelQuery, linkId)), channelQuery.unary(ruvia::DbUnaryOperator::kIsNull, channelQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">()))));
+            .select(channelQuery.coalesce({ DeviceAccessService::text(channelQuery, channelQuery.column(service::device::entities::LinkEntity::column_name<"edge_node_id">())), channelQuery.value("") }))
+            .from(service::device::entities::LinkEntity::table_name())
+            .where(andAll(channelQuery, channelQuery.binary(channelQuery.column(service::device::entities::LinkEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(channelQuery, linkId)), channelQuery.unary(ruvia::db_unary_operator::is_null, channelQuery.column(service::device::entities::LinkEntity::column_name<"deleted_at">()))));
         const auto channel = co_await transaction.query(channelQuery);
         if (channel.empty()) {
             service::common::fail(18003, "通道不存在", 400);
@@ -612,19 +606,19 @@ class DeviceService {
             edgeNodeId.empty() ? packetJson(body.template get<"registration">()) : R"({"mode":"OFF"})";
         const std::string remark = str(body.template get<"remark">());
 
-        ruvia::DbQuery insert(c.pool());
+        ruvia::db_query insert(c.pool());
         const auto jsonb = [&](std::string_view value) {
-            return insert.cast(insert.value(value), ruvia::DbDataType::kJsonb);
+            return insert.cast(insert.value(value), ruvia::db_data_type::jsonb);
         };
         const auto emptyPacket = jsonb(R"({"mode":"OFF"})");
         const auto protocolParams = insert.call(
             "jsonb_strip_nulls",
-            { insert.call("jsonb_build_object", { DeviceAccessService::textKey(insert, "device_code"), DeviceAccessService::text(insert, insert.value(deviceCode)), DeviceAccessService::textKey(insert, "target_id"), insert.nullIf(DeviceAccessService::text(insert, insert.value(targetId)), insert.value("")), DeviceAccessService::textKey(insert, "online_timeout"), insert.cast(insert.value(onlineTimeout), ruvia::DbDataType::kInteger), DeviceAccessService::textKey(insert, "remote_control"), insert.cast(insert.value(remoteControl == "true"), ruvia::DbDataType::kBoolean), DeviceAccessService::textKey(insert, "modbus_mode"), insert.nullIf(DeviceAccessService::text(insert, insert.value(modbusMode)), insert.value("")), DeviceAccessService::textKey(insert, "slave_id"), insert.cast(insert.nullIf(DeviceAccessService::text(insert, insert.value(slaveId)), insert.value("")), ruvia::DbDataType::kInteger), DeviceAccessService::textKey(insert, "timezone"), DeviceAccessService::text(insert, insert.value(timezone)), DeviceAccessService::textKey(insert, "heartbeat"), insert.coalesce({ insert.cast(insert.nullIf(DeviceAccessService::text(insert, insert.value(heartbeat)), insert.value("")), ruvia::DbDataType::kJsonb), emptyPacket }), DeviceAccessService::textKey(insert, "registration"), insert.coalesce({ insert.cast(insert.nullIf(DeviceAccessService::text(insert, insert.value(registration)), insert.value("")), ruvia::DbDataType::kJsonb), emptyPacket }) }) }
+            { insert.call("jsonb_build_object", { DeviceAccessService::textKey(insert, "device_code"), DeviceAccessService::text(insert, insert.value(deviceCode)), DeviceAccessService::textKey(insert, "target_id"), insert.null_if(DeviceAccessService::text(insert, insert.value(targetId)), insert.value("")), DeviceAccessService::textKey(insert, "online_timeout"), insert.cast(insert.value(onlineTimeout), ruvia::db_data_type::integer), DeviceAccessService::textKey(insert, "remote_control"), insert.cast(insert.value(remoteControl == "true"), ruvia::db_data_type::boolean), DeviceAccessService::textKey(insert, "modbus_mode"), insert.null_if(DeviceAccessService::text(insert, insert.value(modbusMode)), insert.value("")), DeviceAccessService::textKey(insert, "slave_id"), insert.cast(insert.null_if(DeviceAccessService::text(insert, insert.value(slaveId)), insert.value("")), ruvia::db_data_type::integer), DeviceAccessService::textKey(insert, "timezone"), DeviceAccessService::text(insert, insert.value(timezone)), DeviceAccessService::textKey(insert, "heartbeat"), insert.coalesce({ insert.cast(insert.null_if(DeviceAccessService::text(insert, insert.value(heartbeat)), insert.value("")), ruvia::db_data_type::jsonb), emptyPacket }), DeviceAccessService::textKey(insert, "registration"), insert.coalesce({ insert.cast(insert.null_if(DeviceAccessService::text(insert, insert.value(registration)), insert.value("")), ruvia::db_data_type::jsonb), emptyPacket }) }) }
         );
-        insert.insertInto(service::device::entities::DeviceEntity::tableName(), { "id", "name", "link_id", "protocol_config_id", "group_id", "status", "protocol_params", "remark", "created_by" })
-            .values({ DeviceAccessService::uuid(insert, id), insert.value(name), DeviceAccessService::uuid(insert, linkId), DeviceAccessService::uuid(insert, protocolConfigId), DeviceAccessService::nullableUuid(insert, groupId), insert.value(status), protocolParams, insert.nullIf(DeviceAccessService::text(insert, insert.value(remark)), insert.value("")), DeviceAccessService::uuid(insert, c.userId) });
+        insert.insert_into(service::device::entities::DeviceEntity::table_name(), { "id", "name", "link_id", "protocol_config_id", "group_id", "status", "protocol_params", "remark", "created_by" })
+            .values({ DeviceAccessService::uuid(insert, id), insert.value(name), DeviceAccessService::uuid(insert, linkId), DeviceAccessService::uuid(insert, protocolConfigId), DeviceAccessService::nullableUuid(insert, groupId), insert.value(status), protocolParams, insert.null_if(DeviceAccessService::text(insert, insert.value(remark)), insert.value("")), DeviceAccessService::uuid(insert, c.userId) });
         (void)co_await transaction.execute(insert);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
             (void)co_await service::rpc::call(c, "telemetry", "initialize", id + "\n" + deviceCode);
@@ -637,7 +631,7 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
+    ruvia::task<ruvia::boxed_array<DeviceDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
         co_await service::debug_idle::touch(c.redis(), "device", id);
         const auto key = service::device::entities::DeviceDebugIndex::key(id);
@@ -666,15 +660,15 @@ return result
         const std::vector<std::string_view> keys{ key };
         const std::vector<std::string_view> args;
         const auto reply = co_await c.redis().eval(readPackets, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
+        if (reply.kind() != ruvia::redis_value::kind_type::array) {
             service::message::redis::throwValue("read debug packets", reply);
         }
-        ruvia::BoxedArray<DeviceDebugAcquisitionDto> result(ruvia::ModelOptions{ .resource = c.arena() });
+        ruvia::boxed_array<DeviceDebugAcquisitionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : reply.array()) {
-            if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 3) {
+            if (row.kind() != ruvia::redis_value::kind_type::array || row.array().size() != 3) {
                 continue;
             }
-            auto& acquisition = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& acquisition = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             acquisition.template set<"id">(row.array()[0].string());
             const auto metadata = row.array()[1].array();
             for (std::size_t index = 0; index + 1 < metadata.size(); index += 2) {
@@ -696,11 +690,11 @@ return result
                     acquisition.template set<"deviceId">(value);
                 }
             }
-            ruvia::BoxedArray<DeviceDebugPacketDto> packets(ruvia::ModelOptions{ .resource = c.arena() });
+            ruvia::boxed_array<DeviceDebugPacketDto> packets(ruvia::model_options{ .resource_ = c.arena() });
             for (const auto& packetRow : row.array()[2].array()) {
                 const auto fields = packetRow.array()[1].array();
                 std::string eventId(packetRow.array()[0].string());
-                auto& packet = packets.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+                auto& packet = packets.emplace(ruvia::model_options{ .resource_ = c.arena() });
                 packet.template set<"id">(eventId);
                 for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
                     const auto name = fields[index].string();
@@ -746,24 +740,24 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> setDebug(Context& c, std::string_view id, bool enabled) {
+    ruvia::task<void> setDebug(Context& c, std::string_view id, bool enabled) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
-        auto transaction = co_await c.db().beginTransaction();
-        ruvia::DbQuery query(c.pool());
-        query.update(service::device::entities::DeviceEntity::tableName())
-            .set(service::device::entities::DeviceEntity::columnName<"debug_enabled">(), query.value(enabled))
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_query query(c.pool());
+        query.update(service::device::entities::DeviceEntity::table_name())
+            .set(service::device::entities::DeviceEntity::column_name<"debug_enabled">(), query.value(enabled))
             .set("updated_at", query.call("now"))
-            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().isNull()).expression(query));
+            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().is_null()).expression(query));
         (void)co_await transaction.execute(query);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         if (enabled) {
             co_await service::debug_idle::touch(c.redis(), "device", id);
             service::debug_idle::watch(
-                c.template workerState<ruvia::WebWorkerHandle>(),
+                c.template worker_state<ruvia::web_worker_handle>(),
                 "device",
                 std::string(id),
-                [](ruvia::WebWorkerContext& ctx, const std::string& deviceId) -> ruvia::Task<void> {
+                [](ruvia::web_worker_context& ctx, const std::string& deviceId) -> ruvia::task<void> {
                     co_await DeviceService::instance().disableExpiredDebug(ctx, deviceId);
                 });
         } else {
@@ -776,29 +770,29 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> disableExpiredDebug(Context& c, std::string_view id) {
+    ruvia::task<void> disableExpiredDebug(Context& c, std::string_view id) {
         if (co_await service::debug_idle::leased(c.redis(), "device", id)) {
             co_return;
         }
-        ruvia::DbQuery lookup(c.pool());
+        ruvia::db_query lookup(c.pool());
         lookup.select({ lookup.column("debug_enabled", "d"), lookup.column("created_by", "d"), lookup.coalesce({ lookup.column("edge_node_id", "l"), lookup.value("") }) })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::LinkEntity::tableName(), lookup.binary(lookup.column("id", "l"), ruvia::DbBinaryOperator::kEqual, lookup.column("link_id", "d")), "l")
-            .where(andAll(lookup, lookup.binary(lookup.column("id", "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(lookup, id)), lookup.unary(ruvia::DbUnaryOperator::kIsNull, lookup.column("deleted_at", "d"))));
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::left, service::device::entities::LinkEntity::table_name(), lookup.binary(lookup.column("id", "l"), ruvia::db_binary_operator::equal, lookup.column("link_id", "d")), "l")
+            .where(andAll(lookup, lookup.binary(lookup.column("id", "d"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(lookup, id)), lookup.unary(ruvia::db_unary_operator::is_null, lookup.column("deleted_at", "d"))));
         const auto rows = co_await c.db().query(lookup);
         if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
             co_return;
         }
         const auto actor = std::string(rows.front()[1].value().value_or(""));
         const auto edgeNodeId = std::string(rows.front()[2].value().value_or(""));
-        auto transaction = co_await c.db().beginTransaction();
-        ruvia::DbQuery query(c.pool());
-        query.update(service::device::entities::DeviceEntity::tableName())
-            .set(service::device::entities::DeviceEntity::columnName<"debug_enabled">(), query.value(false))
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_query query(c.pool());
+        query.update(service::device::entities::DeviceEntity::table_name())
+            .set(service::device::entities::DeviceEntity::column_name<"debug_enabled">(), query.value(false))
             .set("updated_at", query.call("now"))
-            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().isNull()).expression(query));
+            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().is_null()).expression(query));
         (void)co_await transaction.execute(query);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         if (!edgeNodeId.empty() && service::common::isUuid(actor)) {
             (void)co_await service::edge::EdgeService::queueSnapshot(c, edgeNodeId, actor);
@@ -806,21 +800,21 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& input) {
+    ruvia::task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& input) {
         const auto& body = input;
         std::string resolvedLinkId = str(body.template get<"linkId">());
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
-        ruvia::DbQuery currentQuery(c.pool());
+        ruvia::db_query currentQuery(c.pool());
         currentQuery
-            .select({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "d")), currentQuery.coalesce({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")), currentQuery.value("") }), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_config_id">(), "d")), DeviceAccessService::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_params">(), "d"), "device_code"), currentQuery.column(service::device::entities::LinkEntity::columnName<"execution">(), "l"), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"status">(), "d")) })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::LinkEntity::tableName(), currentQuery.binary(currentQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, currentQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "d")), "l")
-            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::DbUnaryOperator::kIsNull, currentQuery.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "d"))));
+            .select({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "d")), currentQuery.coalesce({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")), currentQuery.value("") }), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"protocol_config_id">(), "d")), DeviceAccessService::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"protocol_params">(), "d"), "device_code"), currentQuery.column(service::device::entities::LinkEntity::column_name<"execution">(), "l"), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"status">(), "d")) })
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::LinkEntity::table_name(), currentQuery.binary(currentQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, currentQuery.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "d")), "l")
+            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::db_unary_operator::is_null, currentQuery.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "d"))));
         const auto rows = co_await c.db().query(currentQuery);
         if (rows.empty()) {
             service::common::fail(18001, "设备不存在", 404);
         }
-        auto transaction = co_await c.db().beginTransaction();
+        auto transaction = co_await c.db().begin_transaction();
         co_await lockConnectionNodes(c, transaction, rows.front()[1].value().value_or(""),
             body.template get<"edgeConnection">() ? str(body.template get<"edgeConnection">()->template get<"edgeNodeId">()) : std::string{});
         if (body.template get<"edgeConnection">()) {
@@ -846,12 +840,12 @@ return result
         const std::string requestedLinkId = resolvedLinkId;
         const std::string targetLinkId = requestedLinkId.empty() ? currentLinkId : requestedLinkId;
         const std::string targetProtocolConfigId = body.template get<"protocolConfigId">() ? str(body.template get<"protocolConfigId">()) : currentProtocolConfigId;
-        ruvia::DbQuery targetQuery(c.pool());
+        ruvia::db_query targetQuery(c.pool());
         targetQuery
-            .select(targetQuery.coalesce({ DeviceAccessService::text(targetQuery, targetQuery.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")), targetQuery.value("") }))
-            .from(service::device::entities::LinkEntity::tableName(), "l")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, targetQuery.column(service::device::entities::LinkEntity::columnName<"protocol">(), "l")), "p")
-            .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, targetLinkId)), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "p"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, targetProtocolConfigId)), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "l")), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "p"))));
+            .select(targetQuery.coalesce({ DeviceAccessService::text(targetQuery, targetQuery.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")), targetQuery.value("") }))
+            .from(service::device::entities::LinkEntity::table_name(), "l")
+            .join(ruvia::db_join_type::inner, service::device::entities::ProtocolConfigEntity::table_name(), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, targetQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l")), "p")
+            .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(targetQuery, targetLinkId)), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"id">(), "p"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(targetQuery, targetProtocolConfigId)), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::device::entities::LinkEntity::column_name<"deleted_at">(), "l")), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "p"))));
         const auto target = co_await transaction.query(targetQuery);
         if (target.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
@@ -862,10 +856,10 @@ return result
         co_await ensureUnique(c, transaction, resolvedLinkId, body, std::string(id));
         co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::string(id));
 
-        ruvia::DbQuery update(c.pool());
-        update.update(service::device::entities::DeviceEntity::tableName());
+        ruvia::db_query update(c.pool());
+        update.update(service::device::entities::DeviceEntity::table_name());
         bool changed = false;
-        const auto assign = [&](std::string_view column, ruvia::DbQuery::Expr value) {
+        const auto assign = [&](std::string_view column, ruvia::db_query::expr_type value) {
             update.set(column, value);
             changed = true;
         };
@@ -884,11 +878,11 @@ return result
         if (body.template get<"status">()) {
             assign("status", update.value(body.template get<"status">()->view()));
         }
-        auto protocolParams = update.column(service::device::entities::DeviceEntity::columnName<"protocol_params">());
+        auto protocolParams = update.column(service::device::entities::DeviceEntity::column_name<"protocol_params">());
         const auto jsonPath = [&](std::string_view key) {
-            return update.cast(update.array({ DeviceAccessService::textKey(update, key) }), ruvia::DbTypeDefinition{ .dataType = ruvia::DbDataType::kText, .array = true });
+            return update.cast(update.array({ DeviceAccessService::textKey(update, key) }), ruvia::db_type_definition{ .data_type_ = ruvia::db_data_type::text, .array_ = true });
         };
-        const auto jsonValue = [&](std::string_view key, ruvia::DbQuery::Expr value) {
+        const auto jsonValue = [&](std::string_view key, ruvia::db_query::expr_type value) {
             protocolParams = update.call(
                 "jsonb_set",
                 { protocolParams, jsonPath(key), update.call("to_jsonb", { value }), DeviceAccessService::boolean(update, true) }
@@ -898,7 +892,7 @@ return result
         const auto jsonDocument = [&](std::string_view key, std::string_view value) {
             protocolParams = update.call(
                 "jsonb_set",
-                { protocolParams, jsonPath(key), update.cast(update.value(value), ruvia::DbDataType::kJsonb), DeviceAccessService::boolean(update, true) }
+                { protocolParams, jsonPath(key), update.cast(update.value(value), ruvia::db_data_type::jsonb), DeviceAccessService::boolean(update, true) }
             );
             changed = true;
         };
@@ -908,20 +902,20 @@ return result
         if (body.template get<"targetId">()) {
             jsonValue("target_id", DeviceAccessService::text(update, update.value(body.template get<"targetId">()->view())));
         } else if (connectionChanged) {
-            protocolParams = update.binary(protocolParams, ruvia::DbBinaryOperator::kJsonDelete, DeviceAccessService::textKey(update, "target_id")),
+            protocolParams = update.binary(protocolParams, ruvia::db_binary_operator::json_delete, DeviceAccessService::textKey(update, "target_id")),
             changed = true;
         }
         if (body.template get<"onlineTimeout">()) {
-            jsonValue("online_timeout", update.cast(update.value(static_cast<std::int64_t>(*body.template get<"onlineTimeout">())), ruvia::DbDataType::kBigInt));
+            jsonValue("online_timeout", update.cast(update.value(static_cast<std::int64_t>(*body.template get<"onlineTimeout">())), ruvia::db_data_type::big_int));
         }
         if (body.template get<"remoteControl">()) {
-            jsonValue("remote_control", update.cast(update.value(static_cast<bool>(*body.template get<"remoteControl">())), ruvia::DbDataType::kBoolean));
+            jsonValue("remote_control", update.cast(update.value(static_cast<bool>(*body.template get<"remoteControl">())), ruvia::db_data_type::boolean));
         }
         if (body.template get<"modbusMode">()) {
             jsonValue("modbus_mode", DeviceAccessService::text(update, update.value(body.template get<"modbusMode">()->view())));
         }
         if (body.template get<"slaveId">()) {
-            jsonValue("slave_id", update.cast(update.value(static_cast<std::int64_t>(*body.template get<"slaveId">())), ruvia::DbDataType::kBigInt));
+            jsonValue("slave_id", update.cast(update.value(static_cast<std::int64_t>(*body.template get<"slaveId">())), ruvia::db_data_type::big_int));
         }
         if (body.template get<"timezone">()) {
             jsonValue("timezone", DeviceAccessService::text(update, update.value(body.template get<"timezone">()->view())));
@@ -943,7 +937,7 @@ return result
             assign("protocol_params", protocolParams);
         }
         if (body.template get<"remark">()) {
-            assign("remark", update.nullIf(DeviceAccessService::text(update, update.value(body.template get<"remark">()->view())), update.value("")));
+            assign("remark", update.null_if(DeviceAccessService::text(update, update.value(body.template get<"remark">()->view())), update.value("")));
         }
 
         {
@@ -951,12 +945,12 @@ return result
                 assign("updated_at", update.call("now"));
             }
             if (changed) {
-                update.where(update.binary(update.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(update, id)));
+                update.where(update.binary(update.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(update, id)));
             }
             if (changed) {
                 (void)co_await transaction.execute(update);
             }
-            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
             if (connectionChanged && currentExecution == "edge")
                 co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, currentLinkId);
             co_await transaction.commit();
@@ -983,27 +977,27 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> remove(Context& c, std::string_view id) {
+    ruvia::task<void> remove(Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
-        ruvia::DbQuery currentQuery(c.pool());
+        ruvia::db_query currentQuery(c.pool());
         currentQuery
-            .select({ DeviceAccessService::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_params">(), "d"), "device_code"), currentQuery.coalesce({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::LinkEntity::columnName<"edge_node_id">(), "l")), currentQuery.value("") }), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "d")), currentQuery.column(service::device::entities::LinkEntity::columnName<"execution">(), "l") })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::LinkEntity::tableName(), currentQuery.binary(currentQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, currentQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "d")), "l")
-            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::DbUnaryOperator::kIsNull, currentQuery.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "d"))));
+            .select({ DeviceAccessService::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"protocol_params">(), "d"), "device_code"), currentQuery.coalesce({ DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::LinkEntity::column_name<"edge_node_id">(), "l")), currentQuery.value("") }), DeviceAccessService::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "d")), currentQuery.column(service::device::entities::LinkEntity::column_name<"execution">(), "l") })
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::LinkEntity::table_name(), currentQuery.binary(currentQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, currentQuery.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "d")), "l")
+            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::db_unary_operator::is_null, currentQuery.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "d"))));
         const auto rows = co_await c.db().query(currentQuery);
         if (rows.empty()) {
             service::common::fail(18001, "设备不存在", 404);
         }
-        auto transaction = co_await c.db().beginTransaction();
+        auto transaction = co_await c.db().begin_transaction();
         co_await lockConnectionNodes(c, transaction, rows.front()[1].value().value_or(""), {});
-        ruvia::DbQuery removeQuery(c.pool());
-        removeQuery.update(service::device::entities::DeviceEntity::tableName())
-            .set(service::device::entities::DeviceEntity::columnName<"deleted_at">(), removeQuery.call("now"))
-            .set(service::device::entities::DeviceEntity::columnName<"updated_at">(), removeQuery.call("now"))
-            .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(removeQuery, id)));
+        ruvia::db_query removeQuery(c.pool());
+        removeQuery.update(service::device::entities::DeviceEntity::table_name())
+            .set(service::device::entities::DeviceEntity::column_name<"deleted_at">(), removeQuery.call("now"))
+            .set(service::device::entities::DeviceEntity::column_name<"updated_at">(), removeQuery.call("now"))
+            .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(removeQuery, id)));
         (void)co_await transaction.execute(removeQuery);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "deleted", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         if (!rows.front()[1].value().value_or("").empty())
             co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, rows.front()[2].value().value_or(""));
         co_await transaction.commit();
@@ -1024,77 +1018,53 @@ return result
     // ===== 设备分组（合并入同一 DeviceService 类）=====
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceGroupItemDto>> listGroups(Context& c, bool withCount) {
+    ruvia::task<ruvia::boxed_array<DeviceGroupItemDto>> listGroups(Context& c) {
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         DeviceAccessService::addVisibleGroupsCtes(query, actor);
-        ruvia::DbQuery visible(query.resource());
+        ruvia::db_query visible(query.resource());
         visible.select(visible.column("id")).from("visible_group");
-        ruvia::DbQuery count(query.resource());
+        ruvia::db_query count(query.resource());
         count.select(count.aggregate("count", { count.star() }))
             .from("scoped_device", "scoped")
-            .where(andAll(count, count.binary(count.column("group_id", "scoped"), ruvia::DbBinaryOperator::kEqual, count.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "g")), count.binary(count.column("access_rank", "scoped"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(count, 0))));
-        query.select({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "g")), query.column(service::device::entities::DeviceGroupEntity::columnName<"name">(), "g"), query.coalesce({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "g")), query.value("") }), query.column(service::device::entities::DeviceGroupEntity::columnName<"status">(), "g"), query.column(service::device::entities::DeviceGroupEntity::columnName<"sort_order">(), "g"), query.coalesce({ query.column(service::device::entities::DeviceGroupEntity::columnName<"remark">(), "g"), query.value("") }), withCount ? query.subquery(count) : DeviceAccessService::integer(query, 0), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::columnName<"created_at">(), "g") }), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::columnName<"updated_at">(), "g") }), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">(), "g")) })
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "g")
-            .where(andAll(query, query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "g")), query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "g"), ruvia::DbBinaryOperator::kIn, query.subquery(visible))))
-            .orderBy(query.column(service::device::entities::DeviceGroupEntity::columnName<"sort_order">(), "g"))
-            .addOrderBy(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "g"));
+            .where(andAll(count, count.binary(count.column("group_id", "scoped"), ruvia::db_binary_operator::equal, count.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "g")), count.binary(count.column("access_rank", "scoped"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(count, 0))));
+        query.select({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "g")), query.column(service::device::entities::DeviceGroupEntity::column_name<"name">(), "g"), query.coalesce({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "g")), query.value("") }), query.column(service::device::entities::DeviceGroupEntity::column_name<"status">(), "g"), query.column(service::device::entities::DeviceGroupEntity::column_name<"sort_order">(), "g"), query.coalesce({ query.column(service::device::entities::DeviceGroupEntity::column_name<"remark">(), "g"), query.value("") }), query.subquery(count), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::column_name<"created_at">(), "g") }), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::column_name<"updated_at">(), "g") }), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">(), "g")) })
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "g")
+            .where(andAll(query, query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "g")), query.binary(query.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "g"), ruvia::db_binary_operator::in, query.subquery(visible))))
+            .order_by(query.column(service::device::entities::DeviceGroupEntity::column_name<"sort_order">(), "g"))
+            .add_order_by(query.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "g"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceGroupItemDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceGroupItemDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            fillGroup(result.emplace(ruvia::ModelOptions{ .resource = c.arena() }), row, actor);
+            fillGroup(result.emplace(ruvia::model_options{ .resource_ = c.arena() }), row, actor);
         }
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<DeviceGroupItemDto> groupDetail(Context& c, std::string_view id) {
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
-        ruvia::DbQuery query(c.pool());
-        DeviceAccessService::addVisibleGroupsCtes(query, actor);
-        ruvia::DbQuery visible(query.resource());
-        visible.select(visible.column("id")).from("visible_group");
-        ruvia::DbQuery count(query.resource());
-        count.select(count.aggregate("count", { count.star() }))
-            .from("scoped_device", "scoped")
-            .where(andAll(count, count.binary(count.column("group_id", "scoped"), ruvia::DbBinaryOperator::kEqual, count.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "group_entry")), count.binary(count.column("access_rank", "scoped"), ruvia::DbBinaryOperator::kGreater, DeviceAccessService::integer(count, 0))));
-        query.select({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "group_entry")), query.column(service::device::entities::DeviceGroupEntity::columnName<"name">(), "group_entry"), query.coalesce({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "group_entry")), query.value("") }), query.column(service::device::entities::DeviceGroupEntity::columnName<"status">(), "group_entry"), query.column(service::device::entities::DeviceGroupEntity::columnName<"sort_order">(), "group_entry"), query.coalesce({ query.column(service::device::entities::DeviceGroupEntity::columnName<"remark">(), "group_entry"), query.value("") }), query.subquery(count), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::columnName<"created_at">(), "group_entry") }), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupEntity::columnName<"updated_at">(), "group_entry") }), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">(), "group_entry")) })
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "group_entry")
-            .where(andAll(query, query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "group_entry"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(query, id)), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "group_entry")), query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "group_entry"), ruvia::DbBinaryOperator::kIn, query.subquery(visible))))
-            .limit(1);
-        const auto rows = co_await c.db().query(query);
-        if (rows.empty()) {
-            service::common::fail(17001, "设备分组不存在", 404);
-        }
-        DeviceGroupItemDto item(ruvia::ModelOptions{ .resource = c.arena() });
-        fillGroup(item, rows.front(), actor);
-        co_return item;
-    }
-
-    template <typename Context>
-    ruvia::Task<void> createGroup(Context& c, const CreateDeviceGroupBody& body) {
+    ruvia::task<void> createGroup(Context& c, const CreateDeviceGroupBody& body) {
         co_await validateParent(c, body, std::nullopt);
-        const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const std::string name(body.template get<"name">().view());
         const std::string parentId = body.template get<"parentId">() ? std::string(body.template get<"parentId">()->view()) : "";
         const std::string status = body.template get<"status">() ? std::string(body.template get<"status">()->view()) : "enabled";
         const std::int64_t sortOrder =
             body.template get<"sortOrder">() ? static_cast<std::int64_t>(*body.template get<"sortOrder">()) : 0;
         const std::string remark = body.template get<"remark">() ? std::string(body.template get<"remark">()->view()) : "";
-        ruvia::DbQuery insert(c.pool());
-        insert.insertInto(service::device::entities::DeviceGroupEntity::tableName(), { "id", "name", "parent_id", "status", "sort_order", "remark", "created_by" })
-            .values({ DeviceAccessService::uuid(insert, id), insert.value(name), DeviceAccessService::nullableUuid(insert, parentId), insert.value(status), insert.value(sortOrder), insert.nullIf(DeviceAccessService::text(insert, insert.value(remark)), insert.value("")), DeviceAccessService::uuid(insert, c.userId) });
+        ruvia::db_query insert(c.pool());
+        insert.insert_into(service::device::entities::DeviceGroupEntity::table_name(), { "id", "name", "parent_id", "status", "sort_order", "remark", "created_by" })
+            .values({ DeviceAccessService::uuid(insert, id), insert.value(name), DeviceAccessService::nullableUuid(insert, parentId), insert.value(status), insert.value(sortOrder), insert.null_if(DeviceAccessService::text(insert, insert.value(remark)), insert.value("")), DeviceAccessService::uuid(insert, c.userId) });
         (void)co_await c.db().execute(insert);
     }
 
     template <typename Context>
-    ruvia::Task<void> updateGroup(Context& c, std::string_view id, const UpdateDeviceGroupBody& body) {
-        ruvia::DbQuery currentQuery(c.pool());
-        currentQuery.select(currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">()))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::DbUnaryOperator::kIsNull, currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))));
+    ruvia::task<void> updateGroup(Context& c, std::string_view id, const UpdateDeviceGroupBody& body) {
+        ruvia::db_query currentQuery(c.pool());
+        currentQuery.select(currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">()))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::db_unary_operator::is_null, currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))));
         const auto rows = co_await c.db().query(currentQuery);
         if (rows.empty()) {
             service::common::fail(17001, "设备分组不存在", 404);
@@ -1102,10 +1072,10 @@ return result
         co_await requireGroupOwner(c, rows.front()[0].value().value_or(std::string_view{}));
         co_await validateParent(c, body, std::string(id));
 
-        ruvia::DbQuery update(c.pool());
-        update.update(service::device::entities::DeviceGroupEntity::tableName());
+        ruvia::db_query update(c.pool());
+        update.update(service::device::entities::DeviceGroupEntity::table_name());
         bool changed = false;
-        const auto assign = [&](std::string_view column, ruvia::DbQuery::Expr value) {
+        const auto assign = [&](std::string_view column, ruvia::db_query::expr_type value) {
             update.set(column, value);
             changed = true;
         };
@@ -1122,52 +1092,52 @@ return result
             assign("sort_order", update.value(static_cast<std::int64_t>(*body.template get<"sortOrder">())));
         }
         if (body.template get<"remark">()) {
-            assign("remark", update.nullIf(DeviceAccessService::text(update, update.value(body.template get<"remark">()->view())), update.value("")));
+            assign("remark", update.null_if(DeviceAccessService::text(update, update.value(body.template get<"remark">()->view())), update.value("")));
         }
         if (!changed) {
             co_return;
         }
-        update.set(service::device::entities::DeviceGroupEntity::columnName<"updated_at">(), update.call("now"))
-            .where(update.binary(update.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(update, id)));
+        update.set(service::device::entities::DeviceGroupEntity::column_name<"updated_at">(), update.call("now"))
+            .where(update.binary(update.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(update, id)));
         (void)co_await c.db().execute(update);
     }
 
     template <typename Context>
-    ruvia::Task<void> removeGroup(Context& c, std::string_view id) {
-        ruvia::DbQuery currentQuery(c.pool());
-        currentQuery.select(currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">()))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::DbUnaryOperator::kIsNull, currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))));
+    ruvia::task<void> removeGroup(Context& c, std::string_view id) {
+        ruvia::db_query currentQuery(c.pool());
+        currentQuery.select(currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">()))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(currentQuery, currentQuery.binary(currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentQuery, id)), currentQuery.unary(ruvia::db_unary_operator::is_null, currentQuery.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))));
         const auto rows = co_await c.db().query(currentQuery);
         if (rows.empty()) {
             service::common::fail(17001, "设备分组不存在", 404);
         }
         co_await requireGroupOwner(c, rows.front()[0].value().value_or(std::string_view{}));
-        ruvia::DbQuery childGroups(c.pool());
+        ruvia::db_query childGroups(c.pool());
         childGroups.select(DeviceAccessService::integer(childGroups, 1))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(childGroups, childGroups.binary(childGroups.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(childGroups, id)), childGroups.unary(ruvia::DbUnaryOperator::kIsNull, childGroups.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))));
-        ruvia::DbQuery childDevices(c.pool());
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(childGroups, childGroups.binary(childGroups.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(childGroups, id)), childGroups.unary(ruvia::db_unary_operator::is_null, childGroups.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))));
+        ruvia::db_query childDevices(c.pool());
         childDevices.select(DeviceAccessService::integer(childDevices, 1))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(andAll(childDevices, childDevices.binary(childDevices.column(service::device::entities::DeviceEntity::columnName<"group_id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(childDevices, id)), childDevices.unary(ruvia::DbUnaryOperator::kIsNull, childDevices.column(service::device::entities::DeviceEntity::columnName<"deleted_at">()))));
-        ruvia::DbQuery used(c.pool());
-        used.select(used.binary(used.exists(childGroups), ruvia::DbBinaryOperator::kOr, used.exists(childDevices)));
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(andAll(childDevices, childDevices.binary(childDevices.column(service::device::entities::DeviceEntity::column_name<"group_id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(childDevices, id)), childDevices.unary(ruvia::db_unary_operator::is_null, childDevices.column(service::device::entities::DeviceEntity::column_name<"deleted_at">()))));
+        ruvia::db_query used(c.pool());
+        used.select(used.binary(used.exists(childGroups), ruvia::db_binary_operator::or_value, used.exists(childDevices)));
         const auto usedRows = co_await c.db().query(used);
         if (usedRows.front()[0].value().value_or(std::string_view{}) == "t") {
             service::common::fail(17004, "请先移除子分组和设备", 409);
         }
-        ruvia::DbQuery removeQuery(c.pool());
-        removeQuery.update(service::device::entities::DeviceGroupEntity::tableName())
-            .set(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), removeQuery.call("now"))
-            .set(service::device::entities::DeviceGroupEntity::columnName<"updated_at">(), removeQuery.call("now"))
-            .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(removeQuery, id)));
+        ruvia::db_query removeQuery(c.pool());
+        removeQuery.update(service::device::entities::DeviceGroupEntity::table_name())
+            .set(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), removeQuery.call("now"))
+            .set(service::device::entities::DeviceGroupEntity::column_name<"updated_at">(), removeQuery.call("now"))
+            .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(removeQuery, id)));
         (void)co_await c.db().execute(removeQuery);
     }
 
   private:
     template <typename Context>
-    ruvia::Task<service::device::DeviceCommandStatusDto> readCommandStatus(Context& context, std::string_view commandId) {
+    ruvia::task<service::device::DeviceCommandStatusDto> readCommandStatus(Context& context, std::string_view commandId) {
         const auto fields =
             co_await loadCommandStatus(context, commandId);
         if (fields.empty()) {
@@ -1184,7 +1154,7 @@ return result
             context.userId
         );
 
-        service::device::DeviceCommandStatusDto result(ruvia::ModelOptions{ .resource = context.arena() });
+        service::device::DeviceCommandStatusDto result(ruvia::model_options{ .resource_ = context.arena() });
         fillCommandStatus(result, commandId, fields);
         co_return result;
     }
@@ -1214,8 +1184,8 @@ return result
         const auto actualCount =
             std::clamp<std::int64_t>(commandInteger(fields, "actual_value_count"), 0, 8);
         if (actualCount != 0) {
-            ruvia::BoxedArray<service::device::DeviceCommandActualValueDto> actualValues(
-                ruvia::ModelOptions{ .resource = result.resource() }
+            ruvia::boxed_array<service::device::DeviceCommandActualValueDto> actualValues(
+                ruvia::model_options{ .resource_ = result.resource() }
             );
             for (std::int64_t index = 0; index < actualCount; ++index) {
                 auto& actual = actualValues.emplace();
@@ -1246,20 +1216,20 @@ return result
     }
 
     template <typename Context>
-    static ruvia::Task<std::vector<message::StreamField>> loadCommandStatus(Context& context, std::string_view id) {
-        ruvia::DbQuery statusQuery(context.pool());
+    static ruvia::task<std::vector<message::StreamField>> loadCommandStatus(Context& context, std::string_view id) {
+        ruvia::db_query statusQuery(context.pool());
         const auto createdAtMs = statusQuery.cast(
-            statusQuery.binary(statusQuery.extract(ruvia::DbDatePart::kEpoch, statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"created_at">())), ruvia::DbBinaryOperator::kMultiply, statusQuery.value(std::int64_t{ 1000 })),
-            ruvia::DbDataType::kBigInt
+            statusQuery.binary(statusQuery.extract(ruvia::db_date_part::epoch, statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"created_at">())), ruvia::db_binary_operator::multiply, statusQuery.value(std::int64_t{ 1000 })),
+            ruvia::db_data_type::big_int
         );
         const auto completedAtMs = statusQuery.cast(
-            statusQuery.binary(statusQuery.extract(ruvia::DbDatePart::kEpoch, statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"completed_at">())), ruvia::DbBinaryOperator::kMultiply, statusQuery.value(std::int64_t{ 1000 })),
-            ruvia::DbDataType::kBigInt
+            statusQuery.binary(statusQuery.extract(ruvia::db_date_part::epoch, statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"completed_at">())), ruvia::db_binary_operator::multiply, statusQuery.value(std::int64_t{ 1000 })),
+            ruvia::db_data_type::big_int
         );
         statusQuery
-            .select({ statusQuery.cast(statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"device_id">()), ruvia::DbDataType::kText), statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"device_code">()), statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"protocol">()), statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"status">()), statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"reason">()), statusQuery.cast(createdAtMs, ruvia::DbDataType::kText), statusQuery.coalesce({ statusQuery.cast(completedAtMs, ruvia::DbDataType::kText), statusQuery.value("0") }) })
-            .from(service::command::entities::CommandOperationEntity::tableName())
-            .where(statusQuery.binary(statusQuery.column(service::command::entities::CommandOperationEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, statusQuery.cast(statusQuery.value(id), ruvia::DbDataType::kUuid)));
+            .select({ statusQuery.cast(statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"device_id">()), ruvia::db_data_type::text), statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"device_code">()), statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"protocol">()), statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"status">()), statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"reason">()), statusQuery.cast(createdAtMs, ruvia::db_data_type::text), statusQuery.coalesce({ statusQuery.cast(completedAtMs, ruvia::db_data_type::text), statusQuery.value("0") }) })
+            .from(service::command::entities::CommandOperationEntity::table_name())
+            .where(statusQuery.binary(statusQuery.column(service::command::entities::CommandOperationEntity::column_name<"id">()), ruvia::db_binary_operator::equal, statusQuery.cast(statusQuery.value(id), ruvia::db_data_type::uuid)));
         const auto rows = co_await context.db().query(statusQuery);
         std::vector<message::StreamField> fields;
         if (rows.empty()) {
@@ -1269,22 +1239,22 @@ return result
         for (std::size_t index = 0; index < 7; ++index) {
             fields.push_back({ std::string(names[index]), std::string(rows.front()[index].value().value_or(std::string_view{})) });
         }
-        ruvia::DbQuery actualQuery(context.pool());
+        ruvia::db_query actualQuery(context.pool());
         const auto jsonKey = [&](std::string_view key) {
-            return actualQuery.cast(actualQuery.value(key), ruvia::DbDataType::kText);
+            return actualQuery.cast(actualQuery.value(key), ruvia::db_data_type::text);
         };
         actualQuery
-            .select({ actualQuery.binary(actualQuery.column("value", "a"), ruvia::DbBinaryOperator::kJsonGetText, jsonKey("elementId")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::DbBinaryOperator::kJsonGetText, jsonKey("name")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::DbBinaryOperator::kJsonGetText, jsonKey("kind")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::DbBinaryOperator::kJsonGetText, jsonKey("value")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::DbBinaryOperator::kJsonGetText, jsonKey("unit")) })
-            .from(service::command::entities::CommandOperationEntity::tableName(), "operation")
-            .joinFunction(
-                ruvia::DbJoinType::kCross,
-                actualQuery.call("jsonb_array_elements", { actualQuery.column(service::command::entities::CommandOperationEntity::columnName<"actual_values">(), "operation") }),
+            .select({ actualQuery.binary(actualQuery.column("value", "a"), ruvia::db_binary_operator::json_get_text, jsonKey("elementId")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::db_binary_operator::json_get_text, jsonKey("name")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::db_binary_operator::json_get_text, jsonKey("kind")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::db_binary_operator::json_get_text, jsonKey("value")), actualQuery.binary(actualQuery.column("value", "a"), ruvia::db_binary_operator::json_get_text, jsonKey("unit")) })
+            .from(service::command::entities::CommandOperationEntity::table_name(), "operation")
+            .join_function(
+                ruvia::db_join_type::cross,
+                actualQuery.call("jsonb_array_elements", { actualQuery.column(service::command::entities::CommandOperationEntity::column_name<"actual_values">(), "operation") }),
                 {},
                 "a",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "value" }, { .name = "idx" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "value" }, { .name_ = "idx" } } }
             )
-            .where(actualQuery.binary(actualQuery.column(service::command::entities::CommandOperationEntity::columnName<"id">(), "operation"), ruvia::DbBinaryOperator::kEqual, actualQuery.cast(actualQuery.value(id), ruvia::DbDataType::kUuid)))
-            .orderBy(actualQuery.column("idx", "a"));
+            .where(actualQuery.binary(actualQuery.column(service::command::entities::CommandOperationEntity::column_name<"id">(), "operation"), ruvia::db_binary_operator::equal, actualQuery.cast(actualQuery.value(id), ruvia::db_data_type::uuid)))
+            .order_by(actualQuery.column("idx", "a"));
         const auto actual = co_await context.db().query(actualQuery);
         fields.push_back({ "actual_value_count", std::to_string(actual.size()) });
         const std::string_view actualNames[]{ "element_id", "name", "kind", "value", "unit" };
@@ -1331,29 +1301,29 @@ return result
             std::string(deviceId);
     }
 
-    static ruvia::DbQuery historyQuery(std::pmr::memory_resource* resource, std::string_view deviceId, std::string_view start, std::string_view end, std::int64_t pageSize, std::int64_t offset, std::int64_t page) {
-        const auto timestamp = [](ruvia::DbQuery& query, std::string_view value) {
-            return query.cast(query.value(value), ruvia::DbDataType::kTimestampTz);
+    static ruvia::db_query historyQuery(std::pmr::memory_resource* resource, std::string_view deviceId, std::string_view start, std::string_view end, std::int64_t pageSize, std::int64_t offset, std::int64_t page) {
+        const auto timestamp = [](ruvia::db_query& query, std::string_view value) {
+            return query.cast(query.value(value), ruvia::db_data_type::timestamp_tz);
         };
-        ruvia::DbQuery counted(resource);
-        const auto countedData = counted.column(service::device::entities::DeviceDataEntity::columnName<"data">(), "record");
+        ruvia::db_query counted(resource);
+        const auto countedData = counted.column(service::device::entities::DeviceDataEntity::column_name<"data">(), "record");
         counted.select(counted.aggregate("count", { counted.star() }))
-            .from(service::device::entities::DeviceDataEntity::tableName(), "record")
-            .where(andAll(counted, counted.binary(counted.column(service::device::entities::DeviceDataEntity::columnName<"device_id">(), "record"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(counted, deviceId)), counted.binary(counted.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), ruvia::DbBinaryOperator::kGreaterEqual, timestamp(counted, start)), counted.binary(counted.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), ruvia::DbBinaryOperator::kLessEqual, timestamp(counted, end)), counted.binary(counted.call("jsonb_typeof", { DeviceAccessService::jsonValue(counted, countedData, "values") }), ruvia::DbBinaryOperator::kEqual, counted.value("object"))));
+            .from(service::device::entities::DeviceDataEntity::table_name(), "record")
+            .where(andAll(counted, counted.binary(counted.column(service::device::entities::DeviceDataEntity::column_name<"device_id">(), "record"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(counted, deviceId)), counted.binary(counted.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(counted, start)), counted.binary(counted.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::less_equal, timestamp(counted, end)), counted.binary(counted.call("jsonb_typeof", { DeviceAccessService::jsonValue(counted, countedData, "values") }), ruvia::db_binary_operator::equal, counted.value("object"))));
 
-        ruvia::DbQuery filtered(resource);
-        const auto filteredData = filtered.column(service::device::entities::DeviceDataEntity::columnName<"data">(), "record");
+        ruvia::db_query filtered(resource);
+        const auto filteredData = filtered.column(service::device::entities::DeviceDataEntity::column_name<"data">(), "record");
         filtered
-            .select({ filtered.column(service::device::entities::DeviceDataEntity::columnName<"id">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::columnName<"protocol">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::columnName<"source">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::columnName<"raw_payload_hex">(), "record"), filteredData })
-            .from(service::device::entities::DeviceDataEntity::tableName(), "record")
-            .where(andAll(filtered, filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::columnName<"device_id">(), "record"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(filtered, deviceId)), filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), ruvia::DbBinaryOperator::kGreaterEqual, timestamp(filtered, start)), filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), ruvia::DbBinaryOperator::kLessEqual, timestamp(filtered, end)), filtered.binary(filtered.call("jsonb_typeof", { DeviceAccessService::jsonValue(filtered, filteredData, "values") }), ruvia::DbBinaryOperator::kEqual, filtered.value("object"))))
-            .orderBy(filtered.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"), ruvia::DbOrderDirection::kDesc)
-            .addOrderBy(filtered.column(service::device::entities::DeviceDataEntity::columnName<"id">(), "record"), ruvia::DbOrderDirection::kDesc)
+            .select({ filtered.column(service::device::entities::DeviceDataEntity::column_name<"id">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::column_name<"protocol">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::column_name<"source">(), "record"), filtered.column(service::device::entities::DeviceDataEntity::column_name<"raw_payload_hex">(), "record"), filteredData })
+            .from(service::device::entities::DeviceDataEntity::table_name(), "record")
+            .where(andAll(filtered, filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::column_name<"device_id">(), "record"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(filtered, deviceId)), filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(filtered, start)), filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::less_equal, timestamp(filtered, end)), filtered.binary(filtered.call("jsonb_typeof", { DeviceAccessService::jsonValue(filtered, filteredData, "values") }), ruvia::db_binary_operator::equal, filtered.value("object"))))
+            .order_by(filtered.column(service::device::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_order_direction::desc)
+            .add_order_by(filtered.column(service::device::entities::DeviceDataEntity::column_name<"id">(), "record"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>(offset));
 
-        ruvia::DbQuery normalized(resource);
-        ruvia::DbQuery normalizedValues(resource);
+        ruvia::db_query normalized(resource);
+        ruvia::db_query normalizedValues(resource);
         const auto point = normalizedValues.column("value", "point");
         const auto pointValue = DeviceAccessService::jsonValue(
             normalizedValues,
@@ -1362,33 +1332,33 @@ return result
         );
         const auto pointObject = andAll(
             normalizedValues,
-            normalizedValues.binary(normalizedValues.call("jsonb_typeof", { point }), ruvia::DbBinaryOperator::kEqual, normalizedValues.value("object")),
+            normalizedValues.binary(normalizedValues.call("jsonb_typeof", { point }), ruvia::db_binary_operator::equal, normalizedValues.value("object")),
             normalizedValues.binary(
                 normalizedValues.call("jsonb_typeof", { pointValue }),
-                ruvia::DbBinaryOperator::kEqual,
+                ruvia::db_binary_operator::equal,
                 normalizedValues.value("boolean")
             )
         );
         const auto pointBoolean = normalizedValues.cast(
             DeviceAccessService::jsonText(normalizedValues, point, "value"),
-            ruvia::DbDataType::kBoolean
+            ruvia::db_data_type::boolean
         );
-        const auto pointNumber = normalizedValues.caseWhen(
+        const auto pointNumber = normalizedValues.case_when(
             { { pointBoolean, DeviceAccessService::integer(normalizedValues, 1) } },
             DeviceAccessService::integer(normalizedValues, 0)
         );
         const auto pointPath = normalizedValues.cast(
             normalizedValues.array({ DeviceAccessService::textKey(normalizedValues, "value") }),
-            ruvia::DbTypeDefinition{ .dataType = ruvia::DbDataType::kText, .array = true }
+            ruvia::db_type_definition{ .data_type_ = ruvia::db_data_type::text, .array_ = true }
         );
-        const auto normalizedPoint = normalizedValues.caseWhen(
+        const auto normalizedPoint = normalizedValues.case_when(
             { { pointObject,
                 normalizedValues.call("jsonb_set", { point, pointPath, normalizedValues.call("to_jsonb", { pointNumber }), DeviceAccessService::boolean(normalizedValues, false) }) } },
             point
         );
         normalizedValues
             .select(normalizedValues.aggregate("jsonb_object_agg", { normalizedValues.column("key", "point"), normalizedPoint }))
-            .fromFunction(
+            .from_function(
                 normalizedValues.call(
                     "jsonb_each",
                     { normalizedValues.coalesce(
@@ -1397,83 +1367,83 @@ return result
                               normalizedValues.column("data", "filtered"),
                               "values"
                           ),
-                          normalizedValues.cast(normalizedValues.value("{}"), ruvia::DbDataType::kJsonb) }
+                          normalizedValues.cast(normalizedValues.value("{}"), ruvia::db_data_type::jsonb) }
                     ) }
                 ),
                 "point",
-                { .lateral = true,
-                  .columns = { { .name = "key" }, { .name = "value" } } }
+                { .lateral_ = true,
+                  .columns_ = { { .name_ = "key" }, { .name_ = "value" } } }
             );
         normalized
-            .select({ normalized.star("filtered"), normalized.alias(normalized.coalesce({ normalized.subquery(normalizedValues), normalized.cast(normalized.value("{}"), ruvia::DbDataType::kJsonb) }), "normalized_values") })
+            .select({ normalized.star("filtered"), normalized.alias(normalized.coalesce({ normalized.subquery(normalizedValues), normalized.cast(normalized.value("{}"), ruvia::db_data_type::jsonb) }), "normalized_values") })
             .from(filtered, "filtered");
 
-        ruvia::DbQuery query(resource);
+        ruvia::db_query query(resource);
         query.with("counted", counted)
             .with("filtered", filtered)
             .with("normalized", normalized);
         const auto total = query.coalesce({ query.subquery(counted), DeviceAccessService::integer(query, 0) });
         const auto item = query.call(
             "jsonb_build_object",
-            { DeviceAccessService::textKey(query, "id"), query.column("id", "normalized"), DeviceAccessService::textKey(query, "protocol"), query.column("protocol", "normalized"), DeviceAccessService::textKey(query, "reportTime"), query.call("iot_utc_timestamp", { query.column("report_time", "normalized") }), DeviceAccessService::textKey(query, "source"), query.column("source", "normalized"), DeviceAccessService::textKey(query, "functionCode"), DeviceAccessService::jsonText(query, query.column("data", "normalized"), "function_code"), DeviceAccessService::textKey(query, "values"), query.column("normalized_values", "normalized"), DeviceAccessService::textKey(query, "rawPayloadHex"), query.coalesce({ query.column("raw_payload_hex", "normalized"), query.cast(query.value("[]"), ruvia::DbDataType::kJsonb) }) }
+            { DeviceAccessService::textKey(query, "id"), query.column("id", "normalized"), DeviceAccessService::textKey(query, "protocol"), query.column("protocol", "normalized"), DeviceAccessService::textKey(query, "reportTime"), query.call("iot_utc_timestamp", { query.column("report_time", "normalized") }), DeviceAccessService::textKey(query, "source"), query.column("source", "normalized"), DeviceAccessService::textKey(query, "functionCode"), DeviceAccessService::jsonText(query, query.column("data", "normalized"), "function_code"), DeviceAccessService::textKey(query, "values"), query.column("normalized_values", "normalized"), DeviceAccessService::textKey(query, "rawPayloadHex"), query.coalesce({ query.column("raw_payload_hex", "normalized"), query.cast(query.value("[]"), ruvia::db_data_type::jsonb) }) }
         );
-        const std::array<ruvia::DbOrderTerm, 2> historyOrder{ { ruvia::DbOrderTerm{ query.column("report_time", "normalized"),
-                                                                                    ruvia::DbOrderDirection::kDesc,
-                                                                                    ruvia::DbNullsOrder::kDefault },
-                                                                ruvia::DbOrderTerm{ query.column("id", "normalized"),
-                                                                                    ruvia::DbOrderDirection::kDesc,
-                                                                                    ruvia::DbNullsOrder::kDefault } } };
+        const std::array<ruvia::db_order_term, 2> historyOrder{ { ruvia::db_order_term{ query.column("report_time", "normalized"),
+                                                                                    ruvia::db_order_direction::desc,
+                                                                                    ruvia::db_nulls_order::default_value },
+                                                                ruvia::db_order_term{ query.column("id", "normalized"),
+                                                                                    ruvia::db_order_direction::desc,
+                                                                                    ruvia::db_nulls_order::default_value } } };
         const auto list = query.coalesce(
             { query.aggregate("jsonb_agg", { item }, false, historyOrder),
-              query.cast(query.value("[]"), ruvia::DbDataType::kJsonb) }
+              query.cast(query.value("[]"), ruvia::db_data_type::jsonb) }
         );
         const auto totalPages = query.cast(
-            query.call("ceil", { query.binary(query.cast(total, ruvia::DbDataType::kNumeric), ruvia::DbBinaryOperator::kDivide, query.cast(query.value(pageSize), ruvia::DbDataType::kNumeric)) }),
-            ruvia::DbDataType::kBigInt
+            query.call("ceil", { query.binary(query.cast(total, ruvia::db_data_type::numeric), ruvia::db_binary_operator::divide, query.cast(query.value(pageSize), ruvia::db_data_type::numeric)) }),
+            ruvia::db_data_type::big_int
         );
         query.select(query.cast(
-                         query.call("jsonb_build_object", { DeviceAccessService::textKey(query, "list"), list, DeviceAccessService::textKey(query, "total"), total, DeviceAccessService::textKey(query, "page"), query.cast(query.value(page), ruvia::DbDataType::kBigInt), DeviceAccessService::textKey(query, "pageSize"), query.cast(query.value(pageSize), ruvia::DbDataType::kBigInt), DeviceAccessService::textKey(query, "totalPages"), totalPages }),
-                         ruvia::DbDataType::kText
+                         query.call("jsonb_build_object", { DeviceAccessService::textKey(query, "list"), list, DeviceAccessService::textKey(query, "total"), total, DeviceAccessService::textKey(query, "page"), query.cast(query.value(page), ruvia::db_data_type::big_int), DeviceAccessService::textKey(query, "pageSize"), query.cast(query.value(pageSize), ruvia::db_data_type::big_int), DeviceAccessService::textKey(query, "totalPages"), totalPages }),
+                         ruvia::db_data_type::text
                      ))
             .from("normalized");
         return query;
     }
 
     // 列顺序必须与 fillItem 的 row 下标严格对应。
-    static void selectItemColumns(ruvia::DbQuery& query) {
+    static void selectItemColumns(ruvia::db_query& query) {
         const auto protocolParams = query.column("protocol_params", "d");
         const auto endpoint = query.column("endpoint", "l");
         const auto protocolConfig = query.column("config", "p");
-        const auto emptyJson = query.cast(query.value("{}"), ruvia::DbDataType::kJsonb);
-        const auto emptyArray = query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
+        const auto emptyJson = query.cast(query.value("{}"), ruvia::db_data_type::jsonb);
+        const auto emptyArray = query.cast(query.value("[]"), ruvia::db_data_type::jsonb);
         const auto nullableJsonText = [&](std::string_view key) {
-            return query.nullIf(DeviceAccessService::jsonText(query, protocolParams, key), query.value(""));
+            return query.null_if(DeviceAccessService::jsonText(query, protocolParams, key), query.value(""));
         };
         const auto numericText = DeviceAccessService::jsonText(query, protocolParams, "online_timeout");
-        const auto numericOnlineTimeout = query.caseWhen(
-            { { query.binary(query.coalesce({ numericText, query.value("") }), ruvia::DbBinaryOperator::kRegex, query.value("^-?[0-9]{1,18}$")),
-                query.cast(numericText, ruvia::DbDataType::kInteger) } }
+        const auto numericOnlineTimeout = query.case_when(
+            { { query.binary(query.coalesce({ numericText, query.value("") }), ruvia::db_binary_operator::regex, query.value("^-?[0-9]{1,18}$")),
+                query.cast(numericText, ruvia::db_data_type::integer) } }
         );
         const auto onlineTimeout = query.coalesce({ numericOnlineTimeout, DeviceAccessService::integer(query, 300) });
         const auto timezone = query.coalesce(
-            { query.nullIf(DeviceAccessService::jsonText(query, protocolParams, "timezone"), query.value("")),
+            { query.null_if(DeviceAccessService::jsonText(query, protocolParams, "timezone"), query.value("")),
               query.value("+08:00") }
         );
-        const auto edgeExecution = query.binary(query.column("execution", "l"), ruvia::DbBinaryOperator::kEqual, query.value("edge"));
+        const auto edgeExecution = query.binary(query.column("execution", "l"), ruvia::db_binary_operator::equal, query.value("edge"));
 
-        ruvia::DbQuery functionCount(query.resource());
+        ruvia::db_query functionCount(query.resource());
         const auto functions = functionCount.coalesce(
             { DeviceAccessService::jsonValue(functionCount, functionCount.column("config", "p"), "funcs"),
-              functionCount.cast(functionCount.value("[]"), ruvia::DbDataType::kJsonb) }
+              functionCount.cast(functionCount.value("[]"), ruvia::db_data_type::jsonb) }
         );
         const auto function = functionCount.column("value", "function");
         const auto elements = functionCount.coalesce(
             { DeviceAccessService::jsonValue(functionCount, function, "elements"),
-              functionCount.cast(functionCount.value("[]"), ruvia::DbDataType::kJsonb) }
+              functionCount.cast(functionCount.value("[]"), ruvia::db_data_type::jsonb) }
         );
         const auto responseElements = functionCount.coalesce(
             { DeviceAccessService::jsonValue(functionCount, function, "responseElements"),
-              functionCount.cast(functionCount.value("[]"), ruvia::DbDataType::kJsonb) }
+              functionCount.cast(functionCount.value("[]"), ruvia::db_data_type::jsonb) }
         );
         const auto elementCount = functionCount.call(
             "jsonb_array_length",
@@ -1487,20 +1457,20 @@ return result
             .select(functionCount.coalesce(
                 { functionCount.aggregate(
                       "sum",
-                      { functionCount.binary(elementCount, ruvia::DbBinaryOperator::kAdd, responseElementCount) }
+                      { functionCount.binary(elementCount, ruvia::db_binary_operator::add, responseElementCount) }
                   ),
                   DeviceAccessService::integer(functionCount, 0) }
             ))
-            .fromFunction(functionCount.call("jsonb_array_elements", { functions }), "function", { .columns = { { .name = "value" } } });
-        const auto protocolElementCount = query.caseWhen(
-            { { query.binary(query.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, query.value("Modbus")),
+            .from_function(functionCount.call("jsonb_array_elements", { functions }), "function", { .columns_ = { { .name_ = "value" } } });
+        const auto protocolElementCount = query.case_when(
+            { { query.binary(query.column("protocol", "p"), ruvia::db_binary_operator::equal, query.value("Modbus")),
                 query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "registers"), emptyArray }) }) },
-              { query.binary(query.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, query.value("S7")),
+              { query.binary(query.column("protocol", "p"), ruvia::db_binary_operator::equal, query.value("S7")),
                 query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "areas"), emptyArray }) }) } },
-            query.caseWhen({ { query.binary(query.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, query.value("SL651")), query.coalesce({ query.subquery(functionCount), DeviceAccessService::integer(query, 0) }) } }, query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "points"), emptyArray }) }))
+            query.case_when({ { query.binary(query.column("protocol", "p"), ruvia::db_binary_operator::equal, query.value("SL651")), query.coalesce({ query.subquery(functionCount), DeviceAccessService::integer(query, 0) }) } }, query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "points"), emptyArray }) }))
         );
 
-        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.caseWhen({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l") });
+        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.case_when({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l") });
     }
 
     template <typename Context, typename Row>
@@ -1531,7 +1501,7 @@ return result
         }
         item.template set<"timezone">(row[12].value().value_or(std::string_view{}));
         {
-            DevicePacketDto heartbeat(ruvia::ModelOptions{ .resource = c.arena() });
+            DevicePacketDto heartbeat(ruvia::model_options{ .resource_ = c.arena() });
             if (row[13].value().has_value()) {
                 heartbeat.template set<"mode">(row[13].value().value_or(std::string_view{}));
             }
@@ -1541,7 +1511,7 @@ return result
             item.template set<"heartbeat">(std::move(heartbeat));
         }
         if (!row[30].value().has_value()) {
-            DevicePacketDto registration(ruvia::ModelOptions{ .resource = c.arena() });
+            DevicePacketDto registration(ruvia::model_options{ .resource_ = c.arena() });
             if (row[15].value().has_value()) {
                 registration.template set<"mode">(row[15].value().value_or(std::string_view{}));
             }
@@ -1575,8 +1545,8 @@ return result
         item.template set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})));
         item.template set<"connected">(false);
         item.template set<"connectionState">("disconnected");
-        item.template set<"elements">(ruvia::BoxedArray<DeviceElementDto>(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        item.template set<"elements">(ruvia::boxed_array<DeviceElementDto>(
+            ruvia::model_options{ .resource_ = c.arena() }
         ));
         item.template set<"canEdit">(capabilities.canEdit);
         item.template set<"canDelete">(capabilities.canDelete);
@@ -1618,7 +1588,7 @@ return result
     }
 
     template <typename Context, typename Item>
-    static ruvia::Task<void>
+    static ruvia::task<void>
     fillLatest(Context& c, const std::map<std::string, Item*, std::less<>>& items) {
         if (items.empty()) {
             co_return;
@@ -1644,7 +1614,7 @@ return result
             // these two fields, so HMGET avoids transferring and parsing the rest of the hash.
             pipeline.command("HMGET", service::telemetry::latest::runtimeKey(id), "connection_id", "last_report_at_ms");
             bindings.push_back({ ReplyKind::runtime, item });
-            pipeline.hgetAll(service::telemetry::latest::latestKey(id));
+            pipeline.hget_all(service::telemetry::latest::latestKey(id));
             bindings.push_back({ ReplyKind::latest, item });
             if (item->template get<"edgeNodeId">() &&
                 item->template get<"edgeTransport">() &&
@@ -1677,69 +1647,69 @@ return result
     }
 
     template <typename Context>
-    static ruvia::Task<void>
+    static ruvia::task<void>
     fillCommandOperations(Context& c, const std::map<std::string, DeviceItemDto*, std::less<>>& items, std::optional<std::string_view> onlyDevice) {
         if (items.empty()) {
             co_return;
         }
-        const auto makeWritable = [](ruvia::DbQuery& query,
-                                     ruvia::DbQuery::Expr value) {
+        const auto makeWritable = [](ruvia::db_query& query,
+                                     ruvia::db_query::expr_type value) {
             const auto normalized = query.call("lower", { query.coalesce({ value, query.value("") }) });
-            return query.caseWhen(
-                { { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("true")),
+            return query.case_when(
+                { { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("true")),
                     DeviceAccessService::boolean(query, true) },
-                  { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("t")),
+                  { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("t")),
                     DeviceAccessService::boolean(query, true) },
-                  { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("1")),
+                  { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("1")),
                     DeviceAccessService::boolean(query, true) },
-                  { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("yes")),
+                  { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("yes")),
                     DeviceAccessService::boolean(query, true) },
-                  { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("y")),
+                  { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("y")),
                     DeviceAccessService::boolean(query, true) },
-                  { query.binary(normalized, ruvia::DbBinaryOperator::kEqual, query.value("on")),
+                  { query.binary(normalized, ruvia::db_binary_operator::equal, query.value("on")),
                     DeviceAccessService::boolean(query, true) } },
                 DeviceAccessService::boolean(query, false)
             );
         };
-        const auto emptyJson = [](ruvia::DbQuery& query) {
-            return query.cast(query.value("{}"), ruvia::DbDataType::kJsonb);
+        const auto emptyJson = [](ruvia::db_query& query) {
+            return query.cast(query.value("{}"), ruvia::db_data_type::jsonb);
         };
-        const auto emptyArray = [](ruvia::DbQuery& query) {
-            return query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
+        const auto emptyArray = [](ruvia::db_query& query) {
+            return query.cast(query.value("[]"), ruvia::db_data_type::jsonb);
         };
-        const auto addDeviceFilters = [&](ruvia::DbQuery& query) {
+        const auto addDeviceFilters = [&](ruvia::db_query& query) {
             auto predicate = andAll(
                 query,
-                query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "d")),
-                query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceModelEntity::columnName<"deleted_at">(), "p"))
+                query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "d")),
+                query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceModelEntity::column_name<"deleted_at">(), "p"))
             );
             predicate = query.binary(
                 predicate,
-                ruvia::DbBinaryOperator::kAnd,
-                query.binary(query.column(service::device::entities::DeviceModelEntity::columnName<"enabled">(), "p"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::boolean(query, true))
+                ruvia::db_binary_operator::and_value,
+                query.binary(query.column(service::device::entities::DeviceModelEntity::column_name<"enabled">(), "p"), ruvia::db_binary_operator::equal, DeviceAccessService::boolean(query, true))
             );
             if (onlyDevice) {
                 predicate = query.binary(
                     predicate,
-                    ruvia::DbBinaryOperator::kAnd,
-                    query.binary(query.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(query, *onlyDevice))
+                    ruvia::db_binary_operator::and_value,
+                    query.binary(query.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(query, *onlyDevice))
                 );
             }
             query.where(predicate);
         };
 
-        ruvia::DbQuery modbus(c.pool());
+        ruvia::db_query modbus(c.pool());
         const auto modbusElement = modbus.column("element", "elements");
         const auto modbusRegisterType = DeviceAccessService::jsonText(
             modbus,
             modbusElement,
             "registerType"
         );
-        ruvia::DbQuery modbusLabelOne(c.pool());
+        ruvia::db_query modbusLabelOne(c.pool());
         const auto modbusLabelOneElement = modbusLabelOne.column("element", "elements");
         modbusLabelOne
             .select(DeviceAccessService::jsonText(modbusLabelOne, modbusLabelOne.column("value", "mapping"), "label"))
-            .fromFunction(
+            .from_function(
                 modbusLabelOne.call(
                     "jsonb_array_elements",
                     { modbusLabelOne.coalesce(
@@ -1752,19 +1722,19 @@ return result
                     ) }
                 ),
                 "mapping",
-                { .columns = { { .name = "value" } } }
+                { .columns_ = { { .name_ = "value" } } }
             )
             .where(modbusLabelOne.binary(
                 DeviceAccessService::jsonText(modbusLabelOne, modbusLabelOne.column("value", "mapping"), "key"),
-                ruvia::DbBinaryOperator::kEqual,
+                ruvia::db_binary_operator::equal,
                 modbusLabelOne.value("1")
             ))
             .limit(1);
-        ruvia::DbQuery modbusLabelZero(c.pool());
+        ruvia::db_query modbusLabelZero(c.pool());
         const auto modbusLabelZeroElement = modbusLabelZero.column("element", "elements");
         modbusLabelZero
             .select(DeviceAccessService::jsonText(modbusLabelZero, modbusLabelZero.column("value", "mapping"), "label"))
-            .fromFunction(
+            .from_function(
                 modbusLabelZero.call(
                     "jsonb_array_elements",
                     { modbusLabelZero.coalesce(
@@ -1777,16 +1747,16 @@ return result
                     ) }
                 ),
                 "mapping",
-                { .columns = { { .name = "value" } } }
+                { .columns_ = { { .name_ = "value" } } }
             )
             .where(modbusLabelZero.binary(
                 DeviceAccessService::jsonText(modbusLabelZero, modbusLabelZero.column("value", "mapping"), "key"),
-                ruvia::DbBinaryOperator::kEqual,
+                ruvia::db_binary_operator::equal,
                 modbusLabelZero.value("0")
             ))
             .limit(1);
-        const auto modbusPreset = modbus.caseWhen(
-            { { modbus.binary(modbusRegisterType, ruvia::DbBinaryOperator::kEqual, modbus.value("COIL")),
+        const auto modbusPreset = modbus.case_when(
+            { { modbus.binary(modbusRegisterType, ruvia::db_binary_operator::equal, modbus.value("COIL")),
                 modbus.call(
                     "jsonb_build_array",
                     { modbus.call("jsonb_build_object", { DeviceAccessService::textKey(modbus, "label"), modbus.coalesce({ modbus.subquery(modbusLabelOne), DeviceAccessService::text(modbus, "1") }), DeviceAccessService::textKey(modbus, "value"), DeviceAccessService::text(modbus, "1") }),
@@ -1795,105 +1765,105 @@ return result
             emptyArray(modbus)
         );
         modbus
-            .select({ modbus.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), DeviceAccessService::text(modbus, "MODBUS_WRITE"), DeviceAccessService::text(modbus, "写寄存器"), modbusElement, DeviceAccessService::integer(modbus, 1), modbus.column("element_position", "elements"), modbus.column("preset", "presets"), modbus.column("preset_position", "presets") })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), andAll(modbus, modbus.binary(modbus.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, modbus.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")), modbus.binary(modbus.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, modbus.value("Modbus"))), "p")
-            .joinFunction(
-                ruvia::DbJoinType::kCross,
-                modbus.call("jsonb_array_elements", { modbus.coalesce({ DeviceAccessService::jsonValue(modbus, modbus.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p"), "registers"), emptyArray(modbus) }) }),
+            .select({ modbus.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), DeviceAccessService::text(modbus, "MODBUS_WRITE"), DeviceAccessService::text(modbus, "写寄存器"), modbusElement, DeviceAccessService::integer(modbus, 1), modbus.column("element_position", "elements"), modbus.column("preset", "presets"), modbus.column("preset_position", "presets") })
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(), andAll(modbus, modbus.binary(modbus.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, modbus.column(service::device::entities::DeviceEntity::column_name<"id">(), "d")), modbus.binary(modbus.column(service::device::entities::DeviceModelEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, modbus.value("Modbus"))), "p")
+            .join_function(
+                ruvia::db_join_type::cross,
+                modbus.call("jsonb_array_elements", { modbus.coalesce({ DeviceAccessService::jsonValue(modbus, modbus.column(service::device::entities::DeviceModelEntity::column_name<"config">(), "p"), "registers"), emptyArray(modbus) }) }),
                 {},
                 "elements",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "element" }, { .name = "element_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } }
             )
-            .joinFunction(
-                ruvia::DbJoinType::kLeft,
+            .join_function(
+                ruvia::db_join_type::left,
                 modbus.call("jsonb_array_elements", { modbusPreset }),
                 DeviceAccessService::boolean(modbus, true),
                 "presets",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "preset" }, { .name = "preset_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "preset" }, { .name_ = "preset_position" } } }
             );
         addDeviceFilters(modbus);
-        modbus.andWhere(makeWritable(
+        modbus.and_where(makeWritable(
             modbus,
             DeviceAccessService::jsonText(modbus, modbusElement, "writable")
         ));
 
-        ruvia::DbQuery s7(c.pool());
+        ruvia::db_query s7(c.pool());
         const auto s7Element = s7.column("element", "elements");
-        const auto s7Preset = s7.caseWhen(
-            { { s7.binary(DeviceAccessService::jsonText(s7, s7Element, "dataType"), ruvia::DbBinaryOperator::kEqual, s7.value("BOOL")),
+        const auto s7Preset = s7.case_when(
+            { { s7.binary(DeviceAccessService::jsonText(s7, s7Element, "dataType"), ruvia::db_binary_operator::equal, s7.value("BOOL")),
                 s7.cast(s7.value("[{\"label\":\"1\",\"value\":\"1\"},"
                                  "{\"label\":\"0\",\"value\":\"0\"}]"),
-                        ruvia::DbDataType::kJsonb) } },
+                        ruvia::db_data_type::jsonb) } },
             emptyArray(s7)
         );
-        const auto commandName = s7.caseWhen(
-            { { s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, s7.value("MQTT")),
+        const auto commandName = s7.case_when(
+            { { s7.binary(s7.column("protocol", "p"), ruvia::db_binary_operator::equal, s7.value("MQTT")),
                 s7.value("发送控制消息") } },
             s7.value("写寄存器")
         );
-        s7.select({ s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kConcat, s7.value("_WRITE")), commandName, s7Element, DeviceAccessService::integer(s7, 2), s7.column("element_position", "elements"), s7.column("preset", "presets"), s7.column("preset_position", "presets") })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), andAll(s7, s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")), s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kIn, s7.list({ s7.value("S7"), s7.value("MC"), s7.value("FINS"), s7.value("DLT645"), s7.value("MQTT") }))), "p")
-            .joinFunction(
-                ruvia::DbJoinType::kCross,
-                s7.call("jsonb_array_elements", { s7.coalesce({ DeviceAccessService::jsonValue(s7, s7.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p"), "areas"), DeviceAccessService::jsonValue(s7, s7.column("config", "p"), "points"), emptyArray(s7) }) }),
+        s7.select({ s7.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), s7.binary(s7.column("protocol", "p"), ruvia::db_binary_operator::concat, s7.value("_WRITE")), commandName, s7Element, DeviceAccessService::integer(s7, 2), s7.column("element_position", "elements"), s7.column("preset", "presets"), s7.column("preset_position", "presets") })
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(), andAll(s7, s7.binary(s7.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, s7.column(service::device::entities::DeviceEntity::column_name<"id">(), "d")), s7.binary(s7.column(service::device::entities::DeviceModelEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::in, s7.list({ s7.value("S7"), s7.value("MC"), s7.value("FINS"), s7.value("DLT645"), s7.value("MQTT") }))), "p")
+            .join_function(
+                ruvia::db_join_type::cross,
+                s7.call("jsonb_array_elements", { s7.coalesce({ DeviceAccessService::jsonValue(s7, s7.column(service::device::entities::DeviceModelEntity::column_name<"config">(), "p"), "areas"), DeviceAccessService::jsonValue(s7, s7.column("config", "p"), "points"), emptyArray(s7) }) }),
                 {},
                 "elements",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "element" }, { .name = "element_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } }
             )
-            .joinFunction(ruvia::DbJoinType::kLeft, s7.call("jsonb_array_elements", { s7Preset }), DeviceAccessService::boolean(s7, true), "presets", { .lateral = true, .withOrdinality = true, .columns = { { .name = "preset" }, { .name = "preset_position" } } });
+            .join_function(ruvia::db_join_type::left, s7.call("jsonb_array_elements", { s7Preset }), DeviceAccessService::boolean(s7, true), "presets", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "preset" }, { .name_ = "preset_position" } } });
         addDeviceFilters(s7);
-        s7.andWhere(makeWritable(s7, DeviceAccessService::jsonText(s7, s7Element, "writable")));
+        s7.and_where(makeWritable(s7, DeviceAccessService::jsonText(s7, s7Element, "writable")));
 
-        ruvia::DbQuery sl651(c.pool());
+        ruvia::db_query sl651(c.pool());
         const auto function = sl651.column("function", "functions");
         const auto sl651Element = sl651.column("element", "elements");
-        sl651.select({ sl651.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), DeviceAccessService::jsonText(sl651, function, "funcCode"), sl651.coalesce({ sl651.nullIf(DeviceAccessService::jsonText(sl651, function, "name"), sl651.value("")), DeviceAccessService::jsonText(sl651, function, "funcCode") }), sl651Element, sl651.binary(sl651.column("function_position", "functions"), ruvia::DbBinaryOperator::kAdd, DeviceAccessService::integer(sl651, 2)), sl651.column("element_position", "elements"), sl651.column("preset", "presets"), sl651.column("preset_position", "presets") })
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), andAll(sl651, sl651.binary(sl651.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, sl651.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")), sl651.binary(sl651.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, sl651.value("SL651"))), "p")
-            .joinFunction(
-                ruvia::DbJoinType::kCross,
-                sl651.call("jsonb_array_elements", { sl651.coalesce({ DeviceAccessService::jsonValue(sl651, sl651.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p"), "funcs"), emptyArray(sl651) }) }),
+        sl651.select({ sl651.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"), DeviceAccessService::jsonText(sl651, function, "funcCode"), sl651.coalesce({ sl651.null_if(DeviceAccessService::jsonText(sl651, function, "name"), sl651.value("")), DeviceAccessService::jsonText(sl651, function, "funcCode") }), sl651Element, sl651.binary(sl651.column("function_position", "functions"), ruvia::db_binary_operator::add, DeviceAccessService::integer(sl651, 2)), sl651.column("element_position", "elements"), sl651.column("preset", "presets"), sl651.column("preset_position", "presets") })
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(), andAll(sl651, sl651.binary(sl651.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, sl651.column(service::device::entities::DeviceEntity::column_name<"id">(), "d")), sl651.binary(sl651.column(service::device::entities::DeviceModelEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, sl651.value("SL651"))), "p")
+            .join_function(
+                ruvia::db_join_type::cross,
+                sl651.call("jsonb_array_elements", { sl651.coalesce({ DeviceAccessService::jsonValue(sl651, sl651.column(service::device::entities::DeviceModelEntity::column_name<"config">(), "p"), "funcs"), emptyArray(sl651) }) }),
                 {},
                 "functions",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "function" }, { .name = "function_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } }
             )
-            .joinFunction(
-                ruvia::DbJoinType::kCross,
+            .join_function(
+                ruvia::db_join_type::cross,
                 sl651.call("jsonb_array_elements", { sl651.coalesce({ DeviceAccessService::jsonValue(sl651, function, "elements"), emptyArray(sl651) }) }),
                 {},
                 "elements",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "element" }, { .name = "element_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } }
             )
-            .joinFunction(
-                ruvia::DbJoinType::kLeft,
+            .join_function(
+                ruvia::db_join_type::left,
                 sl651.call("jsonb_array_elements", { sl651.coalesce({ DeviceAccessService::jsonValue(sl651, sl651Element, "options"), emptyArray(sl651) }) }),
                 DeviceAccessService::boolean(sl651, true),
                 "presets",
-                { .lateral = true, .withOrdinality = true, .columns = { { .name = "preset" }, { .name = "preset_position" } } }
+                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "preset" }, { .name_ = "preset_position" } } }
             );
         addDeviceFilters(sl651);
-        sl651.andWhere(sl651.binary(DeviceAccessService::jsonText(sl651, function, "dir"), ruvia::DbBinaryOperator::kEqual, sl651.value("DOWN")));
-        sl651.andWhere(sl651.binary(
+        sl651.and_where(sl651.binary(DeviceAccessService::jsonText(sl651, function, "dir"), ruvia::db_binary_operator::equal, sl651.value("DOWN")));
+        sl651.and_where(sl651.binary(
             sl651.coalesce({ DeviceAccessService::jsonText(sl651, sl651Element, "encode"), sl651.value("") }),
-            ruvia::DbBinaryOperator::kNotEqual,
+            ruvia::db_binary_operator::not_equal,
             sl651.value("JPEG")
         ));
 
-        modbus.combine(ruvia::DbSetOperation::kUnionAll, s7)
-            .combine(ruvia::DbSetOperation::kUnionAll, sl651);
-        ruvia::DbQuery query(c.pool());
-        query.with("command_element", modbus, { .columns = { "device_id", "operation_key", "operation_name", "element", "operation_position", "element_position", "preset", "preset_position" } });
+        modbus.combine(ruvia::db_set_operation::union_all, s7)
+            .combine(ruvia::db_set_operation::union_all, sl651);
+        ruvia::db_query query(c.pool());
+        query.with("command_element", modbus, { .columns_ = { "device_id", "operation_key", "operation_name", "element", "operation_position", "element_position", "preset", "preset_position" } });
         const auto element = query.column("element", "command_element");
         const auto preset = query.column("preset", "command_element");
         query.select({ DeviceAccessService::text(query, query.column("device_id", "command_element")), query.column("operation_key", "command_element"), query.column("operation_name", "command_element"), DeviceAccessService::jsonText(query, element, "id"), DeviceAccessService::jsonText(query, element, "name"), query.coalesce({ DeviceAccessService::jsonText(query, element, "unit"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, element, "registerType"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, element, "dataType"), query.value("") }), DeviceAccessService::jsonText(query, element, "size"), query.coalesce({ DeviceAccessService::jsonText(query, element, "encode"), query.value("") }), DeviceAccessService::jsonText(query, element, "length"), DeviceAccessService::jsonText(query, element, "digits"), DeviceAccessService::jsonText(query, preset, "label"), DeviceAccessService::jsonText(query, preset, "value"), query.column("operation_position", "command_element"), query.column("element_position", "command_element"), query.column("preset_position", "command_element") })
             .from("command_element")
-            .orderBy(query.column("device_id", "command_element"))
-            .addOrderBy(query.column("operation_position", "command_element"))
-            .addOrderBy(query.column("operation_key", "command_element"))
-            .addOrderBy(query.column("element_position", "command_element"))
-            .addOrderBy(query.column("preset_position", "command_element"), ruvia::DbOrderDirection::kAsc, ruvia::DbNullsOrder::kLast);
+            .order_by(query.column("device_id", "command_element"))
+            .add_order_by(query.column("operation_position", "command_element"))
+            .add_order_by(query.column("operation_key", "command_element"))
+            .add_order_by(query.column("element_position", "command_element"))
+            .add_order_by(query.column("preset_position", "command_element"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::last);
         const auto rows = co_await c.db().query(query);
 
         struct OptionData {
@@ -1972,17 +1942,17 @@ return result
             if (item == items.end()) {
                 continue;
             }
-            ruvia::BoxedArray<DeviceCommandOperationDto> operationDtos(
-                ruvia::ModelOptions{ .resource = c.arena() }
+            ruvia::boxed_array<DeviceCommandOperationDto> operationDtos(
+                ruvia::model_options{ .resource_ = c.arena() }
             );
             for (const auto& operation : operations) {
-                auto& operationDto = operationDtos.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+                auto& operationDto = operationDtos.emplace(ruvia::model_options{ .resource_ = c.arena() });
                 operationDto.template set<"name">(operation.name);
-                ruvia::BoxedArray<DeviceCommandOperationElementDto> elementDtos(
-                    ruvia::ModelOptions{ .resource = c.arena() }
+                ruvia::boxed_array<DeviceCommandOperationElementDto> elementDtos(
+                    ruvia::model_options{ .resource_ = c.arena() }
                 );
                 for (const auto& element : operation.elements) {
-                    auto& elementDto = elementDtos.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+                    auto& elementDto = elementDtos.emplace(ruvia::model_options{ .resource_ = c.arena() });
                     elementDto.template set<"elementId">(element.id).template set<"name">(element.name).template set<"value">("");
                     if (!element.unit.empty()) {
                         elementDto.template set<"unit">(element.unit);
@@ -2006,11 +1976,11 @@ return result
                         elementDto.template set<"digits">(*element.digits);
                     }
                     if (!element.options.empty()) {
-                        ruvia::BoxedArray<DeviceCommandOptionDto> optionDtos(
-                            ruvia::ModelOptions{ .resource = c.arena() }
+                        ruvia::boxed_array<DeviceCommandOptionDto> optionDtos(
+                            ruvia::model_options{ .resource_ = c.arena() }
                         );
                         for (const auto& option : element.options) {
-                            optionDtos.emplace(ruvia::ModelOptions{ .resource = c.arena() }).template set<"label">(option.label).template set<"value">(option.value);
+                            optionDtos.emplace(ruvia::model_options{ .resource_ = c.arena() }).template set<"label">(option.label).template set<"value">(option.value);
                         }
                         elementDto.template set<"options">(std::move(optionDtos));
                     }
@@ -2019,22 +1989,22 @@ return result
             }
             item->second->template set<"commandOperations">(std::move(operationDtos));
         }
-        ruvia::DbQuery mqttQuery(c.pool());
-        mqttQuery.select({mqttQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"),
-                         mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p")})
-            .from(service::device::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(),
+        ruvia::db_query mqttQuery(c.pool());
+        mqttQuery.select({mqttQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "d"),
+                         mqttQuery.column(service::device::entities::DeviceModelEntity::column_name<"config">(), "p")})
+            .from(service::device::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceModelEntity::table_name(),
                 andAll(mqttQuery,
-                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, mqttQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")),
-                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, mqttQuery.value("MQTT"))), "p");
+                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::column_name<"device_id">(), "p"), ruvia::db_binary_operator::equal, mqttQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "d")),
+                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, mqttQuery.value("MQTT"))), "p");
         addDeviceFilters(mqttQuery);
         const auto mqttRows = co_await c.db().query(mqttQuery);
         for (const auto& row : mqttRows) {
             const auto item = items.find(std::string(row[0].value().value_or(std::string_view{})));
             if (item == items.end()) continue;
-            const auto config = ruvia::fromJson<service::protocol::MqttConfig>(row[1].value().value_or(std::string_view{}));
+            const auto config = ruvia::from_json<service::protocol::MqttConfig>(row[1].value().value_or(std::string_view{}));
             if (!config || !config->get<"commands">() || !config->get<"points">()) continue;
-            ruvia::BoxedArray<DeviceCommandOperationDto> operations(ruvia::ModelOptions{.resource = c.arena()});
+            ruvia::boxed_array<DeviceCommandOperationDto> operations(ruvia::model_options{.resource_ = c.arena()});
             service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
             for (const auto& point : *config->get<"points">()) allowed.emplace("$point:" + std::string(point.get<"name">().view()));
             for (const auto& command : *config->get<"commands">()) {
@@ -2043,19 +2013,19 @@ return result
                 for (const auto level : service::utils::splitPayload(command.get<"topic">().view(), "/"))
                     if (level.starts_with("{point:") && level.ends_with('}')) topicNames.emplace(level.substr(7, level.size() - 8));
                 for (const auto& id : command.get<"requiredPointIds">()) requiredIds.emplace(id.view());
-                auto& operation = operations.emplace(ruvia::ModelOptions{.resource = c.arena()});
+                auto& operation = operations.emplace(ruvia::model_options{.resource_ = c.arena()});
                 operation.template set<"name">(command.get<"name">().view()).template set<"mqttMessageId">(command.get<"id">().view());
-                ruvia::BoxedArray<DeviceCommandOperationElementDto> elements(ruvia::ModelOptions{.resource = c.arena()});
+                ruvia::boxed_array<DeviceCommandOperationElementDto> elements(ruvia::model_options{.resource_ = c.arena()});
                 for (const auto& point : *config->get<"points">()) {
                     if (!message.references("$point:" + std::string(point.get<"name">().view())) && !topicNames.contains(point.get<"name">().view())) continue;
-                    auto& element = elements.emplace(ruvia::ModelOptions{.resource = c.arena()});
+                    auto& element = elements.emplace(ruvia::model_options{.resource_ = c.arena()});
                     element.template set<"elementId">(point.get<"id">().view()).template set<"name">(point.get<"name">().view())
                         .template set<"value">("").template set<"dataType">(point.get<"dataType">().view())
                         .template set<"required">(requiredIds.contains(point.get<"id">().view()));
                     if (point.get<"unit">()) element.template set<"unit">(point.get<"unit">()->view());
                     if (point.get<"dataType">().view() == "BOOL") {
-                        ruvia::BoxedArray<DeviceCommandOptionDto> options(ruvia::ModelOptions{.resource = c.arena()});
-                        for (const auto value : {"1", "0"}) options.emplace(ruvia::ModelOptions{.resource = c.arena()}).template set<"label">(value).template set<"value">(value);
+                        ruvia::boxed_array<DeviceCommandOptionDto> options(ruvia::model_options{.resource_ = c.arena()});
+                        for (const auto value : {"1", "0"}) options.emplace(ruvia::model_options{.resource_ = c.arena()}).template set<"label">(value).template set<"value">(value);
                         element.template set<"options">(std::move(options));
                     }
                 }
@@ -2065,47 +2035,30 @@ return result
         }
     }
 
-    static std::string redisHashField(const ruvia::RedisValue& value, std::string_view field) {
-        if (value.kind() != ruvia::RedisValue::Kind::kArray) {
-            return {};
-        }
-        const auto& entries = value.array();
-        for (std::size_t index = 0; index + 1 < entries.size(); index += 2) {
-            if (entries[index].kind() != ruvia::RedisValue::Kind::kString ||
-                entries[index + 1].kind() != ruvia::RedisValue::Kind::kString) {
-                continue;
-            }
-            if (entries[index].string() == field) {
-                return std::string(entries[index + 1].string());
-            }
-        }
-        return {};
-    }
-
-    static std::string redisArrayField(const ruvia::RedisValue& value, std::size_t index) {
-        if (value.kind() != ruvia::RedisValue::Kind::kArray) {
+    static std::string redisArrayField(const ruvia::redis_value& value, std::size_t index) {
+        if (value.kind() != ruvia::redis_value::kind_type::array) {
             return {};
         }
         const auto entries = value.array();
-        if (index >= entries.size() || entries[index].kind() != ruvia::RedisValue::Kind::kString) {
+        if (index >= entries.size() || entries[index].kind() != ruvia::redis_value::kind_type::string) {
             return {};
         }
         return std::string(entries[index].string());
     }
 
-    static std::optional<std::string> jsonString(const ruvia::JsonValue& object, std::string_view field) {
-        const auto value = object.template get<ruvia::String>(field);
+    static std::optional<std::string> jsonString(const ruvia::json_value& object, std::string_view field) {
+        const auto value = object.template get<ruvia::string>(field);
         if (!value) {
             return std::nullopt;
         }
         return std::string(value->view());
     }
 
-    static std::int64_t jsonInt(const ruvia::JsonValue& object, std::string_view field, std::int64_t fallback) {
-        if (const auto value = object.template get<ruvia::Int64>(field)) {
+    static std::int64_t jsonInt(const ruvia::json_value& object, std::string_view field, std::int64_t fallback) {
+        if (const auto value = object.template get<ruvia::int64>(field)) {
             return static_cast<std::int64_t>(*value);
         }
-        const auto raw = object.get<ruvia::JsonValue>(field);
+        const auto raw = object.get<ruvia::json_value>(field);
         if (!raw) {
             return fallback;
         }
@@ -2113,8 +2066,8 @@ return result
             .value_or(fallback);
     }
 
-    static double jsonDouble(const ruvia::JsonValue& object, std::string_view field, double fallback) {
-        const auto raw = object.get<ruvia::JsonValue>(field);
+    static double jsonDouble(const ruvia::json_value& object, std::string_view field, double fallback) {
+        const auto raw = object.get<ruvia::json_value>(field);
         if (!raw) {
             return fallback;
         }
@@ -2122,7 +2075,7 @@ return result
     }
 
     template <typename Item>
-    static void applyRuntime(Item& item, const ruvia::RedisValue& reply) {
+    static void applyRuntime(Item& item, const ruvia::redis_value& reply) {
         const auto reportTime = redisArrayField(reply, 1);
         if (!reportTime.empty()) {
             const auto milliseconds = toInt(reportTime);
@@ -2140,7 +2093,7 @@ return result
     }
 
     template <typename Context, typename Item>
-    static void applyEdgeRuntime(Context& c, Item& item, const ruvia::RedisValue& reply) {
+    static void applyEdgeRuntime(Context& c, Item& item, const ruvia::redis_value& reply) {
         const auto state = redisArrayField(reply, 0);
         if (state.empty()) {
             return;
@@ -2150,7 +2103,7 @@ return result
         item.template set<"connectionState">(
             connected ? "connected" : "disconnected"
         );
-        EdgeStatusDto status(ruvia::ModelOptions{ .resource = c.arena() });
+        EdgeStatusDto status(ruvia::model_options{ .resource_ = c.arena() });
         status.template set<"state">(state);
         const auto reason = redisArrayField(reply, 1);
         if (!reason.empty()) {
@@ -2189,8 +2142,8 @@ return result
     };
 
     template <typename Context, typename Item>
-    static void applyLatestElements(Context& c, Item& item, const ruvia::RedisValue& reply) {
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
+    static void applyLatestElements(Context& c, Item& item, const ruvia::redis_value& reply) {
+        if (reply.kind() != ruvia::redis_value::kind_type::array) {
             return;
         }
         bool hasElementIds = false;
@@ -2199,17 +2152,17 @@ return result
 
         const auto& entries = reply.array();
         for (std::size_t index = 0; index + 1 < entries.size(); index += 2) {
-            if (entries[index].kind() != ruvia::RedisValue::Kind::kString ||
-                entries[index + 1].kind() != ruvia::RedisValue::Kind::kString) {
+            if (entries[index].kind() != ruvia::redis_value::kind_type::string ||
+                entries[index + 1].kind() != ruvia::redis_value::kind_type::string) {
                 continue;
             }
             const auto field = entries[index].string();
             if (field == "_element_ids") {
                 hasElementIds = true;
-                const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
-                if (parsed && parsed->isObject()) {
-                    (void)parsed->forEachField(
-                        [&](std::string_view key, const ruvia::JsonValue&) {
+                const auto parsed = ruvia::json_value::parse(entries[index + 1].string());
+                if (parsed && parsed->is_object()) {
+                    (void)parsed->for_each_field(
+                        [&](std::string_view key, const ruvia::json_value&) {
                             if (!key.empty()) {
                                 elementIds.emplace(key);
                             }
@@ -2222,8 +2175,8 @@ return result
             if (field.empty() || field.front() == '_') {
                 continue;
             }
-            const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
-            if (!parsed || !parsed->isObject()) {
+            const auto parsed = ruvia::json_value::parse(entries[index + 1].string());
+            if (!parsed || !parsed->is_object()) {
                 continue;
             }
             LatestElement element;
@@ -2235,7 +2188,7 @@ return result
                 element.dataType
             );
             element.unit = jsonString(*parsed, "unit").value_or("");
-            if (const auto visible = parsed->template get<ruvia::Bool>("visible")) element.visible = static_cast<bool>(*visible);
+            if (const auto visible = parsed->template get<ruvia::bool_value>("visible")) element.visible = static_cast<bool>(*visible);
             element.quality = jsonString(*parsed, "quality").value_or("missing");
             element.group = jsonString(*parsed, "group").value_or("");
             element.encode = jsonString(*parsed, "encode").value_or("");
@@ -2261,12 +2214,12 @@ return result
             }
             return left.id < right.id;
         });
-        ruvia::BoxedArray<DeviceElementDto> dtos(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceElementDto> dtos(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         std::int64_t reportTime = 0;
         for (const auto& element : elements) {
-            auto& dto = dtos.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& dto = dtos.emplace(ruvia::model_options{ .resource_ = c.arena() });
             dto.template set<"id">(element.id)
                 .template set<"name">(element.name)
                 .template set<"value">(element.value)
@@ -2291,9 +2244,9 @@ return result
         }
     }
 
-    static std::string str(const ruvia::String& value) { return std::string(value.view()); }
+    static std::string str(const ruvia::string& value) { return std::string(value.view()); }
 
-    static std::string str(const std::optional<ruvia::String>& value) {
+    static std::string str(const std::optional<ruvia::string>& value) {
         return value ? std::string(value->view()) : std::string{};
     }
 
@@ -2344,7 +2297,7 @@ return result
         return out;
     }
 
-    // 心跳/注册包内容校验（对应旧 SQL shape-check 的第 8、9 条，语义一致）
+    // 心跳/注册包内容校验
     static void validatePacket(const std::optional<DevicePacketBody>& packet) {
         if (!packet) {
             return;
@@ -2387,15 +2340,15 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> lockConnectionNodes(Context& c, ruvia::DbTransaction& transaction, std::string_view prior, std::string_view next) {
+    ruvia::task<void> lockConnectionNodes(Context& c, ruvia::db_transaction& transaction, std::string_view prior, std::string_view next) {
         std::set<std::string> nodes;
         if (!prior.empty()) nodes.emplace(prior);
         if (!next.empty()) nodes.emplace(next);
         for (const auto& id : nodes) {
             if (!service::common::isUuid(id)) service::common::fail(18002, "边缘节点 ID 无效", 400);
-            ruvia::DbQuery query(c.pool());
-            query.select(query.column(entities::EdgeNodeEntity::columnName<"id">())).from(entities::EdgeNodeEntity::tableName())
-                .where((entities::EdgeNodeEntity::column<"id">() == id).expression(query)).lock(ruvia::DbLockOptions{});
+            ruvia::db_query query(c.pool());
+            query.select(query.column(entities::EdgeNodeEntity::column_name<"id">())).from(entities::EdgeNodeEntity::table_name())
+                .where((entities::EdgeNodeEntity::column<"id">() == id).expression(query)).lock(ruvia::db_lock_options{});
             (void)co_await transaction.query(query);
         }
     }
@@ -2403,7 +2356,7 @@ return result
     // 扁平字段（必填/长度/枚举/范围/UUID/timezone）由声明式校验器保证；
     // 此处只做跨字段、依赖 DB 与协议相关的校验（保留 18002/18003 域码）。
     template <typename Context, typename Body>
-    ruvia::Task<void> validate(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required) {
+    ruvia::task<void> validate(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required) {
         validatePacket(body.template get<"heartbeat">());
         validatePacket(body.template get<"registration">());
         const auto linkId = std::string(resolvedLinkId);
@@ -2415,7 +2368,7 @@ return result
             service::common::fail(18003, "请选择设备类型", 400);
         }
 
-        const ruvia::String* code = [&]() -> const ruvia::String* {
+        const ruvia::string* code = [&]() -> const ruvia::string* {
             if constexpr (std::is_same_v<Body, CreateDeviceBody>) {
                 return &body.template get<"deviceCode">();
             } else {
@@ -2434,11 +2387,11 @@ return result
             }
         }
         if (body.template get<"groupId">() && !body.template get<"groupId">()->view().empty()) {
-            ruvia::DbQuery groupQuery(c.pool());
+            ruvia::db_query groupQuery(c.pool());
             groupQuery
                 .select(DeviceAccessService::integer(groupQuery, 1))
-                .from(service::device::entities::DeviceGroupEntity::tableName())
-                .where(andAll(groupQuery, groupQuery.binary(groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(groupQuery, body.template get<"groupId">()->view())), groupQuery.unary(ruvia::DbUnaryOperator::kIsNull, groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))));
+                .from(service::device::entities::DeviceGroupEntity::table_name())
+                .where(andAll(groupQuery, groupQuery.binary(groupQuery.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(groupQuery, body.template get<"groupId">()->view())), groupQuery.unary(ruvia::db_unary_operator::is_null, groupQuery.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))));
             const auto group = co_await transaction.query(groupQuery);
             if (group.empty()) {
                 service::common::fail(18003, "设备分组不存在", 400);
@@ -2448,12 +2401,12 @@ return result
             co_return;
         }
 
-        ruvia::DbQuery relationQuery(c.pool());
+        ruvia::db_query relationQuery(c.pool());
         relationQuery
-            .select(relationQuery.column(service::device::entities::LinkEntity::columnName<"protocol">(), "l"))
-            .from(service::device::entities::LinkEntity::tableName(), "l")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, relationQuery.column(service::device::entities::LinkEntity::columnName<"protocol">(), "l")), "p")
-            .where(andAll(relationQuery, relationQuery.binary(relationQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(relationQuery, linkId)), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "p"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(relationQuery, configId)), relationQuery.unary(ruvia::DbUnaryOperator::kIsNull, relationQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "l")), relationQuery.unary(ruvia::DbUnaryOperator::kIsNull, relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "p"))));
+            .select(relationQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l"))
+            .from(service::device::entities::LinkEntity::table_name(), "l")
+            .join(ruvia::db_join_type::inner, service::device::entities::ProtocolConfigEntity::table_name(), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, relationQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l")), "p")
+            .where(andAll(relationQuery, relationQuery.binary(relationQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(relationQuery, linkId)), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"id">(), "p"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(relationQuery, configId)), relationQuery.unary(ruvia::db_unary_operator::is_null, relationQuery.column(service::device::entities::LinkEntity::column_name<"deleted_at">(), "l")), relationQuery.unary(ruvia::db_unary_operator::is_null, relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "p"))));
         const auto relation = co_await transaction.query(relationQuery);
         if (relation.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
@@ -2487,7 +2440,7 @@ return result
     }
 
     template <typename Context, typename Body>
-    ruvia::Task<void> validateRuntimeIdentity(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
+    ruvia::task<void> validateRuntimeIdentity(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
         const std::string inLinkId = std::string(resolvedLinkId);
         const std::string inTargetId = str(body.template get<"targetId">());
@@ -2496,11 +2449,11 @@ return result
             body.template get<"slaveId">() ? std::to_string(static_cast<std::int64_t>(*body.template get<"slaveId">())) : "";
         const std::string inRegistration = packetJson(body.template get<"registration">());
         const std::string inHeartbeat = packetJson(body.template get<"heartbeat">());
-        ruvia::DbQuery currentDevice(c.pool());
-        currentDevice.select({ currentDevice.column(service::device::entities::DeviceEntity::columnName<"link_id">()), currentDevice.column(service::device::entities::DeviceEntity::columnName<"protocol_config_id">()), currentDevice.column(service::device::entities::DeviceEntity::columnName<"protocol_params">()) })
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(andAll(currentDevice, currentDevice.binary(currentDevice.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentDevice, excluded)), currentDevice.unary(ruvia::DbUnaryOperator::kIsNull, currentDevice.column(service::device::entities::DeviceEntity::columnName<"deleted_at">()))));
-        ruvia::DbQuery candidateQuery(c.pool());
+        ruvia::db_query currentDevice(c.pool());
+        currentDevice.select({ currentDevice.column(service::device::entities::DeviceEntity::column_name<"link_id">()), currentDevice.column(service::device::entities::DeviceEntity::column_name<"protocol_config_id">()), currentDevice.column(service::device::entities::DeviceEntity::column_name<"protocol_params">()) })
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(andAll(currentDevice, currentDevice.binary(currentDevice.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentDevice, excluded)), currentDevice.unary(ruvia::db_unary_operator::is_null, currentDevice.column(service::device::entities::DeviceEntity::column_name<"deleted_at">()))));
+        ruvia::db_query candidateQuery(c.pool());
         candidateQuery.with("current_device", currentDevice);
         const auto currentParams = candidateQuery.column("protocol_params", "current");
         const auto candidateLink = candidateQuery.coalesce(
@@ -2508,7 +2461,7 @@ return result
               candidateQuery.column("link_id", "current") }
         );
         const auto candidateTarget = candidateQuery.coalesce(
-            { candidateQuery.nullIf(DeviceAccessService::text(candidateQuery, candidateQuery.value(inTargetId)), candidateQuery.value("")),
+            { candidateQuery.null_if(DeviceAccessService::text(candidateQuery, candidateQuery.value(inTargetId)), candidateQuery.value("")),
               DeviceAccessService::jsonText(candidateQuery, currentParams, "target_id"),
               candidateQuery.value("") }
         );
@@ -2516,15 +2469,15 @@ return result
             { DeviceAccessService::nullableUuid(candidateQuery, inConfigId),
               candidateQuery.column("protocol_config_id", "current") }
         );
-        const auto inputSlave = candidateQuery.nullIf(
+        const auto inputSlave = candidateQuery.null_if(
             DeviceAccessService::text(candidateQuery, candidateQuery.value(inSlaveId)),
             candidateQuery.value("")
         );
         const auto storedSlave = DeviceAccessService::jsonText(candidateQuery, currentParams, "slave_id");
-        const auto parseSlave = [&](ruvia::DbQuery::Expr value) {
-            return candidateQuery.caseWhen(
-                { { candidateQuery.binary(candidateQuery.coalesce({ value, candidateQuery.value("") }), ruvia::DbBinaryOperator::kRegex, candidateQuery.value("^-?[0-9]{1,18}$")),
-                    candidateQuery.cast(value, ruvia::DbDataType::kInteger) } }
+        const auto parseSlave = [&](ruvia::db_query::expr_type value) {
+            return candidateQuery.case_when(
+                { { candidateQuery.binary(candidateQuery.coalesce({ value, candidateQuery.value("") }), ruvia::db_binary_operator::regex, candidateQuery.value("^-?[0-9]{1,18}$")),
+                    candidateQuery.cast(value, ruvia::db_data_type::integer) } }
             );
         };
         const auto candidateSlave = candidateQuery.coalesce(
@@ -2532,15 +2485,15 @@ return result
         );
         const auto defaultPacket = candidateQuery.cast(
             candidateQuery.value(R"({"mode":"OFF"})"),
-            ruvia::DbDataType::kJsonb
+            ruvia::db_data_type::jsonb
         );
         const auto candidateRegistration = candidateQuery.coalesce(
-            { candidateQuery.cast(candidateQuery.nullIf(DeviceAccessService::text(candidateQuery, candidateQuery.value(inRegistration)), candidateQuery.value("")), ruvia::DbDataType::kJsonb),
+            { candidateQuery.cast(candidateQuery.null_if(DeviceAccessService::text(candidateQuery, candidateQuery.value(inRegistration)), candidateQuery.value("")), ruvia::db_data_type::jsonb),
               DeviceAccessService::jsonValue(candidateQuery, currentParams, "registration"),
               defaultPacket }
         );
         const auto candidateHeartbeat = candidateQuery.coalesce(
-            { candidateQuery.cast(candidateQuery.nullIf(DeviceAccessService::text(candidateQuery, candidateQuery.value(inHeartbeat)), candidateQuery.value("")), ruvia::DbDataType::kJsonb),
+            { candidateQuery.cast(candidateQuery.null_if(DeviceAccessService::text(candidateQuery, candidateQuery.value(inHeartbeat)), candidateQuery.value("")), ruvia::db_data_type::jsonb),
               DeviceAccessService::jsonValue(candidateQuery, currentParams, "heartbeat"),
               defaultPacket }
         );
@@ -2552,13 +2505,13 @@ return result
             { DeviceAccessService::jsonText(candidateQuery, candidateRegistration, "content"),
               candidateQuery.value("") }
         );
-        const auto registrationKeyExpr = candidateQuery.caseWhen(
-            { { candidateQuery.binary(registrationModeExpr, ruvia::DbBinaryOperator::kEqual, candidateQuery.value("OFF")),
+        const auto registrationKeyExpr = candidateQuery.case_when(
+            { { candidateQuery.binary(registrationModeExpr, ruvia::db_binary_operator::equal, candidateQuery.value("OFF")),
                 candidateQuery.value("OFF:") },
-              { candidateQuery.binary(registrationModeExpr, ruvia::DbBinaryOperator::kEqual, candidateQuery.value("HEX")),
+              { candidateQuery.binary(registrationModeExpr, ruvia::db_binary_operator::equal, candidateQuery.value("HEX")),
                 candidateQuery.binary(
                     DeviceAccessService::text(candidateQuery, "HEX:"),
-                    ruvia::DbBinaryOperator::kConcat,
+                    ruvia::db_binary_operator::concat,
                     candidateQuery.call(
                         "upper",
                         { candidateQuery.call(
@@ -2567,18 +2520,18 @@ return result
                         ) }
                     )
                 ) } },
-            candidateQuery.binary(DeviceAccessService::text(candidateQuery, "ASCII:"), ruvia::DbBinaryOperator::kConcat, registrationContent)
+            candidateQuery.binary(DeviceAccessService::text(candidateQuery, "ASCII:"), ruvia::db_binary_operator::concat, registrationContent)
         );
         const auto heartbeatModeExpr = candidateQuery.call(
             "upper",
             { candidateQuery.coalesce({ DeviceAccessService::jsonText(candidateQuery, candidateHeartbeat, "mode"), candidateQuery.value("OFF") }) }
         );
         candidateQuery
-            .select({ candidateLink, DeviceAccessService::jsonText(candidateQuery, candidateQuery.column(service::device::entities::LinkEntity::columnName<"endpoint">(), "link"), "mode"), candidateQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "protocol"), candidateTarget, candidateSlave, registrationModeExpr, registrationKeyExpr, heartbeatModeExpr })
-            .fromFunction(candidateQuery.call("generate_series", { DeviceAccessService::integer(candidateQuery, 1), DeviceAccessService::integer(candidateQuery, 1) }), "base")
-            .join(ruvia::DbJoinType::kLeft, "current_device", DeviceAccessService::boolean(candidateQuery, true), "current")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::LinkEntity::tableName(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "link"), ruvia::DbBinaryOperator::kEqual, candidateLink), candidateQuery.unary(ruvia::DbUnaryOperator::kIsNull, candidateQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "link"))), "link")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "protocol"), ruvia::DbBinaryOperator::kEqual, candidateConfig), candidateQuery.unary(ruvia::DbUnaryOperator::kIsNull, candidateQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "protocol"))), "protocol")
+            .select({ candidateLink, DeviceAccessService::jsonText(candidateQuery, candidateQuery.column(service::device::entities::LinkEntity::column_name<"endpoint">(), "link"), "mode"), candidateQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"protocol">(), "protocol"), candidateTarget, candidateSlave, registrationModeExpr, registrationKeyExpr, heartbeatModeExpr })
+            .from_function(candidateQuery.call("generate_series", { DeviceAccessService::integer(candidateQuery, 1), DeviceAccessService::integer(candidateQuery, 1) }), "base")
+            .join(ruvia::db_join_type::left, "current_device", DeviceAccessService::boolean(candidateQuery, true), "current")
+            .join(ruvia::db_join_type::inner, service::device::entities::LinkEntity::table_name(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "link"), ruvia::db_binary_operator::equal, candidateLink), candidateQuery.unary(ruvia::db_unary_operator::is_null, candidateQuery.column(service::device::entities::LinkEntity::column_name<"deleted_at">(), "link"))), "link")
+            .join(ruvia::db_join_type::inner, service::device::entities::ProtocolConfigEntity::table_name(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"id">(), "protocol"), ruvia::db_binary_operator::equal, candidateConfig), candidateQuery.unary(ruvia::db_unary_operator::is_null, candidateQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "protocol"))), "protocol")
             .limit(1);
         const auto candidate = co_await transaction.query(candidateQuery);
         if (candidate.empty()) {
@@ -2603,17 +2556,17 @@ return result
             co_return;
         }
 
-        ruvia::DbQuery siblingsQuery(c.pool());
-        const auto siblingParams = siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_params">(), "device");
+        ruvia::db_query siblingsQuery(c.pool());
+        const auto siblingParams = siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"protocol_params">(), "device");
         const auto siblingSlaveText = DeviceAccessService::jsonText(
             siblingsQuery,
             siblingParams,
             "slave_id"
         );
         const auto siblingSlave = siblingsQuery.coalesce(
-            { siblingsQuery.caseWhen(
-                  { { siblingsQuery.binary(siblingsQuery.coalesce({ siblingSlaveText, siblingsQuery.value("") }), ruvia::DbBinaryOperator::kRegex, siblingsQuery.value("^-?[0-9]{1,18}$")),
-                      siblingsQuery.cast(siblingSlaveText, ruvia::DbDataType::kInteger) } }
+            { siblingsQuery.case_when(
+                  { { siblingsQuery.binary(siblingsQuery.coalesce({ siblingSlaveText, siblingsQuery.value("") }), ruvia::db_binary_operator::regex, siblingsQuery.value("^-?[0-9]{1,18}$")),
+                      siblingsQuery.cast(siblingSlaveText, ruvia::db_data_type::integer) } }
               ),
               DeviceAccessService::integer(siblingsQuery, 1) }
         );
@@ -2630,13 +2583,13 @@ return result
             { DeviceAccessService::jsonText(siblingsQuery, siblingRegistration, "content"),
               siblingsQuery.value("") }
         );
-        const auto siblingKey = siblingsQuery.caseWhen(
-            { { siblingsQuery.binary(siblingMode, ruvia::DbBinaryOperator::kEqual, siblingsQuery.value("OFF")),
+        const auto siblingKey = siblingsQuery.case_when(
+            { { siblingsQuery.binary(siblingMode, ruvia::db_binary_operator::equal, siblingsQuery.value("OFF")),
                 siblingsQuery.value("OFF:") },
-              { siblingsQuery.binary(siblingMode, ruvia::DbBinaryOperator::kEqual, siblingsQuery.value("HEX")),
+              { siblingsQuery.binary(siblingMode, ruvia::db_binary_operator::equal, siblingsQuery.value("HEX")),
                 siblingsQuery.binary(
                     DeviceAccessService::text(siblingsQuery, "HEX:"),
-                    ruvia::DbBinaryOperator::kConcat,
+                    ruvia::db_binary_operator::concat,
                     siblingsQuery.call(
                         "upper",
                         { siblingsQuery.call(
@@ -2645,14 +2598,14 @@ return result
                         ) }
                     )
                 ) } },
-            siblingsQuery.binary(DeviceAccessService::text(siblingsQuery, "ASCII:"), ruvia::DbBinaryOperator::kConcat, siblingContent)
+            siblingsQuery.binary(DeviceAccessService::text(siblingsQuery, "ASCII:"), ruvia::db_binary_operator::concat, siblingContent)
         );
         siblingsQuery
-            .select({ siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"name">(), "device"), siblingSlave, siblingsQuery.coalesce({ DeviceAccessService::jsonText(siblingsQuery, siblingParams, "target_id"), siblingsQuery.value("") }), siblingMode, siblingKey })
-            .from(service::device::entities::DeviceEntity::tableName(), "device")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "config"), ruvia::DbBinaryOperator::kEqual, siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_config_id">(), "device")), siblingsQuery.unary(ruvia::DbUnaryOperator::kIsNull, siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "config"))), "config")
-            .where(andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "device"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(siblingsQuery, linkId)), siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "device"), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::uuid(siblingsQuery, excluded)), siblingsQuery.unary(ruvia::DbUnaryOperator::kIsNull, siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "device")), siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "config"), ruvia::DbBinaryOperator::kEqual, siblingsQuery.value(protocol))))
-            .orderBy(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "device"));
+            .select({ siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"name">(), "device"), siblingSlave, siblingsQuery.coalesce({ DeviceAccessService::jsonText(siblingsQuery, siblingParams, "target_id"), siblingsQuery.value("") }), siblingMode, siblingKey })
+            .from(service::device::entities::DeviceEntity::table_name(), "device")
+            .join(ruvia::db_join_type::inner, service::device::entities::ProtocolConfigEntity::table_name(), andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"id">(), "config"), ruvia::db_binary_operator::equal, siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"protocol_config_id">(), "device")), siblingsQuery.unary(ruvia::db_unary_operator::is_null, siblingsQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "config"))), "config")
+            .where(andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "device"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(siblingsQuery, linkId)), siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "device"), ruvia::db_binary_operator::not_equal, DeviceAccessService::uuid(siblingsQuery, excluded)), siblingsQuery.unary(ruvia::db_unary_operator::is_null, siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "device")), siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"protocol">(), "config"), ruvia::db_binary_operator::equal, siblingsQuery.value(protocol))))
+            .order_by(siblingsQuery.column(service::device::entities::DeviceEntity::column_name<"id">(), "device"));
         const auto siblings = co_await transaction.query(siblingsQuery);
 
         if (linkMode == "TCP Client") {
@@ -2719,7 +2672,7 @@ return result
     }
 
     template <typename Context, typename Body>
-    ruvia::Task<void> ensureUnique(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
+    ruvia::task<void> ensureUnique(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
         const auto& name = body.template get<"name">();
         const auto& code = body.template get<"deviceCode">();
         if constexpr (std::is_same_v<Body, UpdateDeviceBody>) {
@@ -2729,30 +2682,30 @@ return result
         const std::string codeValue = str(code);
         const std::string linkValue = std::string(resolvedLinkId);
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
-        ruvia::DbQuery query(c.pool());
-        ruvia::DbQuery currentLink(c.pool());
-        currentLink.select(currentLink.column(service::device::entities::DeviceEntity::columnName<"link_id">()))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(currentLink.binary(currentLink.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentLink, excluded)))
+        ruvia::db_query query(c.pool());
+        ruvia::db_query currentLink(c.pool());
+        currentLink.select(currentLink.column(service::device::entities::DeviceEntity::column_name<"link_id">()))
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(currentLink.binary(currentLink.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentLink, excluded)))
             .limit(1);
         const auto nameMatch = andAll(
             query,
-            query.binary(DeviceAccessService::text(query, nameValue), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::text(query, "")),
-            query.binary(query.column(service::device::entities::DeviceEntity::columnName<"name">()), ruvia::DbBinaryOperator::kEqual, query.value(nameValue))
+            query.binary(DeviceAccessService::text(query, nameValue), ruvia::db_binary_operator::not_equal, DeviceAccessService::text(query, "")),
+            query.binary(query.column(service::device::entities::DeviceEntity::column_name<"name">()), ruvia::db_binary_operator::equal, query.value(nameValue))
         );
         const auto codeMatch = andAll(
             query,
-            query.binary(DeviceAccessService::text(query, codeValue), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::text(query, "")),
+            query.binary(DeviceAccessService::text(query, codeValue), ruvia::db_binary_operator::not_equal, DeviceAccessService::text(query, "")),
             query.binary(
-                DeviceAccessService::jsonText(query, query.column(service::device::entities::DeviceEntity::columnName<"protocol_params">()), "device_code"),
-                ruvia::DbBinaryOperator::kEqual,
+                DeviceAccessService::jsonText(query, query.column(service::device::entities::DeviceEntity::column_name<"protocol_params">()), "device_code"),
+                ruvia::db_binary_operator::equal,
                 query.value(codeValue)
             ),
-            query.binary(query.column(service::device::entities::DeviceEntity::columnName<"link_id">()), ruvia::DbBinaryOperator::kEqual, query.coalesce({ DeviceAccessService::nullableUuid(query, linkValue), query.subquery(currentLink) }))
+            query.binary(query.column(service::device::entities::DeviceEntity::column_name<"link_id">()), ruvia::db_binary_operator::equal, query.coalesce({ DeviceAccessService::nullableUuid(query, linkValue), query.subquery(currentLink) }))
         );
         query.select(DeviceAccessService::integer(query, 1))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(andAll(query, query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceEntity::columnName<"deleted_at">())), query.binary(query.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::uuid(query, excluded)), query.binary(nameMatch, ruvia::DbBinaryOperator::kOr, codeMatch)))
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(andAll(query, query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceEntity::column_name<"deleted_at">())), query.binary(query.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::not_equal, DeviceAccessService::uuid(query, excluded)), query.binary(nameMatch, ruvia::db_binary_operator::or_value, codeMatch)))
             .limit(1);
         const auto rows = co_await transaction.query(query);
         if (!rows.empty()) {
@@ -2781,7 +2734,7 @@ return result
     }
 
     template <typename Context, typename Body>
-    ruvia::Task<void> validateParent(Context& c, const Body& body, std::optional<std::string> currentId) {
+    ruvia::task<void> validateParent(Context& c, const Body& body, std::optional<std::string> currentId) {
         const auto& parent = body.template get<"parentId">();
         if (!parent || parent->view().empty()) {
             co_return;
@@ -2792,10 +2745,10 @@ return result
         if (currentId && parent->view() == *currentId) {
             service::common::fail(17003, "上级分组不能是自身", 409);
         }
-        ruvia::DbQuery query(c.pool());
+        ruvia::db_query query(c.pool());
         query.select(DeviceAccessService::integer(query, 1))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(query, query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(query, parent->view())), query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(query, query.binary(query.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(query, parent->view())), query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))))
             .limit(1);
         const auto exists = co_await c.db().query(query);
         if (exists.empty()) {
@@ -2804,17 +2757,17 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> requireGroupOwner(Context& c, std::string_view ownerId) {
+    ruvia::task<void> requireGroupOwner(Context& c, std::string_view ownerId) {
         if (c.userId == ownerId) {
             co_return;
         }
-        ruvia::DbQuery roles(c.pool());
+        ruvia::db_query roles(c.pool());
         roles.select(DeviceAccessService::integer(roles, 1))
-            .from(service::device::entities::SysUserRoleEntity::tableName(), "ur")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::SysRoleEntity::tableName(), andAll(roles, roles.binary(roles.column(service::device::entities::SysRoleEntity::columnName<"id">(), "r"), ruvia::DbBinaryOperator::kEqual, roles.column(service::device::entities::SysUserRoleEntity::columnName<"role_id">(), "ur")), roles.binary(roles.column(service::device::entities::SysRoleEntity::columnName<"code">(), "r"), ruvia::DbBinaryOperator::kEqual, roles.value("superadmin")), roles.binary(roles.column(service::device::entities::SysRoleEntity::columnName<"status">(), "r"), ruvia::DbBinaryOperator::kEqual, roles.value("enabled")), roles.unary(ruvia::DbUnaryOperator::kIsNull, roles.column(service::device::entities::SysRoleEntity::columnName<"deleted_at">(), "r"))), "r")
-            .where(roles.binary(roles.column(service::device::entities::SysUserRoleEntity::columnName<"user_id">(), "ur"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(roles, c.userId)))
+            .from(service::device::entities::SysUserRoleEntity::table_name(), "ur")
+            .join(ruvia::db_join_type::inner, service::device::entities::SysRoleEntity::table_name(), andAll(roles, roles.binary(roles.column(service::device::entities::SysRoleEntity::column_name<"id">(), "r"), ruvia::db_binary_operator::equal, roles.column(service::device::entities::SysUserRoleEntity::column_name<"role_id">(), "ur")), roles.binary(roles.column(service::device::entities::SysRoleEntity::column_name<"code">(), "r"), ruvia::db_binary_operator::equal, roles.value("superadmin")), roles.binary(roles.column(service::device::entities::SysRoleEntity::column_name<"status">(), "r"), ruvia::db_binary_operator::equal, roles.value("enabled")), roles.unary(ruvia::db_unary_operator::is_null, roles.column(service::device::entities::SysRoleEntity::column_name<"deleted_at">(), "r"))), "r")
+            .where(roles.binary(roles.column(service::device::entities::SysUserRoleEntity::column_name<"user_id">(), "ur"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(roles, c.userId)))
             .limit(1);
-        ruvia::DbQuery superadmin(c.pool());
+        ruvia::db_query superadmin(c.pool());
         superadmin.select(superadmin.exists(roles));
         const auto rows = co_await c.db().query(superadmin);
         if (rows.front()[0].value().value_or(std::string_view{}) != "t") {
@@ -2833,80 +2786,80 @@ class DeviceShareService {
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceShareItemDto>> list(Context& c, std::string_view deviceId) {
+    ruvia::task<ruvia::boxed_array<DeviceShareItemDto>> list(Context& c, std::string_view deviceId) {
         (void)co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
-        ruvia::DbQuery currentDevice(c.pool());
-        currentDevice.select(currentDevice.column(service::device::entities::DeviceEntity::columnName<"group_id">()))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(currentDevice.binary(currentDevice.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(currentDevice, deviceId)));
-        ruvia::DbQuery ancestor(c.pool());
-        ruvia::DbQuery ancestorRecursive(c.pool());
-        ancestor.select({ ancestor.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "device_group"), ancestor.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "device_group"), ancestor.column(service::device::entities::DeviceGroupEntity::columnName<"name">(), "device_group") })
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "device_group")
-            .join(ruvia::DbJoinType::kInner, "current_device", ancestor.binary(ancestor.column("group_id", "current_device"), ruvia::DbBinaryOperator::kEqual, ancestor.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "device_group")), "current_device")
-            .where(ancestor.unary(ruvia::DbUnaryOperator::kIsNull, ancestor.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "device_group")));
+        ruvia::db_query currentDevice(c.pool());
+        currentDevice.select(currentDevice.column(service::device::entities::DeviceEntity::column_name<"group_id">()))
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(currentDevice.binary(currentDevice.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(currentDevice, deviceId)));
+        ruvia::db_query ancestor(c.pool());
+        ruvia::db_query ancestorRecursive(c.pool());
+        ancestor.select({ ancestor.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "device_group"), ancestor.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "device_group"), ancestor.column(service::device::entities::DeviceGroupEntity::column_name<"name">(), "device_group") })
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "device_group")
+            .join(ruvia::db_join_type::inner, "current_device", ancestor.binary(ancestor.column("group_id", "current_device"), ruvia::db_binary_operator::equal, ancestor.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "device_group")), "current_device")
+            .where(ancestor.unary(ruvia::db_unary_operator::is_null, ancestor.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "device_group")));
         ancestorRecursive
-            .select({ ancestorRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "parent"), ancestorRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"parent_id">(), "parent"), ancestorRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"name">(), "parent") })
-            .from(service::device::entities::DeviceGroupEntity::tableName(), "parent")
-            .join(ruvia::DbJoinType::kInner, "ancestor_group", ancestorRecursive.binary(ancestorRecursive.column("parent_id", "child"), ruvia::DbBinaryOperator::kEqual, ancestorRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "parent")), "child")
-            .where(ancestorRecursive.unary(ruvia::DbUnaryOperator::kIsNull, ancestorRecursive.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">(), "parent")));
-        ancestor.combine(ruvia::DbSetOperation::kUnionAll, ancestorRecursive);
+            .select({ ancestorRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "parent"), ancestorRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"parent_id">(), "parent"), ancestorRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"name">(), "parent") })
+            .from(service::device::entities::DeviceGroupEntity::table_name(), "parent")
+            .join(ruvia::db_join_type::inner, "ancestor_group", ancestorRecursive.binary(ancestorRecursive.column("parent_id", "child"), ruvia::db_binary_operator::equal, ancestorRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "parent")), "child")
+            .where(ancestorRecursive.unary(ruvia::db_unary_operator::is_null, ancestorRecursive.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">(), "parent")));
+        ancestor.combine(ruvia::db_set_operation::union_all, ancestorRecursive);
 
-        ruvia::DbQuery direct(c.pool());
-        const auto directUser = direct.unary(ruvia::DbUnaryOperator::kIsNotNull, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"user_id">(), "access_grant"));
-        const auto directSubjectType = direct.caseWhen(
+        ruvia::db_query direct(c.pool());
+        const auto directUser = direct.unary(ruvia::db_unary_operator::is_not_null, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"user_id">(), "access_grant"));
+        const auto directSubjectType = direct.case_when(
             { { directUser, DeviceAccessService::text(direct, direct.value("user")) } },
             DeviceAccessService::text(direct, direct.value("department"))
         );
-        const auto directName = direct.caseWhen(
+        const auto directName = direct.case_when(
             { { directUser,
-                direct.coalesce({ direct.nullIf(direct.column(service::device::entities::SysUserEntity::columnName<"nickname">(), "target_user"), direct.value("")), direct.column(service::device::entities::SysUserEntity::columnName<"username">(), "target_user"), direct.value("已删除用户") }) } },
-            direct.coalesce({ direct.column(service::device::entities::SysDepartmentEntity::columnName<"name">(), "target_department"), direct.value("已删除部门") })
+                direct.coalesce({ direct.null_if(direct.column(service::device::entities::SysUserEntity::column_name<"nickname">(), "target_user"), direct.value("")), direct.column(service::device::entities::SysUserEntity::column_name<"username">(), "target_user"), direct.value("已删除用户") }) } },
+            direct.coalesce({ direct.column(service::device::entities::SysDepartmentEntity::column_name<"name">(), "target_department"), direct.value("已删除部门") })
         );
         direct
-            .select({ DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"id">(), "access_grant")), directSubjectType, direct.coalesce({ DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"user_id">(), "access_grant")), DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"department_id">(), "access_grant")) }), directName, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"access_level">(), "access_grant"), DeviceAccessService::text(direct, direct.value("device")), DeviceAccessService::text(direct, direct.value("")), DeviceAccessService::text(direct, direct.value("")), DeviceAccessService::boolean(direct, false), direct.call("iot_utc_timestamp", { direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"created_at">(), "access_grant") }), direct.call("iot_utc_timestamp", { direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"updated_at">(), "access_grant") }) })
-            .from(service::device::entities::DeviceAccessGrantEntity::tableName(), "access_grant")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysUserEntity::tableName(), direct.binary(direct.column(service::device::entities::SysUserEntity::columnName<"id">(), "target_user"), ruvia::DbBinaryOperator::kEqual, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"user_id">(), "access_grant")), "target_user")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysDepartmentEntity::tableName(), direct.binary(direct.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "target_department"), ruvia::DbBinaryOperator::kEqual, direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"department_id">(), "access_grant")), "target_department")
-            .where(direct.binary(direct.column(service::device::entities::DeviceAccessGrantEntity::columnName<"device_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(direct, deviceId)));
+            .select({ DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"id">(), "access_grant")), directSubjectType, direct.coalesce({ DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"user_id">(), "access_grant")), DeviceAccessService::text(direct, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"department_id">(), "access_grant")) }), directName, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"access_level">(), "access_grant"), DeviceAccessService::text(direct, direct.value("device")), DeviceAccessService::text(direct, direct.value("")), DeviceAccessService::text(direct, direct.value("")), DeviceAccessService::boolean(direct, false), direct.call("iot_utc_timestamp", { direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"created_at">(), "access_grant") }), direct.call("iot_utc_timestamp", { direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"updated_at">(), "access_grant") }) })
+            .from(service::device::entities::DeviceAccessGrantEntity::table_name(), "access_grant")
+            .join(ruvia::db_join_type::left, service::device::entities::SysUserEntity::table_name(), direct.binary(direct.column(service::device::entities::SysUserEntity::column_name<"id">(), "target_user"), ruvia::db_binary_operator::equal, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"user_id">(), "access_grant")), "target_user")
+            .join(ruvia::db_join_type::left, service::device::entities::SysDepartmentEntity::table_name(), direct.binary(direct.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "target_department"), ruvia::db_binary_operator::equal, direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"department_id">(), "access_grant")), "target_department")
+            .where(direct.binary(direct.column(service::device::entities::DeviceAccessGrantEntity::column_name<"device_id">(), "access_grant"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(direct, deviceId)));
 
-        ruvia::DbQuery inherited(c.pool());
+        ruvia::db_query inherited(c.pool());
         const auto inheritedUser = inherited.unary(
-            ruvia::DbUnaryOperator::kIsNotNull,
-            inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "group_access")
+            ruvia::db_unary_operator::is_not_null,
+            inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "group_access")
         );
-        const auto inheritedSubjectType = inherited.caseWhen(
+        const auto inheritedSubjectType = inherited.case_when(
             { { inheritedUser, DeviceAccessService::text(inherited, inherited.value("user")) } },
             DeviceAccessService::text(inherited, inherited.value("department"))
         );
-        const auto inheritedName = inherited.caseWhen(
+        const auto inheritedName = inherited.case_when(
             { { inheritedUser,
-                inherited.coalesce({ inherited.nullIf(inherited.column(service::device::entities::SysUserEntity::columnName<"nickname">(), "inherited_user"), inherited.value("")), inherited.column(service::device::entities::SysUserEntity::columnName<"username">(), "inherited_user"), inherited.value("已删除用户") }) } },
-            inherited.coalesce({ inherited.column(service::device::entities::SysDepartmentEntity::columnName<"name">(), "inherited_department"), inherited.value("已删除部门") })
+                inherited.coalesce({ inherited.null_if(inherited.column(service::device::entities::SysUserEntity::column_name<"nickname">(), "inherited_user"), inherited.value("")), inherited.column(service::device::entities::SysUserEntity::column_name<"username">(), "inherited_user"), inherited.value("已删除用户") }) } },
+            inherited.coalesce({ inherited.column(service::device::entities::SysDepartmentEntity::column_name<"name">(), "inherited_department"), inherited.value("已删除部门") })
         );
         inherited
-            .select({ DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"id">(), "group_access")), inheritedSubjectType, inherited.coalesce({ DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "group_access")), DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "group_access")) }), inheritedName, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"access_level">(), "group_access"), DeviceAccessService::text(inherited, inherited.value("group")), DeviceAccessService::text(inherited, inherited.column("id", "ancestor")), inherited.column("name", "ancestor"), DeviceAccessService::boolean(inherited, true), inherited.call("iot_utc_timestamp", { inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"created_at">(), "group_access") }), inherited.call("iot_utc_timestamp", { inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"updated_at">(), "group_access") }) })
-            .from(service::device::entities::DeviceGroupAccessGrantEntity::tableName(), "group_access")
-            .join(ruvia::DbJoinType::kInner, "ancestor_group", inherited.binary(inherited.column("id", "ancestor"), ruvia::DbBinaryOperator::kEqual, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "group_access")), "ancestor")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysUserEntity::tableName(), inherited.binary(inherited.column(service::device::entities::SysUserEntity::columnName<"id">(), "inherited_user"), ruvia::DbBinaryOperator::kEqual, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "group_access")), "inherited_user")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysDepartmentEntity::tableName(), inherited.binary(inherited.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "inherited_department"), ruvia::DbBinaryOperator::kEqual, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "group_access")), "inherited_department");
-        direct.combine(ruvia::DbSetOperation::kUnionAll, inherited);
-        ruvia::DbQuery query(c.pool());
+            .select({ DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"id">(), "group_access")), inheritedSubjectType, inherited.coalesce({ DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "group_access")), DeviceAccessService::text(inherited, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "group_access")) }), inheritedName, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"access_level">(), "group_access"), DeviceAccessService::text(inherited, inherited.value("group")), DeviceAccessService::text(inherited, inherited.column("id", "ancestor")), inherited.column("name", "ancestor"), DeviceAccessService::boolean(inherited, true), inherited.call("iot_utc_timestamp", { inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"created_at">(), "group_access") }), inherited.call("iot_utc_timestamp", { inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"updated_at">(), "group_access") }) })
+            .from(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), "group_access")
+            .join(ruvia::db_join_type::inner, "ancestor_group", inherited.binary(inherited.column("id", "ancestor"), ruvia::db_binary_operator::equal, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "group_access")), "ancestor")
+            .join(ruvia::db_join_type::left, service::device::entities::SysUserEntity::table_name(), inherited.binary(inherited.column(service::device::entities::SysUserEntity::column_name<"id">(), "inherited_user"), ruvia::db_binary_operator::equal, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "group_access")), "inherited_user")
+            .join(ruvia::db_join_type::left, service::device::entities::SysDepartmentEntity::table_name(), inherited.binary(inherited.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "inherited_department"), ruvia::db_binary_operator::equal, inherited.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "group_access")), "inherited_department");
+        direct.combine(ruvia::db_set_operation::union_all, inherited);
+        ruvia::db_query query(c.pool());
         query.with("current_device", currentDevice)
-            .with("ancestor_group", ancestor, { .recursive = true, .columns = { "id", "parent_id", "name" } })
-            .with("device_share", direct, { .columns = { "id", "subject_type", "subject_id", "subject_name", "access_level", "source_type", "source_group_id", "source_group_name", "inherited", "created_at", "updated_at" } });
+            .with("ancestor_group", ancestor, { .recursive_ = true, .columns_ = { "id", "parent_id", "name" } })
+            .with("device_share", direct, { .columns_ = { "id", "subject_type", "subject_id", "subject_name", "access_level", "source_type", "source_group_id", "source_group_name", "inherited", "created_at", "updated_at" } });
         query.select(query.star("device_share"))
             .from("device_share", "device_share")
-            .orderBy(query.column("subject_type", "device_share"))
-            .addOrderBy(query.column("subject_name", "device_share"))
-            .addOrderBy(query.column("inherited", "device_share"))
-            .addOrderBy(query.column("id", "device_share"));
+            .order_by(query.column("subject_type", "device_share"))
+            .add_order_by(query.column("subject_name", "device_share"))
+            .add_order_by(query.column("inherited", "device_share"))
+            .add_order_by(query.column("id", "device_share"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceShareItemDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceShareItemDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}))
                 .template set<"subjectType">(row[1].value().value_or(std::string_view{}))
                 .template set<"subjectId">(row[2].value().value_or(std::string_view{}))
@@ -2923,52 +2876,52 @@ class DeviceShareService {
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceShareTargetDto>> targets(Context& c, std::string_view deviceId) {
+    ruvia::task<ruvia::boxed_array<DeviceShareTargetDto>> targets(Context& c, std::string_view deviceId) {
         (void)co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
-        ruvia::DbQuery owner(c.pool());
-        owner.select(owner.column(service::device::entities::DeviceEntity::columnName<"created_by">()))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(owner.binary(owner.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(owner, deviceId)))
+        ruvia::db_query owner(c.pool());
+        owner.select(owner.column(service::device::entities::DeviceEntity::column_name<"created_by">()))
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(owner.binary(owner.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(owner, deviceId)))
             .limit(1);
-        ruvia::DbQuery users(c.pool());
-        users.select({ DeviceAccessService::text(users, users.value("user")), DeviceAccessService::text(users, users.column(service::device::entities::SysUserEntity::columnName<"id">(), "target")), users.coalesce({ users.nullIf(users.column(service::device::entities::SysUserEntity::columnName<"nickname">(), "target"), users.value("")), users.column(service::device::entities::SysUserEntity::columnName<"username">(), "target") }) })
-            .from(service::device::entities::SysUserEntity::tableName(), "target")
-            .where(andAll(users, users.binary(users.column(service::device::entities::SysUserEntity::columnName<"status">(), "target"), ruvia::DbBinaryOperator::kEqual, users.value("enabled")), users.unary(ruvia::DbUnaryOperator::kIsNull, users.column(service::device::entities::SysUserEntity::columnName<"deleted_at">(), "target")), users.binary(users.column(service::device::entities::SysUserEntity::columnName<"id">(), "target"), ruvia::DbBinaryOperator::kNotEqual, users.subquery(owner))));
-        ruvia::DbQuery departments(c.pool());
-        departments.select({ DeviceAccessService::text(departments, departments.value("department")), DeviceAccessService::text(departments, departments.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "department")), departments.column(service::device::entities::SysDepartmentEntity::columnName<"name">(), "department") })
-            .from(service::device::entities::SysDepartmentEntity::tableName(), "department")
-            .where(andAll(departments, departments.binary(departments.column(service::device::entities::SysDepartmentEntity::columnName<"status">(), "department"), ruvia::DbBinaryOperator::kEqual, departments.value("enabled")), departments.unary(ruvia::DbUnaryOperator::kIsNull, departments.column(service::device::entities::SysDepartmentEntity::columnName<"deleted_at">(), "department"))));
-        users.combine(ruvia::DbSetOperation::kUnionAll, departments);
-        ruvia::DbQuery query(c.pool());
-        query.with("share_target", users, { .columns = { "subject_type", "subject_id", "subject_name" } })
+        ruvia::db_query users(c.pool());
+        users.select({ DeviceAccessService::text(users, users.value("user")), DeviceAccessService::text(users, users.column(service::device::entities::SysUserEntity::column_name<"id">(), "target")), users.coalesce({ users.null_if(users.column(service::device::entities::SysUserEntity::column_name<"nickname">(), "target"), users.value("")), users.column(service::device::entities::SysUserEntity::column_name<"username">(), "target") }) })
+            .from(service::device::entities::SysUserEntity::table_name(), "target")
+            .where(andAll(users, users.binary(users.column(service::device::entities::SysUserEntity::column_name<"status">(), "target"), ruvia::db_binary_operator::equal, users.value("enabled")), users.unary(ruvia::db_unary_operator::is_null, users.column(service::device::entities::SysUserEntity::column_name<"deleted_at">(), "target")), users.binary(users.column(service::device::entities::SysUserEntity::column_name<"id">(), "target"), ruvia::db_binary_operator::not_equal, users.subquery(owner))));
+        ruvia::db_query departments(c.pool());
+        departments.select({ DeviceAccessService::text(departments, departments.value("department")), DeviceAccessService::text(departments, departments.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "department")), departments.column(service::device::entities::SysDepartmentEntity::column_name<"name">(), "department") })
+            .from(service::device::entities::SysDepartmentEntity::table_name(), "department")
+            .where(andAll(departments, departments.binary(departments.column(service::device::entities::SysDepartmentEntity::column_name<"status">(), "department"), ruvia::db_binary_operator::equal, departments.value("enabled")), departments.unary(ruvia::db_unary_operator::is_null, departments.column(service::device::entities::SysDepartmentEntity::column_name<"deleted_at">(), "department"))));
+        users.combine(ruvia::db_set_operation::union_all, departments);
+        ruvia::db_query query(c.pool());
+        query.with("share_target", users, { .columns_ = { "subject_type", "subject_id", "subject_name" } })
             .select(query.star("share_target"))
             .from("share_target", "share_target")
-            .orderBy(query.column("subject_type", "share_target"))
-            .addOrderBy(query.column("subject_name", "share_target"))
-            .addOrderBy(query.column("subject_id", "share_target"));
+            .order_by(query.column("subject_type", "share_target"))
+            .add_order_by(query.column("subject_name", "share_target"))
+            .add_order_by(query.column("subject_id", "share_target"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceShareTargetDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceShareTargetDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"subjectType">(row[0].value().value_or(std::string_view{})).template set<"subjectId">(row[1].value().value_or(std::string_view{})).template set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<void> replace(Context& c, std::string_view deviceId, const ReplaceDeviceSharesBody& body) {
+    ruvia::task<void> replace(Context& c, std::string_view deviceId, const ReplaceDeviceSharesBody& body) {
         auto decision =
             co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
         auto shares = normalize(body);
 
-        auto transaction = co_await c.db().beginTransaction();
-        ruvia::DbQuery deviceQuery(c.pool());
-        deviceQuery.select(DeviceAccessService::text(deviceQuery, deviceQuery.column(service::device::entities::DeviceEntity::columnName<"created_by">())))
-            .from(service::device::entities::DeviceEntity::tableName())
-            .where(andAll(deviceQuery, deviceQuery.binary(deviceQuery.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(deviceQuery, deviceId)), deviceQuery.unary(ruvia::DbUnaryOperator::kIsNull, deviceQuery.column(service::device::entities::DeviceEntity::columnName<"deleted_at">()))))
-            .lock({ .mode = ruvia::DbRowLock::kUpdate });
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_query deviceQuery(c.pool());
+        deviceQuery.select(DeviceAccessService::text(deviceQuery, deviceQuery.column(service::device::entities::DeviceEntity::column_name<"created_by">())))
+            .from(service::device::entities::DeviceEntity::table_name())
+            .where(andAll(deviceQuery, deviceQuery.binary(deviceQuery.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(deviceQuery, deviceId)), deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::device::entities::DeviceEntity::column_name<"deleted_at">()))))
+            .lock({ .mode_ = ruvia::db_row_lock::update });
         const auto deviceRows = co_await transaction.query(deviceQuery);
         if (deviceRows.empty()) {
             service::common::fail(18001, "设备不存在", 404);
@@ -2977,58 +2930,58 @@ class DeviceShareService {
 
         co_await validateTargets(transaction, shares, ownerId);
 
-        ruvia::DbQuery remove(c.pool());
-        remove.deleteFrom(service::device::entities::DeviceAccessGrantEntity::tableName())
-            .where(remove.binary(remove.column(service::device::entities::DeviceAccessGrantEntity::columnName<"device_id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(remove, deviceId)));
+        ruvia::db_query remove(c.pool());
+        remove.delete_from(service::device::entities::DeviceAccessGrantEntity::table_name())
+            .where(remove.binary(remove.column(service::device::entities::DeviceAccessGrantEntity::column_name<"device_id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(remove, deviceId)));
         (void)co_await transaction.execute(remove);
         for (const auto& share : shares) {
             const std::string userId = share.subjectType == "user" ? share.subjectId : "";
             const std::string departmentId =
                 share.subjectType == "department" ? share.subjectId : "";
-            const auto grantId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-            ruvia::DbQuery insert(c.pool());
-            insert.insertInto(service::device::entities::DeviceAccessGrantEntity::tableName(), { "id", "device_id", "user_id", "department_id", "access_level", "granted_by" })
+            const auto grantId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            ruvia::db_query insert(c.pool());
+            insert.insert_into(service::device::entities::DeviceAccessGrantEntity::table_name(), { "id", "device_id", "user_id", "department_id", "access_level", "granted_by" })
                 .values({ DeviceAccessService::uuid(insert, grantId), DeviceAccessService::uuid(insert, deviceId), DeviceAccessService::nullableUuid(insert, userId), DeviceAccessService::nullableUuid(insert, departmentId), insert.value(share.accessLevel), DeviceAccessService::uuid(insert, decision.actor.userId) });
             (void)co_await transaction.execute(insert);
         }
-        const auto auditId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto shareCount = static_cast<std::int64_t>(shares.size());
-        ruvia::DbQuery audit(c.pool());
-        audit.insertInto(service::device::entities::SecurityAuditLogEntity::tableName(), { "id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "details" })
-            .values({ DeviceAccessService::uuid(audit, auditId), DeviceAccessService::uuid(audit, decision.actor.userId), audit.value("device.share.replace"), audit.value("device"), DeviceAccessService::uuid(audit, deviceId), audit.value("success"), audit.call("jsonb_build_object", { DeviceAccessService::textKey(audit, "share_count"), audit.cast(audit.value(shareCount), ruvia::DbDataType::kInteger) }) });
+        ruvia::db_query audit(c.pool());
+        audit.insert_into(service::device::entities::SecurityAuditLogEntity::table_name(), { "id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "details" })
+            .values({ DeviceAccessService::uuid(audit, auditId), DeviceAccessService::uuid(audit, decision.actor.userId), audit.value("device.share.replace"), audit.value("device"), DeviceAccessService::uuid(audit, deviceId), audit.value("success"), audit.call("jsonb_build_object", { DeviceAccessService::textKey(audit, "share_count"), audit.cast(audit.value(shareCount), ruvia::db_data_type::integer) }) });
         (void)co_await transaction.execute(audit);
         co_await transaction.commit();
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceShareItemDto>> listGroup(Context& c, std::string_view groupId) {
+    ruvia::task<ruvia::boxed_array<DeviceShareItemDto>> listGroup(Context& c, std::string_view groupId) {
         (void)co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
-        ruvia::DbQuery query(c.pool());
-        const auto isUser = query.unary(ruvia::DbUnaryOperator::kIsNotNull, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "access_grant"));
-        const auto subjectType = query.caseWhen(
+        ruvia::db_query query(c.pool());
+        const auto isUser = query.unary(ruvia::db_unary_operator::is_not_null, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "access_grant"));
+        const auto subjectType = query.case_when(
             { { isUser, DeviceAccessService::text(query, query.value("user")) } },
             DeviceAccessService::text(query, query.value("department"))
         );
-        const auto subjectName = query.caseWhen(
+        const auto subjectName = query.case_when(
             { { isUser,
-                query.coalesce({ query.nullIf(query.column(service::device::entities::SysUserEntity::columnName<"nickname">(), "target_user"), query.value("")), query.column(service::device::entities::SysUserEntity::columnName<"username">(), "target_user"), query.value("已删除用户") }) } },
-            query.coalesce({ query.column(service::device::entities::SysDepartmentEntity::columnName<"name">(), "target_department"), query.value("已删除部门") })
+                query.coalesce({ query.null_if(query.column(service::device::entities::SysUserEntity::column_name<"nickname">(), "target_user"), query.value("")), query.column(service::device::entities::SysUserEntity::column_name<"username">(), "target_user"), query.value("已删除用户") }) } },
+            query.coalesce({ query.column(service::device::entities::SysDepartmentEntity::column_name<"name">(), "target_department"), query.value("已删除部门") })
         );
-        query.select({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"id">(), "access_grant")), subjectType, query.coalesce({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "access_grant")), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "access_grant")) }), subjectName, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"access_level">(), "access_grant"), DeviceAccessService::text(query, query.value("group")), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "target_group")), query.column(service::device::entities::DeviceGroupEntity::columnName<"name">(), "target_group"), DeviceAccessService::boolean(query, false), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"created_at">(), "access_grant") }), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"updated_at">(), "access_grant") }) })
-            .from(service::device::entities::DeviceGroupAccessGrantEntity::tableName(), "access_grant")
-            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceGroupEntity::tableName(), query.binary(query.column(service::device::entities::DeviceGroupEntity::columnName<"id">(), "target_group"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "access_grant")), "target_group")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysUserEntity::tableName(), query.binary(query.column(service::device::entities::SysUserEntity::columnName<"id">(), "target_user"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"user_id">(), "access_grant")), "target_user")
-            .join(ruvia::DbJoinType::kLeft, service::device::entities::SysDepartmentEntity::tableName(), query.binary(query.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "target_department"), ruvia::DbBinaryOperator::kEqual, query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"department_id">(), "access_grant")), "target_department")
-            .where(query.binary(query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">(), "access_grant"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(query, groupId)))
-            .orderBy(subjectType)
-            .addOrderBy(subjectName)
-            .addOrderBy(query.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"id">(), "access_grant"));
+        query.select({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"id">(), "access_grant")), subjectType, query.coalesce({ DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "access_grant")), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "access_grant")) }), subjectName, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"access_level">(), "access_grant"), DeviceAccessService::text(query, query.value("group")), DeviceAccessService::text(query, query.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "target_group")), query.column(service::device::entities::DeviceGroupEntity::column_name<"name">(), "target_group"), DeviceAccessService::boolean(query, false), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"created_at">(), "access_grant") }), query.call("iot_utc_timestamp", { query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"updated_at">(), "access_grant") }) })
+            .from(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), "access_grant")
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceGroupEntity::table_name(), query.binary(query.column(service::device::entities::DeviceGroupEntity::column_name<"id">(), "target_group"), ruvia::db_binary_operator::equal, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "access_grant")), "target_group")
+            .join(ruvia::db_join_type::left, service::device::entities::SysUserEntity::table_name(), query.binary(query.column(service::device::entities::SysUserEntity::column_name<"id">(), "target_user"), ruvia::db_binary_operator::equal, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"user_id">(), "access_grant")), "target_user")
+            .join(ruvia::db_join_type::left, service::device::entities::SysDepartmentEntity::table_name(), query.binary(query.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "target_department"), ruvia::db_binary_operator::equal, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"department_id">(), "access_grant")), "target_department")
+            .where(query.binary(query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">(), "access_grant"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(query, groupId)))
+            .order_by(subjectType)
+            .add_order_by(subjectName)
+            .add_order_by(query.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"id">(), "access_grant"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceShareItemDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceShareItemDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}))
                 .template set<"subjectType">(row[1].value().value_or(std::string_view{}))
                 .template set<"subjectId">(row[2].value().value_or(std::string_view{}))
@@ -3045,75 +2998,75 @@ class DeviceShareService {
     }
 
     template <typename Context>
-    ruvia::Task<ruvia::BoxedArray<DeviceShareTargetDto>> groupTargets(Context& c, std::string_view groupId) {
+    ruvia::task<ruvia::boxed_array<DeviceShareTargetDto>> groupTargets(Context& c, std::string_view groupId) {
         (void)co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
-        ruvia::DbQuery owner(c.pool());
-        owner.select(owner.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">()))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(owner.binary(owner.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(owner, groupId)))
+        ruvia::db_query owner(c.pool());
+        owner.select(owner.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">()))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(owner.binary(owner.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(owner, groupId)))
             .limit(1);
-        ruvia::DbQuery users(c.pool());
-        users.select({ DeviceAccessService::text(users, users.value("user")), DeviceAccessService::text(users, users.column(service::device::entities::SysUserEntity::columnName<"id">(), "target")), users.coalesce({ users.nullIf(users.column(service::device::entities::SysUserEntity::columnName<"nickname">(), "target"), users.value("")), users.column(service::device::entities::SysUserEntity::columnName<"username">(), "target") }) })
-            .from(service::device::entities::SysUserEntity::tableName(), "target")
-            .where(andAll(users, users.binary(users.column(service::device::entities::SysUserEntity::columnName<"status">(), "target"), ruvia::DbBinaryOperator::kEqual, users.value("enabled")), users.unary(ruvia::DbUnaryOperator::kIsNull, users.column(service::device::entities::SysUserEntity::columnName<"deleted_at">(), "target")), users.binary(users.column(service::device::entities::SysUserEntity::columnName<"id">(), "target"), ruvia::DbBinaryOperator::kNotEqual, users.subquery(owner))));
-        ruvia::DbQuery departments(c.pool());
-        departments.select({ DeviceAccessService::text(departments, departments.value("department")), DeviceAccessService::text(departments, departments.column(service::device::entities::SysDepartmentEntity::columnName<"id">(), "department")), departments.column(service::device::entities::SysDepartmentEntity::columnName<"name">(), "department") })
-            .from(service::device::entities::SysDepartmentEntity::tableName(), "department")
-            .where(andAll(departments, departments.binary(departments.column(service::device::entities::SysDepartmentEntity::columnName<"status">(), "department"), ruvia::DbBinaryOperator::kEqual, departments.value("enabled")), departments.unary(ruvia::DbUnaryOperator::kIsNull, departments.column(service::device::entities::SysDepartmentEntity::columnName<"deleted_at">(), "department"))));
-        users.combine(ruvia::DbSetOperation::kUnionAll, departments);
-        ruvia::DbQuery query(c.pool());
-        query.with("share_target", users, { .columns = { "subject_type", "subject_id", "subject_name" } })
+        ruvia::db_query users(c.pool());
+        users.select({ DeviceAccessService::text(users, users.value("user")), DeviceAccessService::text(users, users.column(service::device::entities::SysUserEntity::column_name<"id">(), "target")), users.coalesce({ users.null_if(users.column(service::device::entities::SysUserEntity::column_name<"nickname">(), "target"), users.value("")), users.column(service::device::entities::SysUserEntity::column_name<"username">(), "target") }) })
+            .from(service::device::entities::SysUserEntity::table_name(), "target")
+            .where(andAll(users, users.binary(users.column(service::device::entities::SysUserEntity::column_name<"status">(), "target"), ruvia::db_binary_operator::equal, users.value("enabled")), users.unary(ruvia::db_unary_operator::is_null, users.column(service::device::entities::SysUserEntity::column_name<"deleted_at">(), "target")), users.binary(users.column(service::device::entities::SysUserEntity::column_name<"id">(), "target"), ruvia::db_binary_operator::not_equal, users.subquery(owner))));
+        ruvia::db_query departments(c.pool());
+        departments.select({ DeviceAccessService::text(departments, departments.value("department")), DeviceAccessService::text(departments, departments.column(service::device::entities::SysDepartmentEntity::column_name<"id">(), "department")), departments.column(service::device::entities::SysDepartmentEntity::column_name<"name">(), "department") })
+            .from(service::device::entities::SysDepartmentEntity::table_name(), "department")
+            .where(andAll(departments, departments.binary(departments.column(service::device::entities::SysDepartmentEntity::column_name<"status">(), "department"), ruvia::db_binary_operator::equal, departments.value("enabled")), departments.unary(ruvia::db_unary_operator::is_null, departments.column(service::device::entities::SysDepartmentEntity::column_name<"deleted_at">(), "department"))));
+        users.combine(ruvia::db_set_operation::union_all, departments);
+        ruvia::db_query query(c.pool());
+        query.with("share_target", users, { .columns_ = { "subject_type", "subject_id", "subject_name" } })
             .select(query.star("share_target"))
             .from("share_target", "share_target")
-            .orderBy(query.column("subject_type", "share_target"))
-            .addOrderBy(query.column("subject_name", "share_target"))
-            .addOrderBy(query.column("subject_id", "share_target"));
+            .order_by(query.column("subject_type", "share_target"))
+            .add_order_by(query.column("subject_name", "share_target"))
+            .add_order_by(query.column("subject_id", "share_target"));
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeviceShareTargetDto> result(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<DeviceShareTargetDto> result(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::ModelOptions{ .resource = c.arena() });
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"subjectType">(row[0].value().value_or(std::string_view{})).template set<"subjectId">(row[1].value().value_or(std::string_view{})).template set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;
     }
 
     template <typename Context>
-    ruvia::Task<void> replaceGroup(Context& c, std::string_view groupId, const ReplaceDeviceSharesBody& body) {
+    ruvia::task<void> replaceGroup(Context& c, std::string_view groupId, const ReplaceDeviceSharesBody& body) {
         auto actor = co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
         auto shares = normalize(body);
-        auto transaction = co_await c.db().beginTransaction();
-        ruvia::DbQuery groupQuery(c.pool());
-        groupQuery.select(DeviceAccessService::text(groupQuery, groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">())))
-            .from(service::device::entities::DeviceGroupEntity::tableName())
-            .where(andAll(groupQuery, groupQuery.binary(groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(groupQuery, groupId)), groupQuery.unary(ruvia::DbUnaryOperator::kIsNull, groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))))
-            .lock({ .mode = ruvia::DbRowLock::kUpdate });
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_query groupQuery(c.pool());
+        groupQuery.select(DeviceAccessService::text(groupQuery, groupQuery.column(service::device::entities::DeviceGroupEntity::column_name<"created_by">())))
+            .from(service::device::entities::DeviceGroupEntity::table_name())
+            .where(andAll(groupQuery, groupQuery.binary(groupQuery.column(service::device::entities::DeviceGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(groupQuery, groupId)), groupQuery.unary(ruvia::db_unary_operator::is_null, groupQuery.column(service::device::entities::DeviceGroupEntity::column_name<"deleted_at">()))))
+            .lock({ .mode_ = ruvia::db_row_lock::update });
         const auto groupRows = co_await transaction.query(groupQuery);
         if (groupRows.empty()) {
             service::common::fail(17001, "设备分组不存在", 404);
         }
         co_await validateTargets(transaction, shares, groupRows.front()[0].value().value_or(std::string_view{}));
 
-        ruvia::DbQuery remove(c.pool());
-        remove.deleteFrom(service::device::entities::DeviceGroupAccessGrantEntity::tableName())
-            .where(remove.binary(remove.column(service::device::entities::DeviceGroupAccessGrantEntity::columnName<"group_id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(remove, groupId)));
+        ruvia::db_query remove(c.pool());
+        remove.delete_from(service::device::entities::DeviceGroupAccessGrantEntity::table_name())
+            .where(remove.binary(remove.column(service::device::entities::DeviceGroupAccessGrantEntity::column_name<"group_id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(remove, groupId)));
         (void)co_await transaction.execute(remove);
         for (const auto& share : shares) {
             const std::string userId = share.subjectType == "user" ? share.subjectId : "";
             const std::string departmentId =
                 share.subjectType == "department" ? share.subjectId : "";
-            const auto grantId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-            ruvia::DbQuery insert(c.pool());
-            insert.insertInto(service::device::entities::DeviceGroupAccessGrantEntity::tableName(), { "id", "group_id", "user_id", "department_id", "access_level", "granted_by" })
+            const auto grantId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            ruvia::db_query insert(c.pool());
+            insert.insert_into(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), { "id", "group_id", "user_id", "department_id", "access_level", "granted_by" })
                 .values({ DeviceAccessService::uuid(insert, grantId), DeviceAccessService::uuid(insert, groupId), DeviceAccessService::nullableUuid(insert, userId), DeviceAccessService::nullableUuid(insert, departmentId), insert.value(share.accessLevel), DeviceAccessService::uuid(insert, actor.userId) });
             (void)co_await transaction.execute(insert);
         }
-        const auto auditId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto shareCount = static_cast<std::int64_t>(shares.size());
-        ruvia::DbQuery audit(c.pool());
-        audit.insertInto(service::device::entities::SecurityAuditLogEntity::tableName(), { "id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "details" })
-            .values({ DeviceAccessService::uuid(audit, auditId), DeviceAccessService::uuid(audit, actor.userId), audit.value("device_group.share.replace"), audit.value("device_group"), DeviceAccessService::uuid(audit, groupId), audit.value("success"), audit.call("jsonb_build_object", { DeviceAccessService::textKey(audit, "share_count"), audit.cast(audit.value(shareCount), ruvia::DbDataType::kInteger) }) });
+        ruvia::db_query audit(c.pool());
+        audit.insert_into(service::device::entities::SecurityAuditLogEntity::table_name(), { "id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "details" })
+            .values({ DeviceAccessService::uuid(audit, auditId), DeviceAccessService::uuid(audit, actor.userId), audit.value("device_group.share.replace"), audit.value("device_group"), DeviceAccessService::uuid(audit, groupId), audit.value("success"), audit.call("jsonb_build_object", { DeviceAccessService::textKey(audit, "share_count"), audit.cast(audit.value(shareCount), ruvia::db_data_type::integer) }) });
         (void)co_await transaction.execute(audit);
         co_await transaction.commit();
     }
@@ -3153,26 +3106,26 @@ class DeviceShareService {
         return shares;
     }
 
-    static ruvia::Task<void> validateTargets(ruvia::DbTransaction& transaction, const std::vector<NormalizedShare>& shares, std::string_view ownerId) {
+    static ruvia::task<void> validateTargets(ruvia::db_transaction& transaction, const std::vector<NormalizedShare>& shares, std::string_view ownerId) {
         for (const auto& share : shares) {
             if (share.subjectType == "user") {
                 if (share.subjectId == ownerId) {
                     service::common::fail(18010, "不能向资源所有者重复授权", 400);
                 }
-                ruvia::DbQuery targetQuery;
+                ruvia::db_query targetQuery;
                 targetQuery.select(DeviceAccessService::integer(targetQuery, 1))
-                    .from(service::device::entities::SysUserEntity::tableName())
-                    .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::SysUserEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, share.subjectId)), targetQuery.binary(targetQuery.column(service::device::entities::SysUserEntity::columnName<"status">()), ruvia::DbBinaryOperator::kEqual, targetQuery.value("enabled")), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::SysUserEntity::columnName<"deleted_at">()))))
+                    .from(service::device::entities::SysUserEntity::table_name())
+                    .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::SysUserEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(targetQuery, share.subjectId)), targetQuery.binary(targetQuery.column(service::device::entities::SysUserEntity::column_name<"status">()), ruvia::db_binary_operator::equal, targetQuery.value("enabled")), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::device::entities::SysUserEntity::column_name<"deleted_at">()))))
                     .limit(1);
                 const auto target = co_await transaction.query(targetQuery);
                 if (target.empty()) {
                     service::common::fail(18010, "包含不存在或已禁用的用户", 400);
                 }
             } else {
-                ruvia::DbQuery targetQuery;
+                ruvia::db_query targetQuery;
                 targetQuery.select(DeviceAccessService::integer(targetQuery, 1))
-                    .from(service::device::entities::SysDepartmentEntity::tableName())
-                    .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::SysDepartmentEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, share.subjectId)), targetQuery.binary(targetQuery.column(service::device::entities::SysDepartmentEntity::columnName<"status">()), ruvia::DbBinaryOperator::kEqual, targetQuery.value("enabled")), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::SysDepartmentEntity::columnName<"deleted_at">()))))
+                    .from(service::device::entities::SysDepartmentEntity::table_name())
+                    .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::SysDepartmentEntity::column_name<"id">()), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(targetQuery, share.subjectId)), targetQuery.binary(targetQuery.column(service::device::entities::SysDepartmentEntity::column_name<"status">()), ruvia::db_binary_operator::equal, targetQuery.value("enabled")), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::device::entities::SysDepartmentEntity::column_name<"deleted_at">()))))
                     .limit(1);
                 const auto target = co_await transaction.query(targetQuery);
                 if (target.empty()) {

@@ -16,11 +16,11 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Channel.h>
-#include <ruvia/core/StopToken.h>
-#include <ruvia/core/Task.h>
-#include <ruvia/core/Timer.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/channel.h>
+#include <ruvia/core/stop_token.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/message.h"
@@ -41,7 +41,7 @@ class WorkerStreamMultiplexer final {
 
     ~WorkerStreamMultiplexer() { stop(); }
 
-    void configure(ruvia::WebWorkerHandle worker, std::size_t index) {
+    void configure(ruvia::web_worker_handle worker, std::size_t index) {
         if (running_.load()) {
             throw std::logic_error("multiplexer is running");
         }
@@ -49,7 +49,7 @@ class WorkerStreamMultiplexer final {
         index_ = index;
         auto ready = std::make_shared<std::promise<void>>();
         auto completion = ready->get_future();
-        if (!worker_.post([this, ready](ruvia::WebWorkerContext& context) {
+        if (!worker_.post([this, ready](ruvia::web_worker_context& context) {
                         return initialize(context, index_, ready);
                     })
                  .accepted()) {
@@ -58,7 +58,7 @@ class WorkerStreamMultiplexer final {
         completion.get();
     }
 
-    ruvia::Task<void> wait(std::size_t workerIndex, WorkerStreamTask task, ruvia::StopToken stopToken, std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
+    ruvia::task<void> wait(std::size_t workerIndex, WorkerStreamTask task, ruvia::stop_token stopToken, std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
         const auto* receiver = &*requireSlot(workerIndex).receivers[taskIndex(task)];
         // The durable work streams remain authoritative when a wake is lost
         // during failover. This is a bounded recovery scan, not a one-second
@@ -71,7 +71,7 @@ class WorkerStreamMultiplexer final {
             if (maximum->count() <= 0) {
                 co_return;
             }
-            (void)co_await receiver->receiveFor(*maximum, std::move(stopToken));
+            (void)co_await receiver->receive_for(*maximum, std::move(stopToken));
         } else {
             (void)co_await receiver->receive(std::move(stopToken));
         }
@@ -92,7 +92,7 @@ class WorkerStreamMultiplexer final {
         }
     }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t index) {
+    void start(ruvia::web_worker_handle worker, std::size_t index) {
         if (running_.exchange(true)) {
             return;
         }
@@ -101,12 +101,12 @@ class WorkerStreamMultiplexer final {
             throw std::logic_error("multiplexer is not configured for this worker");
         }
         worker_ = worker;
-        stopSource_ = std::make_unique<ruvia::StopSource>();
+        stopSource_ = std::make_unique<ruvia::stop_source>();
         auto ready = std::make_shared<std::promise<void>>();
         auto done = std::make_shared<std::promise<void>>();
         auto readiness = ready->get_future();
         stopped_ = done->get_future();
-        if (!worker_.post([this, ready, done](ruvia::WebWorkerContext& context) {
+        if (!worker_.post([this, ready, done](ruvia::web_worker_context& context) {
                         return run(context, index_, ready, done);
                     })
                  .accepted()) {
@@ -127,7 +127,7 @@ class WorkerStreamMultiplexer final {
             return;
         }
         if (stopSource_) {
-            stopSource_->requestStop();
+            stopSource_->request_stop();
         }
         if (stopped_.valid()) {
             stopped_.wait();
@@ -142,8 +142,8 @@ class WorkerStreamMultiplexer final {
     static constexpr std::size_t kBatchSize = 256;
 
     struct WorkerSlot final {
-        std::array<ruvia::ChannelSender<std::uint8_t>, kTaskCount> senders;
-        std::array<std::optional<ruvia::ChannelReceiver<std::uint8_t>>, kTaskCount>
+        std::array<ruvia::channel_sender<std::uint8_t>, kTaskCount> senders;
+        std::array<std::optional<ruvia::channel_receiver<std::uint8_t>>, kTaskCount>
             receivers;
     };
 
@@ -158,12 +158,12 @@ class WorkerStreamMultiplexer final {
         return *slot_;
     }
 
-    ruvia::Task<void> initialize(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready) {
+    ruvia::task<void> initialize(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready) {
         try {
             auto slot = std::make_unique<WorkerSlot>();
             for (std::size_t task = 0; task < kTaskCount; ++task) {
                 auto [sender, receiver] =
-                    ruvia::makeChannel<std::uint8_t>(context.worker(), { .capacity = 1 });
+                    ruvia::make_channel<std::uint8_t>(context.worker(), { .capacity_ = 1 });
                 slot->senders[task] = std::move(sender);
                 slot->receivers[task].emplace(std::move(receiver));
             }
@@ -193,7 +193,7 @@ class WorkerStreamMultiplexer final {
         }
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         bool readySet = false;
         try {
             const auto redis = context.redis();
@@ -206,12 +206,12 @@ class WorkerStreamMultiplexer final {
             }
             ready->set_value();
             readySet = true;
-            const auto stopToken = ruvia::combineStopTokens(
-                context.stopToken(),
+            const auto stopToken = ruvia::combine_stop_tokens(
+                context.get_stop_token(),
                 stopSource_->token()
             );
             bool recovering = true;
-            while (!stopToken.stopRequested()) {
+            while (!stopToken.stop_requested()) {
                 bool failed = false;
                 try {
                     std::vector<service::message::redis::StreamBatch> batches;
@@ -267,7 +267,7 @@ class WorkerStreamMultiplexer final {
                         }
                     }
                 } catch (const std::exception& error) {
-                    if (stopToken.stopRequested()) {
+                    if (stopToken.stop_requested()) {
                         break;
                     }
                     std::cerr << "service worker " << index
@@ -276,7 +276,7 @@ class WorkerStreamMultiplexer final {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(),
                         std::chrono::milliseconds(250)
                     );
@@ -300,10 +300,10 @@ class WorkerStreamMultiplexer final {
     }
 
     std::unique_ptr<WorkerSlot> slot_;
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::size_t index_{};
     std::future<void> stopped_;
-    std::unique_ptr<ruvia::StopSource> stopSource_;
+    std::unique_ptr<ruvia::stop_source> stopSource_;
     std::atomic_bool running_{ false };
 };
 

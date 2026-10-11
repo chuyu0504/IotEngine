@@ -16,9 +16,9 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/ModelObject.h>
-#include <ruvia/web/db/Db.h>
-#include <ruvia/web/db/DbQuery.h>
+#include <ruvia/web/model_object.h>
+#include <ruvia/web/db/db.h>
+#include <ruvia/web/db/db_query.h>
 
 #include "service/common/database.h"
 #include "service/common/http.h"
@@ -52,14 +52,9 @@ class ProtocolConfigurationRules final {
         return std::string(value);
     }
 
-    static std::optional<std::string> stringValue(const ruvia::JsonValue& value) {
-        const auto decoded = value.get<ruvia::String>();
+    static std::optional<std::string> stringValue(const ruvia::json_value& value) {
+        const auto decoded = value.get<ruvia::string>();
         return decoded ? std::optional<std::string>(decoded->view()) : std::nullopt;
-    }
-
-    static std::optional<std::string> stringField(const ruvia::JsonValue& object, std::string_view field) {
-        const auto value = object.get<ruvia::JsonValue>(field);
-        return value ? stringValue(*value) : std::nullopt;
     }
 
   public:
@@ -77,16 +72,16 @@ class ProtocolConfigurationRules final {
     }
 
   private:
-    static bool hasField(const ruvia::JsonValue& object, std::string_view field) {
-        return static_cast<bool>(object.get<ruvia::JsonValue>(field));
+    static bool hasField(const ruvia::json_value& object, std::string_view field) {
+        return static_cast<bool>(object.get<ruvia::json_value>(field));
     }
 
     static bool oneOf(std::string_view value, std::initializer_list<std::string_view> values) {
         return std::find(values.begin(), values.end(), value) != values.end();
     }
 
-    static bool enumFieldValid(const ruvia::JsonValue& object, std::string_view field, std::initializer_list<std::string_view> values) {
-        const auto raw = object.get<ruvia::JsonValue>(field);
+    static bool enumFieldValid(const ruvia::json_value& object, std::string_view field, std::initializer_list<std::string_view> values) {
+        const auto raw = object.get<ruvia::json_value>(field);
         if (!raw) {
             return true;
         }
@@ -97,16 +92,11 @@ class ProtocolConfigurationRules final {
         return oneOf(*value, values);
     }
 
-    static bool booleanFieldValid(const ruvia::JsonValue& object, std::string_view field) {
-        const auto raw = object.get<ruvia::JsonValue>(field);
-        return !raw || raw->isBoolean();
-    }
-
-    static std::optional<std::string> scalarText(const ruvia::JsonValue& value, bool allowString) {
-        if (value.isNumber()) {
+    static std::optional<std::string> scalarText(const ruvia::json_value& value, bool allowString) {
+        if (value.is_number()) {
             return canonicalNumericText(value.view());
         }
-        if (allowString && value.isString()) {
+        if (allowString && value.is_string()) {
             return stringValue(value);
         }
         return std::nullopt;
@@ -329,7 +319,7 @@ class ProtocolConfigurationRules final {
     }
 
     static std::optional<std::int64_t> integerFieldValue(
-        const std::optional<ruvia::JsonValue>& raw,
+        const std::optional<ruvia::json_value>& raw,
         bool allowString,
         std::size_t maximum,
         std::int64_t lower,
@@ -353,28 +343,28 @@ class ProtocolConfigurationRules final {
     }
 
     static std::optional<std::int64_t> integerFieldValue(
-        const ruvia::JsonValue& object,
+        const ruvia::json_value& object,
         std::string_view field,
         bool allowString,
         std::size_t maximum,
         std::int64_t lower,
         std::int64_t upper
     ) {
-        return integerFieldValue(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper);
+        return integerFieldValue(object.get<ruvia::json_value>(field), allowString, maximum, lower, upper);
     }
 
-    static bool integerFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
+    static bool integerFieldValid(const std::optional<ruvia::json_value>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
         if (!raw) {
             return !required;
         }
         return integerFieldValue(raw, allowString, maximum, lower, upper).has_value();
     }
 
-    static bool integerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
-        return integerFieldValid(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper, required);
+    static bool integerFieldValid(const ruvia::json_value& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
+        return integerFieldValid(object.get<ruvia::json_value>(field), allowString, maximum, lower, upper, required);
     }
 
-    static bool signedIntegerFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
+    static bool signedIntegerFieldValid(const std::optional<ruvia::json_value>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
         if (!raw) {
             return true;
         }
@@ -389,11 +379,11 @@ class ProtocolConfigurationRules final {
             value <= upper;
     }
 
-    static bool signedIntegerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
-        return signedIntegerFieldValid(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper);
+    static bool signedIntegerFieldValid(const ruvia::json_value& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
+        return signedIntegerFieldValid(object.get<ruvia::json_value>(field), allowString, maximum, lower, upper);
     }
 
-    static bool numberFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::string_view lower, std::string_view upper) {
+    static bool numberFieldValid(const std::optional<ruvia::json_value>& raw, bool allowString, std::string_view lower, std::string_view upper) {
         if (!raw) {
             return true;
         }
@@ -404,8 +394,8 @@ class ProtocolConfigurationRules final {
         return compareNumeric(*text, lower) >= 0 && compareNumeric(*text, upper) <= 0;
     }
 
-    static bool numberFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::string_view lower, std::string_view upper) {
-        return numberFieldValid(object.get<ruvia::JsonValue>(field), allowString, lower, upper);
+    static bool numberFieldValid(const ruvia::json_value& object, std::string_view field, bool allowString, std::string_view lower, std::string_view upper) {
+        return numberFieldValid(object.get<ruvia::json_value>(field), allowString, lower, upper);
     }
 
     static bool decimalTokenValid(std::string_view value) {
@@ -452,7 +442,7 @@ class ProtocolConfigurationRules final {
         return index == value.size();
     }
 
-    static bool decimalFieldValid(const std::optional<ruvia::JsonValue>& raw) {
+    static bool decimalFieldValid(const std::optional<ruvia::json_value>& raw) {
         if (!raw) {
             return true;
         }
@@ -466,36 +456,36 @@ class ProtocolConfigurationRules final {
             compareNumeric(*text, "1000000000") <= 0;
     }
 
-    static bool decimalFieldValid(const ruvia::JsonValue& object, std::string_view field) {
-        return decimalFieldValid(object.get<ruvia::JsonValue>(field));
+    static bool decimalFieldValid(const ruvia::json_value& object, std::string_view field) {
+        return decimalFieldValid(object.get<ruvia::json_value>(field));
     }
 
     template <typename T>
-    static bool modelArray(const std::optional<ruvia::JsonValue>& raw, std::optional<ruvia::Array<T>>& parsed) {
+    static bool modelArray(const std::optional<ruvia::json_value>& raw, std::optional<ruvia::array<T>>& parsed) {
         if (!raw) {
             parsed.reset();
             return true;
         }
-        if (!raw->isArray()) {
+        if (!raw->is_array()) {
             return false;
         }
-        parsed = raw->template get<ruvia::Array<T>>();
+        parsed = raw->template get<ruvia::array<T>>();
         return parsed.has_value();
     }
 
-    static bool enumValueValid(const std::optional<ruvia::String>& value, std::initializer_list<std::string_view> values) {
+    static bool enumValueValid(const std::optional<ruvia::string>& value, std::initializer_list<std::string_view> values) {
         return !value || oneOf(value->view(), values);
     }
 
   public:
-    static void validateConfig(const std::optional<ruvia::JsonValue>& config, const std::string& protocol, bool required) {
+    static void validateConfig(const std::optional<ruvia::json_value>& config, const std::string& protocol, bool required) {
         if (!config) {
             if (required) {
                 service::common::fail(16004, "config 不能为空", 400);
             }
             return;
         }
-        if (!config->isObject()) {
+        if (!config->is_object()) {
             service::common::fail(16004, "config 必须是对象", 400);
         }
         if (hasField(*config, "storageInterval")) {
@@ -509,7 +499,7 @@ class ProtocolConfigurationRules final {
         }
 
         if (protocol == "MQTT") {
-            const auto typed = ruvia::fromJson<MqttConfig>(config->view());
+            const auto typed = ruvia::from_json<MqttConfig>(config->view());
             if (!typed) service::common::fail(16004, "MQTT 配置字段类型无效", 400);
             const auto topicValid = [](std::string_view topic, bool filter = false) {
                 if (topic.empty() || topic.size() > 1024 || topic.find('\0') != std::string_view::npos) return false;
@@ -537,9 +527,9 @@ class ProtocolConfigurationRules final {
             if (!oneOf(format, {"json", "text", "binary"}) || !oneOf(identity, {"bound", "payload", "topic"})) service::common::fail(16004, "MQTT 负载格式或设备识别方式无效", 400);
             if (identity == "payload" && (!codeField || codeField->view().empty())) service::common::fail(16004, "负载识别需要设备标识字段", 400);
             if (identity == "bound" && topic && topic->view().find_first_of("+#") != std::string_view::npos) service::common::fail(16004, "通配 Topic 需要从 Topic 或负载识别设备", 400);
-            const auto segment = typed->get<"topicDeviceSegment">().value_or(ruvia::Int64{1}).value;
+            const auto segment = typed->get<"topicDeviceSegment">().value_or(ruvia::int64{1}).value_;
             if (segment < 0 || segment > 1024) service::common::fail(16004, "Topic 设备标识段号无效", 400);
-            const auto recordLength = typed->get<"recordLength">().value_or(ruvia::Int64{0}).value;
+            const auto recordLength = typed->get<"recordLength">().value_or(ruvia::int64{0}).value_;
             if (recordLength < 0 || recordLength > 1048576) service::common::fail(16004, "二进制记录长度无效", 400);
             for (const auto* delimiter : {&typed->get<"delimiter">(), &typed->get<"recordDelimiter">()})
                 if (*delimiter && ((*delimiter)->view().empty() || (*delimiter)->view().size() > 8)) service::common::fail(16004, "分隔符长度须为 1 到 8 字节", 400);
@@ -561,7 +551,7 @@ class ProtocolConfigurationRules final {
                 if (const auto& timeField = typed->get<"timeField">(); timeField && !timeField->view().empty()) validateSelector(timeField->view());
             } catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
             if (const auto& timeFormat = typed->get<"timeFormat">(); timeFormat && !oneOf(timeFormat->view(), {"unix_ms", "unix_s", "iso8601"})) service::common::fail(16004, "时间格式无效", 400);
-            const auto qos = typed->get<"qos">().value_or(ruvia::Int64{1}).value;
+            const auto qos = typed->get<"qos">().value_or(ruvia::int64{1}).value_;
             if (qos < 0 || qos > 2) service::common::fail(16004, "MQTT QoS 必须是 0、1 或 2", 400);
             const auto& points = typed->get<"points">();
             if ((required && !points) || (points && points->size() > 256)) service::common::fail(16004, "MQTT 点位配置无效", 400);
@@ -575,12 +565,12 @@ class ProtocolConfigurationRules final {
                     (!field.empty() && (!fields.emplace(field).second || (codeField && codeField->view() == field))) ||
                     !oneOf(point.get<"dataType">().view(), {"BOOL", "STRING", "DOUBLE"}))
                     service::common::fail(16004, "MQTT 点位名称、标识、JSON 字段或类型无效", 400);
-                if (!templatePoints.emplace(std::string(name), point.get<"writable">().value_or(ruvia::Bool{false}).value).second)
+                if (!templatePoints.emplace(std::string(name), point.get<"writable">().value_or(ruvia::bool_value{false}).value_).second)
                     service::common::fail(16004, "MQTT 点位名称重复", 400);
                 try { if (!field.empty()) validateSelector(field); }
                 catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
-                const auto scale = point.get<"scale">().value_or(ruvia::Double{1}).value, offset = point.get<"offset">().value_or(ruvia::Double{0}).value;
-                if (!std::isfinite(scale) || !std::isfinite(offset) || (!scale && point.get<"writable">().value_or(ruvia::Bool{false}).value)) service::common::fail(16004, "倍率、偏移无效；可写点位倍率不能为零", 400);
+                const auto scale = point.get<"scale">().value_or(ruvia::double_value{1}).value_, offset = point.get<"offset">().value_or(ruvia::double_value{0}).value_;
+                if (!std::isfinite(scale) || !std::isfinite(offset) || (!scale && point.get<"writable">().value_or(ruvia::bool_value{false}).value_)) service::common::fail(16004, "倍率、偏移无效；可写点位倍率不能为零", 400);
                 if (const auto& enums = point.get<"enumValues">(); enums) {
                     if (enums->size() > 64) service::common::fail(16004, "最多 64 条枚举映射", 400);
                     std::set<std::string> inputs, outputs;
@@ -592,7 +582,7 @@ class ProtocolConfigurationRules final {
                 }
                 if (point.get<"unit">() && point.get<"unit">()->view().size() > 32)
                     service::common::fail(16004, "MQTT 点位单位过长", 400);
-                if (required && point.get<"writable">().value_or(ruvia::Bool{false}).value &&
+                if (required && point.get<"writable">().value_or(ruvia::bool_value{false}).value_ &&
                     !commands && (!commandTopic || commandTopic->view().empty())) service::common::fail(16004, "可写 MQTT 点位需要指令 Topic", 400);
             }
             try {
@@ -654,7 +644,7 @@ class ProtocolConfigurationRules final {
                         writableIds.insert(referenced.begin(), referenced.end());
                     }
                     if (points) for (const auto& point : *points) {
-                        if (point.get<"writable">().value_or(ruvia::Bool{false}).value != writableIds.contains(point.get<"id">().view()))
+                        if (point.get<"writable">().value_or(ruvia::bool_value{false}).value_ != writableIds.contains(point.get<"id">().view()))
                             throw std::invalid_argument("属性可写状态与控制消息引用不一致");
                     }
                 }
@@ -672,12 +662,12 @@ class ProtocolConfigurationRules final {
         if (protocol == "SL651") {
             if (!enumFieldValid(*config, "responseMode", { "M1", "M2", "M3", "M4" }) ||
                 (hasField(*config, "funcs") &&
-                 !config->get<ruvia::JsonValue>("funcs")->isArray()) ||
+                 !config->get<ruvia::json_value>("funcs")->is_array()) ||
                 (required && (!hasField(*config, "responseMode") || !hasField(*config, "funcs")))) {
                 service::common::fail(16004, "SL651 配置无效", 400);
             }
-            std::optional<ruvia::Array<Sl651Func>> funcs;
-            if (!modelArray(config->get<ruvia::JsonValue>("funcs"), funcs)) {
+            std::optional<ruvia::array<Sl651Func>> funcs;
+            if (!modelArray(config->get<ruvia::json_value>("funcs"), funcs)) {
                 service::common::fail(16004, "SL651 配置无效", 400);
             }
             const auto validElement = [](const Sl651Element& element) {
@@ -686,14 +676,14 @@ class ProtocolConfigurationRules final {
                 }
                 const auto position = element.get<"positionMode">() ? std::string(element.get<"positionMode">()->view()) : std::string("GUIDE");
                 if (position == "OFFSET") {
-                    const auto offset = element.isPresent<"byteOffset">()
+                    const auto offset = element.is_present<"byteOffset">()
                         ? integerFieldValue(element.get<"byteOffset">(), false, 7, 0, 8388607)
                         : std::optional<std::int64_t>{ 0 };
                     const auto length = integerFieldValue(element.get<"length">(), false, 7, 1, 8388608);
                     return offset && length && *offset + *length <= 8388608 &&
                         integerFieldValid(element.get<"digits">(), false, 1, 0, 7, true) &&
                         enumValueValid(element.get<"encode">(), { "BCD", "HEX", "DICT", "JPEG", "TIME_YYMMDDHHMMSS" }) &&
-                        element.isPresent<"encode">();
+                        element.is_present<"encode">();
                 }
                 if (position != "GUIDE") {
                     return false;
@@ -754,11 +744,11 @@ class ProtocolConfigurationRules final {
         }
 
         if (protocol == "MC" || protocol == "FINS" || protocol == "DLT645") {
-            const auto connectionValue = config->get<ruvia::JsonValue>("connection");
-            const auto pointsValue = config->get<ruvia::JsonValue>("points");
+            const auto connectionValue = config->get<ruvia::json_value>("connection");
+            const auto pointsValue = config->get<ruvia::json_value>("points");
             const auto connection = connectionValue ? connectionValue->get<IndustrialConnection>() : std::optional<IndustrialConnection>{};
-            std::optional<ruvia::Array<IndustrialPoint>> points;
-            if (!connectionValue || !connectionValue->isObject() || !connection ||
+            std::optional<ruvia::array<IndustrialPoint>> points;
+            if (!connectionValue || !connectionValue->is_object() || !connection ||
                 !modelArray(pointsValue, points) || !points ||
                 !integerFieldValid(*config, "readInterval", true, 5, 1, 3600) ||
                 !integerFieldValid(*config, "commandFastReadDuration", true, 5, 0, 3600) ||
@@ -821,7 +811,7 @@ class ProtocolConfigurationRules final {
                 const auto unit = point.get<"unit">() ? std::optional<std::string>(point.get<"unit">()->view()) : std::nullopt;
                 if (!id || !service::common::isUuid(*id) || !ids.insert(*id).second || !name || name->empty() || name->size() > 100 || !type ||
                     (unit && unit->size() > 32) ||
-                    (point.isPresent<"writable">() && !point.get<"writable">())) {
+                    (point.is_present<"writable">() && !point.get<"writable">())) {
                     service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
                 }
                 if (protocol == "DLT645") {
@@ -878,12 +868,12 @@ class ProtocolConfigurationRules final {
         }
 
         if (protocol == "S7") {
-            const auto connectionValue = config->get<ruvia::JsonValue>("connection");
-            const auto areasValue = config->get<ruvia::JsonValue>("areas");
-            const auto connection = connectionValue && connectionValue->isObject() ? connectionValue->get<S7Connection>() : std::optional<S7Connection>{};
-            std::optional<ruvia::Array<S7Area>> areas;
+            const auto connectionValue = config->get<ruvia::json_value>("connection");
+            const auto areasValue = config->get<ruvia::json_value>("areas");
+            const auto connection = connectionValue && connectionValue->is_object() ? connectionValue->get<S7Connection>() : std::optional<S7Connection>{};
+            std::optional<ruvia::array<S7Area>> areas;
             if (!enumFieldValid(*config, "plcModel", { "S7-200", "S7-300", "S7-400", "S7-1200", "S7-1500" }) ||
-                (connectionValue && (!connectionValue->isObject() || !connection)) ||
+                (connectionValue && (!connectionValue->is_object() || !connection)) ||
                 (areasValue && !modelArray(areasValue, areas)) ||
                 (required && (!hasField(*config, "plcModel") || !connection || !areas))) {
                 service::common::fail(16004, "S7 配置无效", 400);
@@ -914,7 +904,7 @@ class ProtocolConfigurationRules final {
                         !integerFieldValid(area.get<"size">(), false, 5, 1, 65535, true) ||
                         !integerFieldValid(area.get<"startBit">(), false, 1, 0, 7) ||
                         !signedIntegerFieldValid(area.get<"decimals">(), false, 2, -1, 8) ||
-                        (area.isPresent<"writable">() && !area.get<"writable">())) {
+                        (area.is_present<"writable">() && !area.get<"writable">())) {
                         service::common::fail(16004, "S7 寄存器配置无效", 400);
                     }
                     if (*areaType == "DB" && !integerFieldValid(area.get<"dbNumber">(), false, 5, 1, 65535, true)) {
@@ -928,10 +918,10 @@ class ProtocolConfigurationRules final {
         if (protocol != "Modbus") {
             return;
         }
-        const auto packetValue = config->get<ruvia::JsonValue>("packet");
-        const auto registersValue = config->get<ruvia::JsonValue>("registers");
-        const auto packet = packetValue && packetValue->isObject() ? packetValue->get<ModbusPacket>() : std::optional<ModbusPacket>{};
-        std::optional<ruvia::Array<ModbusRegister>> registers;
+        const auto packetValue = config->get<ruvia::json_value>("packet");
+        const auto registersValue = config->get<ruvia::json_value>("registers");
+        const auto packet = packetValue && packetValue->is_object() ? packetValue->get<ModbusPacket>() : std::optional<ModbusPacket>{};
+        std::optional<ruvia::array<ModbusRegister>> registers;
         if (!enumFieldValid(*config, "byteOrder", { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" }) ||
             (required && !hasField(*config, "byteOrder"))) {
             service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
@@ -939,7 +929,7 @@ class ProtocolConfigurationRules final {
         if ((registersValue && !modelArray(registersValue, registers)) || (required && !registers)) {
             service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
         }
-        if (packetValue && (!packetValue->isObject() || !packet)) {
+        if (packetValue && (!packetValue->is_object() || !packet)) {
             service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
         }
         if (!integerFieldValid(*config, "readInterval", true, 5, 1, 3600)) {
@@ -978,7 +968,7 @@ class ProtocolConfigurationRules final {
             if (!signedIntegerFieldValid(entry.get<"decimals">(), true, 2, -1, 8)) {
                 service::common::fail(16004, "Modbus 寄存器 decimals 无效", 400);
             }
-            if (entry.isPresent<"writable">() && !entry.get<"writable">()) {
+            if (entry.is_present<"writable">() && !entry.get<"writable">()) {
                 service::common::fail(16004, "Modbus 寄存器 writable 必须是布尔值", 400);
             }
         }
@@ -987,7 +977,7 @@ class ProtocolConfigurationRules final {
 
 
 class ProtocolService {
-    static void validateDerivedConfig(const ruvia::JsonValue& config) {
+    static void validateDerivedConfig(const ruvia::json_value& config) {
         try { (void)service::common::orderDerivedPoints(config); }
         catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
     }
@@ -997,7 +987,7 @@ class ProtocolService {
             std::map<std::string, double> inputs;
             for (const auto& input : body.get<"inputs">()) {
                 const std::string alias(input.get<"alias">().view());
-                const double value = input.get<"value">().value;
+                const double value = input.get<"value">().value_;
                 const utils::Expression variable(alias);
                 if (variable.variables().size() != 1 || variable.variables().front() != alias ||
                     !std::isfinite(value) || !inputs.emplace(alias, value).second) {
@@ -1038,8 +1028,8 @@ class ProtocolService {
     static MqttPreviewResult previewMqtt(const MqttPreviewBody& body) {
         try {
             const auto& config = body.get<"config">();
-            const auto rawConfig = ruvia::toJson(config);
-            const auto parsedConfig = ruvia::JsonValue::parse(std::string_view(rawConfig));
+            const auto rawConfig = ruvia::to_json(config);
+            const auto parsedConfig = ruvia::json_value::parse(std::string_view(rawConfig));
             ProtocolConfigurationRules::validateConfig(parsedConfig, "MQTT", true);
             const auto topic = body.get<"topic">().view();
             if (topic.empty() || topic.find_first_of("+#") != std::string_view::npos || topic.find('\0') != std::string_view::npos)
@@ -1073,27 +1063,27 @@ class ProtocolService {
                 }
             }
             if (payload.size() > 1048576) throw std::invalid_argument("示例负载超过 1 MiB");
-            const auto records = utils::payloadRecords(payload, format, option(config.get<"recordsPath">(), ""), option(config.get<"recordDelimiter">(), "\n"), static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::Int64{0}).value));
+            const auto records = utils::payloadRecords(payload, format, option(config.get<"recordsPath">(), ""), option(config.get<"recordDelimiter">(), "\n"), static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{0}).value_));
             MqttPreviewResult result;
-            ruvia::Array<MqttPreviewRecord> output;
+            ruvia::array<MqttPreviewRecord> output;
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
             for (const auto& input : records) {
                 utils::PayloadRecord record(input, format, option(config.get<"delimiter">(), ","));
-                MqttPreviewRecord row; ruvia::Array<ruvia::String> errors; ruvia::Array<MqttPreviewPoint> points;
+                MqttPreviewRecord row; ruvia::array<ruvia::string> errors; ruvia::array<MqttPreviewPoint> points;
                 auto code = deviceCode;
                 if (identity == "payload") {
                     const auto value = record.field(codeField); code = value ? utils::payloadScalarText(*value) : "";
                 } else if (identity == "topic") {
-                    const auto segment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::Int64{1}).value);
+                    const auto segment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::int64{1}).value_);
                     code = segment < levels.size() ? std::string(levels[segment]) : "";
                 }
-                if (code.empty()) errors.push_back(ruvia::String("未提取到设备编码"));
-                else if (!deviceCode.empty() && code != deviceCode) errors.push_back(ruvia::String("设备编码与测试设备不匹配，实际接入将跳过此记录"));
+                if (code.empty()) errors.push_back(ruvia::string("未提取到设备编码"));
+                else if (!deviceCode.empty() && code != deviceCode) errors.push_back(ruvia::string("设备编码与测试设备不匹配，实际接入将跳过此记录"));
                 auto occurredAt = now;
                 const auto timeField = option(config.get<"timeField">(), "");
                 if (!timeField.empty()) if (const auto time = record.field(timeField)) {
                     const auto timestamp = utils::payloadTimestamp(*time, option(config.get<"timeFormat">(), "unix_ms"), option(body.get<"timezone">(), "+08:00"));
-                    if (timestamp) occurredAt = *timestamp; else errors.push_back(ruvia::String("设备时间无效，实际接入将跳过此记录"));
+                    if (timestamp) occurredAt = *timestamp; else errors.push_back(ruvia::string("设备时间无效，实际接入将跳过此记录"));
                 }
                 for (const auto& point : *config.get<"points">()) {
                     if (point.get<"field">().view().empty()) continue;
@@ -1103,8 +1093,8 @@ class ProtocolService {
                         for (const auto& value : *enums) if (value.get<"input">().view() == key) { inputValue = utils::PayloadScalar{std::string(value.get<"output">().view())}; found = true; break; }
                         if (!found) inputValue.reset();
                     }
-                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view(), point.get<"scale">().value_or(ruvia::Double{1}).value, point.get<"offset">().value_or(ruvia::Double{0}).value) : std::nullopt;
-                    if (!value) { errors.push_back(ruvia::String(std::string(point.get<"name">().view()) + "：字段缺失或类型转换失败")); continue; }
+                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view(), point.get<"scale">().value_or(ruvia::double_value{1}).value_, point.get<"offset">().value_or(ruvia::double_value{0}).value_) : std::nullopt;
+                    if (!value) { errors.push_back(ruvia::string(std::string(point.get<"name">().view()) + "：字段缺失或类型转换失败")); continue; }
                     MqttPreviewPoint preview;
                     preview.set<"id">(point.get<"id">().view()).set<"name">(point.get<"name">().view()).set<"value">(utils::payloadScalarText(*value)).set<"unit">(option(point.get<"unit">(), ""));
                     points.push_back(std::move(preview));
@@ -1122,22 +1112,22 @@ class ProtocolService {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> list(Context& c, std::int64_t page, std::int64_t pageSize, std::optional<std::string> protocol) {
+    ruvia::task<std::string> list(Context& c, std::int64_t page, std::int64_t pageSize, std::optional<std::string> protocol) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 1000);
-        ruvia::DbFindOptions countOptions;
-        countOptions.where = ProtocolConfigEntity::column<"deleted_at">().isNull();
+        ruvia::db_find_options countOptions;
+        countOptions.where_ = ProtocolConfigEntity::column<"deleted_at">().is_null();
         if (protocol && !protocol->empty()) {
-            countOptions.where = std::move(countOptions.where) &&
+            countOptions.where_ = std::move(countOptions.where_) &&
                 ProtocolConfigEntity::column<"protocol">() == *protocol;
         }
-        const auto total = co_await c.db().template getRepository<ProtocolConfigEntity>().count(countOptions);
+        const auto total = co_await c.db().template get_repository<ProtocolConfigEntity>().count(countOptions);
 
         auto query = protocolSelect(c.pool());
         if (protocol && !protocol->empty()) {
-            query.andWhere(query.binary(query.column("protocol"), ruvia::DbBinaryOperator::kEqual, query.value(*protocol)));
+            query.and_where(query.binary(query.column("protocol"), ruvia::db_binary_operator::equal, query.value(*protocol)));
         }
-        query.orderBy(query.column("id"), ruvia::DbOrderDirection::kDesc)
+        query.order_by(query.column("id"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>((page - 1) * pageSize));
         const auto rows = co_await c.db().query(query);
@@ -1158,23 +1148,23 @@ class ProtocolService {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> detail(Context& c, std::string_view id) {
+    ruvia::task<std::string> detail(Context& c, std::string_view id) {
         co_return co_await detailData(c, id);
     }
 
     template <typename Context>
-    ruvia::Task<std::string> options(Context& c, const std::string& protocol, std::int64_t page, std::int64_t pageSize) {
+    ruvia::task<std::string> options(Context& c, const std::string& protocol, std::int64_t page, std::int64_t pageSize) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 1000);
-        ruvia::DbFindOptions options;
-        options.where = ProtocolConfigEntity::column<"deleted_at">().isNull() &&
+        ruvia::db_find_options options;
+        options.where_ = ProtocolConfigEntity::column<"deleted_at">().is_null() &&
             ProtocolConfigEntity::column<"protocol">() == protocol;
-        const auto total = co_await c.db().template getRepository<ProtocolConfigEntity>().count(options);
-        options.where = std::move(options.where) && ProtocolConfigEntity::column<"enabled">() == true;
-        options.order = { { "name" } };
-        options.take = static_cast<std::uint64_t>(pageSize);
-        options.skip = static_cast<std::uint64_t>((page - 1) * pageSize);
-        const auto rows = co_await c.db().template getRepository<ProtocolConfigEntity>().find(options);
+        const auto total = co_await c.db().template get_repository<ProtocolConfigEntity>().count(options);
+        options.where_ = std::move(options.where_) && ProtocolConfigEntity::column<"enabled">() == true;
+        options.order_ = { { "name" } };
+        options.take_ = static_cast<std::uint64_t>(pageSize);
+        options.skip_ = static_cast<std::uint64_t>((page - 1) * pageSize);
+        const auto rows = co_await c.db().template get_repository<ProtocolConfigEntity>().find(options);
         std::string result = "{\"list\":[";
         bool first = true;
         for (const auto& row : rows) {
@@ -1191,20 +1181,20 @@ class ProtocolService {
     }
 
     template <typename Context>
-    ruvia::Task<void> create(Context& c, const CreateProtocolBody& body) {
+    ruvia::task<void> create(Context& c, const CreateProtocolBody& body) {
         const std::string protocol(body.get<"protocol">().view());
         const std::string name(body.get<"name">().view());
         ProtocolConfigurationRules::validateProtocol(protocol);
         ProtocolConfigurationRules::validateName(name);
-        if (body.isNull<"config">()) service::common::fail(16004, "config 必须是对象", 400);
+        if (body.is_null<"config">()) service::common::fail(16004, "config 必须是对象", 400);
         ProtocolConfigurationRules::validateConfig(body.get<"config">(), protocol, true);
         validateDerivedConfig(*body.get<"config">());
         co_await ensureNameAvailable(c, name, std::nullopt);
-        const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto& config = body.get<"config">();
         const auto& remark = body.get<"remark">();
-        const bool enabled = body.get<"enabled">().value_or(ruvia::Bool{true}).value;
-        auto transaction = co_await c.db().beginTransaction();
+        const bool enabled = body.get<"enabled">().value_or(ruvia::bool_value{true}).value_;
+        auto transaction = co_await c.db().begin_transaction();
         ProtocolConfigEntity configuration(c.pool());
         configuration.set<"id">(id);
         configuration.set<"protocol">(protocol);
@@ -1215,18 +1205,18 @@ class ProtocolService {
         if (remark && !remark->view().empty()) {
             configuration.set<"remark">(remark->view());
         } else {
-            configuration.setNull<"remark">();
+            configuration.set_null<"remark">();
         }
-        (void)co_await transaction.template getRepository<ProtocolConfigEntity>().insert(configuration);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "created", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        (void)co_await transaction.template get_repository<ProtocolConfigEntity>().insert(configuration);
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
     }
 
     template <typename Context>
-    ruvia::Task<void> update(Context& c, std::string_view id, const UpdateProtocolBody& body) {
-        ruvia::DbFindOptions options;
-        options.where = service::common::database::activeId<ProtocolConfigEntity>(id);
-        const auto existing = co_await c.db().template getRepository<ProtocolConfigEntity>().findOne(options);
+    ruvia::task<void> update(Context& c, std::string_view id, const UpdateProtocolBody& body) {
+        ruvia::db_find_options options;
+        options.where_ = service::common::database::activeId<ProtocolConfigEntity>(id);
+        const auto existing = co_await c.db().template get_repository<ProtocolConfigEntity>().find_one(options);
         if (!existing) {
             service::common::fail(16001, "协议配置不存在", 404);
         }
@@ -1244,21 +1234,21 @@ class ProtocolService {
             ProtocolConfigurationRules::validateName(name->view());
             co_await ensureNameAvailable(c, std::string(name->view()), std::string(id));
         }
-        auto transaction = co_await c.db().beginTransaction();
-        options.lock = ruvia::DbLockOptions{};
-        const auto locked = co_await transaction.template getRepository<ProtocolConfigEntity>().findOne(options);
+        auto transaction = co_await c.db().begin_transaction();
+        options.lock_ = ruvia::db_lock_options{};
+        const auto locked = co_await transaction.template get_repository<ProtocolConfigEntity>().find_one(options);
         if (!locked) service::common::fail(16001, "协议配置不存在", 404);
-        if (body.isNull<"config">()) service::common::fail(16004, "config 必须是对象", 400);
+        if (body.is_null<"config">()) service::common::fail(16004, "config 必须是对象", 400);
         ProtocolConfigurationRules::validateConfig(body.get<"config">(), protocol, false);
         if (body.get<"config">()) {
-            const auto previous = ruvia::JsonValue::parse(locked->template get<"config">());
+            const auto previous = ruvia::json_value::parse(locked->template get<"config">());
             std::map<std::string, std::string> fields;
             if (!previous) throw std::runtime_error("invalid stored protocol configuration");
-            (void)previous->forEachField([&](std::string_view key, const ruvia::JsonValue& value) {
+            (void)previous->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
                 fields[std::string(key)] = std::string(value.view());
                 return true;
             });
-            (void)body.get<"config">()->forEachField([&](std::string_view key, const ruvia::JsonValue& value) {
+            (void)body.get<"config">()->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
                 fields[std::string(key)] = std::string(value.view());
                 return true;
             });
@@ -1268,7 +1258,7 @@ class ProtocolService {
                 merged += service::utils::jsonQuoted(key) + ':' + value;
             }
             merged += '}';
-            const auto mergedConfig = ruvia::JsonValue::parse(merged);
+            const auto mergedConfig = ruvia::json_value::parse(merged);
             if (protocol == "MQTT") ProtocolConfigurationRules::validateConfig(mergedConfig, protocol, true);
             validateDerivedConfig(*mergedConfig);
             if (!service::common::orderDerivedPoints(*mergedConfig).empty()) co_await requireDerivedSupport(transaction, c.pool(), id);
@@ -1277,25 +1267,25 @@ class ProtocolService {
         const auto& remark = body.get<"remark">();
         const auto& config = body.get<"config">();
         const auto& enabled = body.get<"enabled">();
-        ruvia::DbExpressions expressions(c.pool());
-        std::vector<ruvia::DbAssignment> changes{ { "updated_at", expressions.call("now") } };
+        ruvia::db_expressions expressions(c.pool());
+        std::vector<ruvia::db_assignment> changes{ { "updated_at", expressions.call("now") } };
         if (name) {
             changes.push_back({ "name", expressions.value(name->view()) });
         }
         if (enabled) {
-            changes.push_back({ "enabled", expressions.value(enabled->value) });
+            changes.push_back({ "enabled", expressions.value(enabled->value_) });
         }
         if (config) {
-            changes.push_back({ "config", expressions.binary(expressions.column("config"), ruvia::DbBinaryOperator::kJsonConcat, expressions.cast(expressions.value(config->view()), ruvia::DbDataType::kJsonb)) });
+            changes.push_back({ "config", expressions.binary(expressions.column("config"), ruvia::db_binary_operator::json_concat, expressions.cast(expressions.value(config->view()), ruvia::db_data_type::jsonb)) });
         }
-        if (body.isPresent<"remark">()) {
-            changes.push_back({ "remark", remark && !remark->view().empty() ? expressions.value(remark->view()) : expressions.nullValue() });
+        if (body.is_present<"remark">()) {
+            changes.push_back({ "remark", remark && !remark->view().empty() ? expressions.value(remark->view()) : expressions.null_value() });
         }
-        (void)co_await transaction.template getRepository<ProtocolConfigEntity>().update(
+        (void)co_await transaction.template get_repository<ProtocolConfigEntity>().update(
             service::common::database::activeId<ProtocolConfigEntity>(id),
             changes
         );
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
             (void)co_await service::rpc::call(c, "telemetry", "project-protocol", std::string(id));
@@ -1312,36 +1302,36 @@ class ProtocolService {
     }
 
     template <typename Context>
-    ruvia::Task<void> remove(Context& c, std::string_view id) {
-        ruvia::DbFindOptions options;
-        options.where = service::common::database::activeId<ProtocolConfigEntity>(id);
-        const auto existing = co_await c.db().template getRepository<ProtocolConfigEntity>().findOne(options);
+    ruvia::task<void> remove(Context& c, std::string_view id) {
+        ruvia::db_find_options options;
+        options.where_ = service::common::database::activeId<ProtocolConfigEntity>(id);
+        const auto existing = co_await c.db().template get_repository<ProtocolConfigEntity>().find_one(options);
         if (!existing) {
             service::common::fail(16001, "协议配置不存在", 404);
         }
         co_await requireOwner(c, existing->template get<"created_by">());
-        ruvia::DbFindOptions used;
-        used.where = entities::DeviceEntity::column<"protocol_config_id">() == id &&
-            entities::DeviceEntity::column<"deleted_at">().isNull();
-        if (co_await c.db().template getRepository<entities::DeviceEntity>().exists(used)) {
+        ruvia::db_find_options used;
+        used.where_ = entities::DeviceEntity::column<"protocol_config_id">() == id &&
+            entities::DeviceEntity::column<"deleted_at">().is_null();
+        if (co_await c.db().template get_repository<entities::DeviceEntity>().exists(used)) {
             service::common::fail(16008, "协议配置已被设备使用，请先删除关联设备", 409);
         }
-        auto transaction = co_await c.db().beginTransaction();
-        ruvia::DbExpressions expressions(c.pool());
-        (void)co_await transaction.template getRepository<ProtocolConfigEntity>().update(
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_expressions expressions(c.pool());
+        (void)co_await transaction.template get_repository<ProtocolConfigEntity>().update(
             service::common::database::activeId<ProtocolConfigEntity>(id),
             { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
         );
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "deleted", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
     }
 
   private:
     template <typename Context>
-    static ruvia::Task<std::string> detailData(Context& c, std::string_view id) {
+    static ruvia::task<std::string> detailData(Context& c, std::string_view id) {
         auto query = protocolSelect(c.pool());
-        query.where(ProtocolConfigEntity::column<"deleted_at">().isNull().expression(query))
-            .andWhere(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual, query.cast(query.value(id), ruvia::DbDataType::kUuid)))
+        query.where(ProtocolConfigEntity::column<"deleted_at">().is_null().expression(query))
+            .and_where(query.binary(query.column("id"), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -1350,38 +1340,38 @@ class ProtocolService {
         co_return itemJson(rows.front());
     }
 
-    static ruvia::DbQuery edgeNodeReferences(std::pmr::memory_resource* resource, std::string_view configId) {
-        ruvia::DbQuery query(resource);
+    static ruvia::db_query edgeNodeReferences(std::pmr::memory_resource* resource, std::string_view configId) {
+        ruvia::db_query query(resource);
         const auto edgeNodeId =
-            query.cast(query.column("edge_node_id", "l"), ruvia::DbDataType::kText);
+            query.cast(query.column("edge_node_id", "l"), ruvia::db_data_type::text);
         query.select(edgeNodeId)
-            .from(service::protocol::entities::DeviceEntity::tableName(), "d")
-            .join(ruvia::DbJoinType::kInner, service::link::LinkEntity::tableName(), query.binary(query.column("id", "l"), ruvia::DbBinaryOperator::kEqual, query.column(service::protocol::entities::DeviceEntity::columnName<"link_id">(), "d")), "l")
-            .where(query.binary(query.column(service::protocol::entities::DeviceEntity::columnName<"protocol_config_id">(), "d"), ruvia::DbBinaryOperator::kEqual, query.cast(query.value(configId), ruvia::DbDataType::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::protocol::entities::DeviceEntity::columnName<"deleted_at">(), "d")))
-            .andWhere(query.binary(query.column("execution", "l"), ruvia::DbBinaryOperator::kEqual, query.value("edge")))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at", "l")))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNotNull, query.column("edge_node_id", "l")))
+            .from(service::protocol::entities::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::link::LinkEntity::table_name(), query.binary(query.column("id", "l"), ruvia::db_binary_operator::equal, query.column(service::protocol::entities::DeviceEntity::column_name<"link_id">(), "d")), "l")
+            .where(query.binary(query.column(service::protocol::entities::DeviceEntity::column_name<"protocol_config_id">(), "d"), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::protocol::entities::DeviceEntity::column_name<"deleted_at">(), "d")))
+            .and_where(query.binary(query.column("execution", "l"), ruvia::db_binary_operator::equal, query.value("edge")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column("deleted_at", "l")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_not_null, query.column("edge_node_id", "l")))
             .distinct()
-            .orderBy(edgeNodeId);
+            .order_by(edgeNodeId);
         return query;
     }
 
-    static ruvia::Task<void> requireDerivedSupport(ruvia::DbTransaction& transaction, std::pmr::memory_resource* resource, std::string_view configId) {
+    static ruvia::task<void> requireDerivedSupport(ruvia::db_transaction& transaction, std::pmr::memory_resource* resource, std::string_view configId) {
         const auto rows = co_await transaction.query(edgeNodeReferences(resource, configId));
         for (const auto& row : rows) {
             const auto nodeId = row[0].value().value_or(std::string_view{});
-            ruvia::DbFindOptions nodeOptions;
-            nodeOptions.where = service::edge::EdgeNodeEntity::column<"id">() == nodeId;
-            const auto node = co_await transaction.template getRepository<service::edge::EdgeNodeEntity>().findOne(nodeOptions);
-            const auto capability = node ? ruvia::JsonValue::parse(node->template get<"capability">()) : std::optional<ruvia::JsonValue>{};
-            const auto supported = capability ? capability->template get<ruvia::Bool>("derivedPoints") : std::optional<ruvia::Bool>{};
+            ruvia::db_find_options nodeOptions;
+            nodeOptions.where_ = service::edge::EdgeNodeEntity::column<"id">() == nodeId;
+            const auto node = co_await transaction.template get_repository<service::edge::EdgeNodeEntity>().find_one(nodeOptions);
+            const auto capability = node ? ruvia::json_value::parse(node->template get<"capability">()) : std::optional<ruvia::json_value>{};
+            const auto supported = capability ? capability->template get<ruvia::bool_value>("derivedPoints") : std::optional<ruvia::bool_value>{};
             if (!supported || !static_cast<bool>(*supported)) service::common::fail(16009, "关联边缘节点尚不支持派生点，请先升级固件", 409);
         }
     }
 
     template <typename Context>
-    static ruvia::Task<void> syncEdgeNodes(Context& c, std::string_view configId) {
+    static ruvia::task<void> syncEdgeNodes(Context& c, std::string_view configId) {
         const auto rows = co_await c.db().query(edgeNodeReferences(c.pool(), configId));
         for (const auto& row : rows) {
             const auto nodeId = row[0].value().value_or(std::string_view{});
@@ -1403,15 +1393,15 @@ class ProtocolService {
                   << " error=" << message << '\n';
     }
 
-    static ruvia::DbQuery protocolSelect(std::pmr::memory_resource* resource) {
-        ruvia::DbQuery query(resource);
-        query.select({ query.cast(query.column("id"), ruvia::DbDataType::kText), query.column("protocol"), query.column("name"), query.column("enabled"), query.column("config"), service::common::database::emptyText(query, "remark"), query.cast(query.call("iot_utc_timestamp", { query.column("created_at") }), ruvia::DbDataType::kText), query.cast(query.call("iot_utc_timestamp", { query.column("updated_at") }), ruvia::DbDataType::kText) })
-            .from(ProtocolConfigEntity::tableName())
-            .where(ProtocolConfigEntity::column<"deleted_at">().isNull().expression(query));
+    static ruvia::db_query protocolSelect(std::pmr::memory_resource* resource) {
+        ruvia::db_query query(resource);
+        query.select({ query.cast(query.column("id"), ruvia::db_data_type::text), query.column("protocol"), query.column("name"), query.column("enabled"), query.column("config"), service::common::database::emptyText(query, "remark"), query.cast(query.call("iot_utc_timestamp", { query.column("created_at") }), ruvia::db_data_type::text), query.cast(query.call("iot_utc_timestamp", { query.column("updated_at") }), ruvia::db_data_type::text) })
+            .from(ProtocolConfigEntity::table_name())
+            .where(ProtocolConfigEntity::column<"deleted_at">().is_null().expression(query));
         return query;
     }
 
-    static std::string itemJson(const ruvia::DbRow& row) {
+    static std::string itemJson(const ruvia::db_row& row) {
         const auto enabled = row[3].as<bool>().value_or(false);
         std::string result = "{\"id\":" + service::utils::jsonQuoted(row[0].value().value_or("")) +
             ",\"protocol\":" +
@@ -1428,31 +1418,31 @@ class ProtocolService {
     }
 
     template <typename Context>
-    ruvia::Task<void> ensureNameAvailable(Context& c, const std::string& name, std::optional<std::string> excludedId) {
-        ruvia::DbFindOptions options;
-        options.where = ProtocolConfigEntity::column<"deleted_at">().isNull() &&
+    ruvia::task<void> ensureNameAvailable(Context& c, const std::string& name, std::optional<std::string> excludedId) {
+        ruvia::db_find_options options;
+        options.where_ = ProtocolConfigEntity::column<"deleted_at">().is_null() &&
             ProtocolConfigEntity::column<"name">() == name;
         if (excludedId) {
-            options.where = std::move(options.where) && ProtocolConfigEntity::column<"id">() != *excludedId;
+            options.where_ = std::move(options.where_) && ProtocolConfigEntity::column<"id">() != *excludedId;
         }
-        if (co_await c.db().template getRepository<ProtocolConfigEntity>().exists(options)) {
+        if (co_await c.db().template get_repository<ProtocolConfigEntity>().exists(options)) {
             service::common::fail(16005, "配置名称已存在", 409);
         }
     }
 
     template <typename Context>
-    ruvia::Task<void> requireOwner(Context& c, std::string_view ownerId) {
+    ruvia::task<void> requireOwner(Context& c, std::string_view ownerId) {
         if (c.userId == ownerId) {
             co_return;
         }
-        ruvia::DbQuery query(c.pool());
-        query.select(query.cast(query.value(1), ruvia::DbDataType::kInteger))
-            .from(service::user::UserRoleEntity::tableName(), "ur")
-            .join(ruvia::DbJoinType::kInner, service::role::RoleEntity::tableName(), query.binary(query.column("role_id", "ur"), ruvia::DbBinaryOperator::kEqual, query.column("id", "r")), "r")
-            .where(query.binary(query.column("user_id", "ur"), ruvia::DbBinaryOperator::kEqual, query.value(c.userId)))
-            .andWhere(query.binary(query.column("code", "r"), ruvia::DbBinaryOperator::kEqual, query.value("superadmin")))
-            .andWhere(query.binary(query.column("status", "r"), ruvia::DbBinaryOperator::kEqual, query.value("enabled")))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at", "r")))
+        ruvia::db_query query(c.pool());
+        query.select(query.cast(query.value(1), ruvia::db_data_type::integer))
+            .from(service::user::UserRoleEntity::table_name(), "ur")
+            .join(ruvia::db_join_type::inner, service::role::RoleEntity::table_name(), query.binary(query.column("role_id", "ur"), ruvia::db_binary_operator::equal, query.column("id", "r")), "r")
+            .where(query.binary(query.column("user_id", "ur"), ruvia::db_binary_operator::equal, query.value(c.userId)))
+            .and_where(query.binary(query.column("code", "r"), ruvia::db_binary_operator::equal, query.value("superadmin")))
+            .and_where(query.binary(query.column("status", "r"), ruvia::db_binary_operator::equal, query.value("enabled")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column("deleted_at", "r")))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {

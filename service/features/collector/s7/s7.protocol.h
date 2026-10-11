@@ -552,8 +552,6 @@ class Session final : public ProtocolSession,
     }
 
   private:
-    static constexpr std::int64_t kDefaultPingTimeoutMs = 15000;
-    static constexpr std::int64_t kDefaultSendTimeoutMs = 5000;
     static constexpr std::int64_t kDefaultRecvTimeoutMs = 15000;
     static constexpr std::int64_t kDefaultRetryDelayMs = 1000;
     static constexpr std::int64_t kDefaultPduRequestLength = 480;

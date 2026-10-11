@@ -30,14 +30,6 @@ export namespace GB28181 {
             recording: boolean;
         };
     }
-    export interface SipConfig {
-        domain: string;
-        id: string;
-        host: string;
-        public_ip: string;
-        port: number;
-        transport: string;
-    }
     export interface Channel {
         id: string;
         name: string;
@@ -61,14 +53,6 @@ export namespace GB28181 {
         last_seen_at: string;
         online: boolean;
         channels: Channel[];
-    }
-    export interface StreamStatus {
-        id: string;
-        app: string;
-        stream: string;
-        schema: string;
-        online: boolean;
-        reader_count: number;
     }
     export interface Items<T> {
         items: T[];

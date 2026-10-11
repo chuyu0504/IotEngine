@@ -91,8 +91,6 @@ export const replaceDeviceShares = (id: string, data: Device.ReplaceSharesDto) =
         `/v1/device/${deviceIdSchema.parse(id)}/shares`,
         replaceDeviceSharesSchema.parse(data)
     );
-export const getDeviceGroups = (signal?: AbortSignal) =>
-    request.get<DeviceGroup.TreeItem[]>('/v1/device/groups/tree', { signal });
 export const getDeviceGroupsWithCount = (debugDeviceId?: string, commandIds?: readonly string[]) =>
     createSseSnapshotStream<DeviceGroup.TreeItem[]>(
         '/v1/device/events',

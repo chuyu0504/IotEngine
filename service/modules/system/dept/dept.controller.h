@@ -3,7 +3,7 @@
 #include <optional>
 #include <string>
 
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/controller.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
@@ -13,24 +13,23 @@
 
 namespace service::dept {
 
-class DeptController final : public ruvia::Controller<DeptController> {
+class DeptController final : public ruvia::controller<DeptController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/departments", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"system:dept:query">, ruvia::QueryModel<DeptListQuery>);
+    RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"system:dept:query">, ruvia::query_model<DeptListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"system:dept:query">);
-    RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"system:dept:query">, ruvia::PathModel<DeptIdParams>);
-    RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"system:dept:add">, ruvia::JsonBody<CreateDeptBody>);
-    RUVIA_PUT("/:id", update, service::middleware::PermissionMiddleware<"system:dept:edit">, ruvia::PathModel<DeptIdParams>, ruvia::JsonBody<UpdateDeptBody>);
-    RUVIA_DELETE("/:id", remove, service::middleware::PermissionMiddleware<"system:dept:delete">, ruvia::PathModel<DeptIdParams>);
+    RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"system:dept:add">, ruvia::json_body<CreateDeptBody>);
+    RUVIA_PUT("/:id", update, service::middleware::PermissionMiddleware<"system:dept:edit">, ruvia::path_model<DeptIdParams>, ruvia::json_body<UpdateDeptBody>);
+    RUVIA_DELETE("/:id", remove, service::middleware::PermissionMiddleware<"system:dept:delete">, ruvia::path_model<DeptIdParams>);
     RUVIA_ROUTES_END
 
   private:
-    static std::string id(ruvia::Context& c) {
+    static std::string id(ruvia::context& c) {
         return std::string(c.req().validated<DeptIdParams>().get<"id">().view());
     }
 
-    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> list(ruvia::context& c) {
         const auto& query = c.req().validated<DeptListQuery>();
         const auto keyword = query.get<"keyword">()
                                  ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
@@ -47,25 +46,21 @@ class DeptController final : public ruvia::Controller<DeptController> {
                                            status, parentId)));
     }
 
-    ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> options(ruvia::context& c) {
         co_return c.json(service::common::ok<DeptOptionsResponse>(c, co_await deptService().options(c)));
     }
 
-    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
-        co_return c.json(service::common::ok<DeptDetailResponse>(c, co_await deptService().detail(c, id(c))));
-    }
-
-    ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> create(ruvia::context& c) {
         co_await deptService().create(c, c.req().validated<CreateDeptBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> update(ruvia::context& c) {
         co_await deptService().update(c, id(c), c.req().validated<UpdateDeptBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
+    ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
         co_await deptService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }

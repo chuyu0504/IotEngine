@@ -40,7 +40,6 @@ class IWireGuardController {
     virtual RuntimeStatus removePeer(const HubConfig& config, std::string_view publicKey) = 0;
     virtual RuntimeStatus reconcileRoutes(const HubConfig& config,
                                           const std::vector<std::string>& expectedRoutes) = 0;
-    virtual RuntimeStatus status(const HubConfig& config) = 0;
     virtual std::optional<std::vector<std::string>> peerKeys(const HubConfig& config) = 0;
     virtual std::optional<std::unordered_map<std::string, std::uint64_t>> peerHandshakes(
         const HubConfig& config) = 0;
@@ -55,7 +54,6 @@ class UnsupportedController final : public IWireGuardController {
                                   const std::vector<std::string>&) override {
         return unsupported();
     }
-    RuntimeStatus status(const HubConfig&) override { return unsupported(); }
     std::optional<std::vector<std::string>> peerKeys(const HubConfig&) override { return std::nullopt; }
     std::optional<std::unordered_map<std::string, std::uint64_t>>
     peerHandshakes(const HubConfig&) override {
@@ -801,24 +799,6 @@ class Controller final : public IWireGuardController {
                 return failure("route_remove_failed", errorText(errorCode));
         }
         return success();
-    }
-
-    RuntimeStatus status(const HubConfig& config) override {
-        if (!validConfig(config))
-            return failure("invalid_config", "WireGuard hub configuration is invalid");
-        NetlinkClient generic(NETLINK_GENERIC);
-        if (!generic.valid())
-            return failure("netlink_unavailable", errorText(errno));
-        const auto family = generic.resolveFamily(kWireGuardFamily);
-        if (!family)
-            return failure("wireguard_family_unavailable", "WireGuard Generic Netlink family is unavailable");
-        int errorCode = 0;
-        const auto device = getDevice(generic, *family, config.interfaceName, errorCode);
-        if (!device)
-            return failure("status_unavailable", errorText(errorCode));
-        auto result = success();
-        result.peerCount = device->peerKeys.size();
-        return result;
     }
 
     std::optional<std::vector<std::string>> peerKeys(const HubConfig& config) override {

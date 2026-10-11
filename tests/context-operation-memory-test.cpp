@@ -1,11 +1,11 @@
-#include <ruvia/core/EventLoopPool.h>
-#include <ruvia/core/memory/MemoryPool.h>
-#include <ruvia/web/App.h>
-#include <ruvia/web/Controller.h>
-#include <ruvia/web/HttpClient.h>
-#include <ruvia/web/db/DbClient.h>
-#include <ruvia/web/db/DbQuery.h>
-#include <ruvia/web/redis/RedisClient.h>
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/memory/memory_pool.h>
+#include <ruvia/web/app.h>
+#include <ruvia/web/controller.h>
+#include <ruvia/web/http_client.h>
+#include <ruvia/web/db/db_client.h>
+#include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis_client.h>
 
 #include "service/middleware/request_context.h"
 #include "tests/redis_reply.fixture.h"
@@ -23,7 +23,7 @@
 
 namespace {
 
-RUVIA_MODEL(OperationMemoryResult, RUVIA_REQUIRED_FIELD(value, ruvia::String));
+RUVIA_MODEL(OperationMemoryResult, RUVIA_REQUIRED_FIELD(value, ruvia::string));
 
 void check(bool condition, const char* message) {
     if (!condition) {
@@ -136,26 +136,26 @@ private:
     std::thread thread_;
 };
 
-ruvia::Task<void> coldOperationsUseClientStorage(ruvia::EventLoop loop,
+ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
     std::uint16_t databasePort, std::uint16_t redisPort) {
-    ruvia::WorkerMemory worker;
+    ruvia::worker_memory worker;
     std::array<std::byte, 64 * 1024> buffer{};
-    ruvia::RequestMemory request(worker, buffer);
-    check(request.upstreamResource() == worker.resource(),
+    ruvia::request_memory request(worker, buffer);
+    check(request.upstream_resource() == worker.resource(),
         "request memory does not borrow its worker pool");
 
-    ruvia::DbConfig databaseConfig;
-    databaseConfig.driver = ruvia::DbDriver::kPostgreSql;
-    databaseConfig.tls.mode = ruvia::client_tls_mode::disabled;
-    databaseConfig.port = databasePort;
-    databaseConfig.connectTimeout = std::chrono::seconds(2);
-    databaseConfig.queryTimeout = std::chrono::seconds(2);
-    ruvia::DbClient database(loop, databaseConfig);
-    ruvia::RedisConfig redisConfig;
-    redisConfig.tls.mode = ruvia::client_tls_mode::disabled;
-    redisConfig.port = redisPort;
-    redisConfig.poolSizePerWorker = 1;
-    ruvia::RedisClient redis(loop, redisConfig);
+    ruvia::db_config databaseConfig;
+    databaseConfig.driver_ = ruvia::db_driver::postgresql;
+    databaseConfig.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    databaseConfig.port_ = databasePort;
+    databaseConfig.connect_timeout_ = std::chrono::seconds(2);
+    databaseConfig.query_timeout_ = std::chrono::seconds(2);
+    ruvia::db_client database(loop, databaseConfig);
+    ruvia::redis_config redisConfig;
+    redisConfig.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    redisConfig.port_ = redisPort;
+    redisConfig.pool_size_per_worker_ = 1;
+    ruvia::redis_client redis(loop, redisConfig);
     co_await database.connect();
     co_await redis.connect();
     for (int index = 0; index != 2000; ++index) {
@@ -190,10 +190,10 @@ ruvia::Task<void> coldOperationsUseClientStorage(ruvia::EventLoop loop,
     co_await database.shutdown();
 }
 
-ruvia::DbStatement ownedStatement(std::pmr::memory_resource* resource, char fill) {
-    ruvia::DbQuery query(resource);
+ruvia::db_statement ownedStatement(std::pmr::memory_resource* resource, char fill) {
+    ruvia::db_query query(resource);
     query.select(query.value(std::string(2048, fill)));
-    return query.compile(ruvia::DbDriver::kPostgreSql, resource, ruvia::DbParameterMode::kLiteral);
+    return query.compile(ruvia::db_driver::postgresql, resource, ruvia::db_parameter_mode::literal);
 }
 
 void resultStorageIsReclaimed() {
@@ -236,7 +236,7 @@ void resultStorageIsReclaimed() {
     }
 }
 
-class OperationMemoryController final : public ruvia::Controller<OperationMemoryController> {
+class OperationMemoryController final : public ruvia::controller<OperationMemoryController> {
 public:
     RUVIA_CONTROLLER_GROUP("/operation-memory")
     RUVIA_ROUTES_BEGIN
@@ -244,7 +244,7 @@ public:
     RUVIA_ROUTES_END
 
 private:
-    ruvia::Task<ruvia::HttpResponse> probe(ruvia::Context& connection) {
+    ruvia::task<ruvia::http_response> probe(ruvia::context& connection) {
         for (int index = 0; index != 2000; ++index) {
             const auto* before = connection.arena()->allocate(1, 1);
             {
@@ -268,19 +268,19 @@ private:
         const auto* after = connection.arena()->allocate(1, 1);
         check(!adjacent(before, after), "HTTP arena probe missed an injected request allocation");
         service::middleware::RequestContext request(connection, "memory-test");
-        OperationMemoryResult result({.resource = request.arena()});
+        OperationMemoryResult result(ruvia::model_options{.resource_ = request.arena()});
         result.set<"value">("operation storage released");
         co_return connection.json(result);
     }
 };
 
-ruvia::Task<void> verifyHttpRequest(ruvia::EventLoop loop, std::uint16_t port) {
-    ruvia::HttpClient client(loop, {.scheme = ruvia::HttpScheme::kHttp,
-        .host = "127.0.0.1", .port = port, .requestTimeout = std::chrono::seconds(5)});
+ruvia::task<void> verifyHttpRequest(ruvia::event_loop loop, std::uint16_t port) {
+    ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http,
+        .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = std::chrono::seconds(5)});
     {
-        auto response = co_await client.send({.target = "/operation-memory"});
-        const auto body = co_await response.body().readAll();
-        check(response.status() == ruvia::http_status::kOk &&
+        auto response = co_await client.send({.target_ = "/operation-memory"});
+        const auto body = co_await response.body().read_all();
+        check(response.status() == ruvia::http_status::ok &&
             std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) ==
                 R"({"value":"operation storage released"})",
             "serialized result did not survive operation storage release");
@@ -291,14 +291,14 @@ ruvia::Task<void> verifyHttpRequest(ruvia::EventLoop loop, std::uint16_t port) {
 void requestStorageSurvives() {
     PostgreSqlReplyServer database;
     test::RedisReplyServer redis("+PONG\r\n");
-    ruvia::DbConfig databaseConfig;
-    databaseConfig.driver = ruvia::DbDriver::kPostgreSql;
-    databaseConfig.port = database.port();
-    databaseConfig.tls.mode = ruvia::client_tls_mode::disabled;
-    ruvia::RedisConfig redisConfig;
-    redisConfig.port = redis.port();
-    redisConfig.poolSizePerWorker = 1;
-    redisConfig.tls.mode = ruvia::client_tls_mode::disabled;
+    ruvia::db_config databaseConfig;
+    databaseConfig.driver_ = ruvia::db_driver::postgresql;
+    databaseConfig.port_ = database.port();
+    databaseConfig.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    ruvia::redis_config redisConfig;
+    redisConfig.port_ = redis.port();
+    redisConfig.pool_size_per_worker_ = 1;
+    redisConfig.tls_.mode_ = ruvia::client_tls_mode::disabled;
     asio::io_context io;
     asio::ip::tcp::acceptor reservation(io, {asio::ip::address_v4::loopback(), 0});
     const auto port = reservation.local_endpoint().port();
@@ -306,9 +306,9 @@ void requestStorageSurvives() {
     auto& app = ruvia::app();
     std::promise<void> ready;
     auto started = ready.get_future();
-    app.blockingPool(nullptr).listen({.address = "127.0.0.1", .http = port})
-        .server({.worker_count = 1}).database({.config = databaseConfig})
-        .redis({.config = redisConfig}).onStart([&] { ready.set_value(); });
+    app.get_blocking_pool(nullptr).listen({.address_ = "127.0.0.1", .http_ = port})
+        .server({.worker_count_ = 1}).database({.config_ = databaseConfig})
+        .redis({.config_ = redisConfig}).on_start([&] { ready.set_value(); });
     std::exception_ptr serverError;
     std::thread serving([&] {
         try {
@@ -322,7 +322,7 @@ void requestStorageSurvives() {
         if (started.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
             throw std::runtime_error("operation memory app startup timed out");
         started.get();
-        ruvia::EventLoopPool clients({.loopCount = 1});
+        ruvia::event_loop_pool clients({.loop_count_ = 1});
         clients.start();
         clients.loop(0).start(verifyHttpRequest(clients.loop(0), port)).get();
         clients.stop();
@@ -341,7 +341,7 @@ void requestStorageSurvives() {
 
 int main() {
     try {
-        ruvia::EventLoopPool pool({.loopCount = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         PostgreSqlReplyServer database;
         test::RedisReplyServer redis("+PONG\r\n");
         pool.start();

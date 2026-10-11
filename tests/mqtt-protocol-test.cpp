@@ -145,7 +145,7 @@ void testBatchPathsAndRetries() {
     array.start();
     require(array.receive(publication("devices", R"([{"deviceCode":"0","temperature":1},{"deviceCode":"1","temperature":2}])", 0)).size() == 4, "top-level array failed");
     const std::string json = R"({"a/b":{"~name":[false,42]}})";
-    const auto object = ruvia::JsonValue::parse(json);
+    const auto object = ruvia::json_value::parse(json);
     const auto selected = service::utils::jsonField(*object, "/a~1b/~0name/1");
     require(selected && selected->view() == "42", "JSON Pointer escape or index failed");
 }
@@ -242,7 +242,7 @@ void testNamedTemplates() {
     configureNamed(legacy, R"({"device":"$deviceCode","body":"$values"})");
     legacy.start();
     const auto legacyPayloadText = publishedPayload(legacy.execute({ .id = "legacy", .deviceId = "0", .elements = { { "temperature", "15" } } }));
-    const auto legacyPayload = ruvia::JsonValue::parse(legacyPayloadText);
+    const auto legacyPayload = ruvia::json_value::parse(legacyPayloadText);
     const auto legacyTemperature = legacyPayload ? service::utils::jsonField(*legacyPayload, "/body/report/temperature") : std::nullopt;
     require(legacyTemperature && legacyTemperature->view() == "7", "legacy $values API behavior regressed");
 

@@ -19,8 +19,6 @@ export function stopPreviewOnExit(sessionId: string) {
 }
 export const getHealth = (signal?: AbortSignal) =>
     request.get<GB28181.Health>('/v1/gb28181/health', { signal });
-export const getSipConfig = (signal?: AbortSignal) =>
-    request.get<GB28181.SipConfig>('/v1/gb28181/config/sip', { signal });
 export const getDevices = () =>
     createSseSnapshotStream<GB28181.Items<GB28181.Device>>('/v1/gb28181/devices/events');
 export const renameDevice = (payload: GB28181.DeviceNamePayload) =>

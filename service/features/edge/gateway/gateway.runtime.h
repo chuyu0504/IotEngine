@@ -13,8 +13,8 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/core/TaskScope.h>
-#include <ruvia/web/Controller.h>
+#include <ruvia/core/task_scope.h>
+#include <ruvia/web/controller.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -31,22 +31,22 @@
 
 namespace service::edge {
 
-class GatewayController final : public ruvia::Controller<GatewayController> {
+class GatewayController final : public ruvia::controller<GatewayController> {
   public:
     RUVIA_CONTROLLER_GROUP("/edge/v1")
     RUVIA_ROUTES_BEGIN
-    const auto webSocketOptions = ruvia::WebSocketRouteConfig{
-        .lifecycle = {
-            .heartbeat = {
-                .pingInterval = std::chrono::seconds(300),
-                .pongTimeout = std::chrono::seconds(60),
+    const auto webSocketOptions = ruvia::websocket_route_config{
+        .lifecycle_ = {
+            .heartbeat_ = {
+                .ping_interval_ = std::chrono::seconds(300),
+                .pong_timeout_ = std::chrono::seconds(60),
             },
-            .closeHandshakeTimeout = std::chrono::seconds(5),
+            .close_handshake_timeout_ = std::chrono::seconds(5),
         },
-        .deflate = {
-            .enabled = true,
-            .compressionLevel = 9,
-            .contextTakeover = true,
+        .deflate_ = {
+            .enabled_ = true,
+            .compression_level_ = 9,
+            .context_takeover_ = true,
         },
     };
     RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
@@ -84,23 +84,23 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     };
 
     struct LiveSession {
-        ruvia::Context* context{};
-        ruvia::WebSocket* socket{};
+        ruvia::context* context{};
+        ruvia::websocket* socket{};
         Session* session{};
-        ruvia::TaskScope* scope{};
+        ruvia::task_scope* scope{};
         bool active{ true };
         bool flushPending{};
         bool flushing{};
     };
 
-    ruvia::Task<void> connect(ruvia::Context& c) {
-        auto& socket = c.webSocket();
-        auto& dispatcher = c.workerState<SessionDispatcher>();
+    ruvia::task<void> connect(ruvia::context& c) {
+        auto& socket = c.get_websocket();
+        auto& dispatcher = c.worker_state<SessionDispatcher>();
         const auto workerIndex = dispatcher.workerIndex();
         auto first = co_await socket.read();
         if (!first || !first->binary()) {
             co_await socket.close(
-                ruvia::WebSocketCloseOptions{ .code = 1002, .reason = "binary hello required" }
+                ruvia::websocket_close_options{ .code_ = 1002, .reason_ = "binary hello required" }
             );
             co_return;
         }
@@ -111,14 +111,14 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             !protocol::validSessionPlatformId(input.platform_id()) ||
             !protocol::validImei(input.hello().imei())) {
             co_await socket.close(
-                ruvia::WebSocketCloseOptions{ .code = 1002, .reason = "invalid hello" }
+                ruvia::websocket_close_options{ .code_ = 1002, .reason_ = "invalid hello" }
             );
             co_return;
         }
         if (!co_await publishIngress(c, workerIndex, first->payload(), service::message::utcNowMilliseconds())) {
-            co_await socket.close(ruvia::WebSocketCloseOptions{
-                .code = 1008,
-                .reason = "worker lease unavailable",
+            co_await socket.close(ruvia::websocket_close_options{
+                .code_ = 1008,
+                .reason_ = "worker lease unavailable",
             });
             co_return;
         }
@@ -149,9 +149,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     input.sequence() <= session.inboundSequence ||
                     input.platform_id() !=
                         protocol::bytes(session.platformBytes.data(), session.platformBytes.size())) {
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1002,
-                        .reason = "invalid pending heartbeat",
+                    co_await socket.close(ruvia::websocket_close_options{
+                        .code_ = 1002,
+                        .reason_ = "invalid pending heartbeat",
                     });
                     co_return;
                 }
@@ -180,9 +180,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     } catch (const std::exception&) {
                     }
                     if (!sampleAvailable) {
-                        co_await socket.close(ruvia::WebSocketCloseOptions{
-                            .code = 1011,
-                            .reason = "database time sample unavailable",
+                        co_await socket.close(ruvia::websocket_close_options{
+                            .code_ = 1011,
+                            .reason_ = "database time sample unavailable",
                         });
                         co_return;
                     }
@@ -210,9 +210,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 session.protocolVersion,
                 session.workerIndex
             )) {
-            co_await socket.close(ruvia::WebSocketCloseOptions{
-                .code = 1008,
-                .reason = "session replaced",
+            co_await socket.close(ruvia::websocket_close_options{
+                .code_ = 1008,
+                .reason_ = "session replaced",
             });
             co_return;
         }
@@ -230,9 +230,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 session.protocolVersion,
                 session.workerIndex
             );
-            co_await socket.close(ruvia::WebSocketCloseOptions{
-                .code = 1008,
-                .reason = "worker lease lost",
+            co_await socket.close(ruvia::websocket_close_options{
+                .code_ = 1008,
+                .reason_ = "worker lease lost",
             });
             co_return;
         }
@@ -260,9 +260,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 (void)co_await session_state::release(
                     c.redis(), session.nodeId, session.epoch, session.protocolVersion,
                     session.workerIndex);
-                co_await socket.close(ruvia::WebSocketCloseOptions{
-                    .code = 1011,
-                    .reason = "database time sample unavailable",
+                co_await socket.close(ruvia::websocket_close_options{
+                    .code_ = 1011,
+                    .reason_ = "database time sample unavailable",
                 });
                 co_return;
             }
@@ -271,9 +271,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::exception_ptr sessionFailure;
         // Egress must not wait for the node to speak first. This worker's own
         // dispatcher wakes only sessions accepted by this worker.
-        ruvia::TaskScope egressScope(
+        ruvia::task_scope egressScope(
             c.worker(),
-            ruvia::TaskScopeOptions{ .resource = c.pool() }
+            ruvia::task_scope_options{ .resource_ = c.pool() }
         );
         auto live = std::make_shared<LiveSession>(LiveSession{
             .context = &c,
@@ -298,7 +298,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                             return;
                         }
                         current->active = false;
-                        current->scope->requestStop();
+                        current->scope->request_stop();
                         // SessionDispatcher::failSessions is invoked by this same
                         // Service Worker. Abort wakes the connection's read
                         // loop without moving the socket across workers.
@@ -314,16 +314,16 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
                     !validInbound(input, session)) {
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1002,
-                        .reason = "invalid envelope",
+                    co_await socket.close(ruvia::websocket_close_options{
+                        .code_ = 1002,
+                        .reason_ = "invalid envelope",
                     });
                     break;
                 }
                 if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch, session.protocolVersion, session.workerIndex)) {
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1008,
-                        .reason = "session replaced",
+                    co_await socket.close(ruvia::websocket_close_options{
+                        .code_ = 1008,
+                        .reason_ = "session replaced",
                     });
                     break;
                 }
@@ -332,9 +332,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 session.lastInbound = std::chrono::steady_clock::now();
                 if (shouldProject(input) && telemetry.publish &&
                     !co_await publishIngress(c, session.workerIndex, message->payload(), service::message::utcNowMilliseconds())) {
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1008,
-                        .reason = "worker lease lost",
+                    co_await socket.close(ruvia::websocket_close_options{
+                        .code_ = 1008,
+                        .reason_ = "worker lease lost",
                     });
                     break;
                 }
@@ -350,7 +350,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (registered) {
             dispatcher.unregisterSession(session.nodeId, session.epoch);
         }
-        egressScope.requestStop();
+        egressScope.request_stop();
         try {
             co_await egressScope.join();
         } catch (...) {
@@ -381,7 +381,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return result;
     }
 
-    static ruvia::Task<void> sendEnrollment(ruvia::Context& c, ruvia::WebSocket& socket, Session& session) {
+    static ruvia::task<void> sendEnrollment(ruvia::context& c, ruvia::websocket& socket, Session& session) {
         auto reply = makeEnvelope(c, session);
         auto* enrollment = reply.mutable_enrollment_pending();
         enrollment->set_code("pending");
@@ -464,21 +464,21 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return {};
     }
 
-    static pb::Envelope makeEnvelope(ruvia::Context& c, Session& session) {
-        auto result = service::edge::protocol::outbound(c.workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), protocol::uuidText(protocol::bytes(session.platformBytes.data(), session.platformBytes.size())), session.nodeId, session.epoch, ++session.outboundSequence, session.protocolVersion);
+    static pb::Envelope makeEnvelope(ruvia::context& c, Session& session) {
+        auto result = service::edge::protocol::outbound(c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), protocol::uuidText(protocol::bytes(session.platformBytes.data(), session.platformBytes.size())), session.nodeId, session.epoch, ++session.outboundSequence, session.protocolVersion);
         return result;
     }
 
-    static ruvia::Task<void> send(ruvia::WebSocket& socket, const pb::Envelope& envelope) {
+    static ruvia::task<void> send(ruvia::websocket& socket, const pb::Envelope& envelope) {
         const auto wire = protocol::encode(envelope);
         if (wire.empty()) {
             throw std::runtime_error("edge envelope encode failed");
         }
-        co_await socket.binary(wire, { .compress = true });
+        co_await socket.binary(wire, { .compress_ = true });
     }
 
-    static ruvia::Task<void> sendSessionEnvelope(
-        ruvia::Context& c, ruvia::WebSocket& socket, Session& session, pb::Envelope& envelope) {
+    static ruvia::task<void> sendSessionEnvelope(
+        ruvia::context& c, ruvia::websocket& socket, Session& session, pb::Envelope& envelope) {
         if (envelope.has_heartbeat_ack() && session.supportsCommandStartBefore &&
             envelope.heartbeat_ack().has_nonce()) {
             if (envelope.heartbeat_ack().nonce() == 0) {
@@ -498,7 +498,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         session.outbound.emplace_back(std::move(wire));
     }
 
-    static ruvia::Task<bool> publishIngress(ruvia::Context& c, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs) {
+    static ruvia::task<bool> publishIngress(ruvia::context& c, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs) {
         co_return co_await projector_stream::publishIngress(
             c.redis(),
             workerIndex,
@@ -515,7 +515,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     // reliable queues changes. Redis reads are non-blocking and reuse this
     // worker's ordinary pool; no callback or socket crosses worker boundaries.
     static void requestFlush(const std::shared_ptr<LiveSession>& live) {
-        if (!live->active || live->scope->stopRequested()) {
+        if (!live->active || live->scope->stop_requested()) {
             return;
         }
         live->flushPending = true;
@@ -531,7 +531,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
-    static ruvia::Task<void> maintainSession(std::shared_ptr<LiveSession> live) {
+    static ruvia::task<void> maintainSession(std::shared_ptr<LiveSession> live) {
         // 旧固件按真实应用消息维护时序；新固件明确声明状态上报能力后，
         // 由原生 WS 探活维护连接，本任务只续租 Worker 的路由记录。
         const auto probeInterval = (live->session->statusReporting || live->session->sparseHeartbeat)
@@ -539,9 +539,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto idleTimeout = live->session->sparseHeartbeat
             ? std::chrono::seconds(900) : std::chrono::seconds(60);
         try {
-            while (live->active && !live->scope->stopRequested()) {
-                (void)co_await ruvia::sleepFor(live->context->worker(), probeInterval, live->scope->stopToken());
-                if (!live->active || live->scope->stopRequested()) {
+            while (live->active && !live->scope->stop_requested()) {
+                (void)co_await ruvia::sleep_for(live->context->worker(), probeInterval, live->scope->get_stop_token());
+                if (!live->active || live->scope->stop_requested()) {
                     break;
                 }
                 if (live->session->statusReporting) {
@@ -575,7 +575,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
-    static ruvia::Task<void> flushEgress(std::shared_ptr<LiveSession> live) {
+    static ruvia::task<void> flushEgress(std::shared_ptr<LiveSession> live) {
         auto& c = *live->context;
         auto& socket = *live->socket;
         auto& session = *live->session;
@@ -586,7 +586,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const std::string commandKey = "iot:v2:edge:commands:" + session.nodeId;
         std::exception_ptr failure;
         try {
-            while (live->active && !live->scope->stopRequested() &&
+            while (live->active && !live->scope->stop_requested() &&
                    live->flushPending) {
                 live->flushPending = false;
                 for (;;) {
@@ -625,8 +625,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             live->active = false;
             try {
                 co_await socket.close(
-                    ruvia::WebSocketCloseOptions{ .code = 1011,
-                                                  .reason = "edge egress failed" }
+                    ruvia::websocket_close_options{ .code_ = 1011,
+                                                  .reason_ = "edge egress failed" }
                 );
             } catch (...) {
                 socket.abort();
@@ -635,9 +635,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
-    static ruvia::Task<bool> deliverQueuedItem(
-        ruvia::Context& c,
-        ruvia::WebSocket& socket,
+    static ruvia::task<bool> deliverQueuedItem(
+        ruvia::context& c,
+        ruvia::websocket& socket,
         Session& session,
         std::string_view key,
         std::string_view item
@@ -691,7 +691,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         co_return true;
     }
 
-    static ruvia::Task<int> drainKey(ruvia::Context& c, ruvia::WebSocket& socket, Session& session, const std::string& key, int limit) {
+    static ruvia::task<int> drainKey(ruvia::context& c, ruvia::websocket& socket, Session& session, const std::string& key, int limit) {
         int sent = 0;
         for (int count = 0; count < limit; ++count) {
             auto item = co_await c.redis().lpop(key);
@@ -709,7 +709,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return { session.nodeId, session.epoch, session.protocolVersion, session.workerIndex };
     }
 
-    static ruvia::Task<void> handle(ruvia::Context& c, Session& session, const pb::Envelope& input, bool freshTelemetry) {
+    static ruvia::task<void> handle(ruvia::context& c, Session& session, const pb::Envelope& input, bool freshTelemetry) {
         switch (input.payload_case()) {
             case pb::Envelope::kHeartbeat: {
                 constexpr std::uint64_t retryIntervalMs = 30000;
@@ -825,8 +825,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
-    static ruvia::Task<void> sendFirmwareChunk(
-        ruvia::Context& c,
+    static ruvia::task<void> sendFirmwareChunk(
+        ruvia::context& c,
         Session& session,
         const pb::FirmwareChunkRequest& request
     ) {

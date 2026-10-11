@@ -423,23 +423,17 @@ export namespace Protocol {
 /** SL651 命名空间 */
 export namespace SL651 {
     export type Direction = SL651Direction;
-    export type ResponseMode = SL651ResponseMode;
     export type EncodeType = SL651EncodeType;
     export type Element = SL651Element;
     export type Func = SL651Func;
     export type Config = SL651Config;
-    export type DictMapType = SL651DictMapType;
     export type DictMapItem = SL651DictMapItem;
-    export type DictConfig = SL651DictConfig;
-    export type DictDependency = SL651DictDependency;
 }
 /** Modbus 命名空间 */
 export namespace Modbus {
     export type RegisterType = ModbusRegisterType;
     export type DataType = ModbusDataType;
     export type ByteOrder = ModbusByteOrder;
-    export type DictMapItem = ModbusDictMapItem;
-    export type DictConfig = ModbusDictConfig;
     export type PacketConfig = ModbusPacketConfig;
     export type Register = ModbusRegister;
     export type Config = ModbusConfig;
@@ -473,10 +467,6 @@ export type SaveProtocolConfigParams =
           id: string;
           protocol?: Protocol.Type;
       });
-
-export interface GroupOption {
-    value: string;
-}
 
 export interface RegisterGroupSection {
     key: string;

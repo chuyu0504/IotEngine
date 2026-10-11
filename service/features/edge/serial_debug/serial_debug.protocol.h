@@ -45,7 +45,7 @@ inline std::optional<std::string> decodeHex(std::string_view hex) {
 inline std::optional<wire::SerialDebugRequest> decodeRequest(
     std::string_view json, std::string_view path, std::uint64_t previous) {
     if (json.size() > 4096) return std::nullopt;
-    const auto input = ruvia::fromJson<BrowserRequest>(json);
+    const auto input = ruvia::from_json<BrowserRequest>(json);
     if (!input || !input->get<"action">() || !input->get<"requestId">()) return std::nullopt;
     const auto sequence = *input->get<"requestId">();
     if (sequence <= 0 || sequence > 9007199254740991LL ||

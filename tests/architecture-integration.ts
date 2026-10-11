@@ -148,9 +148,10 @@ try {
     assert.equal(missing.status, 400);
     console.log('PASS concurrent HTTP idempotency; payload conflict; missing key');
 
+    const commandStatus = async () =>
+        (await db`SELECT status::text AS status FROM command_operation WHERE id=${commandId}`)[0]?.status;
     await until(
-        async () =>
-            (await api(`/v1/device/commands/${commandId}`)).body.data.status === 'AWAITING_RESULT',
+        async () => (await commandStatus()) === 'AWAITING_RESULT',
         'durable dispatcher did not publish'
     );
     const queue = `iot:channel:command:worker:${instance}:0:high`;
@@ -163,12 +164,9 @@ try {
     // result worker without another database mutation or result notification.
     await db`UPDATE command_attempt SET deadline=clock_timestamp()+INTERVAL '2 seconds' WHERE operation_id=${commandId}`;
     await Bun.sleep(500);
-    assert.equal(
-        (await api(`/v1/device/commands/${commandId}`)).body.data.status,
-        'AWAITING_RESULT'
-    );
+    assert.equal(await commandStatus(), 'AWAITING_RESULT');
     await until(
-        async () => (await api(`/v1/device/commands/${commandId}`)).body.data.status === 'UNKNOWN',
+        async () => (await commandStatus()) === 'UNKNOWN',
         'natural deadline expiry without a new notification must become UNKNOWN'
     );
     const result = [
@@ -189,8 +187,7 @@ try {
     ];
     await publishFixtureEvent(redis, 'iot:v3:command-result', result, 'command-result');
     await until(
-        async () =>
-            (await api(`/v1/device/commands/${commandId}`)).body.data.status === 'SUCCEEDED',
+        async () => (await commandStatus()) === 'SUCCEEDED',
         'late confirmed result must resolve UNKNOWN'
     );
     await publishFixtureEvent(redis, 'iot:v3:command-result', result, 'command-result');
@@ -199,8 +196,7 @@ try {
         WHERE event_type='device.command.updated' AND payload->'data'->>'commandId'=${commandId}
         AND payload->'data'->>'status'='SUCCEEDED'`;
     assert.equal(events[0].count, 1, 'duplicate result emitted duplicate completed event');
-    await redis.send('DEL', [`iot:state:command:${commandId}`]);
-    assert.equal((await api(`/v1/device/commands/${commandId}`)).body.data.status, 'SUCCEEDED');
+    assert.equal(await commandStatus(), 'SUCCEEDED');
     console.log(
         'PASS durable dispatch, timeout ambiguity, late confirmation, duplicate result, DB status authority'
     );

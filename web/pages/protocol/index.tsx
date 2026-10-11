@@ -39,14 +39,12 @@ import {
     Tooltip,
     Tree,
 } from 'antd';
-import type { ColumnsType, TableProps } from 'antd/es/table';
-import type { CSSProperties, ForwardedRef, HTMLAttributes, ReactNode } from 'react';
+import type { ColumnsType } from 'antd/es/table';
+import type { CSSProperties, ReactNode } from 'react';
 import {
-    createContext,
     forwardRef,
     memo,
     useCallback,
-    useContext,
     useEffect,
     useImperativeHandle,
     useLayoutEffect,
@@ -57,6 +55,7 @@ import {
 import { FormModal } from '@/components/form_modal';
 import { PageContainer } from '@/components/page_container';
 import { usePermissions } from '@/hooks/use_permission';
+import { createUuid } from '@/utils/uuid';
 import {
     checkAddressConflict,
     compileMqttTemplate,
@@ -78,7 +77,6 @@ import {
     buildRemoteTsapFromRackSlot,
     defaultConfig,
     formatScaleValue,
-    generateId,
     getConnectionFormValues,
     getDataTypeSize,
     getGroupKey,
@@ -968,7 +966,7 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 dictConfig,
                 remark: values.remark,
             };
-            const pointId = mode === 'create' ? generateId() : current?.id;
+            const pointId = mode === 'create' ? createUuid() : current?.id;
             if (!pointId) return;
             let newRegisters: Modbus.Register[];
             if (mode === 'create') {
@@ -1660,193 +1658,6 @@ export const SortableGroupItemList = <
         </DndContext>
     );
 };
-const SortableGroupTableDisabledContext = createContext(false);
-const SortableGroupTableDragHandleContext = createContext<ReactNode>(null);
-const assignForwardedRef = <T,>(ref: ForwardedRef<T> | null | undefined, node: T | null) => {
-    if (!ref) return;
-    if (typeof ref === 'function') {
-        ref(node);
-        return;
-    }
-    (
-        ref as {
-            current: T | null;
-        }
-    ).current = node;
-};
-const mergeForwardedRefs =
-    <T,>(...refs: Array<ForwardedRef<T> | undefined>) =>
-    (node: T | null) => {
-        refs.forEach((ref) => {
-            assignForwardedRef(ref, node);
-        });
-    };
-const SortableGroupTableDragHandleCell = memo(() => {
-    const dragHandle = useContext(SortableGroupTableDragHandleContext);
-    return <div className="flex items-center justify-center">{dragHandle}</div>;
-});
-interface SortableGroupTableRowProps extends HTMLAttributes<HTMLTableRowElement> {
-    'data-row-key'?: string | number;
-}
-const SortableGroupTableRow = forwardRef<HTMLTableRowElement, SortableGroupTableRowProps>(
-    ({ children, style, ...restProps }, ref) => {
-        const disabled = useContext(SortableGroupTableDisabledContext);
-        const rowKey = String(restProps['data-row-key'] ?? '');
-        const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-            useSortable({
-                id: rowKey,
-                disabled,
-            });
-        const dragHandle = (
-            <Button
-                type="text"
-                size="small"
-                icon={<HolderOutlined />}
-                disabled={disabled}
-                aria-label="拖拽排序"
-                title="拖拽排序"
-                className="!cursor-grab active:!cursor-grabbing"
-                style={{ touchAction: 'none' }}
-                {...attributes}
-                {...listeners}
-            />
-        );
-        return (
-            <SortableGroupTableDragHandleContext.Provider value={dragHandle}>
-                <tr
-                    ref={mergeForwardedRefs(ref, setNodeRef)}
-                    {...restProps}
-                    style={{
-                        ...style,
-                        transform: CSS.Transform.toString(transform),
-                        transition: transition || undefined,
-                        opacity: isDragging ? 0.75 : 1,
-                        zIndex: isDragging ? 1 : undefined,
-                    }}
-                >
-                    {children}
-                </tr>
-            </SortableGroupTableDragHandleContext.Provider>
-        );
-    }
-);
-interface SortableGroupTableListProps<
-    T extends {
-        id: string;
-    },
-> {
-    items: T[];
-    columns: ColumnsType<T>;
-    empty?: ReactNode;
-    className?: string;
-    style?: CSSProperties;
-    disabled?: boolean;
-    onOrderChange?: (nextOrder: string[]) => void;
-    tableProps?: Omit<TableProps<T>, 'columns' | 'dataSource' | 'rowKey' | 'components'>;
-}
-export const SortableGroupTableList = <
-    T extends {
-        id: string;
-    },
->({
-    items,
-    columns,
-    empty,
-    className,
-    style,
-    disabled = false,
-    onOrderChange,
-    tableProps,
-}: SortableGroupTableListProps<T>) => {
-    const currentIds = useMemo(() => items.map((item) => item.id), [items]);
-    const [order, setOrder] = useState<string[]>(currentIds);
-    useEffect(() => {
-        setOrder((previousOrder) => reconcileItemOrder(previousOrder, currentIds));
-    }, [currentIds]);
-    const orderedItems = useMemo(() => {
-        const orderIndex = new Map<string, number>(order.map((id, index) => [id, index]));
-        const originalIndex = new Map<string, number>(items.map((item, index) => [item.id, index]));
-        return [...items].sort((left, right) => {
-            const leftOrder = orderIndex.get(left.id);
-            const rightOrder = orderIndex.get(right.id);
-            if (leftOrder !== undefined && rightOrder !== undefined) {
-                return leftOrder - rightOrder;
-            }
-            if (leftOrder !== undefined) return -1;
-            if (rightOrder !== undefined) return 1;
-            return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
-        });
-    }, [items, order]);
-    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-    const handleDragEnd = useCallback(
-        ({ active, over }: DragEndEvent) => {
-            if (!over || active.id === over.id) return;
-            const activeId = String(active.id);
-            const overId = String(over.id);
-            const activeIndex = order.indexOf(activeId);
-            const overIndex = order.indexOf(overId);
-            if (activeIndex < 0 || overIndex < 0) return;
-            const nextOrder = arrayMove(order, activeIndex, overIndex);
-            setOrder(nextOrder);
-            onOrderChange?.(nextOrder);
-        },
-        [onOrderChange, order]
-    );
-    const columnsWithHandle = useMemo<ColumnsType<T>>(
-        () => [
-            {
-                key: '__sortable_drag_handle__',
-                title: '',
-                width: 48,
-                fixed: 'left' as const,
-                align: 'center',
-                render: () => <SortableGroupTableDragHandleCell />,
-            },
-            ...columns,
-        ],
-        [columns]
-    );
-    if (orderedItems.length === 0) {
-        return empty ?? null;
-    }
-    const locale = {
-        ...(tableProps?.locale ?? {}),
-        emptyText: empty ?? tableProps?.locale?.emptyText ?? <Empty description="暂无数据" />,
-    };
-    const scroll = {
-        x: 'max-content' as const,
-        y: 320,
-        ...(tableProps?.scroll ?? {}),
-    };
-    return (
-        <SortableGroupTableDisabledContext.Provider value={disabled}>
-            <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={disabled ? undefined : handleDragEnd}
-            >
-                <SortableContext
-                    items={orderedItems.map((item) => item.id)}
-                    strategy={verticalListSortingStrategy}
-                >
-                    <div className={className ? className : 'w-full'} style={style}>
-                        <Table
-                            {...tableProps}
-                            rowKey="id"
-                            pagination={false}
-                            dataSource={orderedItems}
-                            columns={columnsWithHandle}
-                            components={{ body: { row: SortableGroupTableRow } }}
-                            locale={locale}
-                            sticky={tableProps?.sticky ?? true}
-                            scroll={scroll}
-                        />
-                    </div>
-                </SortableContext>
-            </DndContext>
-        </SortableGroupTableDisabledContext.Provider>
-    );
-};
 
 /**
  * Modbus 协议配置页面
@@ -2500,7 +2311,7 @@ export function AreaModal({
             startBit: nextStartBit,
             decimals: nextDecimals,
             dataType: resolvedDataType,
-            id: mode === 'create' ? generateId() : initialValue?.id || values.id,
+            id: mode === 'create' ? createUuid() : initialValue?.id || values.id,
             size,
             writable: isWritableArea ? values.writable : false,
         };
@@ -4318,7 +4129,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                 unit: values.unit,
                 remark: values.remark,
             };
-            const pointId = mode === 'create' ? generateId() : current?.id;
+            const pointId = mode === 'create' ? createUuid() : current?.id;
             if (!pointId) return;
             const newFuncs = config.funcs.map((f) => {
                 if (f.id !== funcId) return f;
@@ -4490,7 +4301,7 @@ const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
             let newFuncs: SL651.Func[];
             if (mode === 'create') {
                 const newFunc: SL651.Func = {
-                    id: generateId(),
+                    id: createUuid(),
                     funcCode: values.funcCode,
                     dir: values.dir,
                     name: values.name,
@@ -4719,7 +4530,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                         ele.length !== undefined
                 )
                 .map((ele: Partial<SL651.Element>) => ({
-                    id: ele.id || generateId(),
+                    id: ele.id || createUuid(),
                     name: ele.name?.trim(),
                     group: normalizeGroupName(ele.group) || undefined,
                     guideHex: ele.guideHex?.replace(/\s/g, '') ?? '',
@@ -4928,7 +4739,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                     type="dashed"
                                     onClick={() =>
                                         add({
-                                            id: generateId(),
+                                            id: createUuid(),
                                             name: '',
                                             group: undefined,
                                             guideHex: '',
@@ -5825,7 +5636,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
         pointForm.resetFields();
         pointForm.setFieldsValue(
             point ?? {
-                id: generateId(),
+                id: createUuid(),
                 name: '',
                 dataType: protocol === 'DLT645' ? 'BCD' : 'UINT16',
                 writable: false,
@@ -6754,7 +6565,7 @@ export function MqttConfigPage() {
             });
             if (sequence === previewSequence.current)
                 setPreview({
-                    records: result.records.map((record) => ({ ...record, key: generateId() })),
+                    records: result.records.map((record) => ({ ...record, key: createUuid() })),
                 });
         } catch (error) {
             if (sequence === previewSequence.current)

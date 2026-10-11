@@ -13,7 +13,7 @@
 #include <set>
 #include <optional>
 #include <memory_resource>
-#include <ruvia/web/ModelObject.h>
+#include <ruvia/web/model_object.h>
 
 #include "service/common/uuid.h"
 #include "service/utils/json.h"
@@ -141,8 +141,6 @@ inline std::string deadLetterStream(std::size_t workerIndex, std::string_view in
     return workerStream(kDeadLetterStreamPrefix, workerIndex, {}, instance);
 }
 
-enum class Direction { ToCollector, ToService };
-
 struct StreamField {
     std::string name;
     std::string value;
@@ -217,8 +215,6 @@ struct ParsedDeviceMessage {
     std::string valuesJson;
     std::vector<std::vector<std::uint8_t>> rawPayloads;
 };
-
-enum class ProtocolTaskPriority { High, Normal };
 
 struct ProtocolTask {
     std::string messageId;
@@ -547,11 +543,11 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.acquisitionId = std::string(require("acquisition_id"));
     const auto packetIds = message.get("raw_packet_ids");
     if (!packetIds.empty()) {
-        const auto array = ruvia::JsonValue::parse(packetIds);
-        if (!array || !array->isArray()) throw std::runtime_error("Invalid raw packet IDs");
+        const auto array = ruvia::json_value::parse(packetIds);
+        if (!array || !array->is_array()) throw std::runtime_error("Invalid raw packet IDs");
         const std::string document = "{\"ids\":" + std::string(packetIds) + "}";
-        const auto object = ruvia::JsonValue::parse(document);
-        const auto ids = object ? object->get<ruvia::Array<ruvia::String>>("ids") : std::nullopt;
+        const auto object = ruvia::json_value::parse(document);
+        const auto ids = object ? object->get<ruvia::array<ruvia::string>>("ids") : std::nullopt;
         if (!ids) throw std::runtime_error("Invalid raw packet IDs");
         for (const auto& id : *ids) parsed.rawPacketIds.emplace_back(id.view());
     }
@@ -697,8 +693,7 @@ namespace service::message::live {
 
 // The live stream carries invalidation notices. Consumers rebuild their own
 // authorized snapshot and never treat a stream entry as response data.
-inline constexpr std::string_view kChangesStream{"iot:live:changes"};
-inline constexpr std::string_view kChanges = kChangesStream;
+inline constexpr std::string_view kChanges{"iot:live:changes"};
 inline constexpr std::string_view kTopicField{"topic"};
 inline constexpr std::string_view kSchemaVersionField{"schema_version"};
 inline constexpr std::string_view kSchemaVersion{"1"};
@@ -799,11 +794,11 @@ struct Entry final {
 
 inline std::vector<std::string> parseStringArray(std::string_view json) {
     std::vector<std::string> result;
-    const auto array = ruvia::JsonValue::parse(json);
-    if (!array || !array->isArray()) throw std::runtime_error("invalid projected access-session array");
+    const auto array = ruvia::json_value::parse(json);
+    if (!array || !array->is_array()) throw std::runtime_error("invalid projected access-session array");
     const std::string document = "{\"values\":" + std::string(json) + "}";
-    const auto object = ruvia::JsonValue::parse(document);
-    const auto parsed = object ? object->get<ruvia::Array<ruvia::String>>("values") : std::nullopt;
+    const auto object = ruvia::json_value::parse(document);
+    const auto parsed = object ? object->get<ruvia::array<ruvia::string>>("values") : std::nullopt;
     if (!parsed)
         throw std::runtime_error("invalid projected access-session array");
     result.reserve(parsed->size());

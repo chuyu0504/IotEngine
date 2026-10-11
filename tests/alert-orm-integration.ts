@@ -85,7 +85,6 @@ try {
     const deniedToken = `${deniedUnsigned}.${createHmac('sha256','architecture-test-only-access-secret-000000000').update(deniedUnsigned).digest('base64url')}`;
     for (const [method,path] of [
         ['GET','/v1/alert/rules'],['GET','/v1/alert/events'],
-        ['GET','/v1/alert/stats'],['GET','/v1/alert/records/grouped'],
         ['POST','/v1/alert/rules'],['PUT',`/v1/alert/rules/${device}`],
         ['DELETE',`/v1/alert/rules/${device}`],['POST',`/v1/alert/records/${device}/ack`],
         ['POST','/v1/alert/records/batch-ack'],['POST','/v1/alert/rules/apply-template'],
@@ -123,13 +122,12 @@ try {
     const pageQuery = `deviceId=${device}&status=active&page=2&pageSize=1`;
     const pageStream = await subscribe(`/v1/alert/events?${pageQuery}`);
     const secondPage = await snapshot(pageStream);
-    const httpPage = await request('GET', `/v1/alert/records?${pageQuery}`);
+    const activeIds = new Set((await db`SELECT id FROM open_alert_record WHERE device_id=${device} AND status='active'`).map(row => row.id as string));
     assert.equal(secondPage.total, 3);
     assert.equal(secondPage.list.length, 1);
-    assert.equal(secondPage.list[0].id, httpPage.list[0].id);
+    assert(activeIds.has(secondPage.list[0].id));
     assert.equal((await snapshot(pageStream, 'stats')).total, 3, 'global statistics must not inherit record pagination');
     await pageStream.close();
-    assert((await request('GET', '/v1/alert/records/grouped?days=7')).length > 0);
     const records = await db`SELECT rule_id,status FROM open_alert_record WHERE device_id=${device}`;
     assert.deepEqual(new Set(records.map(row => row.rule_id)), new Set([threshold, rate, bit]));
     assert(records.every(row => row.status === 'active'));
@@ -149,8 +147,9 @@ try {
     const listing = await request('GET',`/v1/alert/rules?keyword=${prefix}`);
     assert.equal(listing.total, 3);
     assert.equal(listing.list.length, 3);
-    const stats = await request('GET','/v1/alert/stats');
-    assert.equal(typeof stats.total, 'number');
+    const recoveredStatsStream = await subscribe(`/v1/alert/events?deviceId=${device}`);
+    assert.equal(typeof (await snapshot(recoveredStatsStream, 'stats')).total, 'number');
+    await recoveredStatsStream.close();
     const offline = await rule('offline', { type: 'offline', duration: 1 });
     await until(async () => (await db`SELECT id FROM open_alert_record WHERE rule_id=${offline} AND status='active'`).length === 1,
         'offline rule did not fire after its deadline');
@@ -164,10 +163,7 @@ try {
     assert.equal(applied.createdIds.length, 1);
     assert.equal((await request('POST','/v1/alert/rules/apply-template', { template_id: template, device_ids: [device] })).success, 0);
     assert.equal((await request('GET',`/v1/alert/templates/${template}`)).name, templateName);
-    const grouped = await request('GET','/v1/alert/records/grouped');
-    assert(Array.isArray(grouped));
-    const active = await request('GET',`/v1/alert/records?deviceId=${device}&status=active`);
-    const offlineRecord = active.list.find((item: { rule_id: string }) => item.rule_id === offline);
+    const offlineRecord = (await db`SELECT id FROM open_alert_record WHERE rule_id=${offline} AND status='active'`)[0] as { id: string } | undefined;
     assert(offlineRecord);
     const ackStream = await subscribe(`/v1/alert/events?deviceId=${device}&status=active`);
     assert((await snapshot(ackStream)).list.some((item: {id:string}) => item.id === offlineRecord.id));
@@ -194,15 +190,13 @@ try {
     for (const query of ['page=0','pageSize=101'])
         await request('GET',`/v1/alert/rules?${query}`,undefined,10001);
     await request('GET','/v1/alert/rules?deviceId=invalid',undefined,19002);
-    await request('GET','/v1/alert/records/grouped?days=366',undefined,10001);
     const ruleName = `${prefix}-threshold-updated`;
     await request('PUT',`/v1/alert/rules/${threshold}`,{
         name: ruleName, device_id: device, severity: 'info',
         conditions: [{ type: 'threshold', elementKey: point, operator: '>', value: '999' }],
         status: 'disabled',
     });
-    assert((await request('GET',`/v1/alert/rules?keyword=${prefix}`)).list.some((item: { id: string; name: string }) => item.id === threshold && item.name === ruleName));
-    assert.equal((await request('GET',`/v1/alert/rules/${threshold}`)).status, 'disabled');
+    assert((await request('GET',`/v1/alert/rules?keyword=${prefix}`)).list.some((item: { id: string; name: string; status: string }) => item.id === threshold && item.name === ruleName && item.status === 'disabled'));
     await request('PUT',`/v1/alert/templates/${template}`,{
         name: templateName, category: prefix, protocol_config_id: model,
         conditions: [{ type: 'offline', duration: 60 }],
@@ -213,7 +207,7 @@ try {
     await request('DELETE',`/v1/alert/rules/${threshold}`);
     await request('DELETE','/v1/alert/rules', { ids: [rate, bit, offline, batchOffline, ...applied.createdIds] });
     assert.equal((await request('GET',`/v1/alert/rules?keyword=${prefix}`)).total, 0);
-    console.log('PASS alert HTTP/SSE: rules/templates CRUD, trigger and acknowledgement pushes, shared records/stats SSE, pagination, grouped HTTP, thresholds, recovery, receipts and change storage');
+    console.log('PASS alert HTTP/SSE: rules/templates CRUD, trigger and acknowledgement pushes, shared records/stats SSE, pagination, thresholds, recovery, receipts and change storage');
 } finally {
     for (const stream of streams) await stream.close();
     await db`UPDATE alert_rule SET deleted_at=NOW() WHERE device_id=${device}`;

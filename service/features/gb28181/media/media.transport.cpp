@@ -14,8 +14,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/web/HttpClientHandle.h>
-#include <ruvia/web/ModelJson.h>
+#include <ruvia/web/http_client_handle.h>
+#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
 #include "service/middleware/log.h"
@@ -98,7 +98,7 @@ std::string rtmpBase(const MediaConfig& config, std::uint16_t httpPort, std::uin
 }
 
 bool managedStream(std::string_view stream) {
-    return stream.starts_with("gb_") || stream.starts_with("gb_playback_");
+    return stream.starts_with("gb_");
 }
 
 const char* safe(const char* value) {
@@ -170,7 +170,7 @@ thread_local ZlmSdk::OwnerIndex ZlmSdk::actorOwner_ = ZlmSdk::kUnassignedOwner;
 
 struct SdkSupervisor::Route final
     : std::enable_shared_from_this<SdkSupervisor::Route> {
-    Route(ruvia::EventLoop value, CollectorCallbacks valueCallbacks)
+    Route(ruvia::event_loop value, CollectorCallbacks valueCallbacks)
         : loop(std::move(value)), callbacks(std::move(valueCallbacks)) {}
 
     void streamChanged(std::string app, std::string stream, std::string schema, bool online, int readerCount) {
@@ -206,7 +206,7 @@ struct SdkSupervisor::Route final
         const auto posted = loop.post(dispatch);
         if (!posted.accepted()) {
             // A full worker mailbox must not silently discard an SDK event.
-            // The owning EventLoop executor has its own queue and is still
+            // The owning event_loop executor has its own queue and is still
             // the same worker, so use it as a lossless fallback while the
             // worker is accepting work.  During teardown, deactivate() owns
             // the dropped event and wakes waitForPending().
@@ -279,7 +279,7 @@ struct SdkSupervisor::Route final
     }
 
     void waitForPending() noexcept {
-        if (loop.isCurrent() || !loop.accepting()) {
+        if (loop.is_current() || !loop.accepting()) {
             std::lock_guard lock(mutex);
             pending = 0;
             return;
@@ -290,7 +290,7 @@ struct SdkSupervisor::Route final
         });
     }
 
-    ruvia::EventLoop loop;
+    ruvia::event_loop loop;
     CollectorCallbacks callbacks;
     std::mutex mutex;
     std::condition_variable completed;
@@ -413,12 +413,7 @@ ZlmSdk& SdkSupervisor::sdk() {
     return *sdk_;
 }
 
-const ZlmSdk* SdkSupervisor::sdkIfStarted() const noexcept {
-    std::lock_guard lock(mutex_);
-    return sdk_ && sdk_->started() ? sdk_.get() : nullptr;
-}
-
-void SdkSupervisor::registerCollector(OwnerIndex owner, ruvia::EventLoop loop, CollectorCallbacks callbacks) {
+void SdkSupervisor::registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks) {
     if (!loop.valid() || !loop.handle().valid()) {
         throw std::invalid_argument(
             "ZLMediaKit SDK collector route requires a valid EventLoop"
@@ -647,12 +642,12 @@ void ZlmSdk::stop() noexcept {
 }
 
 std::optional<OpenRtpServerResult>
-ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) {
+ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId) {
     if (!started_.load()) {
         return std::nullopt;
     }
 
-    const auto streamId = makeStreamId(deviceId, channelId, ssrc, sessionId, mode);
+    const auto streamId = makeStreamId(deviceId, channelId, ssrc, sessionId);
     const auto [rtpPortStart, rtpPortEnd] = rtpPortRange(config_);
     const auto attempts = (rtpPortEnd - rtpPortStart) / 2U + 1U;
     // A stream gets an owner only while it is created by the SIP actor on
@@ -857,11 +852,10 @@ ZlmSdk::OwnerIndex ZlmSdk::streamOwner(std::string_view stream) const {
                                                    : found->second;
 }
 
-std::string ZlmSdk::makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) const {
-    const std::string prefix = mode == "playback" ? "gb_playback" : "gb";
+std::string ZlmSdk::makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId) const {
     // SSRC values may repeat across Collectors and restarts. A new session
     // identity prevents delayed SDK events from being attributed to a replacement.
-    return prefix + "_" + deviceId + "_" + channelId + "_" + ssrc + "_" +
+    return "gb_" + deviceId + "_" + channelId + "_" + ssrc + "_" +
         sessionId;
 }
 
@@ -980,7 +974,7 @@ void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser, const mk_http_re
         const char* headers[] = { "Content-Type", "application/json", nullptr };
         WebRtcResponseModel body;
         body.set<"code">(-1).set<"msg">("invalid WebRTC play request");
-        const auto serialized = ruvia::toJson(body);
+        const auto serialized = ruvia::to_json(body);
         mk_http_response_invoker_do_string(invoker, 400, headers, serialized.c_str());
         return;
     }
@@ -1005,7 +999,7 @@ void API_CALL ZlmSdk::handleWebRtcAnswer(void* userData, const char* answer, con
     } else {
         body.set<"code">(-1).set<"msg">(safe(error));
     }
-    const auto serialized = ruvia::toJson(body);
+    const auto serialized = ruvia::to_json(body);
     mk_http_response_invoker_do_string(invoker, 200, headers, serialized.c_str());
 }
 
@@ -1130,9 +1124,9 @@ std::string MediaProxyController::percentEncode(std::string_view value) {
 }
 
 std::string
-MediaProxyController::queryString(const ruvia::ContextRequest& request) {
+MediaProxyController::queryString(const ruvia::context_request& request) {
     std::string result;
-    for (const auto& field : request.queryFields()) {
+    for (const auto& field : request.query_fields()) {
         if (!result.empty()) {
             result.push_back('&');
         }
@@ -1143,7 +1137,7 @@ MediaProxyController::queryString(const ruvia::ContextRequest& request) {
     return result;
 }
 
-ruvia::Task<void> MediaProxyController::proxy(ruvia::Context& context) {
+ruvia::task<void> MediaProxyController::proxy(ruvia::context& context) {
     if (!sdkSupervisor().started()) {
         service::common::fail(10002, "GB28181 媒体服务未启用", 503);
     }
@@ -1163,7 +1157,7 @@ ruvia::Task<void> MediaProxyController::proxy(ruvia::Context& context) {
     if (!query.empty()) {
         target += '?' + query;
     }
-    std::vector<ruvia::HttpHeaderView> headers;
+    std::vector<ruvia::http_header_view> headers;
     for (const auto name : { "Content-Type", "Accept", "Range" }) {
         if (const auto value = request.header(name)) {
             headers.emplace_back(name, *value);
@@ -1174,11 +1168,11 @@ ruvia::Task<void> MediaProxyController::proxy(ruvia::Context& context) {
         body.assign(co_await request.text());
     }
     const auto content = request.method() == "POST"
-        ? ruvia::HttpClientRequestContentView::bytes(body)
-        : ruvia::HttpClientRequestContentView::none();
+        ? ruvia::http_client_request_content_view::bytes(body)
+        : ruvia::http_client_request_content_view::none();
     // The registered client, upstream socket, and response body all belong to
     // the accepting Service Worker. Ruvia supplies cancellation and backpressure.
-    auto upstream = co_await context.httpClient("gb-media").send({ .method = request.method(), .target = target, .headers = headers, .content = content });
+    auto upstream = co_await context.get_http_client("gb-media").send({ .method_ = request.method(), .target_ = target, .headers_ = headers, .content_ = content });
     if (upstream.status().value() < 200 || upstream.status().value() > 599) {
         service::common::fail(10002, "媒体服务返回了无效状态", 502);
     }
@@ -1191,12 +1185,12 @@ ruvia::Task<void> MediaProxyController::proxy(ruvia::Context& context) {
 
     auto& writer = context.stream();
     if (upstreamPath.ends_with(".m3u8")) {
-        const auto playlist = co_await upstream.body().readAll(2U * 1024U * 1024U);
+        const auto playlist = co_await upstream.body().read_all(2U * 1024U * 1024U);
         const std::string_view playlistText(reinterpret_cast<const char*>(playlist.bytes().data()), playlist.size());
         const auto rewritten = media_proxy_detail::rewriteHlsPlaylist(playlistText, query);
         co_await writer.write(rewritten);
     } else {
-        co_await upstream.body().pipeTo(writer);
+        co_await upstream.body().pipe_to(writer);
     }
     if (!writer.aborted()) {
         co_await writer.end();

@@ -1,0 +1,12 @@
+diff --git a/usrsctplib/CMakeLists.txt b/usrsctplib/CMakeLists.txt
+index c60b393..b84d8f1 100644
+--- a/usrsctplib/CMakeLists.txt
++++ b/usrsctplib/CMakeLists.txt
+@@ -177,6 +177,7 @@ add_library(usrsctp ${usrsctp_sources} ${usrsctp_headers})
+ target_include_directories(usrsctp PUBLIC $<INSTALL_INTERFACE:include>
+         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+ 
++target_compile_definitions(usrsctp PRIVATE timingsafe_bcmp=usrsctp_timingsafe_bcmp)
+ if (WIN32)
+ 	message(STATUS "link library: ws2_32")
+ 	target_link_libraries(usrsctp ws2_32 iphlpapi)

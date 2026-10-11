@@ -28,6 +28,11 @@ async function query(path: string, params: Record<string, string | number> = {})
     const search = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]));
     return write('GET', path + (search.size ? `?${search}` : ''));
 }
+async function listed(path: string, id: string) {
+    const item = (await query(path, { keyword: tag })).list.find((row: { id: string }) => row.id === id);
+    assert(item, `${path} does not list ${id}`);
+    return item;
+}
 
 const roles: string[] = [], departments: string[] = [], users: string[] = [];
 try {
@@ -43,22 +48,22 @@ try {
         assert.equal(row.description, null);
         assert.deepEqual(row.permissions, ['z:test', 'a:test']);
     }
-    assert.deepEqual((await query(`/v1/roles/${roles[0]}`)).permissions, ['a:test', 'z:test']);
+    assert.deepEqual((await listed('/v1/roles', roles[0])).permissions, ['a:test', 'z:test']);
     const page = await query('/v1/roles', {keyword:tag.toUpperCase(), page:2, pageSize:1});
     assert.equal(page.total, 2); assert.equal(page.list.length, 1); assert.equal(page.totalPages, 2);
     const empty = await query('/v1/roles', {keyword:tag, page:9, pageSize:1});
     assert.equal(empty.total, 2); assert.deepEqual(empty.list, []);
     assert.equal((await query('/v1/roles', {keyword:"' OR TRUE --"})).total, 0);
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: [], description: '' });
-    assert.deepEqual((await query(`/v1/roles/${roles[0]}`)).permissions, []);
+    assert.deepEqual((await listed('/v1/roles', roles[0])).permissions, []);
     const escapedPermissions = ['scope:"\\权限', 'scope:"\\权限'];
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: escapedPermissions });
     const [escapedRole] = await sql`SELECT permissions FROM sys_role WHERE id=${roles[0]}`;
     assert.deepEqual(escapedRole.permissions, escapedPermissions);
-    assert.deepEqual((await query(`/v1/roles/${roles[0]}`)).permissions, escapedPermissions);
+    assert.deepEqual((await listed('/v1/roles', roles[0])).permissions, escapedPermissions);
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: [] });
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: ['bad,permission'] }, 13005);
-    assert.deepEqual((await query(`/v1/roles/${roles[0]}`)).permissions, []);
+    assert.deepEqual((await listed('/v1/roles', roles[0])).permissions, []);
     assert((await query('/v1/roles/options')).some((row: { id: string }) => row.id === roles[0]));
     console.log('PASS role permissions, parameter binding, options and empty-page count');
 
@@ -71,7 +76,7 @@ try {
     const [child] = await sql`SELECT id FROM sys_department WHERE code=${`${tag}_child`}`;
     departments.push(child.id);
     assert.equal((await query('/v1/departments', { parent_id: root.id })).list[0].id, child.id);
-    const detail = await query(`/v1/departments/${child.id}`);
+    const detail = await listed('/v1/departments', child.id);
     assert.equal(detail.parent_name, `${tag}_root`); assert.equal(detail.leader_id, admin);
     assert.match(detail.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     assert.equal((await query('/v1/departments', {parent_id:root.id, keyword:tag.toUpperCase()})).total, 1);
@@ -94,7 +99,7 @@ try {
     const [user] = await sql`SELECT id, nickname, phone, email FROM sys_user WHERE username=${tag}`;
     users.push(user.id);
     assert.equal(user.nickname, null); assert.equal(user.phone, null); assert.equal(user.email, null);
-    assert.equal((await query(`/v1/users/${user.id}`)).roles.length, 2);
+    assert.equal((await listed('/v1/users', user.id)).roles.length, 2);
     assert.equal((await query('/v1/users', {keyword:tag.toUpperCase(), status:'enabled'})).total, 1);
     assert.equal((await query('/v1/users/options', {keyword:tag})).length, 1);
     await write('POST', '/v1/auth/login', { username: tag, password: 'wrong-password' }, 11001);
@@ -115,16 +120,16 @@ try {
     await write('PUT', `/v1/users/${admin}`, { role_ids:[roles[0]]}, 12003);
     await write('DELETE', `/v1/roles/${roles[0]}`, undefined, 13004);
     await write('PUT', `/v1/users/${user.id}`, { role_ids: [roles[0], roles[0]] }, 12005);
-    assert.equal((await query(`/v1/users/${user.id}`)).roles.length, 2);
-    assert.equal((await query(`/v1/users/${user.id}`)).status, 'enabled');
+    assert.equal((await listed('/v1/users', user.id)).roles.length, 2);
+    assert.equal((await listed('/v1/users', user.id)).status, 'enabled');
     await write('PUT', `/v1/users/${user.id}`, { role_ids: [roles[1]], department_id: '', nickname: '', status: 'disabled' });
-    const changedUser = await query(`/v1/users/${user.id}`);
+    const changedUser = await listed('/v1/users', user.id);
     assert.equal(changedUser.status, 'disabled');
     assert.equal(changedUser.roles.length, 1);
     assert.equal(changedUser.department_id, '');
     const [updated] = await sql`SELECT department_id, nickname FROM sys_user WHERE id=${user.id}`;
     assert.equal(updated.department_id, null); assert.equal(updated.nickname, '');
-    assert.equal((await query(`/v1/users/${user.id}`)).roles.length, 1);
+    assert.equal((await listed('/v1/users', user.id)).roles.length, 1);
     assert.equal((await query('/v1/users/options', {keyword:tag})).length, 0);
     await write('POST', '/v1/auth/login', { username: tag, password: 'orm-test-only-password' }, 11002);
     await write('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token }, 11002);

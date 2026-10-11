@@ -5,8 +5,6 @@ import type { Alert } from './alert.types';
 
 export const getRules = (params?: Record<string, unknown>, signal?: AbortSignal) =>
     request.get<PaginatedResult<Alert.RuleItem>>('/v1/alert/rules', { params, signal });
-export const getRuleDetail = (id: string, signal?: AbortSignal) =>
-    request.get<Alert.RuleItem>(`/v1/alert/rules/${id}`, { signal });
 export const createRule = (data: Alert.RuleDto) => request.post<void>('/v1/alert/rules', data);
 export const updateRule = (id: string, data: Alert.RuleDto) =>
     request.put<void>(`/v1/alert/rules/${id}`, data);

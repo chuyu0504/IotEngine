@@ -10,9 +10,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/web/Context.h>
-#include <ruvia/web/db/Db.h>
-#include <ruvia/web/redis/RedisRepository.h>
+#include <ruvia/web/context.h>
+#include <ruvia/web/db/db.h>
+#include <ruvia/web/redis/redis_repository.h>
 #include "service/modules/system/operations/operations.entity.h"
 
 #include "service/common/message.h"
@@ -23,17 +23,17 @@ namespace service::system {
 
 class OperationsService final {
   public:
-    static ruvia::Task<OperationsReadiness> readiness(ruvia::Context& context) {
+    static ruvia::task<OperationsReadiness> readiness(ruvia::context& context) {
         const auto expectedWorkers = workerCount(context);
         bool databaseReady = false;
         bool redisReady = false;
         try {
-            ruvia::DbQuery query(context.pool());
+            ruvia::db_query query(context.pool());
             query.select(query.value(1));
             databaseReady = !(co_await context.db().query(query)).empty();
             const std::vector<std::string_view> command{ "PING" };
             const auto reply = co_await context.redis().command(command);
-            redisReady = reply.kind() == ruvia::RedisValue::Kind::kString &&
+            redisReady = reply.kind() == ruvia::redis_value::kind_type::string &&
                 reply.string() == "PONG";
         } catch (...) {
         }
@@ -67,7 +67,7 @@ class OperationsService final {
         co_return OperationsReadiness{ ready, aggregateHealthJson(snapshots, status) };
     }
 
-    static ruvia::Task<std::string> metrics(ruvia::Context& context) {
+    static ruvia::task<std::string> metrics(ruvia::context& context) {
         const auto expectedWorkers = workerCount(context);
         if (expectedWorkers == 0) {
             co_return fallbackMetrics();
@@ -96,23 +96,23 @@ class OperationsService final {
     }
 
   private:
-    static std::size_t workerCount(const ruvia::Context& context) noexcept {
+    static std::size_t workerCount(const ruvia::context& context) noexcept {
         try {
-            return context.workerState<service::ServiceWorkerTopology>().count;
+            return context.worker_state<service::ServiceWorkerTopology>().count;
         } catch (const std::logic_error&) {
             return 0;
         }
     }
 
-    static ruvia::Task<std::vector<WorkerDiagnosticSnapshot>>
-    loadSnapshots(ruvia::Context& context, std::size_t count) {
-        auto snapshots = context.redis().getRepository<WorkerSnapshotEntity>();
+    static ruvia::task<std::vector<WorkerDiagnosticSnapshot>>
+    loadSnapshots(ruvia::context& context, std::size_t count) {
+        auto snapshots = context.redis().get_repository<WorkerSnapshotEntity>();
         std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
-                .where = WorkerSnapshotEntity::field<"id">() ==
+                .where_ = WorkerSnapshotEntity::field<"id">() ==
                     service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
-            const auto snapshot = co_await snapshots.findOne(options);
+            const auto snapshot = co_await snapshots.find_one(options);
             if (!snapshot) continue;
             auto& value = result[index];
             value.metrics.assign(snapshot->get<"metrics">().view());

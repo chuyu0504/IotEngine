@@ -111,8 +111,6 @@ void testEnvelopeRoundTrip() {
 
 void testCompatibleProtocolVersionContract() {
     service::common::UuidV7Generator uuidGenerator;
-    require(!service::edge::protocol::isCurrentProtocolVersion(2),
-            "legacy protocol was reported as current");
     require(service::edge::protocol::supportsProtocolVersion(2) &&
                 service::edge::protocol::supportsProtocolVersion(3) &&
                 service::edge::protocol::supportsProtocolVersion(4) &&
@@ -122,13 +120,8 @@ void testCompatibleProtocolVersionContract() {
     require(!service::edge::protocol::supportsProtocolVersion(1) &&
                 !service::edge::protocol::supportsProtocolVersion(7),
             "unsupported protocol version was accepted");
-    require(service::edge::protocol::isCurrentProtocolVersion(
-                service::edge::protocol::kProtocolVersion),
-            "current protocol version was rejected");
     require(service::edge::protocol::kProtocolVersion == 6,
             "firmware streaming did not advance the wire protocol");
-    require(!service::edge::protocol::isCurrentProtocolVersion(7),
-            "future protocol version was reported as current");
 
     auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002");
@@ -427,29 +420,6 @@ void testWebTerminalProtobuf() {
             "web terminal resize payload changed");
 }
 
-void testFirmwareRequestDefersVersionToNodeHello() {
-    service::edge::pb::FirmwareUpdateRequest request;
-    require(service::edge::firmware::populateUpdateRequest(
-                request, std::string(16, '\1'),
-                "https://example.test/edge/v1/firmware/id/download?token=legacy",
-                std::string(32, '\2'), 1024, true),
-            "valid firmware request metadata was rejected");
-    require(request.version().empty(),
-            "firmware request must not infer or require a target version");
-    require(!request.download_url().empty() && request.size_bytes() == 1024 &&
-                request.keep_settings(),
-            "firmware request metadata changed unexpectedly");
-    service::edge::pb::FirmwareUpdateRequest stream;
-    require(service::edge::firmware::populateUpdateRequest(
-                stream, std::string(16, '\1'), {}, std::string(32, '\2'), 1024, true) &&
-                stream.download_url().empty(),
-            "WS firmware request without a legacy URL was rejected");
-    service::edge::pb::FirmwareUpdateRequest empty;
-    require(!service::edge::firmware::populateUpdateRequest(
-                empty, std::string(16, '\1'), {}, std::string(32, '\2'), 0, true),
-            "zero-length firmware request was accepted");
-}
-
 void testFirmwareChunkSource() {
     const auto path = std::filesystem::temp_directory_path() /
                       ("iot-engine-firmware-chunk-" +
@@ -609,7 +579,6 @@ int main() {
     testModemProfileRoundTrip();
     testNanopbBounds();
     testWebTerminalProtobuf();
-    testFirmwareRequestDefersVersionToNodeHello();
     testFirmwareChunkSource();
     testLegacyDebugAcquisitionIdentity();
     testCommandResultProjectionState();

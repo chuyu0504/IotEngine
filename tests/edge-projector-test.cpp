@@ -47,7 +47,7 @@ int main() {
         require(serviceSource.find("config::detail::jsonText(query, existingCapability, \"terminal\")") !=
                     std::string::npos,
                 "edge projector does not guard terminal capability");
-        require(serviceSource.find("query.caseWhen({{valid, query.cast(text, ruvia::DbDataType::kBigInt)}})") !=
+        require(serviceSource.find("query.case_when({{valid, query.cast(text, ruvia::db_data_type::big_int)}})") !=
                     std::string::npos,
                 "edge projector does not guard desiredVersion");
         require(serviceSource.find("\"status\", \"last_seen_at\", \"updated_at\"") != std::string::npos,

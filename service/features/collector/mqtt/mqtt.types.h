@@ -4,15 +4,15 @@
 #include <string>
 #include <vector>
 
-#include <ruvia/web/Model.h>
-#include <ruvia/web/ModelJson.h>
+#include <ruvia/web/model.h>
+#include <ruvia/web/model_json.h>
 
 namespace service::collector::mqtt {
 
-RUVIA_MODEL(Connection, RUVIA_REQUIRED_FIELD(clientId, ruvia::String), RUVIA_OPTIONAL_FIELD(username, ruvia::String), RUVIA_OPTIONAL_FIELD(password, ruvia::String), RUVIA_OPTIONAL_FIELD(keepAliveSeconds, ruvia::Int64));
-RUVIA_MODEL(ValueMapping, RUVIA_REQUIRED_FIELD(input, ruvia::String), RUVIA_REQUIRED_FIELD(output, ruvia::String));
-RUVIA_MODEL(Point, RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String), RUVIA_REQUIRED_FIELD(field, ruvia::String), RUVIA_REQUIRED_FIELD(dataType, ruvia::String), RUVIA_OPTIONAL_FIELD(unit, ruvia::String), RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool), RUVIA_OPTIONAL_FIELD(scale, ruvia::Double), RUVIA_OPTIONAL_FIELD(offset, ruvia::Double), RUVIA_OPTIONAL_FIELD(enumValues, ruvia::Array<ValueMapping>));
-RUVIA_MODEL(CommandMessage, RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String), RUVIA_REQUIRED_FIELD(topic, ruvia::String), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::String), RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::Array<ruvia::String>));
-RUVIA_MODEL(Config, RUVIA_REQUIRED_FIELD(topic, ruvia::String), RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::String), RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::String), RUVIA_OPTIONAL_FIELD(identitySource, ruvia::String), RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::Int64), RUVIA_OPTIONAL_FIELD(payloadFormat, ruvia::String), RUVIA_OPTIONAL_FIELD(delimiter, ruvia::String), RUVIA_OPTIONAL_FIELD(recordDelimiter, ruvia::String), RUVIA_OPTIONAL_FIELD(recordLength, ruvia::Int64), RUVIA_OPTIONAL_FIELD(timeField, ruvia::String), RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::String), RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::String), RUVIA_OPTIONAL_FIELD(commands, ruvia::Array<CommandMessage>), RUVIA_OPTIONAL_FIELD(qos, ruvia::Int64), RUVIA_REQUIRED_FIELD(points, ruvia::Array<Point>));
+RUVIA_MODEL(Connection, RUVIA_REQUIRED_FIELD(clientId, ruvia::string), RUVIA_OPTIONAL_FIELD(username, ruvia::string), RUVIA_OPTIONAL_FIELD(password, ruvia::string), RUVIA_OPTIONAL_FIELD(keepAliveSeconds, ruvia::int64));
+RUVIA_MODEL(ValueMapping, RUVIA_REQUIRED_FIELD(input, ruvia::string), RUVIA_REQUIRED_FIELD(output, ruvia::string));
+RUVIA_MODEL(Point, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string), RUVIA_REQUIRED_FIELD(field, ruvia::string), RUVIA_REQUIRED_FIELD(dataType, ruvia::string), RUVIA_OPTIONAL_FIELD(unit, ruvia::string), RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(scale, ruvia::double_value), RUVIA_OPTIONAL_FIELD(offset, ruvia::double_value), RUVIA_OPTIONAL_FIELD(enumValues, ruvia::array<ValueMapping>));
+RUVIA_MODEL(CommandMessage, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string), RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::string), RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::array<ruvia::string>));
+RUVIA_MODEL(Config, RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::string), RUVIA_OPTIONAL_FIELD(identitySource, ruvia::string), RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::int64), RUVIA_OPTIONAL_FIELD(payloadFormat, ruvia::string), RUVIA_OPTIONAL_FIELD(delimiter, ruvia::string), RUVIA_OPTIONAL_FIELD(recordDelimiter, ruvia::string), RUVIA_OPTIONAL_FIELD(recordLength, ruvia::int64), RUVIA_OPTIONAL_FIELD(timeField, ruvia::string), RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::string), RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::string), RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::string), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::string), RUVIA_OPTIONAL_FIELD(commands, ruvia::array<CommandMessage>), RUVIA_OPTIONAL_FIELD(qos, ruvia::int64), RUVIA_REQUIRED_FIELD(points, ruvia::array<Point>));
 
 } // namespace service::collector::mqtt

@@ -15,8 +15,8 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Task.h>
-#include <ruvia/web/redis/RedisTypes.h>
+#include <ruvia/core/task.h>
+#include <ruvia/web/redis/redis_types.h>
 
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
@@ -197,34 +197,34 @@ inline std::string elementKey(std::string_view version, std::string_view deviceI
 
 namespace detail {
 
-inline std::string stringReply(const ruvia::RedisValue& value, std::string_view operation) {
-    if (value.kind() != ruvia::RedisValue::Kind::kString) {
+inline std::string stringReply(const ruvia::redis_value& value, std::string_view operation) {
+    if (value.kind() != ruvia::redis_value::kind_type::string) {
         redis::throwValue(operation, value);
     }
     return std::string(value.string());
 }
 
-inline std::int64_t integerReply(const ruvia::RedisValue& value, std::string_view operation) {
-    if (value.kind() != ruvia::RedisValue::Kind::kInteger) {
+inline std::int64_t integerReply(const ruvia::redis_value& value, std::string_view operation) {
+    if (value.kind() != ruvia::redis_value::kind_type::integer) {
         redis::throwValue(operation, value);
     }
     return value.integer();
 }
 
-inline void requireOk(const ruvia::RedisValue& value, std::string_view operation) {
+inline void requireOk(const ruvia::redis_value& value, std::string_view operation) {
     if (stringReply(value, operation) != "OK") {
         throw std::runtime_error(std::string(operation) + " returned an unexpected status");
     }
 }
 
-inline std::vector<std::string> stringArray(const ruvia::RedisValue& value, std::string_view operation) {
-    if (value.kind() != ruvia::RedisValue::Kind::kArray) {
+inline std::vector<std::string> stringArray(const ruvia::redis_value& value, std::string_view operation) {
+    if (value.kind() != ruvia::redis_value::kind_type::array) {
         redis::throwValue(operation, value);
     }
     std::vector<std::string> result;
     result.reserve(value.array().size());
     for (const auto& entry : value.array()) {
-        if (entry.kind() != ruvia::RedisValue::Kind::kString) {
+        if (entry.kind() != ruvia::redis_value::kind_type::string) {
             redis::throwValue(operation, value);
         }
         result.emplace_back(entry.string());
@@ -237,8 +237,8 @@ inline std::vector<std::string> sortedStrings(std::vector<std::string> values) {
     return values;
 }
 
-inline std::vector<message::StreamField> hashFields(const ruvia::RedisValue& value, std::string_view operation) {
-    if (value.kind() != ruvia::RedisValue::Kind::kArray) {
+inline std::vector<message::StreamField> hashFields(const ruvia::redis_value& value, std::string_view operation) {
+    if (value.kind() != ruvia::redis_value::kind_type::array) {
         redis::throwValue(operation, value);
     }
     const auto values = value.array();
@@ -248,8 +248,8 @@ inline std::vector<message::StreamField> hashFields(const ruvia::RedisValue& val
     std::vector<message::StreamField> result;
     result.reserve(values.size() / 2);
     for (std::size_t index = 0; index < values.size(); index += 2) {
-        if (values[index].kind() != ruvia::RedisValue::Kind::kString ||
-            values[index + 1].kind() != ruvia::RedisValue::Kind::kString) {
+        if (values[index].kind() != ruvia::redis_value::kind_type::string ||
+            values[index + 1].kind() != ruvia::redis_value::kind_type::string) {
             redis::throwValue(operation, value);
         }
         result.push_back(
@@ -260,10 +260,10 @@ inline std::vector<message::StreamField> hashFields(const ruvia::RedisValue& val
 }
 
 template <typename Redis>
-ruvia::Task<std::pmr::vector<ruvia::RedisValue>>
+ruvia::task<std::pmr::vector<ruvia::redis_value>>
 execute(const Redis& redis, const std::vector<std::vector<std::string>>& commands) {
     if (commands.empty()) {
-        co_return std::pmr::vector<ruvia::RedisValue>{};
+        co_return std::pmr::vector<ruvia::redis_value>{};
     }
     if constexpr (requires { redis.pipeline(); }) {
         auto pipeline = redis.pipeline();
@@ -273,7 +273,7 @@ execute(const Redis& redis, const std::vector<std::vector<std::string>>& command
         }
         auto replies = co_await std::move(pipeline).exec();
         for (const auto& reply : replies) {
-            if (reply.kind() == ruvia::RedisValue::Kind::kError) {
+            if (reply.kind() == ruvia::redis_value::kind_type::error) {
                 redis::throwValue("runtime pipeline", reply);
             }
         }
@@ -296,10 +296,10 @@ return replies
         }
         std::vector<std::string_view> views(arguments.begin(), arguments.end());
         const auto reply = co_await redis.eval(script, {}, views);
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
+        if (reply.kind() != ruvia::redis_value::kind_type::array) {
             redis::throwValue("runtime batch", reply);
         }
-        std::pmr::vector<ruvia::RedisValue> replies;
+        std::pmr::vector<ruvia::redis_value> replies;
         replies.reserve(reply.array().size());
         for (const auto& value : reply.array()) {
             replies.push_back(value);
@@ -309,7 +309,7 @@ return replies
 }
 
 template <typename Redis>
-ruvia::Task<void> flush(const Redis& redis, std::vector<std::vector<std::string>>& commands) {
+ruvia::task<void> flush(const Redis& redis, std::vector<std::vector<std::string>>& commands) {
     if (commands.empty()) {
         co_return;
     }
@@ -497,14 +497,14 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
 }
 
 template <typename Redis>
-ruvia::Task<std::vector<std::string>> members(const Redis& redis, std::string key) {
+ruvia::task<std::vector<std::string>> members(const Redis& redis, std::string key) {
     co_return sortedStrings(
         stringArray(co_await redis::command(redis, { "SMEMBERS", std::move(key) }), "SMEMBERS runtime")
     );
 }
 
 template <typename Redis>
-ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
+ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
     const auto keysSet = prefix(version) + ":keys";
     auto keys = stringArray(co_await redis::command(redis, { "SMEMBERS", keysSet }), "SMEMBERS runtime snapshot keys");
     keys.push_back(keysSet);
@@ -520,7 +520,7 @@ ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 } // namespace detail
 
 template <typename Redis>
-ruvia::Task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds, std::string_view preserveVersion) {
+ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds, std::string_view preserveVersion) {
     const auto expired = detail::stringArray(
         co_await redis::command(
             redis,
@@ -541,7 +541,7 @@ ruvia::Task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
 }
 
 template <typename Redis>
-ruvia::Task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds) {
+ruvia::task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds) {
     const auto activeReply =
         co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
     if (activeReply.null()) {
@@ -557,7 +557,7 @@ ruvia::Task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMi
 // Service projection. The version pointer is switched only after every readable
 // Hash/Set/List has been written, so readers never observe a partial snapshot.
 template <typename Redis>
-ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7Generator& uuidGenerator) {
+ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7Generator& uuidGenerator) {
     const auto snapshotSignature = signature(snapshot);
     const auto activeReply =
         co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
@@ -691,7 +691,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 }
 
 template <typename Redis>
-ruvia::Task<std::string> activeVersion(const Redis& redis) {
+ruvia::task<std::string> activeVersion(const Redis& redis) {
     const auto versionReply =
         co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
     if (versionReply.null()) {
@@ -701,7 +701,7 @@ ruvia::Task<std::string> activeVersion(const Redis& redis) {
 }
 
 template <typename Redis>
-ruvia::Task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
+ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
     RuntimeSnapshot snapshot;
 
     for (const auto& linkId : co_await detail::members(redis, prefix(version) + ":links")) {
@@ -781,7 +781,7 @@ ruvia::Task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
 }
 
 template <typename Redis>
-ruvia::Task<RuntimeSnapshot> load(const Redis& redis) {
+ruvia::task<RuntimeSnapshot> load(const Redis& redis) {
     co_return co_await load(redis, co_await activeVersion(redis));
 }
 
@@ -800,15 +800,15 @@ inline std::string targetKey(std::string_view linkId, std::string_view targetId)
 }
 
 template <typename Redis>
-ruvia::Task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
+ruvia::task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
                             std::string_view expectedOwner) {
     const auto owner = co_await message::redis::command(redis, {"GET", key(linkId)});
-    co_return owner.kind() == ruvia::RedisValue::Kind::kString &&
+    co_return owner.kind() == ruvia::redis_value::kind_type::string &&
         owner.string() == expectedOwner;
 }
 
 template <typename Redis>
-ruvia::Task<bool> retainTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
+ruvia::task<bool> retainTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     static constexpr std::string_view script = R"lua(
 local current=redis.call('GET',KEYS[1])
 if current and current~=ARGV[1] then return 0 end
@@ -819,14 +819,14 @@ return 1
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+    if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("claim target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
 
 template <typename Redis>
-ruvia::Task<bool> renewTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
+ruvia::task<bool> renewTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     static constexpr std::string_view script = R"lua(
 if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end
 return redis.call('PEXPIRE',KEYS[1],15000)
@@ -835,14 +835,14 @@ return redis.call('PEXPIRE',KEYS[1],15000)
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+    if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("renew target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
 
 template <typename Redis>
-ruvia::Task<void> releaseTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
+ruvia::task<void> releaseTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     static constexpr std::string_view script = R"lua(
 if redis.call('GET',KEYS[1])==ARGV[1] then
   redis.call('DEL',KEYS[1])
@@ -854,13 +854,13 @@ return 0
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+    if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("release target ownership", reply);
     }
 }
 
 template <typename Redis>
-ruvia::Task<RuntimeSnapshot> retain(const Redis& redis, RuntimeSnapshot snapshot) {
+ruvia::task<RuntimeSnapshot> retain(const Redis& redis, RuntimeSnapshot snapshot) {
     static constexpr std::string_view script = R"lua(
 local owner=redis.call('GET',KEYS[1])
 if owner and owner~=ARGV[1] then return 0 end
@@ -873,7 +873,7 @@ return 1
         const std::string_view keys[]{ lease };
         const std::string_view args[]{ service::runtime::instanceId() };
         const auto reply = co_await redis.eval(script, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             message::redis::throwValue("claim link ownership", reply);
         }
         if (reply.integer() == 1) {
@@ -896,7 +896,7 @@ namespace service::collector {
 class CollectorCommandService final {
   public:
     template <typename Redis>
-    static ruvia::Task<TransmissionReservation> reserveTransmission(
+    static ruvia::task<TransmissionReservation> reserveTransmission(
         const Redis& redis, const message::ProtocolTask& task, std::int64_t nowMs) {
         if (nowMs - task.createdAtMs >= 60000)
             co_return TransmissionReservation::Expired;
@@ -904,9 +904,9 @@ class CollectorCommandService final {
         const auto key = "iot:v2:command:sent:" + task.messageId;
         const auto claimed = co_await message::redis::command(
             redis, {"SET", key, "1", "NX", "EX", "86400"});
-        if (claimed.kind() == ruvia::RedisValue::Kind::kNull)
+        if (claimed.kind() == ruvia::redis_value::kind_type::null)
             co_return TransmissionReservation::Duplicate;
-        if (claimed.kind() == ruvia::RedisValue::Kind::kError)
+        if (claimed.kind() == ruvia::redis_value::kind_type::error)
             message::redis::throwValue("claim command transmission", claimed);
         co_return TransmissionReservation::Reserved;
     }
@@ -915,7 +915,7 @@ class CollectorCommandService final {
 class CollectorStateService final {
   public:
     template <typename Redis>
-    static ruvia::Task<DeviceRouteOwner> bindRoute(const Redis& redis,
+    static ruvia::task<DeviceRouteOwner> bindRoute(const Redis& redis,
         const ProtocolAction& action, std::uint64_t sessionEpoch,
         std::size_t workerIndex, std::string linkId) {
         static constexpr std::string_view script = R"lua(
@@ -946,20 +946,20 @@ return {previous_worker, previous_connection, previous_instance}
             linkId
         };
         const auto reply = co_await redis.eval(script, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray || reply.array().size() != 3) {
+        if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() != 3) {
             message::redis::throwValue("bind device route", reply);
         }
-        const auto oldWorker = reply.array()[0].kind() == ruvia::RedisValue::Kind::kString
+        const auto oldWorker = reply.array()[0].kind() == ruvia::redis_value::kind_type::string
             ? std::string(reply.array()[0].string())
             : std::string{};
-        const auto oldConnection = reply.array()[1].kind() == ruvia::RedisValue::Kind::kString
+        const auto oldConnection = reply.array()[1].kind() == ruvia::redis_value::kind_type::string
             ? std::string(reply.array()[1].string())
             : std::string{};
         co_return DeviceRouteOwner{oldWorker, oldConnection, std::string(reply.array()[2].string())};
     }
 
     template <typename Redis>
-    static ruvia::Task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId, std::string_view connectionId, std::string_view reason) {
+    static ruvia::task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId, std::string_view connectionId, std::string_view reason) {
         static constexpr std::string_view script = R"lua(
 if redis.call('HGET', KEYS[1], 'connection_id') ~= ARGV[1] then return 0 end
 redis.call('HDEL', KEYS[1], 'instance_id', 'worker_id', 'connection_id', 'session_epoch')
@@ -987,7 +987,7 @@ return 1
     }
 
     template <typename Redis>
-    static ruvia::Task<void> storeLinkEvent(const Redis& redis,
+    static ruvia::task<void> storeLinkEvent(const Redis& redis,
         const message::StreamMessage& event, std::size_t workerIndex) {
         const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
         const auto key =
@@ -997,7 +997,7 @@ return 1
     }
 
     template <typename Redis>
-    static ruvia::Task<void> publishWorker(const Redis& redis, std::size_t workerIndex, std::string_view version) {
+    static ruvia::task<void> publishWorker(const Redis& redis, std::size_t workerIndex, std::string_view version) {
         const CollectorWorkerRecord record{
             workerIndex, std::string(version), "applied", message::utcNowMilliseconds()};
         co_await message::redis::setHash(
@@ -1007,13 +1007,13 @@ return 1
     }
 
     template <typename Redis>
-    static ruvia::Task<void> eraseWorker(const Redis& redis, std::size_t index) {
+    static ruvia::task<void> eraseWorker(const Redis& redis, std::size_t index) {
         co_await message::redis::eraseMatching(redis, CollectorLinkRecord::key("*", index, service::runtime::instanceId()));
         co_await message::redis::eraseHash(redis, CollectorWorkerRecord::key(index, service::runtime::instanceId()));
     }
 
     template <typename Redis>
-    static ruvia::Task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index) {
+    static ruvia::task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index) {
         co_await message::redis::eraseHash(redis, CollectorLinkRecord::key(id, index, service::runtime::instanceId()));
     }
 };

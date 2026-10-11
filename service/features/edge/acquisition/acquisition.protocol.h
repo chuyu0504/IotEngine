@@ -129,12 +129,12 @@ class RawAcquisition final {
         result.observedAtMs = record.observed_at_ms();
         std::map<std::string, std::string> values;
         const auto merge = [&](std::string_view json) {
-            const auto root = ruvia::JsonValue::parse(json);
-            const auto points = root ? root->get<ruvia::JsonValue>("values") : std::nullopt;
-            if (!points || !points->isObject()) {
+            const auto root = ruvia::json_value::parse(json);
+            const auto points = root ? root->get<ruvia::json_value>("values") : std::nullopt;
+            if (!points || !points->is_object()) {
                 throw std::invalid_argument("invalid decoded acquisition values");
             }
-            (void)points->forEachField([&](std::string_view id, const ruvia::JsonValue& value) {
+            (void)points->for_each_field([&](std::string_view id, const ruvia::json_value& value) {
                 values[std::string(id)] = std::string(value.view());
                 return true;
             });

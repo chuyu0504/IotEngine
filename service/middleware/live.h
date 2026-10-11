@@ -17,10 +17,10 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Channel.h>
-#include <ruvia/web/Controller.h>
-#include <ruvia/web/ModelJson.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/channel.h>
+#include <ruvia/web/controller.h>
+#include <ruvia/web/model_json.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -37,8 +37,8 @@ class Bus final {
   public:
     struct Subscription {
         std::string topic;
-        ruvia::ChannelSender<int> sender;
-        ruvia::ChannelReceiver<int> receiver;
+        ruvia::channel_sender<int> sender;
+        ruvia::channel_receiver<int> receiver;
         std::vector<std::string> topics;
         std::set<std::string> changedTopics;
     };
@@ -54,11 +54,11 @@ class Bus final {
         return *workerIndex_;
     }
 
-    std::shared_ptr<Subscription> subscribe(const ruvia::WorkerHandle& worker, std::string_view topic) {
-        if (!worker.isCurrent()) {
+    std::shared_ptr<Subscription> subscribe(const ruvia::worker_handle& worker, std::string_view topic) {
+        if (!worker.is_current()) {
             throw std::logic_error("live subscriptions must belong to the current worker");
         }
-        auto [sender, receiver] = ruvia::makeChannel<int>(worker, { .capacity = 1 });
+        auto [sender, receiver] = ruvia::make_channel<int>(worker, { .capacity_ = 1 });
         auto subscription = std::make_shared<Subscription>(
             Subscription{ std::string(topic), std::move(sender), std::move(receiver) }
         );
@@ -69,7 +69,7 @@ class Bus final {
         return subscription;
     }
 
-    std::shared_ptr<Subscription> subscribeTopics(const ruvia::WorkerHandle& worker, std::vector<std::string> topics) {
+    std::shared_ptr<Subscription> subscribeTopics(const ruvia::worker_handle& worker, std::vector<std::string> topics) {
         auto subscription = subscribe(worker, "");
         subscription->topics = std::move(topics);
         return subscription;
@@ -111,7 +111,7 @@ class Bus final {
 };
 
 inline Bus& bus() {
-    // Every WebWorker owns one event-loop thread. Keeping the bus in thread
+    // Every web_worker owns one event-loop thread. Keeping the bus in thread
     // local storage prevents subscriptions and wakeups from crossing workers;
     // QueryRuntime initializes the worker index before requests are served.
     thread_local Bus value;
@@ -123,13 +123,13 @@ inline Bus& bus() {
 // to the feature runtime and other workers/instances.
 class QueryRuntime final {
   public:
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex) {
-        stop_ = std::make_unique<ruvia::StopSource>();
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex) {
+        stop_ = std::make_unique<ruvia::stop_source>();
         auto ready = std::make_shared<std::promise<void>>();
         auto done = std::make_shared<std::promise<void>>();
         auto started = ready->get_future();
         stopped_ = done->get_future();
-        if (!worker.post([this, workerIndex, ready, done](ruvia::WebWorkerContext& context) {
+        if (!worker.post([this, workerIndex, ready, done](ruvia::web_worker_context& context) {
                        return run(context, workerIndex, ready, done);
                    })
                  .accepted()) {
@@ -148,7 +148,7 @@ class QueryRuntime final {
         if (!stop_) {
             return;
         }
-        stop_->requestStop();
+        stop_->request_stop();
         if (stopped_.valid()) {
             stopped_.wait();
         }
@@ -158,14 +158,14 @@ class QueryRuntime final {
     ~QueryRuntime() { stop(); }
 
   private:
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
         bus().setWorkerIndex(workerIndex);
         const auto group = "api-live:" + service::runtime::instanceId() + ":" +
             std::to_string(workerIndex);
         const auto consumer = "api-live:" + service::runtime::instanceId() + ":" +
             std::to_string(workerIndex);
         const auto redis = context.redis();
-        const auto stop = ruvia::combineStopTokens(context.stopToken(), stop_->token());
+        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
         bool initialized = false;
         try {
             co_await service::message::redis::ensureGroup(
@@ -176,7 +176,7 @@ class QueryRuntime final {
             ready->set_value();
             initialized = true;
             bool recovering = true;
-            while (!stop.stopRequested()) {
+            while (!stop.stop_requested()) {
                 bool failed = false;
                 try {
                     if (recovering) {
@@ -236,7 +236,7 @@ class QueryRuntime final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (stop.stopRequested()) {
+                    if (stop.stop_requested()) {
                         break;
                     }
                     std::cerr << "live API fanout: " << error.what() << '\n';
@@ -244,7 +244,7 @@ class QueryRuntime final {
                     recovering = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1));
                 }
             }
         } catch (...) {
@@ -262,34 +262,34 @@ class QueryRuntime final {
         done->set_value();
     }
 
-    std::unique_ptr<ruvia::StopSource> stop_;
+    std::unique_ptr<ruvia::stop_source> stop_;
     std::future<void> stopped_;
 };
 
 template <typename Model>
 std::string json(const Model& model) {
-    return std::string(ruvia::toJson(model));
+    return std::string(ruvia::to_json(model));
 }
 
-inline std::string data(ruvia::Context&, std::string_view value) {
+inline std::string data(ruvia::context&, std::string_view value) {
     return "{\"code\":0,\"message\":\"ok\",\"data\":" + std::string(value) + "}";
 }
 
 struct SnapshotChannel {
     std::string event;
     std::string topic;
-    std::function<ruvia::Task<std::string>(service::middleware::RequestContext&)> query;
+    std::function<ruvia::task<std::string>(service::middleware::RequestContext&)> query;
 };
 
 // Channels share one socket, but authorization, change detection and payloads
 // remain independent. Telemetry never reloads device metadata or the group tree.
 template <typename CheckToken, typename OnKeepalive>
-ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken, OnKeepalive onKeepalive) {
+ruvia::task<void> serveSnapshotChannels(ruvia::context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken, OnKeepalive onKeepalive) {
     using namespace std::chrono_literals;
     if (context.req().header("Accept").value_or("").find("text/event-stream") == std::string_view::npos) {
         service::common::fail(10002, "此接口需要 text/event-stream", 406);
     }
-    if (const auto* user = context.tryRequestState<service::middleware::AuthenticatedUserSnapshot>()) {
+    if (const auto* user = context.try_request_state<service::middleware::AuthenticatedUserSnapshot>()) {
         channels.push_back({ "user", "auth", user->query });
     }
     std::vector<std::string> topics;
@@ -297,12 +297,12 @@ ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string use
         topics.push_back(channel.topic);
     }
     auto subscription = bus().subscribeTopics(context.worker(), std::move(topics));
-    auto readChannel = [&](const SnapshotChannel& channel) -> ruvia::Task<std::string> {
+    auto readChannel = [&](const SnapshotChannel& channel) -> ruvia::task<std::string> {
         std::string payload;
         try {
             service::middleware::RequestContext request(context, userId);
             payload = co_await channel.query(request);
-        } catch (const ruvia::HttpError& failure) {
+        } catch (const ruvia::http_error& failure) {
             const auto info = failure.info();
             payload = json(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
         } catch (const std::exception&) {
@@ -316,31 +316,31 @@ ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string use
         previous.push_back(co_await readChannel(channel));
     }
     context.header("X-Accel-Buffering", "no");
-    auto stream = context.streamSse();
+    auto stream = context.stream_sse();
     context.header("Cache-Control", "no-store");
     for (std::size_t index = 0; index < channels.size(); ++index) {
-        co_await stream.write({ .data = previous[index], .event = channels[index].event });
+        co_await stream.write({ .data_ = previous[index], .event_ = channels[index].event });
     }
-    while (!stream.aborted() && !context.stopToken().stopRequested()) {
-        const auto notification = co_await subscription->receiver.receiveFor(15s, context.stopToken());
-        if (stream.aborted() || context.stopToken().stopRequested()) {
+    while (!stream.aborted() && !context.get_stop_token().stop_requested()) {
+        const auto notification = co_await subscription->receiver.receive_for(15s, context.get_stop_token());
+        if (stream.aborted() || context.get_stop_token().stop_requested()) {
             co_return;
         }
-        if (!notification.hasValue() && notification.status() != ruvia::WorkerWaitStatus::kTimedOut) {
+        if (!notification.has_value() && notification.status() != ruvia::worker_wait_status::timed_out) {
             co_return;
         }
         std::string error;
         try {
             checkToken();
-        } catch (const ruvia::HttpError& failure) {
+        } catch (const ruvia::http_error& failure) {
             const auto info = failure.info();
             error = json(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
         }
         if (!error.empty()) {
-            co_await stream.write({ .data = error, .event = "error" });
+            co_await stream.write({ .data_ = error, .event_ = "error" });
             co_return;
         }
-        if (notification.hasValue()) {
+        if (notification.has_value()) {
             auto changed = std::exchange(subscription->changedTopics, {});
             for (std::size_t index = 0; index < channels.size(); ++index) {
                 if (!changed.contains(channels[index].topic)) {
@@ -351,10 +351,10 @@ ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string use
                     continue;
                 }
                 previous[index] = std::move(next);
-                co_await stream.write({ .data = previous[index], .event = channels[index].event });
+                co_await stream.write({ .data_ = previous[index], .event_ = channels[index].event });
             }
         }
-        if (notification.status() == ruvia::WorkerWaitStatus::kTimedOut) {
+        if (notification.status() == ruvia::worker_wait_status::timed_out) {
             co_await onKeepalive();
             co_await context.stream().write(": keepalive\n\n");
         }
@@ -362,16 +362,16 @@ ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string use
 }
 
 template <typename CheckToken>
-ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken) {
-    co_await serveSnapshotChannels(context, std::move(userId), std::move(channels), std::move(checkToken), []() -> ruvia::Task<void> { co_return; });
+ruvia::task<void> serveSnapshotChannels(ruvia::context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken) {
+    co_await serveSnapshotChannels(context, std::move(userId), std::move(channels), std::move(checkToken), []() -> ruvia::task<void> { co_return; });
 }
 
 // Only initial connection and change notifications execute the query. The
 // caller's heartbeat check validates token lifetime without database I/O.
 template <typename Query, typename CheckToken>
-ruvia::Task<void> serveSnapshots(ruvia::Context& context, std::string_view topic, std::string userId, Query query, CheckToken checkToken) {
+ruvia::task<void> serveSnapshots(ruvia::context& context, std::string_view topic, std::string userId, Query query, CheckToken checkToken) {
     using namespace std::chrono_literals;
-    if (context.tryRequestState<service::middleware::AuthenticatedUserSnapshot>()) {
+    if (context.try_request_state<service::middleware::AuthenticatedUserSnapshot>()) {
         std::vector<SnapshotChannel> channels;
         channels.push_back({ "snapshot", std::string(topic), query });
         co_await serveSnapshotChannels(context, std::move(userId), std::move(channels), checkToken);
@@ -381,45 +381,45 @@ ruvia::Task<void> serveSnapshots(ruvia::Context& context, std::string_view topic
         service::common::fail(10002, "此接口需要 text/event-stream", 406);
     }
     auto subscription = bus().subscribe(context.worker(), topic);
-    auto readSnapshot = [&]() -> ruvia::Task<std::string> {
+    auto readSnapshot = [&]() -> ruvia::task<std::string> {
         service::middleware::RequestContext snapshot(context, userId);
         co_return co_await query(snapshot);
     };
     checkToken();
     auto previous = co_await readSnapshot();
     context.header("X-Accel-Buffering", "no");
-    auto stream = context.streamSse();
+    auto stream = context.stream_sse();
     context.header("Cache-Control", "no-store");
-    co_await stream.write({ .data = previous, .event = "snapshot" });
-    while (!stream.aborted() && !context.stopToken().stopRequested()) {
-        const auto notification = co_await subscription->receiver.receiveFor(15s, context.stopToken());
-        if (stream.aborted() || context.stopToken().stopRequested()) {
+    co_await stream.write({ .data_ = previous, .event_ = "snapshot" });
+    while (!stream.aborted() && !context.get_stop_token().stop_requested()) {
+        const auto notification = co_await subscription->receiver.receive_for(15s, context.get_stop_token());
+        if (stream.aborted() || context.get_stop_token().stop_requested()) {
             co_return;
         }
-        if (!notification.hasValue() && notification.status() != ruvia::WorkerWaitStatus::kTimedOut) {
+        if (!notification.has_value() && notification.status() != ruvia::worker_wait_status::timed_out) {
             co_return;
         }
         std::string next;
         std::string error;
         try {
             checkToken();
-            if (notification.hasValue()) {
+            if (notification.has_value()) {
                 next = co_await readSnapshot();
             }
-        } catch (const ruvia::HttpError& failure) {
+        } catch (const ruvia::http_error& failure) {
             const auto info = failure.info();
             error = json(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
         } catch (const std::exception&) {
             error = "{\"code\":10004,\"message\":\"实时订阅已中断\"}";
         }
         if (!error.empty()) {
-            co_await stream.write({ .data = error, .event = "error" });
+            co_await stream.write({ .data_ = error, .event_ = "error" });
             co_return;
         }
-        if (notification.hasValue() && next != previous) {
+        if (notification.has_value() && next != previous) {
             previous = std::move(next);
-            co_await stream.write({ .data = previous, .event = "snapshot" });
-        } else if (notification.status() == ruvia::WorkerWaitStatus::kTimedOut) {
+            co_await stream.write({ .data_ = previous, .event_ = "snapshot" });
+        } else if (notification.status() == ruvia::worker_wait_status::timed_out) {
             co_await context.stream().write(": keepalive\n\n");
         }
     }

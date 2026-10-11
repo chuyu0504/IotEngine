@@ -42,15 +42,15 @@ int main() {
         require(sql.find("^([0-9]|[1-5][0-9]|6[0-2])$") != std::string::npos, "bit index must be bounded before shifting");
         require(sql.find("int8shr") != std::string::npos, "bit conditions must use the parsed index");
         require(sql.find("CASE WHEN") != std::string::npos, "numeric casts must retain guarded CASE expressions");
-        const auto refreshSql = service::alert::metadata::detail::refreshQuery().compile(ruvia::DbDriver::kPostgreSql, nullptr, ruvia::DbParameterMode::kLiteral);
+        const auto refreshSql = service::alert::metadata::detail::refreshQuery().compile(ruvia::db_driver::postgresql, nullptr, ruvia::db_parameter_mode::literal);
         require(refreshSql.sql().find("^[0-9]{1,10}$") != std::string_view::npos, "metadata refresh must guard offline duration");
         const auto metadataSource = readSource("service/features/alert/alert.service.h");
         requireAbsent(metadataSource, "std::stoll(", "alert metadata uses unsafe/partial stoll parsing");
         const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");
         requireAbsent(runtimeSource, "std::stoull(", "alert runtime uses unsafe/partial stoull parsing");
         const auto serviceSource = readSource("service/modules/alert/alert.types.h");
-        require(serviceSource.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::String") != std::string::npos, "alert remark must have a typed model field");
-        require(serviceSource.find("silenceDuration, ruvia::Int64") != std::string::npos, "alert silence duration must have an integer model field");
+        require(serviceSource.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::string") != std::string::npos, "alert remark must have a typed model field");
+        require(serviceSource.find("silenceDuration, ruvia::int64") != std::string::npos, "alert silence duration must have an integer model field");
 
         service::alert::alertRequest::validateConditions(
             R"([{"type":"threshold","elementKey":"temperature","operator":">","value":"12.5"}])"

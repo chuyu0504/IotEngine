@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Bun for native WS integration
+      - name: Set up Bun for native HTTP/SSE integration
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -119,6 +119,12 @@ jobs:
           ./tests/edge-network-view-test.ts
           ./tests/edge-node-drawer-test.ts
           ./tests/packet-debug-test.ts
+          ./tests/edge-dtu-config-test.ts
+          ./tests/edge-log-level-test.ts
+          ./tests/edge-mobile-operator-test.ts
+          ./tests/protocol-import-test.ts
+          ./tests/protocol-tsap-test.ts
+          ./tests/sl651-config-test.ts
 
   ubuntu_build:
     name: Ubuntu build
@@ -126,21 +132,18 @@ jobs:
     env:
       CC: clang-19
       CXX: clang++-19
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils perl bison flex pkg-config make
-          python -m pip install meson==1.12.1
+          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make
           clang-19 --version
           clang++-19 --version
           clang-scan-deps-19 --version
@@ -156,33 +159,52 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Read compiler identity
-        id: compiler
+      - name: Bootstrap latest vcpkg
+        id: vcpkg
         run: |
-          identity="$(clang++-19 --version; g++-14 --version)"
-          echo "version=$(printf '%s' "$identity" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          echo "commit=$(git -C "$VCPKG_ROOT" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v6
+      - name: Restore vcpkg binary cache
+        id: restore-vcpkg-cache
+        uses: actions/cache/restore@v6
         with:
-          path: build/ci/_deps
-          key: fetchcontent-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.version }}-${{ hashFiles('CMakeLists.txt', 'ports/cmake/**') }}
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-clang19-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-clang19-
 
       - name: Configure
         id: configure
         run: |
+          # vcpkg installs during configure; restored archives skip port builds.
+          before=$(find "$VCPKG_DEFAULT_BINARY_CACHE" -type f | wc -l)
           cmake -S . -B build/ci -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          after=$(find "$VCPKG_DEFAULT_BINARY_CACHE" -type f | wc -l)
+          echo "new-binaries=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Upload configure diagnostics
         if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
         uses: actions/upload-artifact@v7
         with:
           name: cmake-configure-${{ runner.os }}-${{ github.sha }}
-          path: build/ci/CMakeFiles/CMakeConfigureLog.yaml
+          path: |
+            build/ci/CMakeFiles/CMakeConfigureLog.yaml
+            build/ci/vcpkg-manifest-install.log
+            ${{ env.VCPKG_ROOT }}/buildtrees/*/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Save vcpkg binary cache
+        if: github.ref == 'refs/heads/main' && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' && steps.configure.outputs.new-binaries == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build
         run: cmake --build build/ci --config "$BUILD_TYPE" --parallel "$(nproc)"
@@ -229,6 +251,9 @@ jobs:
   windows_build:
     name: Windows MSVC build
     runs-on: windows-2025
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
@@ -243,65 +268,54 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-
-      - uses: msys2/setup-msys2@v2
-        id: msys2
-        with:
-          msystem: MSYS
-          update: true
-          install: make pkgconf patch diffutils
-
-      - name: Install native build tools
-        shell: pwsh
-        env:
-          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: |
-          choco install strawberryperl winflexbison3 jom nasm --yes --no-progress
-          python -m pip install meson==1.12.1
-          "C:\Strawberry\perl\bin" >> $env:GITHUB_PATH
-          "$env:MSYS2_LOCATION\usr\bin" >> $env:GITHUB_PATH
-
-      - uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Read Windows runner image version
-        id: windows-image
+      - name: Bootstrap latest vcpkg
+        id: vcpkg
         shell: pwsh
         run: |
-          $imageOS = $env:ImageOS
-          $imageVersion = $env:ImageVersion
-          if ([string]::IsNullOrWhiteSpace($imageOS) -or $imageOS -notmatch '^[A-Za-z0-9._-]+$') {
-              throw 'ImageOS is empty or contains unsupported characters'
-          }
-          if ([string]::IsNullOrWhiteSpace($imageVersion) -or $imageVersion -notmatch '^[A-Za-z0-9._-]+$') {
-              throw 'ImageVersion is empty or contains unsupported characters'
-          }
-          $compilerVersion = (Get-Item (Get-Command cl).Source).VersionInfo.FileVersion.Replace(' ', '-')
-          "version=$imageOS-$imageVersion-$compilerVersion" >> $env:GITHUB_OUTPUT
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          "commit=$(git -C $env:VCPKG_ROOT rev-parse HEAD)" >> $env:GITHUB_OUTPUT
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v6
+      - name: Restore vcpkg binary cache
+        id: restore-vcpkg-cache
+        uses: actions/cache/restore@v6
         with:
-          path: build/ci/_deps
-          key: fetchcontent-${{ runner.os }}-${{ runner.arch }}-${{ steps.windows-image.outputs.version }}-${{ hashFiles('CMakeLists.txt', 'ports/cmake/**') }}
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-msvc-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-msvc-
 
       - name: Configure
         id: configure
         shell: pwsh
         run: |
+          # vcpkg installs during configure; restored archives skip port builds.
+          $before = (Get-ChildItem -Recurse -File $env:VCPKG_DEFAULT_BINARY_CACHE).Count
           cmake -S . -B build/ci `
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $after = (Get-ChildItem -Recurse -File $env:VCPKG_DEFAULT_BINARY_CACHE).Count
+          "new-binaries=$(($after -gt $before).ToString().ToLower())" >> $env:GITHUB_OUTPUT
 
       - name: Upload configure diagnostics
         if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
         uses: actions/upload-artifact@v7
         with:
           name: cmake-configure-${{ runner.os }}-${{ github.sha }}
-          path: build/ci/CMakeFiles/CMakeConfigureLog.yaml
+          path: |
+            build/ci/CMakeFiles/CMakeConfigureLog.yaml
+            build/ci/vcpkg-manifest-install.log
+            ${{ env.VCPKG_ROOT }}/buildtrees/*/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Save vcpkg binary cache
+        if: github.ref == 'refs/heads/main' && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' && steps.configure.outputs.new-binaries == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build
         run: cmake --build build/ci --config ${{ env.BUILD_TYPE }} --parallel $env:NUMBER_OF_PROCESSORS

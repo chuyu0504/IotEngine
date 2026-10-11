@@ -1,4 +1,4 @@
-import type { PageParams, PaginatedResult } from '@/types/pagination';
+import type { PageParams } from '@/types/pagination';
 
 export namespace Access {
     export type Status = 'enabled' | 'disabled';
@@ -105,5 +105,4 @@ export namespace Access {
         status?: 'success' | 'failed';
         action?: string;
     }
-    export type LogPage = PaginatedResult<LogItem>;
 }

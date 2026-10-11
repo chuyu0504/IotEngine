@@ -1,173 +1,173 @@
 #pragma once
 
 #include "service/common/uuid.h"
-#include <ruvia/web/Validation.h>
-#include <ruvia/web/ModelObject.h>
+#include <ruvia/web/validation.h>
+#include <ruvia/web/model_object.h>
 
 namespace service::protocol {
 
 RUVIA_MODEL(ExpressionTestInput,
-    RUVIA_REQUIRED_FIELD(alias, ruvia::String, RUVIA_MIN(1, "变量名不能为空"), RUVIA_MAX(32, "变量名过长")),
-    RUVIA_REQUIRED_FIELD(value, ruvia::Double));
+    RUVIA_REQUIRED_FIELD(alias, ruvia::string, RUVIA_MIN(1, "变量名不能为空"), RUVIA_MAX(32, "变量名过长")),
+    RUVIA_REQUIRED_FIELD(value, ruvia::double_value));
 RUVIA_MODEL(ExpressionTestUnitRule,
-    RUVIA_REQUIRED_FIELD(condition, ruvia::String, RUVIA_MIN(1, "单位条件不能为空"), RUVIA_MAX(512, "单位条件过长")),
-    RUVIA_REQUIRED_FIELD(unit, ruvia::String, RUVIA_MAX(32, "单位过长")));
+    RUVIA_REQUIRED_FIELD(condition, ruvia::string, RUVIA_MIN(1, "单位条件不能为空"), RUVIA_MAX(512, "单位条件过长")),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::string, RUVIA_MAX(32, "单位过长")));
 RUVIA_MODEL(ExpressionTestBody,
-    RUVIA_REQUIRED_FIELD(expression, ruvia::String, RUVIA_MIN(1, "公式不能为空"), RUVIA_MAX(512, "公式过长")),
-    RUVIA_REQUIRED_FIELD(inputs, ruvia::Array<ExpressionTestInput>, RUVIA_MAX(16, "最多 16 个变量")),
-    RUVIA_REQUIRED_FIELD(unit, ruvia::String, RUVIA_MAX(32, "单位过长")),
-    RUVIA_REQUIRED_FIELD(unitRules, ruvia::Array<ExpressionTestUnitRule>, RUVIA_MAX(8, "最多 8 条单位条件")));
+    RUVIA_REQUIRED_FIELD(expression, ruvia::string, RUVIA_MIN(1, "公式不能为空"), RUVIA_MAX(512, "公式过长")),
+    RUVIA_REQUIRED_FIELD(inputs, ruvia::array<ExpressionTestInput>, RUVIA_MAX(16, "最多 16 个变量")),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::string, RUVIA_MAX(32, "单位过长")),
+    RUVIA_REQUIRED_FIELD(unitRules, ruvia::array<ExpressionTestUnitRule>, RUVIA_MAX(8, "最多 8 条单位条件")));
 RUVIA_MODEL(ExpressionTestResult,
-    RUVIA_REQUIRED_FIELD(value, ruvia::Double),
-    RUVIA_REQUIRED_FIELD(unit, ruvia::String),
-    RUVIA_REQUIRED_FIELD(matchedRule, ruvia::Int64));
+    RUVIA_REQUIRED_FIELD(value, ruvia::double_value),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::string),
+    RUVIA_REQUIRED_FIELD(matchedRule, ruvia::int64));
 RUVIA_MODEL(ExpressionTestResponse,
-    RUVIA_REQUIRED_FIELD(code, ruvia::Int64),
-    RUVIA_REQUIRED_FIELD(message, ruvia::String),
+    RUVIA_REQUIRED_FIELD(code, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(message, ruvia::string),
     RUVIA_REQUIRED_FIELD(data, ExpressionTestResult));
 
 RUVIA_MODEL(Sl651Element,
-    RUVIA_OPTIONAL_FIELD(positionMode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(byteOffset, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(length, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(digits, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(encode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(guideHex, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(positionMode, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(byteOffset, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(length, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(encode, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(guideHex, ruvia::string));
 RUVIA_MODEL(Sl651Func,
-    RUVIA_OPTIONAL_FIELD(funcCode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(dir, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<Sl651Element>),
-    RUVIA_OPTIONAL_FIELD(responseElements, ruvia::Array<Sl651Element>));
+    RUVIA_OPTIONAL_FIELD(funcCode, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(dir, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::array<Sl651Element>),
+    RUVIA_OPTIONAL_FIELD(responseElements, ruvia::array<Sl651Element>));
 RUVIA_MODEL(ModbusPacket,
-    RUVIA_OPTIONAL_FIELD(mergeGap, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(maxQuantity, ruvia::JsonValue));
+    RUVIA_OPTIONAL_FIELD(mergeGap, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(maxQuantity, ruvia::json_value));
 RUVIA_MODEL(ModbusRegister,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(registerType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(dataType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(address, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(quantity, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(decimals, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(registerType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(dataType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(address, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(quantity, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(scale, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(decimals, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value));
 RUVIA_MODEL(S7Connection,
-    RUVIA_OPTIONAL_FIELD(probeMode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(handshakeTimeout, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(directProbeTimeout, ruvia::JsonValue));
+    RUVIA_OPTIONAL_FIELD(probeMode, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(handshakeTimeout, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(directProbeTimeout, ruvia::json_value));
 RUVIA_MODEL(S7Area,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(area, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(dataType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(start, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(size, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(startBit, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(decimals, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(dbNumber, ruvia::JsonValue));
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(area, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(dataType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(start, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(size, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(startBit, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(decimals, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(dbNumber, ruvia::json_value));
 RUVIA_MODEL(IndustrialConnection,
-    RUVIA_OPTIONAL_FIELD(frame, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(network, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(station, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(moduleIo, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(multidrop, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(monitoringTimer, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(destinationNetwork, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(sourceNetwork, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(destinationNode, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(sourceNode, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(destinationUnit, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(sourceUnit, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(version, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(wakeupBytes, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(writePassword, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(operatorCode, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(frame, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(network, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(station, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(moduleIo, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(multidrop, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(monitoringTimer, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(destinationNetwork, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(sourceNetwork, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(destinationNode, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(sourceNode, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(destinationUnit, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(sourceUnit, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(version, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(wakeupBytes, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(writePassword, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(operatorCode, ruvia::string));
 RUVIA_MODEL(IndustrialPoint,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(dataType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(identifier, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(length, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(digits, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(area, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(decimals, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(address, ruvia::JsonValue),
-    RUVIA_OPTIONAL_FIELD(bit, ruvia::JsonValue));
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(dataType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(identifier, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(length, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(area, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(scale, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(decimals, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(address, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(bit, ruvia::json_value));
 
 // 顶层 config 保留未知键、精确数字 token 和 PATCH 合并；各协议固定嵌套结构用 Model。
-RUVIA_MODEL(MqttValueMapping, RUVIA_REQUIRED_FIELD(input, ruvia::String), RUVIA_REQUIRED_FIELD(output, ruvia::String));
+RUVIA_MODEL(MqttValueMapping, RUVIA_REQUIRED_FIELD(input, ruvia::string), RUVIA_REQUIRED_FIELD(output, ruvia::string));
 RUVIA_MODEL(MqttPoint,
-    RUVIA_REQUIRED_FIELD(id, ruvia::String),
-    RUVIA_REQUIRED_FIELD(name, ruvia::String),
-    RUVIA_REQUIRED_FIELD(field, ruvia::String),
-    RUVIA_REQUIRED_FIELD(dataType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(offset, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(enumValues, ruvia::Array<MqttValueMapping>));
+    RUVIA_REQUIRED_FIELD(id, ruvia::string),
+    RUVIA_REQUIRED_FIELD(name, ruvia::string),
+    RUVIA_REQUIRED_FIELD(field, ruvia::string),
+    RUVIA_REQUIRED_FIELD(dataType, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(scale, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(offset, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(enumValues, ruvia::array<MqttValueMapping>));
 RUVIA_MODEL(MqttCommandMessage,
-    RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String),
-    RUVIA_REQUIRED_FIELD(topic, ruvia::String), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::String),
-    RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::Array<ruvia::String>));
+    RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string),
+    RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::string),
+    RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::array<ruvia::string>));
 RUVIA_MODEL(MqttConfig,
-    RUVIA_OPTIONAL_FIELD(storagePolicy, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(topic, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(identitySource, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(payloadFormat, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(delimiter, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(recordDelimiter, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(recordLength, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(timeField, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(commands, ruvia::Array<MqttCommandMessage>),
-    RUVIA_OPTIONAL_FIELD(qos, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(points, ruvia::Array<MqttPoint>));
+    RUVIA_OPTIONAL_FIELD(storagePolicy, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(topic, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(identitySource, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(payloadFormat, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(delimiter, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(recordDelimiter, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(recordLength, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(timeField, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::string), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(commands, ruvia::array<MqttCommandMessage>),
+    RUVIA_OPTIONAL_FIELD(qos, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(points, ruvia::array<MqttPoint>));
 
 RUVIA_MODEL(MqttPreviewBody,
     RUVIA_REQUIRED_FIELD(config, MqttConfig),
-    RUVIA_REQUIRED_FIELD(topic, ruvia::String, RUVIA_MIN(1, "Topic 不能为空"), RUVIA_MAX(1024, "Topic 过长")),
-    RUVIA_REQUIRED_FIELD(payload, ruvia::String, RUVIA_MAX(2097152, "示例负载过长")),
-    RUVIA_OPTIONAL_FIELD(deviceCode, ruvia::String, RUVIA_MAX(128, "设备编码过长")),
-    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String, RUVIA_MAX(6, "时区过长")));
+    RUVIA_REQUIRED_FIELD(topic, ruvia::string, RUVIA_MIN(1, "Topic 不能为空"), RUVIA_MAX(1024, "Topic 过长")),
+    RUVIA_REQUIRED_FIELD(payload, ruvia::string, RUVIA_MAX(2097152, "示例负载过长")),
+    RUVIA_OPTIONAL_FIELD(deviceCode, ruvia::string, RUVIA_MAX(128, "设备编码过长")),
+    RUVIA_OPTIONAL_FIELD(timezone, ruvia::string, RUVIA_MAX(6, "时区过长")));
 RUVIA_MODEL(MqttPreviewPoint,
-    RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String),
-    RUVIA_REQUIRED_FIELD(value, ruvia::String), RUVIA_REQUIRED_FIELD(unit, ruvia::String));
+    RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string),
+    RUVIA_REQUIRED_FIELD(value, ruvia::string), RUVIA_REQUIRED_FIELD(unit, ruvia::string));
 RUVIA_MODEL(MqttPreviewRecord,
-    RUVIA_REQUIRED_FIELD(deviceCode, ruvia::String), RUVIA_REQUIRED_FIELD(time, ruvia::String),
-    RUVIA_REQUIRED_FIELD(points, ruvia::Array<MqttPreviewPoint>), RUVIA_REQUIRED_FIELD(errors, ruvia::Array<ruvia::String>));
-RUVIA_MODEL(MqttPreviewResult, RUVIA_REQUIRED_FIELD(records, ruvia::Array<MqttPreviewRecord>));
-RUVIA_MODEL(MqttPreviewResponse, RUVIA_REQUIRED_FIELD(code, ruvia::Int64), RUVIA_REQUIRED_FIELD(message, ruvia::String), RUVIA_REQUIRED_FIELD(data, MqttPreviewResult));
+    RUVIA_REQUIRED_FIELD(deviceCode, ruvia::string), RUVIA_REQUIRED_FIELD(time, ruvia::string),
+    RUVIA_REQUIRED_FIELD(points, ruvia::array<MqttPreviewPoint>), RUVIA_REQUIRED_FIELD(errors, ruvia::array<ruvia::string>));
+RUVIA_MODEL(MqttPreviewResult, RUVIA_REQUIRED_FIELD(records, ruvia::array<MqttPreviewRecord>));
+RUVIA_MODEL(MqttPreviewResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, MqttPreviewResult));
 
 RUVIA_MODEL(CreateProtocolBody,
-    RUVIA_REQUIRED_FIELD(protocol, ruvia::String, RUVIA_MIN(1, "协议不能为空"), RUVIA_MAX(16, "协议过长")),
-    RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "配置名称不能为空"), RUVIA_MAX(64, "配置名称过长")),
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(500, "remark 长度超出限制")),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_NULLABLE, RUVIA_DEFAULT(true)),
-    RUVIA_OPTIONAL_FIELD(config, ruvia::JsonValue, RUVIA_NULLABLE));
+    RUVIA_REQUIRED_FIELD(protocol, ruvia::string, RUVIA_MIN(1, "协议不能为空"), RUVIA_MAX(16, "协议过长")),
+    RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "配置名称不能为空"), RUVIA_MAX(64, "配置名称过长")),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(500, "remark 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value, RUVIA_NULLABLE, RUVIA_DEFAULT(true)),
+    RUVIA_OPTIONAL_FIELD(config, ruvia::json_value, RUVIA_NULLABLE));
 RUVIA_MODEL(UpdateProtocolBody,
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(16, "协议过长")),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(64, "配置名称过长")),
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(500, "remark 长度超出限制")),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_NULLABLE),
-    RUVIA_OPTIONAL_FIELD(config, ruvia::JsonValue, RUVIA_NULLABLE));
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(16, "协议过长")),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(64, "配置名称过长")),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(500, "remark 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value, RUVIA_NULLABLE),
+    RUVIA_OPTIONAL_FIELD(config, ruvia::json_value, RUVIA_NULLABLE));
 
 RUVIA_MODEL(ProtocolListQuery,
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
-    RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "pageSize 必须在 1 - 1000 之间")),
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT")));
+    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
+    RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "pageSize 必须在 1 - 1000 之间")),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::string, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT")));
 RUVIA_MODEL(ProtocolIdParams,
-    RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
+    RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 
 } // namespace service::protocol

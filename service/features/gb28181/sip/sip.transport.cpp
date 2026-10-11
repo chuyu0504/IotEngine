@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "service/middleware/log.h"
-#include "service/common/timestamp.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
 
 #if !defined(_WIN32)
@@ -389,22 +388,13 @@ std::string ptzCommand(const std::string& action, uint8_t speed) {
     return output.str();
 }
 
-long long gbTimeToUnixSeconds(const std::string& value, int defaultOffsetMinutes) {
-    const auto parsed =
-        service::common::parseUtcTimestamp(value, defaultOffsetMinutes);
-    return parsed ? static_cast<long long>(
-                        std::chrono::system_clock::to_time_t(*parsed)
-                    )
-                  : 0;
-}
-
-void runOnLoopAndWait(const ruvia::EventLoop& loop, std::function<void()> work) {
+void runOnLoopAndWait(const ruvia::event_loop& loop, std::function<void()> work) {
     // Supervisor-only lifecycle barrier used before HTTP serving starts and
-    // after it stops. Request/Worker paths use Runtime::invoke + OneShot.
+    // after it stops. Request/Worker paths use Runtime::invoke + one_shot.
     if (!loop.valid()) {
         throw std::runtime_error("GB28181 SIP IO loop is not configured");
     }
-    if (loop.isCurrent()) {
+    if (loop.is_current()) {
         work();
         return;
     }
@@ -440,7 +430,7 @@ void enablePortReuse(Socket& socket, std::error_code& error) {
 
 } // namespace
 
-SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver, ZlmSdk::OwnerIndex owner)
+SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver, ZlmSdk::OwnerIndex owner)
     : uuidGenerator_(uuidGenerator),
       sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
@@ -453,7 +443,7 @@ SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig 
 void SipServer::setAcknowledgementHandler(
     std::function<void(std::function<void(bool)>)> handler
 ) {
-    if (running_.load() && ioLoop_.valid() && !ioLoop_.isCurrent()) {
+    if (running_.load() && ioLoop_.valid() && !ioLoop_.is_current()) {
         runOnLoopAndWait(ioLoop_, [this, handler = std::move(handler)]() mutable {
             acknowledgementHandler_ = std::move(handler);
         });
@@ -465,7 +455,7 @@ void SipServer::setAcknowledgementHandler(
 void SipServer::setPreviewClosedHandler(
     std::function<void(const std::string& sessionId)> handler
 ) {
-    if (running_.load() && ioLoop_.valid() && !ioLoop_.isCurrent()) {
+    if (running_.load() && ioLoop_.valid() && !ioLoop_.is_current()) {
         runOnLoopAndWait(ioLoop_, [this, handler = std::move(handler)]() mutable {
             previewClosedHandler_ = std::move(handler);
         });
@@ -477,7 +467,7 @@ void SipServer::setPreviewClosedHandler(
 void SipServer::setStreamClosedHandler(
     std::function<void(const std::string& streamId)> handler
 ) {
-    if (running_.load() && ioLoop_.valid() && !ioLoop_.isCurrent()) {
+    if (running_.load() && ioLoop_.valid() && !ioLoop_.is_current()) {
         runOnLoopAndWait(ioLoop_, [this, handler = std::move(handler)]() mutable {
             streamClosedHandler_ = std::move(handler);
         });
@@ -502,7 +492,7 @@ void SipServer::invalidateDevice(const std::string& deviceId, std::string reason
         }
         self->invalidateDeviceInLoop(deviceId, std::move(reason), true);
     };
-    if (ioLoop_.isCurrent()) {
+    if (ioLoop_.is_current()) {
         operation();
         return;
     }
@@ -513,15 +503,11 @@ void SipServer::invalidateDevice(const std::string& deviceId, std::string reason
     }
 }
 
-void SipServer::closeDeviceSession(const std::string& deviceId) {
-    invalidateDevice(deviceId, "device_session_closed");
-}
-
 SipServer::~SipServer() {
     if (!running_.load()) {
         return;
     }
-    if (ioLoop_.valid() && ioLoop_.isCurrent()) {
+    if (ioLoop_.valid() && ioLoop_.is_current()) {
         running_.store(false);
         stopInLoop();
     } else {
@@ -560,7 +546,6 @@ void SipServer::start() {
         );
     }
     if (sipConfig_.registrationTimeoutSeconds <= 0 ||
-        sipConfig_.commandTimeoutSeconds <= 0 ||
         sipConfig_.inviteTimeoutSeconds <= 0 ||
         sipConfig_.viewerLeaseTimeoutSeconds <= 0 ||
         sipConfig_.nonceTtlSeconds <= 0) {
@@ -574,7 +559,7 @@ void SipServer::start() {
             // startInLoop may have bound one transport before another
             // transport failed (for example TCP after UDP).  Clear every
             // partially-created socket and timer while still on the owning
-            // EventLoop so a failed Collector initialization cannot leak a
+            // event_loop so a failed Collector initialization cannot leak a
             // listener into the next worker incarnation.
             stopInLoop();
             running_.store(false);
@@ -602,7 +587,7 @@ void SipServer::stop() {
 }
 
 void SipServer::startInLoop() {
-    if (!ioLoop_.valid() || !ioLoop_.isCurrent()) {
+    if (!ioLoop_.valid() || !ioLoop_.is_current()) {
         throw std::runtime_error("GB28181 SIP IO loop is not available");
     }
 
@@ -615,7 +600,7 @@ void SipServer::startInLoop() {
     const auto transport = lower(sipConfig_.transport);
     if (transport == "udp" || transport == "both") {
         const asio::ip::udp::endpoint endpoint(address, sipConfig_.port);
-        udpSocket_ = std::make_unique<asio::ip::udp::socket>(ioLoop_.ioContext());
+        udpSocket_ = std::make_unique<asio::ip::udp::socket>(ioLoop_.io_context());
         udpSocket_->open(endpoint.protocol(), error);
         if (error) {
             throw std::runtime_error("Could not open GB28181 UDP socket: " + error.message());
@@ -640,7 +625,7 @@ void SipServer::startInLoop() {
     if (transport == "tcp" || transport == "both") {
         const asio::ip::tcp::endpoint endpoint(address, sipConfig_.port);
         tcpAcceptor_ =
-            std::make_unique<asio::ip::tcp::acceptor>(ioLoop_.ioContext());
+            std::make_unique<asio::ip::tcp::acceptor>(ioLoop_.io_context());
         tcpAcceptor_->open(endpoint.protocol(), error);
         if (error) {
             throw std::runtime_error("Could not open GB28181 TCP acceptor: " + error.message());
@@ -666,7 +651,7 @@ void SipServer::startInLoop() {
                   << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
     }
     deadlineTimer_ =
-        std::make_unique<asio::steady_timer>(ioLoop_.ioContext());
+        std::make_unique<asio::steady_timer>(ioLoop_.io_context());
 }
 
 void SipServer::stopInLoop() {
@@ -698,7 +683,6 @@ void SipServer::stopInLoop() {
     deadlines_ = {};
     deadlineGenerations_.clear();
     digestNonceCounts_.clear();
-    pendingRecordQueries_.clear();
     invalidatedDevices_.clear();
     if (udpSocket_) {
         udpSocket_->cancel(error);
@@ -1108,7 +1092,6 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     const auto toTag = extractTag(to);
     if (!message.body.empty()) {
         LOG_DEBUG << "[GB28181][Invite] 200 OK SDP received, session=" << session->sessionId
-                  << ", mode=" << session->mode
                   << ", device=" << session->deviceId
                   << ", channel=" << session->channelId
                   << ", stream_id=" << session->streamId
@@ -1148,7 +1131,6 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
 
     sendRequest(ack.str(), remote);
     LOG_DEBUG << "[GB28181][Invite] ACK sent, session=" << session->sessionId
-              << ", mode=" << session->mode
               << ", device=" << session->deviceId
               << ", channel=" << session->channelId
               << ", stream_id=" << session->streamId
@@ -1360,92 +1342,6 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         return;
     }
 
-    if (cmdType == "RecordInfo") {
-        auto originalDeviceId = deviceId;
-        bool matchedPendingQuery = false;
-        if (!snText.empty()) {
-            const auto sn = parseUnsigned(snText);
-            if (!sn) {
-                LOG_WARN << "[GB28181][Record] Ignored RecordInfo with invalid SN, reported_device="
-                         << originalDeviceId
-                         << ", sn=\"" << snText << "\""
-                         << ", remote=" << transportName(remote.transport) << " "
-                         << peerToString(remote);
-                sendResponse(message, remote, 200, "OK");
-                return;
-            }
-            const auto iter = pendingRecordQueries_.find(*sn);
-            if (iter != pendingRecordQueries_.end()) {
-                if (!samePeer(iter->second.remote, remote)) {
-                    LOG_WARN << "[GB28181][Record] Ignored RecordInfo from unexpected remote, expected_device="
-                             << iter->second.deviceId
-                             << ", reported_device=" << originalDeviceId
-                             << ", sn=" << *sn
-                             << ", expected_remote="
-                             << transportName(iter->second.remote.transport) << " "
-                             << peerToString(iter->second.remote)
-                             << ", actual_remote=" << transportName(remote.transport)
-                             << " " << peerToString(remote);
-                    sendResponse(message, remote, 200, "OK");
-                    return;
-                }
-                deviceId = iter->second.deviceId;
-                matchedPendingQuery = true;
-                pendingRecordQueries_.erase(iter);
-                cancelDeadline(DeadlineKind::RecordQuery, std::to_string(*sn));
-            }
-        }
-        if (!matchedPendingQuery &&
-            rejectUnexpectedRemote("Record", deviceId)) {
-            sendResponse(message, remote, 403, "Forbidden");
-            return;
-        }
-        std::vector<RecordItem> records;
-        for (auto item : root.child("RecordList").children("Item")) {
-            RecordItem record;
-            record.deviceId = xmlText(item, "DeviceID");
-            record.name = xmlText(item, "Name");
-            record.filePath = xmlText(item, "FilePath");
-            record.address = xmlText(item, "Address");
-            const auto rawStart = xmlText(item, "StartTime");
-            const auto rawEnd = xmlText(item, "EndTime");
-            record.startTime = service::common::canonicalUtcTimestamp(
-                rawStart,
-                sipConfig_.deviceTimezoneOffsetMinutes
-            );
-            record.endTime = service::common::canonicalUtcTimestamp(
-                rawEnd,
-                sipConfig_.deviceTimezoneOffsetMinutes
-            );
-            record.type = xmlText(item, "Type");
-            record.recorderId = xmlText(item, "RecorderID");
-            if (!record.deviceId.empty() && !record.startTime.empty() &&
-                !record.endTime.empty()) {
-                LOG_DEBUG << "[GB28181][Record] Item, device=" << deviceId
-                          << ", channel=" << record.deviceId
-                          << ", name=\"" << record.name << "\""
-                          << ", start_time=" << record.startTime
-                          << ", end_time=" << record.endTime
-                          << ", type=" << record.type;
-                records.push_back(std::move(record));
-            } else if (!record.deviceId.empty()) {
-                LOG_WARN << "[GB28181][Record] Invalid time rejected, device="
-                         << deviceId << ", channel=" << record.deviceId
-                         << ", start_time=\"" << rawStart << "\", end_time=\""
-                         << rawEnd << "\"";
-            }
-        }
-        const auto recordCount = records.size();
-        deviceRegistry_.updateRecords(deviceId, std::move(records));
-        LOG_DEBUG << "[GB28181][Record] Updated, device=" << deviceId
-                  << ", reported_device=" << originalDeviceId
-                  << ", sn=" << snText
-                  << ", records=" << recordCount
-                  << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
-        acknowledge(message, remote);
-        return;
-    }
-
     LOG_WARN << "[GB28181][Message] Unhandled CmdType, cmd_type=" << cmdType
              << ", device=" << deviceId
              << ", sn=" << snText
@@ -1510,85 +1406,6 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
 
     sendRequest(request.str(), *remote);
     LOG_DEBUG << "[GB28181][Catalog] Query sent, device=" << deviceId
-              << ", sn=" << sn
-              << ", call_id=" << callId
-              << ", branch=" << branch
-              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
-              << ", body_bytes=" << bodyText.size();
-    return true;
-}
-
-bool SipServer::queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    LOG_DEBUG << "[GB28181][Record] Query requested, device=" << deviceId
-              << ", channel=" << channelId
-              << ", start_time=" << startTime
-              << ", end_time=" << endTime;
-
-    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    const auto unavailableReason = routeUnavailableReason(route);
-    if (!unavailableReason.empty()) {
-        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=" << unavailableReason;
-        return false;
-    }
-
-    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
-    if (!endpoint.has_value()) {
-        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=invalid_remote_address"
-                 << ", remote_address=" << route->remoteAddress;
-        return false;
-    }
-
-    auto remote = peerFromAddress(route->remoteAddress);
-    if (!remote.has_value()) {
-        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=peer_unavailable"
-                 << ", remote_address=" << route->remoteAddress;
-        return false;
-    }
-
-    const auto sn = cseq_.fetch_add(1);
-    std::ostringstream body;
-    body << "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
-         << "<Query>\r\n"
-         << "<CmdType>RecordInfo</CmdType>\r\n"
-         << "<SN>" << sn << "</SN>\r\n"
-         << "<DeviceID>" << channelId << "</DeviceID>\r\n"
-         << "<StartTime>" << startTime << "</StartTime>\r\n"
-         << "<EndTime>" << endTime << "</EndTime>\r\n"
-         << "<Secrecy>0</Secrecy>\r\n"
-         << "<Type>all</Type>\r\n"
-         << "</Query>\r\n";
-
-    const auto bodyText = body.str();
-    const auto publicHost = sipConfig_.publicIp.empty() || sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP" ? sipConfig_.host : sipConfig_.publicIp;
-    const auto branch = "z9hG4bK-" + makeToken("record");
-    const auto tag = makeToken("tag");
-    const auto callId = makeToken("record") + "@" + sipConfig_.domain;
-    pendingRecordQueries_[sn] =
-        PendingRecordQuery{ .deviceId = deviceId, .remote = *remote };
-    scheduleDeadline(DeadlineKind::RecordQuery, std::to_string(sn), std::chrono::seconds(sipConfig_.commandTimeoutSeconds));
-
-    std::ostringstream request;
-    request << "MESSAGE sip:" << channelId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
-            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << sn << " MESSAGE\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: Application/MANSCDP+xml\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
-
-    sendRequest(request.str(), *remote);
-    LOG_DEBUG << "[GB28181][Record] Query sent, device=" << deviceId
-              << ", channel=" << channelId
               << ", sn=" << sn
               << ", call_id=" << callId
               << ", branch=" << branch
@@ -1814,7 +1631,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
 
     std::vector<std::string> staleSessionIds;
     for (auto& [_, session] : previewSessions_) {
-        if (session.mode == "preview" && session.deviceId == deviceId && session.channelId == channelId) {
+        if (session.deviceId == deviceId && session.channelId == channelId) {
             if (!session.mediaOnline) {
                 staleSessionIds.push_back(session.sessionId);
                 continue;
@@ -1971,7 +1788,6 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
             found = true;
             session.mediaOnline = online;
             LOG_DEBUG << "[GB28181][Media] Session media state changed, session=" << session.sessionId
-                      << ", mode=" << session.mode
                       << ", device=" << session.deviceId
                       << ", channel=" << session.channelId
                       << ", stream_id=" << streamId
@@ -1983,158 +1799,6 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
         LOG_DEBUG << "[GB28181][Media] Stream state ignored because session was not found, stream_id="
                   << streamId << ", online=" << online;
     }
-}
-
-std::optional<SipPreviewStartResult>
-SipServer::startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    ZlmSdk::OwnerScope sdkOwner(owner_);
-    LOG_DEBUG << "[GB28181][Playback] Start requested, device=" << deviceId
-              << ", channel=" << channelId
-              << ", start_time=" << startTime
-              << ", end_time=" << endTime;
-
-    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    const auto unavailableReason = routeUnavailableReason(route);
-    if (!unavailableReason.empty()) {
-        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=" << unavailableReason;
-        return std::nullopt;
-    }
-
-    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
-    if (!endpoint.has_value()) {
-        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=invalid_remote_address"
-                 << ", remote_address=" << route->remoteAddress;
-        return std::nullopt;
-    }
-
-    auto remote = peerFromAddress(route->remoteAddress);
-    if (!remote.has_value()) {
-        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=peer_unavailable"
-                 << ", remote_address=" << route->remoteAddress;
-        return std::nullopt;
-    }
-
-    const auto cseq = cseq_.fetch_add(1);
-    const auto publicHost = sipConfig_.publicIp.empty() || sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP" ? sipConfig_.host : sipConfig_.publicIp;
-    const auto mediaHost = mediaConfig_.rtpPublicIp.empty() || mediaConfig_.rtpPublicIp == "YOUR_PUBLIC_SERVER_IP" ? publicHost : mediaConfig_.rtpPublicIp;
-    const auto sessionId = makeToken("playback");
-    const auto branch = "z9hG4bK-" + makeToken("branch");
-    const auto fromTag = makeToken("tag");
-    const auto callId = sessionId + "@" + sipConfig_.domain;
-    const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-    const auto ssrcNumber = 2000000000ULL + ((nowMs + cseq) % 899999999ULL);
-    const auto ssrc = std::to_string(ssrcNumber);
-    LOG_DEBUG << "[GB28181][Playback] Opening ZLM RTP server, device=" << deviceId
-              << ", channel=" << channelId
-              << ", ssrc=" << ssrc;
-    const auto rtpServer =
-        zlmSdk_.openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next(), "playback");
-    if (!rtpServer.has_value()) {
-        LOG_WARN << "[GB28181][Playback] Start failed, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", reason=zlm_open_rtp_failed"
-                 << ", ssrc=" << ssrc;
-        return std::nullopt;
-    }
-    LOG_DEBUG << "[GB28181][Playback] ZLM RTP server opened, stream_id=" << rtpServer->streamId
-              << ", rtp_port=" << rtpServer->port
-              << ", ssrc=" << ssrc;
-
-    const auto startSeconds =
-        gbTimeToUnixSeconds(startTime, sipConfig_.deviceTimezoneOffsetMinutes);
-    const auto endSeconds =
-        gbTimeToUnixSeconds(endTime, sipConfig_.deviceTimezoneOffsetMinutes);
-    if (startSeconds == 0 || endSeconds == 0 || endSeconds <= startSeconds) {
-        LOG_WARN << "[GB28181][Playback] Time range converted to an unusual value, device=" << deviceId
-                 << ", channel=" << channelId
-                 << ", start_time=" << startTime
-                 << ", end_time=" << endTime
-                 << ", start_seconds=" << startSeconds
-                 << ", end_seconds=" << endSeconds;
-    }
-
-    std::ostringstream body;
-    body << "v=0\r\n"
-         << "o=" << channelId << " 0 0 IN IP4 " << mediaHost << "\r\n"
-         << "s=Playback\r\n"
-         << "u=" << channelId << ":0\r\n"
-         << "c=IN IP4 " << mediaHost << "\r\n"
-         << "t=" << startSeconds << " " << endSeconds << "\r\n"
-         << "m=video " << rtpServer->port << " TCP/RTP/AVP 96\r\n"
-         << "a=recvonly\r\n"
-         << "a=setup:passive\r\n"
-         << "a=connection:new\r\n"
-         << "a=rtpmap:96 PS/90000\r\n"
-         << "y=" << ssrc << "\r\n";
-
-    const auto bodyText = body.str();
-    std::ostringstream request;
-    request << "INVITE sip:" << channelId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << fromTag << "\r\n"
-            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << cseq << " INVITE\r\n"
-            << "Contact: <sip:" << sipConfig_.id << "@" << sipUriHost(publicHost) << ":" << sipConfig_.port << ">\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "Subject: " << channelId << ":" << ssrc << "," << sipConfig_.id << ":0\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: application/sdp\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
-
-    PreviewSession session;
-    session.sessionId = sessionId;
-    session.deviceId = deviceId;
-    session.channelId = channelId;
-    session.streamId = rtpServer->streamId;
-    session.callId = callId;
-    session.fromTag = fromTag;
-    session.branch = branch;
-    session.ssrc = ssrc;
-    session.inviteCseq = cseq;
-    session.rtpPort = rtpServer->port;
-    session.playUrls = rtpServer->playUrls;
-    session.remote = *remote;
-    session.mode = "playback";
-    session.viewerCount = 1;
-
-    const auto viewerId = makeToken("viewer");
-    previewSessions_[sessionId] = session;
-    previewViewers_.emplace(viewerId, sessionId);
-    notifyViewerCountChanged(session.streamId, session.viewerCount);
-    scheduleDeadline(DeadlineKind::Invite, sessionId, std::chrono::seconds(sipConfig_.inviteTimeoutSeconds));
-    scheduleDeadline(DeadlineKind::ViewerLease, viewerId, std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
-
-    sendRequest(request.str(), *remote);
-    LOG_DEBUG << "[GB28181][Playback] INVITE sent, device=" << deviceId
-              << ", channel=" << channelId
-              << ", viewer_session=" << viewerId
-              << ", stream_session=" << sessionId
-              << ", stream_id=" << rtpServer->streamId
-              << ", rtp_port=" << rtpServer->port
-              << ", ssrc=" << ssrc
-              << ", call_id=" << callId
-              << ", branch=" << branch
-              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
-              << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
-
-    return SipPreviewStartResult{
-        viewerId,
-        session.deviceId,
-        session.channelId,
-        session.streamId,
-        session.ssrc,
-        session.rtpPort,
-        session.playUrls,
-        static_cast<unsigned int>(sipConfig_.viewerLeaseTimeoutSeconds),
-    };
 }
 
 std::optional<SipPreviewStopResult>
@@ -2208,7 +1872,6 @@ SipServer::stopPreview(const std::string& sessionId) {
 
     LOG_DEBUG << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
               << ", stream_session=" << streamSessionId
-              << ", mode=" << session.mode
               << ", device=" << session.deviceId
               << ", channel=" << session.channelId
               << ", stream_id=" << session.streamId
@@ -2239,7 +1902,6 @@ SipServer::stopPreview(const std::string& sessionId) {
         sendRequest(bye.str(), session.remote);
         byeSent = true;
         LOG_DEBUG << "[GB28181][Preview] BYE sent, session=" << streamSessionId
-                  << ", mode=" << session.mode
                   << ", stream_id=" << session.streamId
                   << ", call_id=" << session.callId
                   << ", cseq=" << cseq
@@ -2391,7 +2053,7 @@ void SipServer::acknowledge(const SipMessage& request, const SipPeer& remote) {
             return;
         }
 
-        if (self->ioLoop_.isCurrent()) {
+        if (self->ioLoop_.is_current()) {
             if (persisted) {
                 self->sendResponse(request, remote, 200, "OK");
             } else {
@@ -2582,7 +2244,7 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
 }
 
 void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
-    if (!ioLoop_.valid() || !ioLoop_.isCurrent()) {
+    if (!ioLoop_.valid() || !ioLoop_.is_current()) {
         LOG_WARN << "[GB28181][Catalog] Schedule skipped, device=" << deviceId
                  << ", reason=io_loop_unavailable";
         return;
@@ -2597,7 +2259,7 @@ std::string SipServer::deadlineKey(DeadlineKind kind, const std::string& key) {
 }
 
 void SipServer::scheduleDeadline(DeadlineKind kind, std::string key, std::chrono::milliseconds delay) {
-    if (!deadlineTimer_ || !ioLoop_.isCurrent()) {
+    if (!deadlineTimer_ || !ioLoop_.is_current()) {
         return;
     }
     const auto composite = deadlineKey(kind, key);
@@ -2701,12 +2363,6 @@ void SipServer::expireDeadline(const Deadline& deadline) {
             (void)stopPreview(deadline.key);
             break;
         }
-        case DeadlineKind::RecordQuery:
-            if (const auto sn = parseUnsigned(deadline.key)) {
-                pendingRecordQueries_.erase(*sn);
-            }
-            LOG_WARN << "[GB28181][Record] Query timed out, sn=" << deadline.key;
-            break;
         case DeadlineKind::AuthNonce:
             digestNonceCounts_.erase(deadline.key);
             break;
@@ -2744,7 +2400,7 @@ void SipServer::closeDeviceTransport(const std::string& deviceId, const std::str
 }
 
 void SipServer::invalidateDeviceInLoop(const std::string& deviceId, std::string reason, bool closeTransport) {
-    if (!ioLoop_.isCurrent()) {
+    if (!ioLoop_.is_current()) {
         LOG_WARN << "[GB28181][SIP] Device invalidation ignored outside owning loop, device="
                  << deviceId;
         return;
@@ -2763,17 +2419,4 @@ void SipServer::invalidateDeviceInLoop(const std::string& deviceId, std::string 
     LOG_INFO << "[GB28181][SIP] Device session invalidated, device=" << deviceId
              << ", reason=" << (reason.empty() ? "unspecified" : reason)
              << ", transport_closed=" << closeTransport;
-}
-
-std::optional<std::string>
-SipServer::sessionIdByCallId(const std::string& callId) const {
-    if (callId.empty()) {
-        return std::nullopt;
-    }
-    for (const auto& [id, session] : previewSessions_) {
-        if (session.callId == callId) {
-            return id;
-        }
-    }
-    return std::nullopt;
 }

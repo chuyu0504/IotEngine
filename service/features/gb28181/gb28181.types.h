@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "service/features/gb28181/device/device.types.h"
-#include "service/features/gb28181/media/media.types.h"
 
 namespace service::gb28181 {
 
@@ -24,7 +23,6 @@ struct ProjectionPublishResult final {
 
 struct ProjectionSnapshot final {
     std::vector<Device> devices;
-    std::vector<StreamStatus> streams;
 };
 
 } // namespace service::gb28181

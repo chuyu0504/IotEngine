@@ -195,20 +195,14 @@ export const getEdgeVpnState = (scope: Edge.EventScope) =>
         eventParams(scope),
         'vpn'
     );
-export const createVpnNetwork = (data: EdgeVpn.NetworkCreateDto) =>
-    request.post<{ id: string }>('/v1/vpn/networks', data);
 export const createEdgeVpnPeer = (data: EdgeVpn.PeerCreateDto) =>
     request.post<{ id: string }>('/v1/vpn/peers', data);
 export const syncEdgeVpnPeer = (peerId: string) =>
     request.post<void>(`/v1/vpn/peers/${edgeIdSchema.parse(peerId)}/sync`);
 export const revokeEdgeVpnPeer = (peerId: string) =>
     request.post<void>(`/v1/vpn/peers/${edgeIdSchema.parse(peerId)}/revoke`);
-export const createEdgeVpnRoute = (data: EdgeVpn.RouteDto) =>
-    request.post<{ id: string }>('/v1/vpn/routes', data);
 export const updateEdgeVpnRoute = (routeId: string, data: Partial<EdgeVpn.RouteDto>) =>
     request.patch<void>(`/v1/vpn/routes/${edgeIdSchema.parse(routeId)}`, data);
-export const deleteEdgeVpnRoute = (routeId: string) =>
-    request.delete<void>(`/v1/vpn/routes/${edgeIdSchema.parse(routeId)}`);
 
 export function authenticateDebugConnection(token: string) {
     return requestDebugOperation<void>(

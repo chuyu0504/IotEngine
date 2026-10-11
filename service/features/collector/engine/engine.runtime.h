@@ -195,32 +195,15 @@ class ProtocolEngine final {
     }
 
     void reload(RuntimeSnapshot snapshot) {
-        for (const auto& link : snapshot.links) {
-            const auto& factory = registry_.require(link.protocol);
-            factory.validateLink(link);
-        }
-        snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
-        links_.clear();
-        for (const auto& link : snapshot_->links)
-            links_.emplace(link.id, &link);
-
+        replaceSnapshot(std::move(snapshot));
         // Configuration generations are immutable for an established connection. Close/recreate
         // is handled by the link factory; retaining a session across incompatible config would
         // allow stale device routes and command responses.
         sessions_.clear();
     }
 
-    void reload(RuntimeSnapshot snapshot, const std::set<std::string, std::less<>>& affectedLinks) {
-        for (const auto& link : snapshot.links) {
-            const auto& factory = registry_.require(link.protocol);
-            factory.validateLink(link);
-        }
-        (void)affectedLinks;
-        snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
-        links_.clear();
-        for (const auto& link : snapshot_->links)
-            links_.emplace(link.id, &link);
-
+    void reloadRetainingSessions(RuntimeSnapshot snapshot) {
+        replaceSnapshot(std::move(snapshot));
         // TcpTransport owns transport reconciliation. Sessions are retained here until either the target
         // emits a real disconnected event or Worker selectively refreshes an eligible Modbus TCP
         // session after rotating its transport epoch.
@@ -362,6 +345,17 @@ class ProtocolEngine final {
         ProtocolConnectionInfo info;
         std::unique_ptr<ProtocolSession> session;
     };
+
+    void replaceSnapshot(RuntimeSnapshot snapshot) {
+        for (const auto& link : snapshot.links) {
+            const auto& factory = registry_.require(link.protocol);
+            factory.validateLink(link);
+        }
+        snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
+        links_.clear();
+        for (const auto& link : snapshot_->links)
+            links_.emplace(link.id, &link);
+    }
 
     ProtocolSessionFactoryRegistry registry_;
     std::shared_ptr<const RuntimeSnapshot> snapshot_ = std::make_shared<RuntimeSnapshot>();

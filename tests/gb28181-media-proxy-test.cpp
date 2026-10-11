@@ -8,9 +8,9 @@
 #include <string>
 #include <thread>
 
-#include <ruvia/core/EventLoopPool.h>
-#include <ruvia/web/App.h>
-#include <ruvia/web/HttpClient.h>
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/web/app.h>
+#include <ruvia/web/http_client.h>
 
 #include "service/features/gb28181/media/media.transport.h"
 
@@ -118,22 +118,22 @@ class Origin final {
     std::jthread thread_;
 };
 
-ruvia::Task<void> verifyProxy(ruvia::EventLoop loop, std::uint16_t port) {
-    ruvia::HttpClient client(loop, { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = port, .requestTimeout = 5s, .maxResponseBytes = 4U * 1024U * 1024U });
+ruvia::task<void> verifyProxy(ruvia::event_loop loop, std::uint16_t port) {
+    ruvia::http_client client(loop, { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s, .max_response_bytes_ = 4U * 1024U * 1024U });
     {
-        auto response = co_await client.send({ .target = "/media/rtp/playlist.m3u8?token=test" });
+        auto response = co_await client.send({ .target_ = "/media/rtp/playlist.m3u8?token=test" });
         require(response.status().value() == 200, "HLS proxy status failed");
         require(response.header("Cache-Control") == "no-cache", "media response headers were lost");
-        const auto body = co_await response.body().readAll();
+        const auto body = co_await response.body().read_all();
         require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == "#EXTM3U\nsegment.ts?token=test\n", "HLS child URL did not retain authorization");
     }
     {
-        auto response = co_await client.send({ .target = "/media/rtp/large.live.flv" });
-        const auto body = co_await response.body().readAll(4U * 1024U * 1024U);
+        auto response = co_await client.send({ .target_ = "/media/rtp/large.live.flv" });
+        const auto body = co_await response.body().read_all(4U * 1024U * 1024U);
         require(body.size() == 3U * 1024U * 1024U && body.bytes().front() == std::byte{'m'} && body.bytes().back() == std::byte{'m'}, "media stream was truncated at the proxy buffering limit");
     }
     {
-        auto response = co_await client.send({ .target = "/media/rtp/cancel.live.flv" });
+        auto response = co_await client.send({ .target_ = "/media/rtp/cancel.live.flv" });
         require((co_await response.body().read()).has_value(), "cancellable media stream did not start");
     }
     co_await client.shutdown();
@@ -159,7 +159,7 @@ int main() {
         reservation.close();
         std::promise<void> ready;
         auto started = ready.get_future();
-        app.blockingPool(nullptr).listen({ .address = "127.0.0.1", .http = port }).server({ .worker_count = 2 }).httpClient({ .alias = "gb-media", .config = { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(), .connectionCount = 2, .requestTimeout = std::nullopt, .maxResponseBytes = 2U * 1024U * 1024U, .protocol = ruvia::HttpClientProtocol::kHttp1Only } }).onStart([&] {
+        app.get_blocking_pool(nullptr).listen({ .address_ = "127.0.0.1", .http_ = port }).server({ .worker_count_ = 2 }).get_http_client({ .alias_ = "gb-media", .config_ = { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(), .connection_count_ = 2, .request_timeout_ = std::nullopt, .max_response_bytes_ = 2U * 1024U * 1024U, .protocol_ = ruvia::http_client_protocol::http1_only } }).on_start([&] {
             ready.set_value();
         });
         serving = std::thread([&] {
@@ -175,7 +175,7 @@ int main() {
         });
         require(started.wait_for(10s) == std::future_status::ready, "media proxy app startup timed out");
         started.get();
-        ruvia::EventLoopPool clientPool({ .loopCount = 1 });
+        ruvia::event_loop_pool clientPool({ .loop_count_ = 1 });
         clientPool.start();
         clientPool.loop(0).start(verifyProxy(clientPool.loop(0), port)).get();
         clientPool.stop();

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
+import { pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { consumeServerSentEvents } from '../web/lib/sse';
 
@@ -20,6 +20,7 @@ const releases: Array<() => void> = [];
 let seeded = false;
 let token = '', otherToken = '';
 type Reply = {data?: any; error?: {code:number; message:string}};
+type DesktopDevice = {id: string; online: boolean};
 function check(reply: Reply, code = 0) {
     assert.equal(reply.error?.code ?? 0,code,JSON.stringify(reply.error));
     return reply.data;
@@ -125,7 +126,6 @@ try {
     }
     await db`INSERT INTO vpn_route(id,network_id,edge_peer_id,lan_interface,target_cidr,virtual_cidr,created_by,status) VALUES
         (${routeA},${network},${edgeA},'lan','192.168.1.0/24','172.31.10.0/24',${admin},'active')`;
-    await openStream('/v1/vpn/desktop/devices/events', '', 11004);
     const login = check(await request('POST', '/v1/auth/login', { username, password }, ''));
     assert.ok(login.token); assert.ok(login.refresh_token);
     const refreshed = check(await request('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token }, ''));
@@ -133,33 +133,21 @@ try {
     console.log('PASS actual login and refresh_token contract');
     const initialDevices=check(await request('GET','/v1/vpn/desktop/devices'));
     assert.equal(initialDevices.filter((d:any)=>[edgeA,edgeB].includes(d.id)).length,2);
-    check(await request('GET','/v1/vpn/peers?edgeNodeId=invalid'),10001);
     check(await request('GET','/v1/vpn/networks?pageSize=101'),10001);
     check(await request('GET','/v1/vpn/desktop/peers/invalid/config'),10001);
     check(await request('POST','/v1/vpn/desktop/peers',[]),10002);
-    check(await request('POST','/v1/vpn/networks',{}),11007);
+    check(await request('POST','/v1/vpn/peers',{}),11007);
     console.log('PASS ordinary HTTP snapshots, typed query/path validation and write permissions');
-    for (const path of ['/v1/vpn/networks', `/v1/vpn/networks/${network}`, `/v1/vpn/peers?edgeNodeId=${edgeA}`, `/v1/vpn/routes?edgeNodeId=${edgeA}`, '/v1/vpn/sessions']) {
-        check(await request('GET',path));
-    }
-    assert.equal(check(await request('GET',`/v1/vpn/peers?edgeNodeId=${edgeA}`)).length,1);
-    assert.equal(check(await request('GET',`/v1/vpn/routes?edgeNodeId=${edgeA}`))[0].id,routeA);
-    check(await request('GET','/v1/vpn/diagnostics'),11007);
-    console.log('PASS network, peer, route and session HTTP reads and diagnostics permission');
+    assert.equal(check(await request('GET','/v1/vpn/networks')).list[0]?.id,network);
+    console.log('PASS default network HTTP read');
 
-    const list = await openStream('/v1/vpn/desktop/devices/events'); const devices = (await list.next()).data;
-    assert.equal(devices.filter((d: any) => [edgeA,edgeB].includes(d.id)).length, 2);
-    assert.equal(devices.find((d: any) => d.id === edgeA).online, false); list.close();
+    assert.equal(initialDevices.find((d: DesktopDevice) => d.id === edgeA).online, false);
     await db`UPDATE edge_node SET last_seen_at=NOW() - INTERVAL '1 day' WHERE id=${edgeA}`;
-    const presenceStream=await openStream('/v1/vpn/desktop/devices/events'); await presenceStream.next();
     await presence.set(`iot:edge:session:${edgeA}`,'disposable-session');
-    await presence.send('XADD', ['iot:live:changes', '*', 'topic', 'edge']);
-    await presenceStream.next(x=>x.data?.find((d:any)=>d.id===edgeA)?.online===true);
+    assert.equal(check(await request('GET','/v1/vpn/desktop/devices')).find((d: DesktopDevice)=>d.id===edgeA).online,true);
     await db`UPDATE edge_node SET last_seen_at=NOW() WHERE id=${edgeA}`;
     await presence.del(`iot:edge:session:${edgeA}`);
-    await presence.send('XADD', ['iot:live:changes', '*', 'topic', 'edge']);
-    await presenceStream.next(x=>x.data?.find((d:any)=>d.id===edgeA)?.online===false);
-    presenceStream.close();
+    assert.equal(check(await request('GET','/v1/vpn/desktop/devices')).find((d: DesktopDevice)=>d.id===edgeA).online,false);
     console.log('PASS desktop online follows live Edge session, independent of stale or fresh telemetry timestamp');
     await connectEdge();
     assert.equal((await db`SELECT vpn_desktop_user_authorized(${user}::uuid) AS allowed`)[0].allowed, true);
@@ -254,19 +242,6 @@ try {
         cycling=next;
     }
     console.log('PASS historical revoked address reuse, concurrent reuse, stale disconnect fencing and repeated reconnect');
-    const enrollmentId=randomUUID(), enrollmentToken=randomBytes(32).toString('hex'), enrollmentKey=publicKey();
-    await db`INSERT INTO vpn_enrollment(id,token_hash,network_id,allowed_routes,expires_at,created_by)
-        VALUES (${enrollmentId},${createHash('sha256').update(enrollmentToken).digest('hex')},${network},'[]'::jsonb,NOW()+INTERVAL '5 minutes',${user})`;
-    const enrollBody={token:enrollmentToken,publicKey:enrollmentKey,name:'Token enrollment retry'};
-    const tokenPeers=await Promise.all([
-        request('POST', '/v1/vpn/client/enroll',enrollBody,''),
-        request('POST', '/v1/vpn/client/enroll',enrollBody,'')
-    ]).then(results=>results.map(result=>check(result)));
-    assert.equal(tokenPeers[0].peerId,enrollmentId);
-    assert.equal(tokenPeers[1].peerId,enrollmentId);
-    assert.equal(tokenPeers[0].assignedIpv4,tokenPeers[1].assignedIpv4);
-    check(await request('POST', '/v1/vpn/client/enroll',{...enrollBody,publicKey:publicKey()},''),21006);
-    console.log('PASS token enrollment consumes and allocates atomically with same-key retry');
     console.log('PASS same account simultaneous logins, distinct client IPs, stable retry IP and independent logout');
     console.log('PASS selected routes, split-role permissions, concurrent enrollment and retry');
     for (const ids of [null,{},[1],['bad'],[edgeA,edgeA],[edgeA,edgeA.toUpperCase()],Array(65).fill(edgeA)]) check(await enroll(key,ids),21001);
@@ -299,17 +274,17 @@ try {
     const revoked=await live.next(x=>!!x.error); assert.equal(revoked.error?.code,11007);
     assert.equal((await db`SELECT vpn_desktop_user_authorized(${user}::uuid) AS allowed`)[0].allowed,false);
     assert.equal((await db`SELECT count(*)::int AS count FROM vpn_effective_edge_access WHERE peer_id=${peer}`)[0].count,0);
-    await openStream('/v1/vpn/desktop/devices/events',token,11007);
+    check(await request('GET','/v1/vpn/desktop/devices',undefined,token),11007);
     console.log('PASS one-stream route changes, Edge approval removal and enroll-permission revocation');
     await db`UPDATE sys_role SET permissions='["iot:vpn:query","iot:vpn:enroll"]'::jsonb WHERE id=${roleVpn}`;
     await db`UPDATE sys_role SET permissions='[]'::jsonb WHERE id=${roleEdge}`;
-    await openStream('/v1/vpn/desktop/devices/events',token,11007);
+    check(await request('GET','/v1/vpn/desktop/devices',undefined,token),11007);
     await db`UPDATE sys_role SET permissions='["iot:edge:query"]'::jsonb WHERE id=${roleEdge}`;
     const pauseStream=await openStream(`/v1/vpn/desktop/peers/${peer}/config/events`,token); await pauseStream.next();
     await db`UPDATE vpn_network SET status='disabled' WHERE id=${network}`;
     const paused=await pauseStream.next(x=>x.data?.networkEnabled===false);
     assert.deepEqual(paused.data.allowedRoutes,[]); assert.deepEqual(paused.data.edgeAddresses,[]);
-    const disabled=await openStream('/v1/vpn/desktop/devices/events'); assert.deepEqual((await disabled.next()).data,[]); disabled.close();
+    assert.deepEqual(check(await request('GET','/v1/vpn/desktop/devices')),[]);
     check(await enroll(publicKey(),[edgeA]),21004);
     await db`UPDATE vpn_network SET status='enabled' WHERE id=${network}`;
     await pauseStream.next(x=>x.data?.networkEnabled===true&&x.data.allowedRoutes.length>0); pauseStream.close();
@@ -330,7 +305,6 @@ try {
     if (seeded) {
         await db`UPDATE vpn_network SET status='enabled' WHERE id=${network}`;
         await db`DELETE FROM vpn_peer WHERE user_id IN (${user},${other}) OR id IN (${edgeA},${edgeB})`;
-        await db`DELETE FROM vpn_enrollment WHERE created_by IN (${user},${other})`;
         await db`DELETE FROM edge_node WHERE id IN (${edgeA},${edgeB})`;
         await db`DELETE FROM sys_user WHERE id IN (${user},${other})`;
         await db`DELETE FROM sys_role WHERE id IN (${roleVpn},${roleEdge})`;

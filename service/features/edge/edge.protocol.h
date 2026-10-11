@@ -201,10 +201,6 @@ using service::message::edge::kOldestCompatibleProtocolVersion;
 using service::message::edge::kDefaultPlatformId;
 using service::message::edge::kMaxMessageSize;
 
-inline constexpr bool isCurrentProtocolVersion(std::uint32_t version) noexcept {
-    return version == kProtocolVersion;
-}
-
 inline constexpr bool supportsProtocolVersion(std::uint32_t version) noexcept {
     return version >= kOldestCompatibleProtocolVersion && version <= kProtocolVersion;
 }

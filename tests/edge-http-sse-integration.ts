@@ -102,8 +102,7 @@ try {
     await request('DELETE', `/v1/edge/${node}`, undefined, 17021);
     await request('DELETE', `/v1/edge/${pending}`, undefined);
     assert.equal((await db`SELECT id FROM edge_node WHERE id=${pending}`).length, 0);
-    assert(Array.isArray(await request('GET','/v1/edge/firmware')));
-    console.log('PASS Edge rename push, group filtering/assignment, enrollment guards and firmware list');
+    console.log('PASS Edge rename push, group filtering/assignment and enrollment guards');
     const inventoryNodes = Array.from({ length: 201 }, () => ({ id: crypto.randomUUID(), imei: imei() }));
     await db`INSERT INTO edge_node(id,platform_id,imei,name,enrollment_status,capability)
         SELECT x.id,${platform}::uuid,x.imei,${tag + '_inventory'},'approved','{}'::jsonb
@@ -126,7 +125,7 @@ try {
         ['GET','/v1/edge?page=0',undefined], ['GET','/v1/edge?pageSize=101',undefined],
         ['GET','/v1/edge/invalid',undefined], ['PUT',`/v1/edge/${node}/name`,{name:42}],
         ['PUT',`/v1/edge/groups/${groups[0]}`,{name:`${tag}_a`,sortOrder:-1}],
-        ['POST',`/v1/edge/${node}/network`,{interfaces:[]}], ['GET',`/v1/edge/${node}/logs?limit=49`,undefined],
+        ['POST',`/v1/edge/${node}/network`,{interfaces:[]}], ['GET',`/v1/edge/events?nodeId=${node}&logs=true&limit=49`,undefined],
         ['PUT',`/v1/edge/${node}/logs/level`,{level:'trace'}],
     ] as const) await request(method,path,data,10001);
     await request('PUT',`/v1/edge/groups/${groups[0]}`,null,10002);
@@ -208,7 +207,9 @@ try {
     assert.equal(levelChanges, 1);
     assert.equal((await db`SELECT status->'log'->>'level' AS level FROM edge_node WHERE id=${node}`)[0].level, 'warn');
     await logSubscription.close();
-    assert.deepEqual((await request('GET',`/v1/edge/${node}/logs?level=error`)).lines, []);
+    const errorLogs = await subscribe(`/v1/edge/events?nodeId=${node}&logs=true&level=error`, 'logs');
+    assert.deepEqual((await errorLogs.next()).data.lines, []);
+    await errorLogs.close();
     const idleLogs = await openSnapshotSubscription(`/v1/edge/events?nodeId=${node}&logs=true`,token(admin)); streams.push(idleLogs);
     assert.deepEqual(new Set([(await idleLogs.next()).event, (await idleLogs.next()).event, (await idleLogs.next()).event]), new Set(['nodes', 'detail', 'logs']));
     await idleLogs.expectQuiet();
@@ -216,7 +217,7 @@ try {
     await idleLogs.close();
     assert.equal(captures, 1, 'SSE heartbeat must not request device logs');
     console.log('PASS Edge log initial snapshot, explicit capture, protobuf response push and log-level notification');
-    for (const path of ['/v1/edge', '/v1/edge/groups', `/v1/edge/${node}`, `/v1/edge/${node}/logs`]) {
+    for (const path of ['/v1/edge', '/v1/edge/groups', `/v1/edge/${node}`]) {
         const response = await fetch(apiBase + path, { headers: { Authorization: `Bearer ${token(admin)}` } });
         assert.equal(response.status, 200, path);
     }

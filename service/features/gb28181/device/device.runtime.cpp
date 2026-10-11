@@ -24,19 +24,6 @@ void DeviceRegistry::upsertRegistration(const std::string& deviceId, const std::
     notify(device, DeviceChange::Status);
 }
 
-void DeviceRegistry::updateKeepalive(const std::string& deviceId, const std::string& remoteAddress) {
-    auto& device = devices_[deviceId];
-    device.id = deviceId;
-    if (device.name.empty()) {
-        device.name = deviceId;
-    }
-    device.remoteAddress = remoteAddress;
-    device.registrationSource = "sip";
-    device.online = true;
-    device.lastSeen = std::chrono::system_clock::now();
-    notify(device, DeviceChange::Status);
-}
-
 bool DeviceRegistry::updateKeepaliveAndNeedsCatalog(
     const std::string& deviceId,
     const std::string& remoteAddress
@@ -80,38 +67,6 @@ void DeviceRegistry::updateCatalog(const std::string& deviceId, std::vector<Chan
     }
     device.channels = std::move(channels);
     notify(device, DeviceChange::Catalog);
-}
-
-void DeviceRegistry::updateRecords(const std::string& deviceId, std::vector<RecordItem> records) {
-    auto& device = devices_[deviceId];
-    device.id = deviceId;
-    if (device.name.empty()) {
-        device.name = deviceId;
-    }
-    device.online = true;
-    device.lastSeen = std::chrono::system_clock::now();
-    device.records = std::move(records);
-    notify(device, DeviceChange::Records);
-}
-
-void DeviceRegistry::forEachDevice(
-    const std::function<void(const Device&)>& visitor
-) const {
-    for (const auto& [_, device] : devices_) {
-        visitor(device);
-    }
-}
-
-bool DeviceRegistry::visitDevice(
-    const std::string& deviceId,
-    const std::function<void(const Device&)>& visitor
-) const {
-    const auto iter = devices_.find(deviceId);
-    if (iter == devices_.end()) {
-        return false;
-    }
-    visitor(iter->second);
-    return true;
 }
 
 std::vector<Device> DeviceRegistry::listDevices() const {
@@ -162,16 +117,6 @@ void DeviceRegistry::markOffline(const std::string& deviceId) {
         iter->second.online = false;
         notify(iter->second, DeviceChange::Status);
     }
-}
-
-bool DeviceRegistry::updateMapping(const std::string& deviceId, std::string mappedDeviceId) {
-    const auto iter = devices_.find(deviceId);
-    if (iter == devices_.end()) {
-        return false;
-    }
-    iter->second.mappedDeviceId = std::move(mappedDeviceId);
-    notify(iter->second, DeviceChange::Mapping);
-    return true;
 }
 
 bool DeviceRegistry::updateDeviceName(const std::string& deviceId, std::string customName) {

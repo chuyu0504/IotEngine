@@ -9,30 +9,9 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/ModelObject.h>
+#include <ruvia/web/model_object.h>
 
 namespace service::utils {
-
-inline bool isJsonContentType(std::string_view value) noexcept {
-    value = value.substr(0, value.find(';'));
-    const auto first = value.find_first_not_of(" \t");
-    if (first == std::string_view::npos) {
-        return false;
-    }
-    value = value.substr(first, value.find_last_not_of(" \t") - first + 1);
-    constexpr std::string_view expected = "application/json";
-    if (value.size() != expected.size()) {
-        return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-        const char ch = value[index];
-        const char lower = ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + ('a' - 'A')) : ch;
-        if (lower != expected[index]) {
-            return false;
-        }
-    }
-    return true;
-}
 
 inline std::string jsonEscape(std::string_view value) {
     static constexpr std::array<char, 16> hex{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
@@ -114,25 +93,25 @@ inline std::vector<std::string> jsonFieldSegments(std::string_view path) {
     }
 }
 
-inline std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& root, std::string_view path) {
-    auto current = ruvia::JsonValue::parse(root.view());
+inline std::optional<ruvia::json_value> jsonField(const ruvia::json_value& root, std::string_view path) {
+    auto current = ruvia::json_value::parse(root.view());
     if (!current) {
         return std::nullopt;
     }
     for (const auto& key : jsonFieldSegments(path)) {
-        if (current->isObject()) {
-            current = current->get<ruvia::JsonValue>(key);
-        } else if (current->isArray()) {
+        if (current->is_object()) {
+            current = current->get<ruvia::json_value>(key);
+        } else if (current->is_array()) {
             std::size_t index = 0;
             const auto number = std::from_chars(key.data(), key.data() + key.size(), index);
             if (key.empty() || (key.size() > 1 && key.front() == '0') || number.ec != std::errc{} || number.ptr != key.data() + key.size()) {
                 return std::nullopt;
             }
-            std::optional<ruvia::JsonValue> selected;
+            std::optional<ruvia::json_value> selected;
             std::size_t position = 0;
-            (void)current->forEachElement([&](const ruvia::JsonValue& item) {
+            (void)current->for_each_element([&](const ruvia::json_value& item) {
                 if (position++ == index) {
-                    selected = ruvia::JsonValue::parse(item.view());
+                    selected = ruvia::json_value::parse(item.view());
                     return false;
                 }
                 return true;
@@ -158,8 +137,8 @@ class JsonValueTemplate final {
     JsonValueTemplate(std::string_view input, const Tokens& allowed, const Tokens& sparse = {}, bool unique = false,
                       std::size_t maxBytes = 16384, unsigned maxDepth = 32) : capacity_(input.size()) {
         if (input.empty() || input.size() > maxBytes) throw std::invalid_argument("JSON 模板字节长度无效");
-        const auto root = ruvia::JsonValue::parse(input);
-        if (!root || !root->isObject()) throw std::invalid_argument("JSON 模板根节点必须是对象");
+        const auto root = ruvia::json_value::parse(input);
+        if (!root || !root->is_object()) throw std::invalid_argument("JSON 模板根节点必须是对象");
         root_ = parse(*root, allowed, sparse, unique, 0, maxDepth);
     }
 
@@ -189,24 +168,24 @@ class JsonValueTemplate final {
         Node value;
     };
 
-    Node parse(const ruvia::JsonValue& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth) {
+    Node parse(const ruvia::json_value& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth) {
         if (depth > maxDepth) throw std::invalid_argument("JSON 模板嵌套层数过多");
         Node node;
-        if (raw.isObject()) {
+        if (raw.is_object()) {
             node.kind = Node::Kind::Object;
             Tokens keys;
-            (void)raw.forEachField([&](std::string_view key, const ruvia::JsonValue& child) {
+            (void)raw.for_each_field([&](std::string_view key, const ruvia::json_value& child) {
                 if (!keys.emplace(key).second) throw std::invalid_argument("JSON 模板对象键重复");
                 node.members.emplace_back(jsonQuoted(key), parse(child, allowed, sparse, unique, depth + 1, maxDepth));
                 return true;
             });
-        } else if (raw.isArray()) {
+        } else if (raw.is_array()) {
             node.kind = Node::Kind::Array;
-            (void)raw.forEachElement([&](const ruvia::JsonValue& child) {
+            (void)raw.for_each_element([&](const ruvia::json_value& child) {
                 node.elements.push_back(parse(child, allowed, sparse, unique, depth + 1, maxDepth));
                 return true;
             });
-        } else if (const auto text = raw.get<ruvia::String>(); text && text->view().starts_with('$')) {
+        } else if (const auto text = raw.get<ruvia::string>(); text && text->view().starts_with('$')) {
             const auto token = text->view();
             if (!allowed.contains(token)) throw std::invalid_argument("JSON 模板包含未知占位符: " + std::string(token));
             if (!references_.emplace(token).second && unique) throw std::invalid_argument("JSON 模板占位符重复");

@@ -7,20 +7,20 @@
 #include <string_view>
 #include <utility>
 
-#include <ruvia/web/Context.h>
-#include <ruvia/web/ConnInfo.h>
+#include <ruvia/web/context.h>
+#include <ruvia/web/conn_info.h>
 #include "service/utils/text.h"
 #include "service/utils/number.h"
-#include <ruvia/web/Error.h>
+#include <ruvia/web/error.h>
 
-#include <ruvia/web/Model.h>
+#include <ruvia/web/model.h>
 #include "service/common/uuid.h"
 
 namespace service::common {
 
 RUVIA_MODEL(OperationResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string));
 
 inline constexpr std::int64_t kValidationErrorCode{10001};
 inline constexpr std::int64_t kBadRequestErrorCode{10002};
@@ -32,8 +32,8 @@ inline constexpr std::int64_t kTokenInvalidErrorCode{11006};
 inline constexpr std::int64_t kPermissionDeniedErrorCode{11007};
 
 RUVIA_MODEL(ErrorResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string));
 
 
 struct Page final {
@@ -42,7 +42,7 @@ struct Page final {
     std::int64_t offset{0};
 };
 
-inline Page page(const ruvia::ContextRequest& request) {
+inline Page page(const ruvia::context_request& request) {
     const auto integer = [&request](std::string_view name, std::int64_t fallback) {
         return service::utils::parseInt64(request.query(name)).value_or(fallback);
     };
@@ -56,10 +56,10 @@ inline Page page(const ruvia::ContextRequest& request) {
 
 [[noreturn]] inline void fail(std::int64_t code, std::string message, std::uint16_t status) {
     const auto codeText = std::to_string(code);
-    throw ruvia::HttpError(ruvia::HttpErrorInfoOptions{
-        .status = ruvia::HttpStatusCode::fromValue(status),
-        .code = codeText,
-        .message = message,
+    throw ruvia::http_error(ruvia::http_error_info_options{
+        .status_ = ruvia::http_status_code::from_value(status),
+        .code_ = codeText,
+        .message_ = message,
     });
 }
 
@@ -82,21 +82,21 @@ inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {
 }
 
 template <typename Response, typename Context, typename Data> Response ok(Context& c, Data&& data) {
-    Response response(ruvia::ModelOptions{.resource = c.arena()});
+    Response response(ruvia::model_options{.resource_ = c.arena()});
     response.template set<"code">(0)
         .template set<"message">("ok")
         .template set<"data">(std::forward<Data>(data));
     return response;
 }
 
-inline OperationResponse operation(ruvia::Context& c, std::string_view message) {
-    OperationResponse response(ruvia::ModelOptions{.resource = c.arena()});
+inline OperationResponse operation(ruvia::context& c, std::string_view message) {
+    OperationResponse response(ruvia::model_options{.resource_ = c.arena()});
     response.set<"code">(0).set<"message">(message);
     return response;
 }
 
-inline ErrorResponse error(ruvia::Context& c, std::int64_t code, std::string_view message) {
-    ErrorResponse response(ruvia::ModelOptions{.resource = c.arena()});
+inline ErrorResponse error(ruvia::context& c, std::int64_t code, std::string_view message) {
+    ErrorResponse response(ruvia::model_options{.resource_ = c.arena()});
     response.set<"code">(code).set<"message">(message);
     return response;
 }
@@ -106,7 +106,7 @@ inline void requireUuid(std::int64_t code, std::string_view value, std::string_v
         service::common::fail(code, std::string(message), 400);
 }
 
-inline std::string clientIp(const ruvia::Context& context) {
+inline std::string clientIp(const ruvia::context& context) {
     if (const auto value = context.req().header("X-Real-IP")) {
         const auto resolved = service::utils::trim(*value);
         if (!resolved.empty())

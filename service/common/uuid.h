@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ruvia/web/ModelTypes.h>
+#include <ruvia/web/model_types.h>
 
 #include <array>
 #include <chrono>
@@ -157,9 +157,9 @@ inline std::string uuidText(const std::uint8_t value[16]) {
     return uuidText(std::string_view(reinterpret_cast<const char*>(value), 16));
 }
 
-inline bool isUuidField(const ruvia::String& value) noexcept { return isUuid(value.view()); }
+inline bool isUuidField(const ruvia::string& value) noexcept { return isUuid(value.view()); }
 
-inline bool isOptionalUuidField(const ruvia::String& value) noexcept {
+inline bool isOptionalUuidField(const ruvia::string& value) noexcept {
     return value.empty() || isUuid(value.view());
 }
 

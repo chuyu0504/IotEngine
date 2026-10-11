@@ -44,22 +44,22 @@ struct StateRecord final {
         return result + "}}";
     }
 
-    static Sample sample(const ruvia::JsonValue& value, std::int64_t timestamp) {
+    static Sample sample(const ruvia::json_value& value, std::int64_t timestamp) {
         Sample result;
         result.at = timestamp;
-        if (const auto at = value.get<ruvia::Int64>("sample_time_ms")) {
-            result.at = at->value;
+        if (const auto at = value.get<ruvia::int64>("sample_time_ms")) {
+            result.at = at->value_;
         }
-        if (const auto number = value.get<ruvia::Double>("value"); number && std::isfinite(number->value)) {
-            result.value = number->value;
-        } else if (const auto boolean = value.get<ruvia::Bool>("value")) {
+        if (const auto number = value.get<ruvia::double_value>("value"); number && std::isfinite(number->value_)) {
+            result.value = number->value_;
+        } else if (const auto boolean = value.get<ruvia::bool_value>("value")) {
             result.value = static_cast<bool>(*boolean) ? 1 : 0;
         }
-        if (const auto unit = value.get<ruvia::String>("unit")) {
+        if (const auto unit = value.get<ruvia::string>("unit")) {
             result.unit = unit->view();
         }
         result.quality = result.value ? "good" : "missing";
-        if (const auto quality = value.get<ruvia::String>("quality")) {
+        if (const auto quality = value.get<ruvia::string>("quality")) {
             result.quality = quality->view();
         }
         return result;
@@ -70,27 +70,27 @@ struct StateRecord final {
         if (wire.empty()) {
             return state;
         }
-        const auto value = ruvia::JsonValue::parse(wire);
+        const auto value = ruvia::json_value::parse(wire);
         if (!value) {
             throw std::runtime_error("invalid derived state");
         }
-        if (const auto latest = value->get<ruvia::JsonValue>("latest")) {
-            (void)latest->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+        if (const auto latest = value->get<ruvia::json_value>("latest")) {
+            (void)latest->for_each_field([&](std::string_view id, const ruvia::json_value& raw) {
                 state.latest[std::string(id)] = sample(raw, 0);
                 return true;
             });
         }
-        if (const auto windows = value->get<ruvia::JsonValue>("windows")) {
-            (void)windows->forEachField([&](std::string_view id, const ruvia::JsonValue& item) {
+        if (const auto windows = value->get<ruvia::json_value>("windows")) {
+            (void)windows->for_each_field([&](std::string_view id, const ruvia::json_value& item) {
                 auto& window = state.windows[std::string(id)];
-                if (const auto unit = item.get<ruvia::String>("unit")) {
+                if (const auto unit = item.get<ruvia::string>("unit")) {
                     window.unit = unit->view();
                 }
-                if (const auto overflow = item.get<ruvia::Int64>("overflowUntil")) {
-                    window.overflowUntil = overflow->value;
+                if (const auto overflow = item.get<ruvia::int64>("overflowUntil")) {
+                    window.overflowUntil = overflow->value_;
                 }
-                if (const auto samples = item.get<ruvia::JsonValue>("samples")) {
-                    (void)samples->forEachElement([&](const ruvia::JsonValue& point) {
+                if (const auto samples = item.get<ruvia::json_value>("samples")) {
+                    (void)samples->for_each_element([&](const ruvia::json_value& point) {
                         const auto parsed = sample(point, 0);
                         if (parsed.value) {
                             window.samples.emplace_back(parsed.at, *parsed.value);

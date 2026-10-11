@@ -13,9 +13,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Task.h>
-#include <ruvia/core/Timer.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
 #include "service/features/alert/alert.service.h"
@@ -36,7 +36,7 @@ class Reconciler final {
 
     ~Reconciler() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -57,7 +57,7 @@ class Reconciler final {
         auto readiness = ready->get_future();
         stopped_ = stopped->get_future().share();
         const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::WebWorkerContext& context) {
+            [this, ready, stopped](ruvia::web_worker_context& context) {
                 return run(context, workerIndex_, ready, stopped);
             }
         );
@@ -82,7 +82,7 @@ class Reconciler final {
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext&) -> ruvia::Task<void> {
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                                                 service::message::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Reconciler
                                                 );
@@ -111,7 +111,7 @@ class Reconciler final {
         return aggregate == "link" || aggregate == "device" || aggregate == "protocol";
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
             std::vector<std::string> streams;
@@ -129,7 +129,7 @@ class Reconciler final {
             auto nextRecoverySweep = std::chrono::steady_clock::now();
             std::optional<std::chrono::steady_clock::time_point> cleanupDeadline =
                 std::chrono::steady_clock::now();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 if (!recovering && cleanupDeadline &&
                     std::chrono::steady_clock::now() >= *cleanupDeadline) {
                     try {
@@ -171,7 +171,7 @@ class Reconciler final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.stopToken().stopRequested()) {
+                    if (!running_.load() || context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "runtime config stream read failed: " << error.what() << '\n';
@@ -181,7 +181,7 @@ class Reconciler final {
                         std::string_view::npos;
                 }
                 if (groupMissing && running_.load() &&
-                    !context.stopToken().stopRequested()) {
+                    !context.get_stop_token().stop_requested()) {
                     try {
                         co_await service::message::redis::ensureGroup(
                             redis,
@@ -194,11 +194,11 @@ class Reconciler final {
                                   << ensureError.what() << '\n';
                     }
                 }
-                if (!running_.load() || context.stopToken().stopRequested()) {
+                if (!running_.load() || context.get_stop_token().stop_requested()) {
                     break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     continue;
                 }
                 if (recovering && batches.empty()) {
@@ -220,7 +220,7 @@ class Reconciler final {
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Reconciler,
-                        context.stopToken(),
+                        context.get_stop_token(),
                         timeout
                     );
                     continue;
@@ -230,7 +230,7 @@ class Reconciler final {
                     if (!recovering) {
                         // Absorb the rest of a CRUD burst before taking the global projection
                         // lock. Recovery already has a durable backlog and needs no delay.
-                        (void)co_await ruvia::sleepFor(context.worker(), kCoalesceWindow);
+                        (void)co_await ruvia::sleep_for(context.worker(), kCoalesceWindow);
                     }
                     std::size_t messageCount = 0;
                     for (const auto& batch : batches) {
@@ -317,7 +317,7 @@ class Reconciler final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (context.stopToken().stopRequested()) {
+                    if (context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "runtime reconciliation failed: " << error.what() << '\n';
@@ -325,7 +325,7 @@ class Reconciler final {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                 }
             }
         } catch (...) {
@@ -340,7 +340,7 @@ class Reconciler final {
         }
     }
 
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;

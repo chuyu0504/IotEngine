@@ -73,8 +73,6 @@ WindowsServiceSnapshot capture(const std::wstring& name) {
     if (actions->cActions) result.actions.assign(actions->lpsaActions, actions->lpsaActions + actions->cActions);
     return result;
 }
-bool exists(const std::wstring& name) { auto scm = manager(); auto service = open(scm.value, name, SERVICE_QUERY_STATUS); return !!service; }
-bool isRunning(const std::wstring& name) { auto scm = manager(); auto service = open(scm.value, name, SERVICE_QUERY_STATUS); return service && status(service.value).dwCurrentState == SERVICE_RUNNING; }
 void validateExisting(const std::wstring& name, const std::wstring& binary) {
     const auto old = capture(name);
     if (old.present && (_wcsicmp(old.binary.c_str(), binary.c_str()) || _wcsicmp(old.account.c_str(), L"LocalSystem") || old.type != SERVICE_WIN32_OWN_PROCESS))

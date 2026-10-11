@@ -36,7 +36,7 @@ async function commandCompleted(commandId: string) {
             assert.equal(reply.code, 0);
             if (reply.data.complete) {
                 assert.equal(reply.data.statuses[0].status, 'SUCCEEDED');
-                return;
+                return reply.data.statuses[0];
             }
         }
         throw new Error('Command did not reach a terminal state');
@@ -119,18 +119,13 @@ async function verify(protocol: 'MC' | 'FINS' | 'DLT645', version: string) {
         const result = await http('POST', `/v1/device/${device}/commands`, {idempotency_key: crypto.randomUUID(), elements: [{elementId: '00000000-0000-7000-8000-000000000111', value: protocol === 'DLT645' ? '13.25' : '13'}]});
         assert.equal(result.command_ids.length, 1);
         const commandId = result.command_ids[0];
-        await commandCompleted(commandId);
+        const status = await commandCompleted(commandId);
         assert.equal((await db`SELECT status FROM command_operation WHERE id=${commandId}`)[0].status,'SUCCEEDED');
         assert.equal(writes, 1, 'one command wrote more than once');
-        const status = await http('GET', `/v1/device/commands/${commandId}`);
-        assert.equal(status.status,'SUCCEEDED');
         // Collector protocols verify readback bytes but currently do not publish
         // optional actual_values (EdgeNode results can). Preserve the stored contract.
         const recorded = (await db`SELECT actual_values FROM command_operation WHERE id=${commandId}`)[0].actual_values;
         assert.equal((status.actual_values ?? []).length,recorded.length);
-        const statuses = await http('GET', `/v1/device/commands?ids=${commandId}`);
-        assert.equal(statuses.complete,true);
-        assert.equal(statuses.statuses[0].status,'SUCCEEDED');
         if (protocol === 'MC' && version === '3E') {
             const accessKey = `ak_${crypto.randomUUID().replaceAll('-','')}`;
             const hash = createHash('sha256').update(accessKey).digest('hex');

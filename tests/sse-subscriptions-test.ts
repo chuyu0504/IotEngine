@@ -34,7 +34,7 @@ test('one healthy SSE connection shares snapshots and cancels only after the las
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async (url, init) => {
             calls++;
-            expect(String(url)).toBe('/v1/device/realtime?group=A%26B');
+            expect(String(url)).toBe('/v1/device/events?group=A%26B');
             expect(new Headers(init?.headers).get('Accept')).toBe('text/event-stream');
             expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer token');
             return wire.response;
@@ -42,7 +42,7 @@ test('one healthy SSE connection shares snapshots and cancels only after the las
     });
     const values: unknown[][] = [[], []];
     const errors: Error[] = [];
-    const stream = subscriptions.create('/v1/device/realtime', { group: 'A&B' });
+    const stream = subscriptions.create('/v1/device/events', { group: 'A&B' });
     const first = stream.subscribe({ next: value => values[0].push(value), error: error => errors.push(error) });
     const second = stream.subscribe({ next: value => values[1].push(value), error: error => errors.push(error) });
     await tick();
@@ -69,7 +69,7 @@ test('disconnect retries are bounded, and release cancels an open stream', async
         retryDelay: async () => { delays++; },
     });
     const errors: Error[] = [];
-    const release = subscriptions.create('/v1/auth/me/events').subscribe({ next: () => {}, error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events').subscribe({ next: () => {}, error: error => errors.push(error) });
     await tick();
     expect(calls).toBe(9);
     expect(delays).toBe(8);
@@ -86,7 +86,7 @@ test('account replacement aborts old subscriptions and discards a late response'
         fetch: (() => new Promise<Response>(resolve => { finish = resolve; })) as typeof fetch,
     });
     const values: unknown[] = [], errors: Error[] = [];
-    subscriptions.create('/v1/auth/me/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+    subscriptions.create('/v1/link/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     await tick();
     session = { token: 'new', userId: 'new-user' };
     subscriptions.sessionChanged();
@@ -112,7 +112,7 @@ test('expired stream refreshes its token and reconnects with a fresh snapshot', 
         }) as typeof fetch,
     });
     const values: unknown[] = [], errors: Error[] = [];
-    const release = subscriptions.create('/v1/auth/me/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     await tick();
     wire.send('snapshot', { code: 0, data: { id: 'user' } });
     await tick();
@@ -130,7 +130,7 @@ test('business denial ends the subscription without a retry loop', async () => {
         fetch: (async () => { calls++; return wire.response; }) as typeof fetch,
     });
     const errors: Error[] = [];
-    const release = subscriptions.create('/v1/auth/me/events').subscribe({ next: () => {}, error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events').subscribe({ next: () => {}, error: error => errors.push(error) });
     await tick();
     wire.send('error', { code: 11007, message: 'denied' });
     await tick();

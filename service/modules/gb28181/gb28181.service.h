@@ -5,14 +5,11 @@
 #include <string_view>
 #include <utility>
 
-#include <ruvia/web/Context.h>
-#include <ruvia/web/ModelJson.h>
-#include <ruvia/web/db/DbQuery.h>
+#include <ruvia/web/context.h>
+#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
-#include "service/common/uuid.h"
 #include "service/middleware/rpc.h"
-#include "service/modules/gb28181/gb28181.entity.h"
 #include "service/modules/gb28181/gb28181.types.h"
 
 namespace service::gb28181 {
@@ -21,19 +18,19 @@ namespace detail {
 
 template <typename Context>
 rpc_wire::ControlRequest controlRequest(Context& c) {
-    return rpc_wire::ControlRequest({ .resource = c.arena() });
+    return rpc_wire::ControlRequest({ .resource_ = c.arena() });
 }
 
 template <typename Context>
 std::string encodeRequest(Context& c, const rpc_wire::ControlRequest& request) {
-    const auto encoded = ruvia::toJson(request, { .resource = c.arena() });
+    const auto encoded = ruvia::to_json(request, { .resource_ = c.arena() });
     return { encoded.data(), encoded.size() };
 }
 
 template <typename Response, typename Context>
 Response parseResponse(Context& c, std::string_view body) {
     auto parsed =
-        ruvia::fromJson<Response>(body, { .resource = c.arena() });
+        ruvia::from_json<Response>(body, { .resource_ = c.arena() });
     if (!parsed || !parsed->template get<"data">()) {
         service::common::fail(10004, "GB28181 RPC 响应无效", 502);
     }
@@ -43,7 +40,7 @@ Response parseResponse(Context& c, std::string_view body) {
 template <typename Context>
 
 GbMediaPortsDto mediaPorts(Context& c, const rpc_wire::MediaPorts& value) {
-    GbMediaPortsDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbMediaPortsDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"http">()) {
         result.set<"http">(*field);
     }
@@ -77,7 +74,7 @@ GbMediaCapabilitiesDto mediaCapabilities(
     Context& c,
     const rpc_wire::MediaCapabilities& value
 ) {
-    GbMediaCapabilitiesDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbMediaCapabilitiesDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"faac">()) {
         result.set<"faac">(*field);
     }
@@ -120,7 +117,7 @@ GbMediaCapabilitiesDto mediaCapabilities(
 template <typename Context>
 
 GbHealthDto health(Context& c, const rpc_wire::Health& value) {
-    GbHealthDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbHealthDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"status">()) {
         result.set<"status">(field->view());
     }
@@ -147,33 +144,8 @@ GbHealthDto health(Context& c, const rpc_wire::Health& value) {
 
 template <typename Context>
 
-GbSipConfigDto sipConfig(Context& c, const rpc_wire::SipConfig& value) {
-    GbSipConfigDto result(ruvia::ModelOptions{ .resource = c.arena() });
-    if (const auto& field = value.template get<"domain">()) {
-        result.set<"domain">(field->view());
-    }
-    if (const auto& field = value.template get<"id">()) {
-        result.set<"id">(field->view());
-    }
-    if (const auto& field = value.template get<"host">()) {
-        result.set<"host">(field->view());
-    }
-    if (const auto& field = value.template get<"publicIp">()) {
-        result.set<"publicIp">(field->view());
-    }
-    if (const auto& field = value.template get<"port">()) {
-        result.set<"port">(*field);
-    }
-    if (const auto& field = value.template get<"transport">()) {
-        result.set<"transport">(field->view());
-    }
-    return result;
-}
-
-template <typename Context>
-
 GbChannelDto channel(Context& c, const rpc_wire::Channel& value) {
-    GbChannelDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbChannelDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"id">()) {
         result.set<"id">(field->view());
     }
@@ -203,39 +175,8 @@ GbChannelDto channel(Context& c, const rpc_wire::Channel& value) {
 
 template <typename Context>
 
-GbRecordDto record(Context& c, const rpc_wire::Record& value) {
-    GbRecordDto result(ruvia::ModelOptions{ .resource = c.arena() });
-    if (const auto& field = value.template get<"deviceId">()) {
-        result.set<"deviceId">(field->view());
-    }
-    if (const auto& field = value.template get<"name">()) {
-        result.set<"name">(field->view());
-    }
-    if (const auto& field = value.template get<"filePath">()) {
-        result.set<"filePath">(field->view());
-    }
-    if (const auto& field = value.template get<"address">()) {
-        result.set<"address">(field->view());
-    }
-    if (const auto& field = value.template get<"startTime">()) {
-        result.set<"startTime">(field->view());
-    }
-    if (const auto& field = value.template get<"endTime">()) {
-        result.set<"endTime">(field->view());
-    }
-    if (const auto& field = value.template get<"type">()) {
-        result.set<"type">(field->view());
-    }
-    if (const auto& field = value.template get<"recorderId">()) {
-        result.set<"recorderId">(field->view());
-    }
-    return result;
-}
-
-template <typename Context>
-
 GbDeviceDto device(Context& c, const rpc_wire::Device& value) {
-    GbDeviceDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbDeviceDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"id">()) {
         result.set<"id">(field->view());
     }
@@ -263,9 +204,6 @@ GbDeviceDto device(Context& c, const rpc_wire::Device& value) {
     if (const auto& field = value.template get<"registrationSource">()) {
         result.set<"registrationSource">(field->view());
     }
-    if (const auto& field = value.template get<"mappedDeviceId">()) {
-        result.set<"mappedDeviceId">(field->view());
-    }
     if (const auto& field = value.template get<"lastSeenAt">()) {
         result.set<"lastSeenAt">(field->view());
     }
@@ -274,47 +212,13 @@ GbDeviceDto device(Context& c, const rpc_wire::Device& value) {
     }
 
     if (const auto& source = value.template get<"channels">()) {
-        ruvia::BoxedArray<GbChannelDto> channels(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<GbChannelDto> channels(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& item : *source) {
             channels.emplace(channel(c, item));
         }
         result.set<"channels">(std::move(channels));
-    }
-    if (const auto& source = value.template get<"records">()) {
-        ruvia::BoxedArray<GbRecordDto> records(
-            ruvia::ModelOptions{ .resource = c.arena() }
-        );
-        for (const auto& item : *source) {
-            records.emplace(record(c, item));
-        }
-        result.set<"records">(std::move(records));
-    }
-    return result;
-}
-
-template <typename Context>
-
-GbStreamDto stream(Context& c, const rpc_wire::Stream& value) {
-    GbStreamDto result(ruvia::ModelOptions{ .resource = c.arena() });
-    if (const auto& field = value.template get<"id">()) {
-        result.set<"id">(field->view());
-    }
-    if (const auto& field = value.template get<"app">()) {
-        result.set<"app">(field->view());
-    }
-    if (const auto& field = value.template get<"stream">()) {
-        result.set<"stream">(field->view());
-    }
-    if (const auto& field = value.template get<"schema">()) {
-        result.set<"schema">(field->view());
-    }
-    if (const auto& field = value.template get<"online">()) {
-        result.set<"online">(*field);
-    }
-    if (const auto& field = value.template get<"readerCount">()) {
-        result.set<"readerCount">(*field);
     }
     return result;
 }
@@ -322,7 +226,7 @@ GbStreamDto stream(Context& c, const rpc_wire::Stream& value) {
 template <typename Context>
 
 GbPlayUrlsDto playUrls(Context& c, const rpc_wire::PlayUrls& value) {
-    GbPlayUrlsDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbPlayUrlsDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"httpFlv">()) {
         result.set<"httpFlv">(field->view());
     }
@@ -350,7 +254,7 @@ GbPlayUrlsDto playUrls(Context& c, const rpc_wire::PlayUrls& value) {
 template <typename Context>
 
 GbPreviewStartDto previewStart(Context& c, const rpc_wire::PreviewStart& value) {
-    GbPreviewStartDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbPreviewStartDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"sent">()) {
         result.set<"sent">(*field);
     }
@@ -384,7 +288,7 @@ GbPreviewStartDto previewStart(Context& c, const rpc_wire::PreviewStart& value) 
 template <typename Context>
 
 GbPreviewStopDto previewStop(Context& c, const rpc_wire::PreviewStop& value) {
-    GbPreviewStopDto result(ruvia::ModelOptions{ .resource = c.arena() });
+    GbPreviewStopDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"stopped">()) {
         result.set<"stopped">(*field);
     }
@@ -403,52 +307,12 @@ GbPreviewStopDto previewStop(Context& c, const rpc_wire::PreviewStop& value) {
     return result;
 }
 
-template <typename Context>
-
-GbActionDto action(Context& c, const rpc_wire::Action& value) {
-    GbActionDto result(ruvia::ModelOptions{ .resource = c.arena() });
-    if (const auto& field = value.template get<"registered">()) {
-        result.set<"registered">(*field);
-    }
-    if (const auto& field = value.template get<"sent">()) {
-        result.set<"sent">(*field);
-    }
-    if (const auto& field = value.template get<"deviceId">()) {
-        result.set<"deviceId">(field->view());
-    }
-    if (const auto& field = value.template get<"channelId">()) {
-        result.set<"channelId">(field->view());
-    }
-    if (const auto& field = value.template get<"action">()) {
-        result.set<"action">(field->view());
-    }
-    if (const auto& field = value.template get<"mappedDeviceId">()) {
-        result.set<"mappedDeviceId">(field->view());
-    }
-    if (const auto& field = value.template get<"speed">()) {
-        result.set<"speed">(*field);
-    }
-    if (const auto& field = value.template get<"pan">()) {
-        result.set<"pan">(*field);
-    }
-    if (const auto& field = value.template get<"tilt">()) {
-        result.set<"tilt">(*field);
-    }
-    if (const auto& field = value.template get<"zoom">()) {
-        result.set<"zoom">(*field);
-    }
-    if (const auto& field = value.template get<"recording">()) {
-        result.set<"recording">(*field);
-    }
-    return result;
-}
-
 } // namespace detail
 
 class Gb28181Service final {
   public:
     template <typename Context>
-    [[nodiscard]] ruvia::Task<GbHealthDto> health(Context& c) const {
+    [[nodiscard]] ruvia::task<GbHealthDto> health(Context& c) const {
         const auto raw = co_await call(c, "health", "{}");
         auto response = detail::parseResponse<rpc_wire::HealthResponse>(c, raw);
         co_return detail::health(c, *response.template get<"data">());
@@ -456,78 +320,27 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    [[nodiscard]] ruvia::Task<GbSipConfigDto>
-    sipConfig(Context& c) const {
-        const auto raw = co_await call(c, "config.sip", "{}");
-        auto response = detail::parseResponse<rpc_wire::SipConfigResponse>(c, raw);
-        co_return detail::sipConfig(c, *response.template get<"data">());
-    }
-
-    template <typename Context>
-
-    [[nodiscard]] ruvia::Task<GbDeviceListDto>
+    [[nodiscard]] ruvia::task<GbDeviceListDto>
     devices(Context& c) const {
         const auto raw = co_await call(c, "devices", "{}");
         auto response = detail::parseResponse<rpc_wire::DeviceListResponse>(c, raw);
         const auto& source = *response.template get<"data">();
-        ruvia::BoxedArray<GbDeviceDto> items(
-            ruvia::ModelOptions{ .resource = c.arena() }
+        ruvia::boxed_array<GbDeviceDto> items(
+            ruvia::model_options{ .resource_ = c.arena() }
         );
         if (const auto& values = source.template get<"items">()) {
             for (const auto& item : *values) {
                 items.emplace(detail::device(c, item));
             }
         }
-        GbDeviceListDto result(ruvia::ModelOptions{ .resource = c.arena() });
+        GbDeviceListDto result(ruvia::model_options{ .resource_ = c.arena() });
         result.set<"items">(std::move(items));
         co_return result;
     }
 
     template <typename Context>
 
-    [[nodiscard]] ruvia::Task<GbDeviceDto>
-    device(Context& c, std::string id) const {
-        auto payload = detail::controlRequest(c);
-        payload.template set<"deviceId">(id);
-        const auto raw = co_await call(c, "device", detail::encodeRequest(c, payload));
-        auto response = detail::parseResponse<rpc_wire::DeviceResponse>(c, raw);
-        co_return detail::device(c, *response.template get<"data">());
-    }
-
-    template <typename Context>
-
-    [[nodiscard]] ruvia::Task<GbStreamListDto>
-    streams(Context& c) const {
-        const auto raw = co_await call(c, "streams", "{}");
-        auto response = detail::parseResponse<rpc_wire::StreamListResponse>(c, raw);
-        const auto& source = *response.template get<"data">();
-        ruvia::BoxedArray<GbStreamDto> items(
-            ruvia::ModelOptions{ .resource = c.arena() }
-        );
-        if (const auto& values = source.template get<"items">()) {
-            for (const auto& item : *values) {
-                items.emplace(detail::stream(c, item));
-            }
-        }
-        GbStreamListDto result(ruvia::ModelOptions{ .resource = c.arena() });
-        result.set<"items">(std::move(items));
-        co_return result;
-    }
-
-    template <typename Context>
-
-    [[nodiscard]] ruvia::Task<GbStreamDto>
-    stream(Context& c, std::string id) const {
-        auto payload = detail::controlRequest(c);
-        payload.template set<"streamId">(id);
-        const auto raw = co_await call(c, "stream", detail::encodeRequest(c, payload));
-        auto response = detail::parseResponse<rpc_wire::StreamResponse>(c, raw);
-        co_return detail::stream(c, *response.template get<"data">());
-    }
-
-    template <typename Context>
-
-    ruvia::Task<void> queryCatalog(Context& c, std::string deviceId) const {
+    ruvia::task<void> queryCatalog(Context& c, std::string deviceId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
         (void)co_await call(c, "catalog", detail::encodeRequest(c, payload));
@@ -536,7 +349,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> renameDevice(Context& c, std::string deviceId, std::string name) const {
+    ruvia::task<void> renameDevice(Context& c, std::string deviceId, std::string name) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
         payload.template set<"name">(name);
@@ -546,7 +359,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> renameChannel(Context& c, std::string deviceId, std::string channelId, std::string name) const {
+    ruvia::task<void> renameChannel(Context& c, std::string deviceId, std::string channelId, std::string name) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
@@ -557,53 +370,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> mapDevice(Context& c, std::string deviceId, std::string mappedDeviceId) const {
-        if (!mappedDeviceId.empty()) {
-            if (!service::common::isUuid(mappedDeviceId)) {
-                service::common::fail(10001, "mapped_device_id 必须是 UUID", 400);
-            }
-            ruvia::DbQuery targetQuery(c.pool());
-            targetQuery
-                .select(targetQuery.value(1))
-                .from(service::gb28181::entities::DeviceEntity::tableName())
-                .where(targetQuery.binary(
-                    targetQuery.column(service::gb28181::entities::DeviceEntity::columnName<"id">()),
-                    ruvia::DbBinaryOperator::kEqual,
-                    targetQuery.cast(targetQuery.value(mappedDeviceId), ruvia::DbDataType::kUuid)
-                ))
-                .andWhere(targetQuery.unary(
-                    ruvia::DbUnaryOperator::kIsNull,
-                    targetQuery.column(service::gb28181::entities::DeviceEntity::columnName<"deleted_at">())
-                ));
-            const auto target = co_await c.db().query(targetQuery);
-            if (target.empty()) {
-                service::common::fail(10003, "映射目标设备不存在", 404);
-            }
-        }
-        auto payload = detail::controlRequest(c);
-        payload.template set<"deviceId">(deviceId);
-        if (!mappedDeviceId.empty()) {
-            payload.template set<"mappedDeviceId">(mappedDeviceId);
-        }
-        (void)co_await call(c, mappedDeviceId.empty() ? "unmap" : "map", detail::encodeRequest(c, payload));
-        co_return;
-    }
-
-    template <typename Context>
-
-    ruvia::Task<void> queryRecords(Context& c, std::string deviceId, std::string channelId, std::string startTime, std::string endTime) const {
-        auto payload = detail::controlRequest(c);
-        payload.template set<"deviceId">(deviceId);
-        payload.template set<"channelId">(channelId);
-        payload.template set<"startTime">(startTime);
-        payload.template set<"endTime">(endTime);
-        (void)co_await call(c, "records", detail::encodeRequest(c, payload));
-        co_return;
-    }
-
-    template <typename Context>
-
-    ruvia::Task<void> ptz(Context& c, std::string deviceId, std::string channelId, std::string action, std::uint8_t speed) const {
+    ruvia::task<void> ptz(Context& c, std::string deviceId, std::string channelId, std::string action, std::uint8_t speed) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
@@ -615,7 +382,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> ptzPosition(Context& c, std::string deviceId, std::string channelId, double pan, double tilt, double zoom) const {
+    ruvia::task<void> ptzPosition(Context& c, std::string deviceId, std::string channelId, double pan, double tilt, double zoom) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
@@ -628,7 +395,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<GbPreviewStartDto>
+    ruvia::task<GbPreviewStartDto>
     startPreview(Context& c, std::string deviceId, std::string channelId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"deviceId">(deviceId);
@@ -642,7 +409,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<GbPreviewStopDto>
+    ruvia::task<GbPreviewStopDto>
     stopPreview(Context& c, std::string sessionId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"sessionId">(sessionId);
@@ -655,7 +422,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> renewPreview(Context& c, std::string sessionId) const {
+    ruvia::task<void> renewPreview(Context& c, std::string sessionId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"sessionId">(sessionId);
         (void)co_await call(c, "preview.heartbeat", detail::encodeRequest(c, payload));
@@ -664,23 +431,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<GbPreviewStartDto>
-    startPlayback(Context& c, std::string deviceId, std::string channelId, std::string startTime, std::string endTime) const {
-        auto payload = detail::controlRequest(c);
-        payload.template set<"deviceId">(deviceId);
-        payload.template set<"channelId">(channelId);
-        payload.template set<"startTime">(startTime);
-        payload.template set<"endTime">(endTime);
-        const auto raw =
-            co_await call(c, "playback.start", detail::encodeRequest(c, payload));
-        auto response =
-            detail::parseResponse<rpc_wire::PreviewStartResponse>(c, raw);
-        co_return detail::previewStart(c, *response.template get<"data">());
-    }
-
-    template <typename Context>
-
-    ruvia::Task<bool> recording(Context& c, std::string streamId) const {
+    ruvia::task<bool> recording(Context& c, std::string streamId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"streamId">(streamId);
         const auto raw =
@@ -692,7 +443,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> startRecording(Context& c, std::string streamId) const {
+    ruvia::task<void> startRecording(Context& c, std::string streamId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"streamId">(streamId);
         (void)co_await call(c, "recording.start", detail::encodeRequest(c, payload));
@@ -701,7 +452,7 @@ class Gb28181Service final {
 
     template <typename Context>
 
-    ruvia::Task<void> stopRecording(Context& c, std::string streamId) const {
+    ruvia::task<void> stopRecording(Context& c, std::string streamId) const {
         auto payload = detail::controlRequest(c);
         payload.template set<"streamId">(streamId);
         (void)co_await call(c, "recording.stop", detail::encodeRequest(c, payload));
@@ -710,7 +461,7 @@ class Gb28181Service final {
 
   private:
     template <typename Context>
-    static ruvia::Task<std::string> call(Context& c, std::string_view operation, std::string payload) {
+    static ruvia::task<std::string> call(Context& c, std::string_view operation, std::string payload) {
         co_return co_await service::rpc::call(c, "gb28181", operation, std::move(payload));
     }
 };

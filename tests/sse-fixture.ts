@@ -3,7 +3,15 @@ import { apiBase } from './architecture-fixture';
 import { consumeServerSentEvents } from '../web/lib/sse';
 import type { ServerSentEvent } from '../web/utils/sse';
 
-export async function openSnapshotSubscription(path: string, bearer: string, options?: { includeUser?: boolean }) {
+export interface SnapshotSubscription {
+    readonly commentCount: number;
+    next(timeoutMs?: number): Promise<ServerSentEvent>;
+    unread(event: ServerSentEvent): void;
+    expectQuiet(durationMs?: number): Promise<void>;
+    close(): Promise<void>;
+}
+
+export async function openSnapshotSubscription(path: string, bearer: string, options?: { includeUser?: boolean }): Promise<SnapshotSubscription> {
     const controller = new AbortController();
     const response = await fetch(apiBase + path, {
         headers: { Accept: 'text/event-stream', Authorization: `Bearer ${bearer}`, ...(options?.includeUser ? { 'X-SSE-User': '1' } : {}) }, signal: controller.signal,

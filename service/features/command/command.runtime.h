@@ -14,9 +14,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/Task.h>
-#include <ruvia/core/Timer.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
 #include "service/features/command/command.service.h"
@@ -33,7 +33,7 @@ class CommandProcessingRuntime final {
 
     ~CommandProcessingRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -52,7 +52,7 @@ class CommandProcessingRuntime final {
         readiness.push_back(ready->get_future());
         stopped_ = stopped->get_future().share();
         const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::WebWorkerContext& context) {
+            [this, ready, stopped](ruvia::web_worker_context& context) {
                 return run(context, workerIndex_, ready, stopped);
             }
         );
@@ -79,7 +79,7 @@ class CommandProcessingRuntime final {
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext&) -> ruvia::Task<void> {
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                                                 service::message::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::CommandResult
                                                 );
@@ -99,10 +99,9 @@ class CommandProcessingRuntime final {
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:command-result";
-    static constexpr auto kStateTtl = std::chrono::hours(24);
     static constexpr std::size_t kBatchSize = 256;
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
             std::vector<std::string> streams;
@@ -118,7 +117,7 @@ class CommandProcessingRuntime final {
             static constexpr auto kPendingRecoveryInterval =
                 std::chrono::milliseconds(5000);
             auto nextRecoverySweep = std::chrono::steady_clock::now();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 bool dispatchFailed = false;
                 std::optional<std::chrono::milliseconds> dispatchDelay;
                 try {
@@ -129,7 +128,7 @@ class CommandProcessingRuntime final {
                     dispatchFailed = true;
                 }
                 if (streams.empty()) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(),
                         dispatchFailed ? std::chrono::milliseconds(250)
                                        : std::chrono::seconds(1)
@@ -162,7 +161,7 @@ class CommandProcessingRuntime final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.stopToken().stopRequested()) {
+                    if (!running_.load() || context.get_stop_token().stop_requested()) {
                         break;
                     }
                     std::cerr << "command result stream read failed for service worker " << index
@@ -173,7 +172,7 @@ class CommandProcessingRuntime final {
                         std::string_view::npos;
                 }
                 if (groupMissing && running_.load() &&
-                    !context.stopToken().stopRequested()) {
+                    !context.get_stop_token().stop_requested()) {
                     try {
                         co_await message::redis::ensureGroup(
                             redis,
@@ -186,11 +185,11 @@ class CommandProcessingRuntime final {
                                   << index << ": " << ensureError.what() << '\n';
                     }
                 }
-                if (!running_.load() || context.stopToken().stopRequested()) {
+                if (!running_.load() || context.get_stop_token().stop_requested()) {
                     break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     continue;
                 }
                 if (recovering && batches.empty()) {
@@ -199,7 +198,7 @@ class CommandProcessingRuntime final {
                 }
                 if (batches.empty()) {
                     if (dispatchFailed) {
-                        (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                        (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     } else {
                         auto recoveryWait =
                             std::optional<std::chrono::milliseconds>(
@@ -211,7 +210,7 @@ class CommandProcessingRuntime final {
                         co_await service::message::workerStreamMultiplexer().wait(
                             index,
                             service::message::WorkerStreamTask::CommandResult,
-                            context.stopToken(),
+                            context.get_stop_token(),
                             recoveryWait
                         );
                     }
@@ -238,7 +237,7 @@ class CommandProcessingRuntime final {
                     }
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                 }
             }
         } catch (...) {
@@ -253,7 +252,7 @@ class CommandProcessingRuntime final {
         }
     }
 
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;

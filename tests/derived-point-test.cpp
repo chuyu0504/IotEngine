@@ -14,7 +14,7 @@ void require(bool value, const char* reason) {
 int main() {
     try {
         using service::utils::Expression;
-        const auto configuration = ruvia::JsonValue::parse(R"json({"registers":[{"id":"00000000-0000-4000-8000-000000000001"}],"derivedPoints":[{"id":"00000000-0000-4000-8000-000000000002","name":"pressure","kind":"expression","valueType":"number","expression":"if(p > 100, p / 1000, p)","inputs":[{"alias":"p","pointId":"00000000-0000-4000-8000-000000000001"}],"unit":"kPa","unitMode":"conditional","unitRules":[{"condition":"p > 100","unit":"MPa"}],"maxAgeSeconds":10,"visible":true}],"pointVisibility":{"00000000-0000-4000-8000-000000000001":false}})json");
+        const auto configuration = ruvia::json_value::parse(R"json({"registers":[{"id":"00000000-0000-4000-8000-000000000001"}],"derivedPoints":[{"id":"00000000-0000-4000-8000-000000000002","name":"pressure","kind":"expression","valueType":"number","expression":"if(p > 100, p / 1000, p)","inputs":[{"alias":"p","pointId":"00000000-0000-4000-8000-000000000001"}],"unit":"kPa","unitMode":"conditional","unitRules":[{"condition":"p > 100","unit":"MPa"}],"maxAgeSeconds":10,"visible":true}],"pointVisibility":{"00000000-0000-4000-8000-000000000001":false}})json");
         require(configuration && service::common::orderDerivedPoints(*configuration).size() == 1, "configuration must decode and validate");
         require(Expression("if(x > 10, x * 2, 1 / 0)").evaluate([](auto) {
             return 12;

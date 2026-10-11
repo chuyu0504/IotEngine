@@ -39,7 +39,7 @@ try {
     const [role] = await sql`SELECT id FROM sys_role WHERE code=${tag}`;
     assert(role);
     await request('PUT', `/v1/roles/${role.id}`, { description: 'HTTP update', permissions: [] });
-    assert.equal((await request('GET', `/v1/roles/${role.id}`)).data.description, 'HTTP update');
+    assert.equal((await request('GET', `/v1/roles?keyword=${tag}`)).data.list[0].description, 'HTTP update');
     assert.equal((await request('GET', `/v1/roles?keyword=${tag}&pageSize=1`)).data.total, 1);
 
     await request('POST', '/v1/departments', { name: tag, code: tag });
@@ -54,17 +54,17 @@ try {
     assert.equal((await request('PUT', `/v1/departments/${root.id}`, { parent_id: child.id }, 400)).code, 14003);
     assert.equal((await request('DELETE', `/v1/departments/${root.id}`, undefined, 409)).code, 14005);
     await request('PUT', `/v1/departments/${child.id}`, { parent_id: '', leader_id: '' });
-    assert.equal((await request('GET', `/v1/departments/${child.id}`)).data.parent_id, '');
+    assert.equal((await request('GET', `/v1/departments?keyword=${tag}_child`)).data.list[0].parent_id, '');
 
     await request('POST', '/v1/users', {
         username: tag, password: 'disposable-test-password', role_ids: [role.id], department_id: root.id,
     });
     const [user] = await sql`SELECT id FROM sys_user WHERE username=${tag}`;
-    assert.equal((await request('GET', `/v1/users/${user.id}`)).data.roles[0].id, role.id);
+    assert.equal((await request('GET', `/v1/users?keyword=${tag}`)).data.list[0].roles[0].id, role.id);
     assert.equal((await request('GET', `/v1/users?keyword=${tag.toUpperCase()}`)).data.total, 1);
     assert.equal((await request('GET', '/v1/users', undefined, 403, accessToken(user.id))).code, 11007);
     await request('PUT', `/v1/users/${user.id}`, { nickname: 'HTTP update', department_id: '' });
-    const changed = (await request('GET', `/v1/users/${user.id}`)).data;
+    const changed = (await request('GET', `/v1/users?keyword=${tag}`)).data.list[0];
     assert.equal(changed.nickname, 'HTTP update');
     assert.equal(changed.department_id, '');
     assert.equal((await request('DELETE', `/v1/users/${admin}`, undefined, 400)).code, 12004);

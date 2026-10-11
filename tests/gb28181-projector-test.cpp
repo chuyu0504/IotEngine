@@ -4,7 +4,7 @@
 #include <vector>
 #include <string_view>
 #include <asio.hpp>
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/event_loop_pool.h>
 
 #include "service/features/gb28181/gb28181.service.h"
 #include "service/features/gb28181/gb28181.protocol.h"
@@ -20,9 +20,9 @@ void require(bool condition, std::string_view message) {
 
 struct ProjectionQueryCompiler {
   std::vector<std::string> statements;
-  ruvia::Task<void> execute(const ruvia::DbQuery& query) {
-    auto statement = query.compile(ruvia::DbDriver::kPostgreSql,
-        std::pmr::get_default_resource(), ruvia::DbParameterMode::kLiteral);
+  ruvia::task<void> execute(const ruvia::db_query& query) {
+    auto statement = query.compile(ruvia::db_driver::postgresql,
+        std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
     statements.emplace_back(statement.sql());
     co_return;
   }
@@ -30,11 +30,10 @@ struct ProjectionQueryCompiler {
 
 struct ProjectionQueries : service::gb28181::GbProjectionService {
   using GbProjectionService::syncChannels;
-  using GbProjectionService::syncRecords;
 };
 
-void completeProjection(ruvia::Task<void> task) {
-  ruvia::EventLoopPool pool({.loopCount = 1});
+void completeProjection(ruvia::task<void> task) {
+  ruvia::event_loop_pool pool({.loop_count_ = 1});
   pool.start();
   pool.loop(0).start(std::move(task)).get();
   pool.stop();
@@ -45,15 +44,10 @@ void testNonemptyProjectionQueries() {
   Device device;
   device.id = "camera-query-test";
   device.channels.push_back(Channel{.id="channel-1", .name="Camera's channel"});
-  device.records.push_back(RecordItem{.deviceId="channel-1", .name="Recording",
-      .filePath="record.mp4", .startTime="2026-09-15T00:00:00Z",
-      .endTime="2026-09-15T01:00:00Z", .type="all", .recorderId="recorder-1"});
   ProjectionQueryCompiler transaction;
   completeProjection(ProjectionQueries::syncChannels(transaction, device));
-  completeProjection(ProjectionQueries::syncRecords(transaction, device));
-  require(transaction.statements.size() == 2, "nonempty projection did not compile both writes");
-  require(transaction.statements[0].find("gb28181_channel") != std::string::npos &&
-          transaction.statements[1].find("gb28181_record") != std::string::npos,
+  require(transaction.statements.size() == 1, "nonempty projection did not compile the channel write");
+  require(transaction.statements[0].find("gb28181_channel") != std::string::npos,
           "projection compiled a different storage target");
 }
 
@@ -97,6 +91,9 @@ int main() {
                 decodedDevice.channels.size() == 1 &&
                 decodedDevice.channels[0].customName == "Gate camera",
             "device projection lost identity or channel custom name");
+    require(!projection::projectionDeviceChange("records") &&
+                !projection::projectionDeviceChange("mapping"),
+            "retired device projection changes must use the malformed-projection path");
     auto invalidDevice = encodedDevice;
     for (auto& field : invalidDevice.fields) {
       if (field.name == "channel_count") field.value = "100001";

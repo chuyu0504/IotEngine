@@ -293,7 +293,6 @@ export namespace Edge {
 }
 export const edgeQueryKeys = {
     all: ['edge'] as const,
-    list: (query?: Edge.Query) => [...edgeQueryKeys.all, 'list', query ?? {}] as const,
     detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
     logs: (id?: string, query?: Edge.LogsQuery) =>
         [...edgeQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
@@ -349,12 +348,6 @@ export namespace EdgeVpn {
         edgeNodeId: string;
         name: string;
     }
-    export interface NetworkCreateDto {
-        name: string;
-        overlayCidr?: string;
-        hubEndpoint?: string;
-        hubListenPort?: number;
-    }
     export interface RouteDto {
         networkId: string;
         edgePeerId: string;
@@ -369,7 +362,6 @@ export namespace EdgeVpn {
         peers: Peer[];
         routes: Route[];
     }
-    export type Node = Edge.Node;
 }
 export const edgeVpnQueryKeys = {
     all: ['edge-vpn'] as const,

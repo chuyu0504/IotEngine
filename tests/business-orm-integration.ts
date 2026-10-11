@@ -256,7 +256,7 @@ try {
     }, 'link create did not become visible');
     const linkList = await query(`/v1/link?page=1&pageSize=20&keyword=${encodeURIComponent(tag)}`);
     assert(linkList.list.some((item: { id: string }) => item.id === link));
-    const linkDetail = await query(`/v1/link/${link}`);
+    const linkDetail = linkList.list.find((item: { id: string }) => item.id === link);
     assert.equal(linkDetail.id, link);
     assert.equal(linkDetail.name, linkName);
     assert.equal(linkDetail.endpoint.mode, 'TCP Server');
@@ -270,10 +270,10 @@ try {
         endpoint: linkEndpoint,
         status: 'disabled',
     });
-    const updatedLink = await query(`/v1/link/${link}`);
+    const updatedLink = (await query(`/v1/link?page=1&pageSize=20&keyword=${encodeURIComponent(tag)}`)).list.find((item: { id: string }) => item.id === link);
     assert.equal(updatedLink.name, updatedLinkName);
     assert.equal(updatedLink.endpoint.port, linkPort);
-    console.log('PASS link ORM create, list, detail, update and numeric endpoint JSON');
+    console.log('PASS link ORM create, list, update and numeric endpoint JSON');
 
     const missingNodeId = crypto.randomUUID();
     const serialEndpoint = { transport: 'serial', interface: '/dev/ttyS0' };
@@ -369,11 +369,11 @@ try {
     await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: alternateLink });
     assert.equal((await query(`/v1/device/${deviceOne}`)).link_id, alternateLink);
     assert.equal((await query(`/v1/device/${deviceTwo}`)).link_id, link);
-    assert.equal((await query(`/v1/link/${link}`)).id, link);
+    assert.equal((await db`SELECT id FROM link WHERE id=${link} AND deleted_at IS NULL`).length, 1);
     assert.equal((await db`SELECT count(*) AS count FROM link WHERE deleted_at IS NULL`)[0].count, channelsBefore);
     await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: link });
     assert.equal((await query(`/v1/device/${deviceOne}`)).link_id, link);
-    assert.equal((await query(`/v1/link/${alternateLink}`)).id, alternateLink);
+    assert.equal((await db`SELECT id FROM link WHERE id=${alternateLink} AND deleted_at IS NULL`).length, 1);
     console.log('PASS device connection edits preserve both shared physical channels and other devices');
 
 

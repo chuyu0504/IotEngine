@@ -40,22 +40,6 @@ export const webhookSaveSchema = z.object({
     eventTypes: z.array(webhookEventSchema).min(1, '至少选择一个事件'),
     secret: z.string().trim().max(255).nullable().optional(),
 });
-export const webhookFormSchema = webhookSaveSchema
-    .omit({ headers: true })
-    .extend({ headersText: z.string().max(10000, 'Header JSON 过长') })
-    .transform(({ headersText, ...data }, context) => {
-        try {
-            const headers = z.record(z.string(), z.string()).parse(JSON.parse(headersText || '{}'));
-            return { ...data, headers };
-        } catch {
-            context.addIssue({
-                code: 'custom',
-                path: ['headersText'],
-                message: '请输入值均为字符串的 JSON 对象',
-            });
-            return z.NEVER;
-        }
-    });
 export const logQuerySchema = pageParamsSchema.extend({
     accessKeyId: uuidSchema.optional(),
     webhookId: uuidSchema.optional(),

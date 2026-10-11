@@ -3,8 +3,8 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/web/Controller.h>
-#include <ruvia/web/ModelJson.h>
+#include <ruvia/web/controller.h>
+#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -13,8 +13,8 @@
 
 namespace service::middleware {
 
-inline service::auth::JwtPayload requireAuth(ruvia::Context& c) {
-    const auto token = ruvia::jwtBearerToken(c.req().header("Authorization").value_or(""));
+inline service::auth::JwtPayload requireAuth(ruvia::context& c) {
+    const auto token = ruvia::jwt_bearer_token(c.req().header("Authorization").value_or(""));
     if (!token) {
         service::common::fail(service::common::kUnauthorizedErrorCode, "未登录", 401);
     }
@@ -27,20 +27,20 @@ inline service::auth::JwtPayload requireAuth(ruvia::Context& c) {
     }
 }
 
-class AuthMiddleware final : public ruvia::Middleware {
+class AuthMiddleware final : public ruvia::middleware {
   public:
-    ruvia::Task<void> handle(ruvia::Context& c, ruvia::Next& next) {
+    ruvia::task<void> handle(ruvia::context& c, ruvia::next& next) {
         (void)requireAuth(c);
         if (c.req().header("X-SSE-User").value_or("") == "1") {
-            const AuthenticatedUserSnapshot snapshot{ [](RequestContext& request) -> ruvia::Task<std::string> {
+            const AuthenticatedUserSnapshot snapshot{ [](RequestContext& request) -> ruvia::task<std::string> {
                 const auto response = service::common::ok<service::auth::CurrentUserResponse>(
                     request,
                     co_await service::auth::authService().current(request, request.userId)
                 );
-                const auto encoded = ruvia::toJson(response);
+                const auto encoded = ruvia::to_json(response);
                 co_return std::string(encoded.data(), encoded.size());
             } };
-            const auto binding = c.bindRequestState(snapshot);
+            const auto binding = c.bind_request_state(snapshot);
             co_await next();
         } else {
             co_await next();

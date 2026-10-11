@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/event_loop_pool.h>
 #include <type_traits>
 #include "tests/redis_reply.fixture.h"
 
@@ -51,8 +51,8 @@ namespace collector = service::collector;
 namespace {
 
 template <typename Result>
-Result runTask(ruvia::Task<Result> task) {
-    ruvia::EventLoopPool pool({.loopCount = 1});
+Result runTask(ruvia::task<Result> task) {
+    ruvia::event_loop_pool pool({.loop_count_ = 1});
     pool.start();
     auto completion = pool.loop(0).start(std::move(task));
     if constexpr (std::is_void_v<Result>) {
@@ -109,8 +109,8 @@ struct FakeDbResult {
 };
 
 struct RuntimeRepositoryScaleDb {
-    ruvia::Task<FakeDbResult> query(const ruvia::DbQuery& query) {
-        const auto statement = query.compile(ruvia::DbDriver::kPostgreSql, std::pmr::get_default_resource(), ruvia::DbParameterMode::kLiteral);
+    ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
+        const auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
         const auto sql = statement.sql();
         FakeDbResult result;
         if (sql.find("FROM \"link\" WHERE") !=
@@ -130,7 +130,7 @@ struct RecordingRedis {
     explicit RecordingRedis(std::int64_t result)
         : reply(test::redisInteger(result, std::pmr::get_default_resource())) {}
 
-    ruvia::Task<ruvia::RedisValue>
+    ruvia::task<ruvia::redis_value>
     eval(std::string_view value, std::span<const std::string_view> inputKeys, std::span<const std::string_view> inputArguments) const {
         script.assign(value);
         keys.assign(inputKeys.begin(), inputKeys.end());
@@ -141,7 +141,7 @@ struct RecordingRedis {
     mutable std::string script;
     mutable std::vector<std::string> keys;
     mutable std::vector<std::string> arguments;
-    ruvia::RedisValue reply;
+    ruvia::redis_value reply;
 };
 
 struct AlertScheduleRedisState {
@@ -162,9 +162,9 @@ struct AlertScheduleRedis {
             commands.emplace_back(arguments.begin(), arguments.end());
         }
 
-        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
             state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(), commands.end());
-            std::pmr::vector<ruvia::RedisValue> replies;
+            std::pmr::vector<ruvia::redis_value> replies;
             replies.reserve(commands.size());
             for (const auto& command : commands) {
                 if (!command.empty() && command.front() == "EVALSHA" &&
@@ -179,7 +179,7 @@ struct AlertScheduleRedis {
         }
     };
 
-    ruvia::Task<std::string> scriptLoad(std::string_view script) const {
+    ruvia::task<std::string> script_load(std::string_view script) const {
         state->script = std::string(script);
         co_return "alert-schedule-sha";
     }
@@ -188,8 +188,8 @@ struct AlertScheduleRedis {
 };
 
 struct FailingLatestPipeline {
-    ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
-        std::pmr::vector<ruvia::RedisValue> replies;
+    ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
+        std::pmr::vector<ruvia::redis_value> replies;
         replies.push_back(test::redisError("injected latest projection failure", std::pmr::get_default_resource()));
         co_return replies;
     }
@@ -207,9 +207,9 @@ struct FailingConfigRedis {
             commands.emplace_back(arguments.begin(), arguments.end());
         }
 
-        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
             owner->pipelineCommands.insert(owner->pipelineCommands.end(), commands.begin(), commands.end());
-            std::pmr::vector<ruvia::RedisValue> replies;
+            std::pmr::vector<ruvia::redis_value> replies;
             replies.reserve(commands.size());
             for (std::size_t index = 0; index < commands.size(); ++index) {
                 replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
@@ -220,7 +220,7 @@ struct FailingConfigRedis {
 
     [[nodiscard]] Pipeline pipeline() const { return Pipeline{ this }; }
 
-    ruvia::Task<ruvia::RedisValue>
+    ruvia::task<ruvia::redis_value>
     command(std::span<const std::string_view> arguments) const {
         if (arguments.empty()) {
             co_return test::redisError(
@@ -259,7 +259,7 @@ struct FailingConfigRedis {
             );
         }
         if (arguments.front() == "ZRANGEBYSCORE") {
-            std::pmr::vector<ruvia::RedisValue> values;
+            std::pmr::vector<ruvia::redis_value> values;
             co_return test::redisArray(
                 std::move(values),
                 std::pmr::get_default_resource()
@@ -295,15 +295,15 @@ struct RecordingLatestRedis {
             commands.emplace_back(arguments.begin(), arguments.end());
         }
 
-        static ruvia::RedisValue string(std::string_view value) {
+        static ruvia::redis_value string(std::string_view value) {
             return test::redisString(
                 value,
                 std::pmr::get_default_resource()
             );
         }
 
-        static ruvia::RedisValue existingLatestReply() {
-            std::pmr::vector<ruvia::RedisValue> values;
+        static ruvia::redis_value existingLatestReply() {
+            std::pmr::vector<ruvia::redis_value> values;
             values.push_back(string("device-1"));
             values.push_back(string("{\"temperature\":true}"));
             return test::redisArray(
@@ -312,8 +312,8 @@ struct RecordingLatestRedis {
             );
         }
 
-        ruvia::RedisValue existingRuntimeReply() const {
-            std::pmr::vector<ruvia::RedisValue> values;
+        ruvia::redis_value existingRuntimeReply() const {
+            std::pmr::vector<ruvia::redis_value> values;
             values.push_back(string("device-1"));
             values.push_back(string(state->preservedOnlineUntilMs));
             return test::redisArray(
@@ -322,9 +322,9 @@ struct RecordingLatestRedis {
             );
         }
 
-        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
             state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(), commands.end());
-            std::pmr::vector<ruvia::RedisValue> replies;
+            std::pmr::vector<ruvia::redis_value> replies;
             replies.reserve(commands.size());
             for (const auto& command : commands) {
                 if (command.size() >= 3 && command[0] == "HMGET" &&
@@ -343,7 +343,7 @@ struct RecordingLatestRedis {
 
     [[nodiscard]] Pipeline pipeline() const { return Pipeline{ state }; }
 
-    ruvia::Task<ruvia::RedisValue>
+    ruvia::task<ruvia::redis_value>
     command(std::span<const std::string_view> arguments) const {
         state->directCommands.emplace_back(arguments.begin(), arguments.end());
         if (!arguments.empty() && arguments.front() == "XADD") {
@@ -360,8 +360,8 @@ struct RecordingLatestRedis {
 };
 
 struct LatestProjectionDb {
-    ruvia::Task<FakeDbResult> query(const ruvia::DbQuery& query) {
-        const auto statement = query.compile(ruvia::DbDriver::kPostgreSql, std::pmr::get_default_resource(), ruvia::DbParameterMode::kLiteral);
+    ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
+        const auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
         const auto text = statement.sql();
         FakeDbResult result;
         if (text.find("'online_timeout'") != std::string_view::npos) {
@@ -2819,7 +2819,7 @@ void testRuntimeReconcile() {
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(previous);
     (void)engine.connected({ .connectionId = "preserved-connection", .linkId = "client-link", .remoteAddress = "127.0.0.1:15002", .targetId = "target-b", .sessionEpoch = 1 });
-    engine.reload(metadataUpdate, metadataPlan.affectedLinks);
+    engine.reloadRetainingSessions(metadataUpdate);
     require(engine.contains("preserved-connection"), "metadata reload discarded a preserved TCP Client session");
 
     auto pollingPrevious = previous;
@@ -2840,7 +2840,7 @@ void testRuntimeReconcile() {
     const auto initialActions =
         refreshEngine.connected({ .connectionId = "refreshed-connection", .linkId = "client-link", .remoteAddress = "127.0.0.1:15001", .targetId = "target-a", .sessionEpoch = 2 });
     require(has(initialActions, collector::ProtocolActionKind::BindDevice) && has(initialActions, collector::ProtocolActionKind::Send), "initial Modbus client session was not active");
-    refreshEngine.reload(pollingUpdate, pollingPlan.affectedLinks);
+    refreshEngine.reloadRetainingSessions(pollingUpdate);
     const auto refreshes =
         refreshEngine.refreshClientSessions(pollingPlan.refreshClientSessions);
     require(refreshes.size() == 1 && refreshes.front().connectionId == "refreshed-connection", "changed Modbus target did not rebuild its protocol session");
@@ -3632,12 +3632,12 @@ void testAtomicPendingCommandDispatch() {
     dispatches.push_back({ .task = second, .streamFields = { { "message_id", second.messageId }, { "device_id", second.deviceId } } });
 
     RecordingRedis redis(2);
-    runTask(service::command::dispatchPendingBatch(redis, "iot:channel:command:worker:0:high", service::command::PendingQueueKind::Stream, dispatches, "user-1", 10'000));
+    runTask(service::command::dispatchPendingBatch(redis, "iot:channel:command:worker:0:high", service::command::PendingQueueKind::Stream, dispatches, 10'000));
     require(redis.keys.size() == 1, "queue must not own a second command status model");
     require(redis.script.find("depth+count>tonumber(ARGV[2])") != std::string::npos, "queue must reject capacity overflow before writing");
     require(redis.script.find("LTRIM") == std::string::npos && redis.script.find("MAXLEN") == std::string::npos, "accepted commands must never be trimmed");
     RecordingRedis full(0);
-    require(!runTask(service::command::dispatchPendingBatch(full, "queue", service::command::PendingQueueKind::Stream, dispatches, "user", 1)), "capacity rejection must be observable");
+    require(!runTask(service::command::dispatchPendingBatch(full, "queue", service::command::PendingQueueKind::Stream, dispatches, 1)), "capacity rejection must be observable");
 }
 
 void testCollectorUuidOwnership() {

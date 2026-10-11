@@ -135,15 +135,6 @@ enum class TransmissionReservation { Expired, Duplicate, Reserved };
 using RealtimePointDefinition = service::message::realtime::Point;
 using RealtimeDeviceDefinition = service::message::realtime::Device;
 
-struct DtuDefinition {
-    std::string key;
-    std::string linkId;
-    std::string targetId;
-    std::string protocol;
-    std::vector<std::uint8_t> registrationBytes;
-    std::vector<DeviceDefinition> devices;
-};
-
 struct RuntimeSnapshot {
     std::vector<LinkDefinition> links;
     std::vector<DeviceDefinition> devices;

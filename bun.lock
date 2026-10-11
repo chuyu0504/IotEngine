@@ -22,7 +22,6 @@
         "jv4-connection": "^1.0.9",
         "jv4-decoder": "^1.1.7",
         "jv4-demuxer": "^1.1.3",
-        "jv4-renderer": "^1.0.2",
         "mpegts.js": "^1.8.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
@@ -468,8 +467,6 @@
     "jv4-decoder": ["jv4-decoder@1.1.7", "", { "dependencies": { "afsm": "^2.4.7", "eventemitter3": "^4.0.7" } }, "sha512-s80ybJfh+yzj0nDpSkkz2c6pS+/hubrkb6Q5e15Rv27wCc1QTJ+FRX8rAkxBOA8zfJdbPRbVGQF5oQ9vW/gSUA=="],
 
     "jv4-demuxer": ["jv4-demuxer@1.1.3", "", { "dependencies": { "afsm": "^2.2.3", "crypto-js": "^4.2.0", "eventemitter3": "^4.0.7", "oput": "^1.2.2" } }, "sha512-emtHdDMBH5N2IEPwR3p17CBAJLUqkPpU+2cJ825y/PMa4WNeFov0FbOF6KVK+npshet2Frt/HVj35fWuHHVqpQ=="],
-
-    "jv4-renderer": ["jv4-renderer@1.0.2", "", { "dependencies": { "afsm": "^2.2.4", "eventemitter3": "^4.0.7" } }, "sha512-RwQYLCLfzueoVMeqJR1FfnQGh1hdhUmClcCCCl8xpjhYwhUVTYJCzs0ifs/K42rITwzaBaxyf2p91NkmVJ1I/A=="],
 
     "lightningcss": ["lightningcss@1.32.0", "", { "dependencies": { "detect-libc": "^2.0.3" }, "optionalDependencies": { "lightningcss-android-arm64": "1.32.0", "lightningcss-darwin-arm64": "1.32.0", "lightningcss-darwin-x64": "1.32.0", "lightningcss-freebsd-x64": "1.32.0", "lightningcss-linux-arm-gnueabihf": "1.32.0", "lightningcss-linux-arm64-gnu": "1.32.0", "lightningcss-linux-arm64-musl": "1.32.0", "lightningcss-linux-x64-gnu": "1.32.0", "lightningcss-linux-x64-musl": "1.32.0", "lightningcss-win32-arm64-msvc": "1.32.0", "lightningcss-win32-x64-msvc": "1.32.0" } }, "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ=="],
 

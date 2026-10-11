@@ -15,8 +15,8 @@ struct Result {
 class DerivedService final {
   public:
     template <class Redis>
-    static ruvia::Task<Result> append(const Redis& redis, std::string_view configWire, message::ParsedDeviceMessage& message, bool expiration = false, bool deduplicate = false) {
-        const auto config = ruvia::JsonValue::parse(configWire);
+    static ruvia::task<Result> append(const Redis& redis, std::string_view configWire, message::ParsedDeviceMessage& message, bool expiration = false, bool deduplicate = false) {
+        const auto config = ruvia::json_value::parse(configWire);
         if (!config) {
             co_return Result{};
         }
@@ -27,11 +27,11 @@ class DerivedService final {
         const Calculation calculation(definitions);
         const auto key = StateRecord::key(message.deviceId, configWire);
         std::map<std::string, Sample> incoming;
-        const auto root = ruvia::JsonValue::parse(message.valuesJson);
+        const auto root = ruvia::json_value::parse(message.valuesJson);
         if (!root) {
             throw std::runtime_error("invalid sample JSON");
         }
-        const auto values = root->get<ruvia::JsonValue>("values");
+        const auto values = root->get<ruvia::json_value>("values");
         if (!values) {
             throw std::runtime_error("sample has no values");
         }
@@ -42,7 +42,7 @@ class DerivedService final {
             }
         }
         if (!expiration) {
-            (void)values->forEachField([&](std::string_view id, const ruvia::JsonValue& wire) {
+            (void)values->for_each_field([&](std::string_view id, const ruvia::json_value& wire) {
                 if (inputIds.contains(std::string(id))) {
                     incoming[std::string(id)] = StateRecord::sample(wire, message.observedAtMs);
                 }
@@ -51,16 +51,16 @@ class DerivedService final {
         }
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
             const auto previous = co_await message::redis::command(redis, { "GET", key });
-            if (previous.kind() != ruvia::RedisValue::Kind::kNull && previous.kind() != ruvia::RedisValue::Kind::kString) {
+            if (previous.kind() != ruvia::redis_value::kind_type::null && previous.kind() != ruvia::redis_value::kind_type::string) {
                 message::redis::throwValue("derived state read", previous);
             }
-            const std::string before = previous.kind() == ruvia::RedisValue::Kind::kString ? std::string(previous.string()) : std::string{};
+            const std::string before = previous.kind() == ruvia::redis_value::kind_type::string ? std::string(previous.string()) : std::string{};
             auto state = StateRecord::decode(before);
             const auto outputs = calculation.advance(state, incoming, message.occurredAtMs);
             const auto after = StateRecord::encode(state);
             std::map<std::string, std::string> fields;
             if (!expiration) {
-                (void)values->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+                (void)values->for_each_field([&](std::string_view id, const ruvia::json_value& raw) {
                     fields[std::string(id)] = std::string(raw.view());
                     return true;
                 });
@@ -72,7 +72,7 @@ class DerivedService final {
                 }
             }
             std::string json = "{";
-            (void)root->forEachField([&](std::string_view name, const ruvia::JsonValue& raw) {
+            (void)root->for_each_field([&](std::string_view name, const ruvia::json_value& raw) {
                 if (name != "values") {
                     json += utils::jsonQuoted(name) + ':' + std::string(raw.view()) + ',';
                 }
@@ -121,7 +121,7 @@ return 1
             }
             const std::vector<std::string_view> args(store.begin(), store.end());
             const auto reply = co_await redis.eval(cas, keys, args);
-            if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+            if (reply.kind() != ruvia::redis_value::kind_type::integer) {
                 message::redis::throwValue("derived state CAS", reply);
             }
             if (reply.integer() == 0) {

@@ -9,8 +9,6 @@
         "forceConsistentCasingInFileNames": true,
         "skipLibCheck": true,
         "allowJs": false,
-        "experimentalDecorators": true,
-        "emitDecoratorMetadata": true,
         "noEmit": true,
         "jsx": "react-jsx",
         "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -19,5 +17,5 @@
         }
     },
     "include": ["web/**/*.ts", "web/**/*.tsx", "web/**/*.d.ts", "vite-env.d.ts"],
-    "exclude": ["node_modules", "dist"]
+    "exclude": ["node_modules"]
 }

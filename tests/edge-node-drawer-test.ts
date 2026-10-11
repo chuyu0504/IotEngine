@@ -21,10 +21,6 @@ const edgeProjector = readFileSync(
     new URL('../service/features/edge/edge.service.h', import.meta.url),
     'utf8'
 );
-const vpnDomain = readFileSync(
-    new URL('../service/modules/vpn/vpn.service.h', import.meta.url),
-    'utf8'
-);
 const vpnBackend = readFileSync(
     new URL('../service/features/vpn/vpn.service.h', import.meta.url),
     'utf8'
@@ -147,27 +143,15 @@ test('edge bridge routes commit before configuration is queued', () => {
     expect(queue).toBeGreaterThan(commit);
 });
 
-test('Windows VPN configurations contain only active virtual LAN routes', () => {
-    expect(vpnDomain).toContain(
-        'routes.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r")'
-    );
-    expect(vpnDomain).toContain(
-        'routes.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r")'
-    );
-    expect(vpnDomain).toContain('routes.value("active")');
-    expect(vpnDomain).toContain('VPN 当前没有可用虚拟网段');
-    expect(vpnDomain).not.toContain('address += "/32"');
-});
-
 test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
     expect(vpnBackend).toContain(
-        'addresses.aggregate("string_agg", { addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access")'
+        'addresses.aggregate("string_agg", { addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::column_name<"edge_address">(), "access")'
     );
     expect(vpnBackend).toContain(
-        '.from(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::tableName(), "access")'
+        '.from(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::table_name(), "access")'
     );
     expect(vpnBackend).toContain(
-        'addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual, addresses.column(service::vpn::persistence::VpnPeerEntity::columnName<"id">(), "p")'
+        'addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::column_name<"peer_id">(), "access"), Op::equal, addresses.column(service::vpn::persistence::VpnPeerEntity::column_name<"id">(), "p")'
     );
     expect(vpnBackend).toContain('peerRecord.edgeAddresses');
     expect(vpnBackend).toContain('client.edgeAddresses.push_back');

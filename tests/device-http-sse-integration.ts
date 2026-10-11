@@ -72,8 +72,6 @@ try {
     device = item.id;
     const countedGroup = created.get('groups').find((row: {id:string}) => row.id === group);
     assert.equal(countedGroup.deviceCount, 1, 'the shared connection must update group counts after device creation');
-    await request('GET', '/v1/device/commands?ids=', undefined, 10001);
-    await request('GET', `/v1/device/commands/${crypto.randomUUID()}`, undefined, 18012);
     await request('POST', `/v1/device/${device}/commands`, { elements: [] }, 10001);
     const detail = () => request('GET', `/v1/device/${device}`);
     assert.equal((await detail()).created_by, admin);
@@ -101,7 +99,6 @@ try {
     assert.equal(list.commentCount, commentsBeforeDuplicate, 'duplicate notification must not trigger a heartbeat');
     await list.expectQuiet();
     assert(Array.isArray(await request('GET', '/v1/device/options')));
-    assert((await request('GET', '/v1/device/groups/tree-count')).some((row: {id:string}) => row.id === group));
     await request('PUT', `/v1/device/${device}`, {name:`${tag}_updated`,remote_control:false});
     assert.equal((await detail()).name, `${tag}_updated`);
     assert.equal((await detail()).remark, 'retained');
@@ -146,8 +143,7 @@ try {
     assert.equal(initialCommandPage.get('commands').code, 0);
     assert.equal(initialCommandPage.get('commands').data.statuses.length, 256);
     assert.equal(initialCommandPage.get('commands').data.complete, false);
-    assert.equal((await request('GET', `/v1/device/commands/${commandIds[0]}`)).status, 'ACCEPTED');
-    assert.equal((await request('GET', `/v1/device/commands?ids=${commandIds[0]}`)).complete, false);
+    assert.equal(initialCommandPage.get('commands').data.statuses[0].status, 'ACCEPTED');
     await commands.expectQuiet();
     // No telemetry event: a command-only change must not query the metrics channel.
     await redis.send('HSET', [`iot:v2:runtime:device:${device}`, 'last_report_at_ms', String(reported + 30000)]);
@@ -168,7 +164,7 @@ try {
     await db`DELETE FROM command_operation WHERE request_id=${commandRequest}`;
     await db`DELETE FROM command_request WHERE id=${commandRequest}`;
     await request('PUT', `/v1/device/groups/${group}`, {name:`${tag}_updated`});
-    assert.equal((await request('GET', `/v1/device/groups/${group}`)).name, `${tag}_updated`);
+    assert.equal((await db`SELECT name FROM device_group WHERE id=${group}`)[0].name, `${tag}_updated`);
     await db`INSERT INTO sys_user(id,username,password_hash) VALUES(${user},${user},'unused-test-password')`;
     await db`INSERT INTO sys_role(id,name,code,permissions) VALUES(${role},${role},${role},'["iot:device:query","iot:device:edit","iot:device:delete","iot:device:share","iot:device-group:query","iot:device-group:share"]'::jsonb)`;
     await db`INSERT INTO sys_user_role(id,user_id,role_id) VALUES(${crypto.randomUUID()},${user},${role})`;

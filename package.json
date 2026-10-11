@@ -9,19 +9,12 @@
     },
     "scripts": {
         "dev": "vite",
-        "dev:web": "vite",
         "build": "vite build",
-        "build:web": "vite build",
         "start": "vite preview --host 0.0.0.0",
         "lint": "biome lint .",
         "typecheck": "tsc --noEmit",
         "format": "biome format --write .",
-        "format:check": "biome format .",
-        "test:web-terminal": "bun test ./tests/terminal-protocol-test.ts",
-        "stress:setup": "bun tests/stress/setup.ts",
-        "stress:config-reload": "bun tests/stress/config-reload.ts",
-        "stress:latest-read-model": "bun tests/stress/latest-read-model.ts",
-        "stress:collector": "bun tests/stress/collector.ts"
+        "format:check": "biome format ."
     },
     "dependencies": {
         "@ant-design/cssinjs": "^2.1.2",
@@ -41,7 +34,6 @@
         "jv4-connection": "^1.0.9",
         "jv4-decoder": "^1.1.7",
         "jv4-demuxer": "^1.1.3",
-        "jv4-renderer": "^1.0.2",
         "mpegts.js": "^1.8.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",

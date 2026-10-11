@@ -143,23 +143,23 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         if (target == link.targets.end()) {
             throw std::invalid_argument("MQTT broker configuration is missing");
         }
-        auto connection = ruvia::fromJson<Connection>(target->mqttConfig);
+        auto connection = ruvia::from_json<Connection>(target->mqttConfig);
         if (!connection) {
             throw std::invalid_argument("invalid MQTT broker configuration");
         }
         connection_ = std::move(*connection);
         const auto clientId = connection_.get<"clientId">().view();
-        keepAlive_ = connection_.get<"keepAliveSeconds">().value_or(ruvia::Int64{ 60 }).value;
+        keepAlive_ = connection_.get<"keepAliveSeconds">().value_or(ruvia::int64{ 60 }).value_;
         if (clientId.empty() || !validText(clientId) || keepAlive_ < 1 || keepAlive_ > 65535) {
             throw std::invalid_argument("invalid MQTT client ID or keep alive");
         }
         for (const auto* device : devices) {
-            auto parsed = ruvia::fromJson<Config>(device->calculationConfig);
+            auto parsed = ruvia::from_json<Config>(device->calculationConfig);
             if (!parsed) {
                 throw std::invalid_argument("invalid MQTT device configuration");
             }
             const auto& config = *parsed;
-            const auto qos = config.get<"qos">().value_or(ruvia::Int64{ 1 }).value;
+            const auto qos = config.get<"qos">().value_or(ruvia::int64{ 1 }).value_;
             if (qos < 0 || qos > 2) {
                 throw std::invalid_argument("invalid MQTT QoS");
             }
@@ -175,18 +175,18 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             subscription.recordDelimiter = stringOption(config.get<"recordDelimiter">(), "\n");
             subscription.timeField = stringOption(config.get<"timeField">(), "");
             subscription.timeFormat = stringOption(config.get<"timeFormat">(), "unix_ms");
-            subscription.topicSegment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::Int64{ 1 }).value);
-            subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::Int64{ 0 }).value);
+            subscription.topicSegment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::int64{ 1 }).value_);
+            subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);
             if (const auto& topic = config.get<"commandTopic">(); topic && !topic->view().empty()) {
                 subscription.commandTopic = deviceTopic(std::string(topic->view()), device->code);
             }
             std::map<std::string, bool, std::less<>> templatePoints;
             for (const auto& point : config.get<"points">()) {
                 const auto& unit = point.get<"unit">();
-                if (!templatePoints.emplace(std::string(point.get<"name">().view()), point.get<"writable">().value_or(ruvia::Bool{ false }).value).second) {
+                if (!templatePoints.emplace(std::string(point.get<"name">().view()), point.get<"writable">().value_or(ruvia::bool_value{ false }).value_).second) {
                     throw std::invalid_argument("MQTT 点位名称重复");
                 }
-                subscription.points.push_back({ std::string(point.get<"id">().view()), std::string(point.get<"name">().view()), std::string(point.get<"field">().view()), std::string(point.get<"dataType">().view()), unit ? std::string(unit->view()) : "", point.get<"scale">().value_or(ruvia::Double{ 1 }).value, point.get<"offset">().value_or(ruvia::Double{ 0 }).value });
+                subscription.points.push_back({ std::string(point.get<"id">().view()), std::string(point.get<"name">().view()), std::string(point.get<"field">().view()), std::string(point.get<"dataType">().view()), unit ? std::string(unit->view()) : "", point.get<"scale">().value_or(ruvia::double_value{ 1 }).value_, point.get<"offset">().value_or(ruvia::double_value{ 0 }).value_ });
                 if (const auto& values = point.get<"enumValues">(); values) {
                     for (const auto& value : *values) {
                         subscription.points.back().enums.emplace_back(value.get<"input">().view(), value.get<"output">().view());

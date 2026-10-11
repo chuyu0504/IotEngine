@@ -411,7 +411,6 @@ class TcpTransport final {
             std::string token;
             std::shared_ptr<asio::ip::tcp::socket> socket;
             std::shared_ptr<asio::ip::tcp::resolver> resolver;
-            bool claimPending = true;
             bool claimResponseReceived = false;
             bool leaseHeld = false;
             bool releaseRequested = false;
@@ -430,7 +429,6 @@ class TcpTransport final {
         std::string reason;
         std::string error;
         std::int64_t lastActivityAtMs = 0;
-        bool claimPending_ = false;
 
         ClientTarget(TcpTransport& ownerValue, LinkDefinition linkValue, LinkTargetDefinition targetValue)
             : owner(ownerValue), link(std::move(linkValue)), target(std::move(targetValue)) {}
@@ -460,7 +458,6 @@ class TcpTransport final {
                 owner.close(activeConnection, "local_closed");
             }
             attempt.reset();
-            claimPending_ = false;
         }
 
         void connect() {
@@ -485,7 +482,6 @@ class TcpTransport final {
             currentAttempt->token = owner.uuidGenerator_.next();
             attempt = currentAttempt;
             connectionId = currentAttempt->token;
-            claimPending_ = true;
             const auto claimCompleted = [self = shared_from_this(), currentAttempt](bool claimed) {
                 self->onClaimCompleted(currentAttempt, claimed);
             };
@@ -501,7 +497,6 @@ class TcpTransport final {
                 return;
             }
             currentAttempt->claimResponseReceived = true;
-            currentAttempt->claimPending = false;
             currentAttempt->leaseHeld = claimed;
             const bool current = attempt == currentAttempt && connectionId == currentAttempt->token;
             if (!current) {
@@ -510,7 +505,6 @@ class TcpTransport final {
                 }
                 return;
             }
-            claimPending_ = false;
             if (stopped || currentAttempt->cancelled) {
                 if (claimed) {
                     release(currentAttempt, true);
@@ -651,7 +645,6 @@ class TcpTransport final {
             }
             attempt.reset();
             connectionId.clear();
-            claimPending_ = false;
         }
 
         void scheduleReconnect() {
@@ -828,7 +821,7 @@ class TcpTransport final {
                                                .occurredAtMs = activity,
                                                .payload = std::move(bytes) };
                 onPacket_(std::move(packet));
-                publish(linkId, definitions_[linkId].mode == "TCP Server" ? "listening" : "connected", {}, {}, false);
+                publish(linkId, definitions_[linkId].mode == "TCP Server" ? "listening" : "connected");
             },
             [this](std::string_view currentId, std::string_view reason) {
                 removeConnection(currentId, reason, true);
@@ -869,7 +862,6 @@ class TcpTransport final {
                     client->second->attempt.reset();
                 }
                 client->second->connectionId.clear();
-                client->second->claimPending_ = false;
                 client->second->failed = true;
                 if (!client->second->stopped && client->second->reconnectToken == 0) {
                     client->second->reconnectToken = scheduler_.scheduleAfter(
@@ -884,7 +876,7 @@ class TcpTransport final {
         }
     }
 
-    void publish(std::string_view linkId, std::string state, std::string_view reason = {}, std::string_view error = {}, bool emit = true) {
+    void publish(std::string_view linkId, std::string state, std::string_view reason = {}, std::string_view error = {}) {
         if (!onState_) {
             return;
         }
@@ -907,7 +899,6 @@ class TcpTransport final {
             }
             status.targets.push_back({ .id = client->target.id, .state = client->state, .reason = client->reason, .error = client->error, .lastActivityAtMs = client->lastActivityAtMs });
         }
-        (void)emit;
         onState_(std::move(status));
     }
 

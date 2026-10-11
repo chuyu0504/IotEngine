@@ -12,11 +12,9 @@ struct SipConfig {
     std::string password;
     std::string transport{"udp"};
     int registrationTimeoutSeconds{180};
-    int commandTimeoutSeconds{10};
     int inviteTimeoutSeconds{15};
     int viewerLeaseTimeoutSeconds{90};
     int nonceTtlSeconds{300};
-    int deviceTimezoneOffsetMinutes{480};
     bool logging{true};
 };
 

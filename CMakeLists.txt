@@ -1,5 +1,37 @@
 cmake_minimum_required(VERSION 3.28)
 
+# Dependencies come from the vcpkg manifest. Select the toolchain from
+# VCPKG_ROOT unless the caller supplied one explicitly.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if("$ENV{VCPKG_ROOT}" STREQUAL "")
+        message(FATAL_ERROR "VCPKG_ROOT is not set")
+    endif()
+    file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" IOT_ENGINE_VCPKG_ROOT)
+    set(CMAKE_TOOLCHAIN_FILE "${IOT_ENGINE_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        CACHE FILEPATH "Toolchain file selected from VCPKG_ROOT")
+    if(NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
+        message(FATAL_ERROR "VCPKG_ROOT does not contain scripts/buildsystems/vcpkg.cmake: $ENV{VCPKG_ROOT}")
+    endif()
+    unset(IOT_ENGINE_VCPKG_ROOT)
+endif()
+# MSVC builds use the static runtime, so dependencies use the matching triplet.
+if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET x64-windows-static CACHE STRING "vcpkg target triplet")
+endif()
+list(PREPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/ports/vcpkg")
+list(REMOVE_DUPLICATES VCPKG_OVERLAY_PORTS)
+list(APPEND VCPKG_INSTALL_OPTIONS --no-print-usage)
+list(REMOVE_DUPLICATES VCPKG_INSTALL_OPTIONS)
+
+# ZLMediaKit and its Find*.cmake modules use CMAKE_BUILD_TYPE even with
+# multi-config generators. Set the dependency-discovery configuration before
+# project() loads the vcpkg toolchain, otherwise Visual Studio can bind Release
+# targets to /MTd libraries from debug/lib.
+if(CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Ninja Multi-Config")
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+        "Dependency-discovery configuration for multi-config generators" FORCE)
+endif()
+
 project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -22,12 +54,15 @@ set(RUVIA_ENABLE_POSTGRESQL ON CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_REDIS ON CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
+# Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 66cd98f6380801ca056b9d2d94dd177be2aa4b3b)
+    URL https://github.com/hyird/Ruvia/archive/7fa82cc4bab89968d5d8a2b089f08fc7e42a8147.tar.gz
+    URL_HASH SHA256=23b260216c8f7d5bd3661fcd90cb7007d195041f55deb12479d0be029b921b5a
+    PATCH_COMMAND
+        "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=<SOURCE_DIR>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/patch-ruvia.cmake")
 FetchContent_MakeAvailable(ruvia)
-include("${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/dependencies.cmake")
-iot_engine_fetch_dependencies()
 
 FetchContent_Declare(nanopb
     GIT_REPOSITORY https://github.com/nanopb/nanopb.git
@@ -38,7 +73,7 @@ FetchContent_Declare(nanopb
 FetchContent_MakeAvailable(nanopb)
 
 # ZLMediaKit's C SDK exposes PCM-to-AAC input only when FAAC is present. FAAC
-# does not ship a CMake build, so build its upstream static
+# does not ship a CMake build or a vcpkg port, so build its upstream static
 # library directly from the source list used by its own MSVC project.
 FetchContent_Declare(faac_source
     GIT_REPOSITORY https://github.com/knik0/faac.git
@@ -135,10 +170,7 @@ if(DEFINED CMAKE_MESSAGE_LOG_LEVEL)
     set(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED TRUE)
 endif()
 set(CMAKE_MESSAGE_LOG_LEVEL WARNING)
-set(CMAKE_DISABLE_FIND_PACKAGE_PkgConfig ON)
 FetchContent_MakeAvailable(zlmediakit)
-unset(CMAKE_DISABLE_FIND_PACKAGE_PkgConfig)
-iot_engine_write_license_manifest()
 if(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED)
     set(CMAKE_MESSAGE_LOG_LEVEL "${IOT_ENGINE_MESSAGE_LOG_LEVEL}")
 else()
@@ -193,16 +225,20 @@ unset(IOT_ENGINE_ZLM_DEFINITIONS)
 unset(IOT_ENGINE_ZLM_WEBRTC_DEFINITIONS)
 unset(IOT_ENGINE_ZLM_FEATURE)
 
-if(ENABLE_API_STATIC_LIB)
-    target_compile_definitions(mk_api INTERFACE MediaKitApi_STATIC)
-endif()
+target_compile_definitions(mk_api INTERFACE MediaKitApi_STATIC)
 if(MSVC)
     # mk_common.h only includes the generated export header when this is set.
     # Without it, static consumers are incorrectly compiled with dllimport.
     target_compile_definitions(mk_api INTERFACE GENERATE_EXPORT)
 endif()
 
-
+# Imported targets found inside Ruvia and ZLMediaKit are directory-scoped;
+# resolve the packages used directly by this project here.
+find_package(OpenSSL 3.5 REQUIRED COMPONENTS SSL Crypto)
+find_package(PostgreSQL REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/features/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
@@ -266,7 +302,7 @@ target_include_directories(iot-engine PRIVATE
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
-    ruvia_postgresql_backend
+    PostgreSQL::PostgreSQL
     pugixml::pugixml
     spdlog::spdlog
     edgenode-protocol
@@ -276,8 +312,7 @@ iot_engine_configure_target(iot-engine)
 if(MSVC)
     target_compile_definitions(iot-engine PRIVATE
         NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        MediaKitApi_STATIC)
+        WIN32_LEAN_AND_MEAN)
     target_compile_options(iot-engine PRIVATE /bigobj /FS)
 endif()
 
@@ -343,8 +378,7 @@ iot_engine_add_test(telemetry-contract
 
 iot_engine_add_test(vpn-cidr
     SOURCES tests/vpn-cidr-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto
-    INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
@@ -425,8 +459,7 @@ iot_engine_add_test(gb28181-media
         "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     MSVC_DEFINITIONS
         NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        MediaKitApi_STATIC)
+        WIN32_LEAN_AND_MEAN)
 
 iot_engine_add_test(model-migration LARGE
     SOURCES tests/model-migration-test.cpp
@@ -442,7 +475,7 @@ iot_engine_add_test(gb28181-media-proxy
         service/features/packet_log/packet_log.transport.cpp
         service/features/gb28181/media/media.transport.cpp
     LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
-    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN MediaKitApi_STATIC)
+    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
 
 iot_engine_add_test(gb28181-projector LARGE
     SOURCES
@@ -475,13 +508,12 @@ iot_engine_add_test(gb28181-sip
         "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     MSVC_DEFINITIONS
         NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        MediaKitApi_STATIC)
+        WIN32_LEAN_AND_MEAN)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 
 add_custom_target(iot-engine-web ALL
-    COMMAND "${BUN_EXECUTABLE}" run build:web
+    COMMAND "${BUN_EXECUTABLE}" run build
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building frontend into ${CMAKE_BINARY_DIR}/web"
     VERBATIM)

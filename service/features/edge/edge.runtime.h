@@ -25,10 +25,10 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/StopToken.h>
-#include <ruvia/core/TaskScope.h>
-#include <ruvia/core/Timer.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/stop_token.h>
+#include <ruvia/core/task_scope.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/features/edge/edge.service.h"
 #include "service/features/edge/session/session.service.h"
@@ -37,7 +37,7 @@
 
 namespace service::edge {
 
-// One instance is created by App::useWorkerState for every Service Worker.
+// One instance is created by application::use_worker_state for every Service Worker.
 // The session table and Redis notification Stream are worker-local: no wakeup,
 // callback, or socket is forwarded to another worker.
 class SessionDispatcher final {
@@ -82,7 +82,7 @@ class SessionDispatcher final {
 
     void requestStop() noexcept {
         if (stopSource_) {
-            stopSource_->requestStop();
+            stopSource_->request_stop();
         }
         service::message::workerStreamMultiplexer().signal(
             service::message::WorkerStreamTask::EdgeDispatcher
@@ -111,7 +111,7 @@ class SessionDispatcher final {
 
     [[nodiscard]] bool failed() const noexcept { return failed_; }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t workerIndex, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         bool readySet = false;
         try {
             if (running_) {
@@ -119,7 +119,7 @@ class SessionDispatcher final {
             }
             workerIndex_ = workerIndex;
             failed_ = false;
-            stopSource_ = std::make_unique<ruvia::StopSource>();
+            stopSource_ = std::make_unique<ruvia::stop_source>();
             const auto redis = context.redis();
             const auto workerStream = dispatch::stream(workerIndex, service::runtime::instanceId());
             const auto consumer = "service-edge-dispatcher-" +
@@ -133,11 +133,11 @@ class SessionDispatcher final {
             ready->set_value();
             readySet = true;
             bool recovering = true;
-            const auto stopToken = ruvia::combineStopTokens(
-                context.stopToken(),
+            const auto stopToken = ruvia::combine_stop_tokens(
+                context.get_stop_token(),
                 stopSource_->token()
             );
-            while (!stopToken.stopRequested()) {
+            while (!stopToken.stop_requested()) {
                 bool failed = false;
                 try {
                     auto messages = recovering
@@ -187,7 +187,7 @@ class SessionDispatcher final {
                         );
                     }
                 } catch (const std::exception& error) {
-                    if (stopToken.stopRequested()) {
+                    if (stopToken.stop_requested()) {
                         break;
                     }
                     std::cerr << "edge dispatch worker " << workerIndex
@@ -196,7 +196,7 @@ class SessionDispatcher final {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(),
                         std::chrono::milliseconds(250)
                     );
@@ -246,7 +246,7 @@ class SessionDispatcher final {
     }
 
     std::map<std::string, SessionTarget, std::less<>> sessions_;
-    std::unique_ptr<ruvia::StopSource> stopSource_;
+    std::unique_ptr<ruvia::stop_source> stopSource_;
     std::optional<std::size_t> workerIndex_;
     bool running_{ false };
     bool failed_{ false };
@@ -262,7 +262,7 @@ class DispatcherRuntime final {
 
     ~DispatcherRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -281,8 +281,8 @@ class DispatcherRuntime final {
         stopped_ = stopped->get_future().share();
         try {
             const auto posted = worker_.post(
-                [workerIndex, ready, stopped](ruvia::WebWorkerContext& context) {
-                    return context.workerState<SessionDispatcher>().run(
+                [workerIndex, ready, stopped](ruvia::web_worker_context& context) {
+                    return context.worker_state<SessionDispatcher>().run(
                         context,
                         workerIndex,
                         ready,
@@ -307,8 +307,8 @@ class DispatcherRuntime final {
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                                context.workerState<SessionDispatcher>().requestStop();
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context& context) -> ruvia::task<void> {
+                                                context.worker_state<SessionDispatcher>().requestStop();
                                                 co_return;
                                             })
                                           .accepted();
@@ -324,7 +324,7 @@ class DispatcherRuntime final {
     }
 
   private:
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;
@@ -346,7 +346,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
 
     ~EdgeProjectionRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
+    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (running_.exchange(true)) {
             return;
         }
@@ -365,8 +365,8 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         auto readiness = ready->get_future();
         stopped_ = stopped->get_future().share();
         const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::WebWorkerContext& context) {
-                leaseScope_ = std::make_unique<ruvia::TaskScope>(context.worker());
+            [this, ready, stopped](ruvia::web_worker_context& context) {
+                leaseScope_ = std::make_unique<ruvia::task_scope>(context.worker());
                 return run(context, workerIndex_, ready, stopped);
             }
         );
@@ -392,11 +392,11 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             return;
         }
         if (leaseScope_) {
-            leaseScope_->requestStop();
+            leaseScope_->request_stop();
         }
         if (worker_.valid()) {
             const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext&) -> ruvia::Task<void> {
+            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                                                 service::message::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::EdgeProjector
                                                 );
@@ -423,7 +423,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
     static constexpr auto kRecoverySweepInterval =
         std::chrono::seconds(1);
 
-    void markLeaseLost(ruvia::WebWorkerContext& context) noexcept {
+    void markLeaseLost(ruvia::web_worker_context& context) noexcept {
         failed_.store(true);
         if (leaseLost_.exchange(true)) {
             return;
@@ -435,7 +435,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         try {
             // This is deliberately resolved from the current worker context;
             // no session or callback is routed through another Worker.
-            context.workerState<SessionDispatcher>().failSessions("worker lease lost");
+            context.worker_state<SessionDispatcher>().failSessions("worker lease lost");
         } catch (const std::exception& error) {
             std::cerr << "edge worker-local session shutdown failed: "
                       << error.what() << '\n';
@@ -460,15 +460,15 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
     }
 
     template <typename Redis>
-    ruvia::Task<void> maintainLeases(ruvia::WebWorkerContext& context, const Redis& redis, std::size_t index, ruvia::StopToken scopeStop) {
-        const auto stop = ruvia::combineStopTokens(context.stopToken(), scopeStop);
-        while (running_.load() && !stop.stopRequested()) {
-            (void)co_await ruvia::sleepFor(
+    ruvia::task<void> maintainLeases(ruvia::web_worker_context& context, const Redis& redis, std::size_t index, ruvia::stop_token scopeStop) {
+        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), scopeStop);
+        while (running_.load() && !stop.stop_requested()) {
+            (void)co_await ruvia::sleep_for(
                 context.worker(),
                 kLeaseRenewInterval,
                 stop
             );
-            if (stop.stopRequested() || !running_.load()) {
+            if (stop.stop_requested() || !running_.load()) {
                 break;
             }
             try {
@@ -499,7 +499,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         }
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         bool readySet = false;
         bool leaseAcquired = false;
         bool heartbeatStarted = false;
@@ -531,7 +531,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                 throw std::runtime_error("edge projector lease scope is not ready");
             }
             leaseScope_->spawn(
-                maintainLeases(context, redis, index, leaseScope_->stopToken())
+                maintainLeases(context, redis, index, leaseScope_->get_stop_token())
             );
             heartbeatStarted = true;
 
@@ -584,7 +584,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             auto nextDiscovery = std::chrono::steady_clock::now();
             auto nextRecoverySweep = nextDiscovery;
 
-            while (running_.load() && !context.stopToken().stopRequested() &&
+            while (running_.load() && !context.get_stop_token().stop_requested() &&
                    !leaseLost_.load()) {
                 // A recovery heartbeat loss removes that stream from the read
                 // set before another message can be acknowledged for it.
@@ -675,12 +675,12 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                     std::cerr << "edge stream discovery failed: " << error.what() << '\n';
                     maintenanceFailed = true;
                 }
-                if (!running_.load() || context.stopToken().stopRequested() ||
+                if (!running_.load() || context.get_stop_token().stop_requested() ||
                     leaseLost_.load()) {
                     break;
                 }
                 if (maintenanceFailed) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(), std::chrono::milliseconds(250)
                     );
                     continue;
@@ -731,7 +731,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                               );
                     }
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.stopToken().stopRequested() ||
+                    if (!running_.load() || context.get_stop_token().stop_requested() ||
                         leaseLost_.load()) {
                         break;
                     }
@@ -742,7 +742,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                         std::string_view::npos;
                 }
                 if (groupMissing && running_.load() &&
-                    !context.stopToken().stopRequested() && !leaseLost_.load()) {
+                    !context.get_stop_token().stop_requested() && !leaseLost_.load()) {
                     try {
                         co_await service::message::redis::ensureGroup(
                             redis,
@@ -773,12 +773,12 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                                   << ensureError.what() << '\n';
                     }
                 }
-                if (!running_.load() || context.stopToken().stopRequested() ||
+                if (!running_.load() || context.get_stop_token().stop_requested() ||
                     leaseLost_.load()) {
                     break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(),
                         std::chrono::milliseconds(250)
                     );
@@ -806,12 +806,12 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                         std::cerr << "edge stream cleanup failed: " << error.what() << '\n';
                         maintenanceFailed = true;
                     }
-                    if (!running_.load() || context.stopToken().stopRequested() ||
+                    if (!running_.load() || context.get_stop_token().stop_requested() ||
                         leaseLost_.load()) {
                         break;
                     }
                     if (maintenanceFailed) {
-                        (void)co_await ruvia::sleepFor(
+                        (void)co_await ruvia::sleep_for(
                             context.worker(),
                             std::chrono::milliseconds(250)
                         );
@@ -820,7 +820,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::EdgeProjector,
-                        context.stopToken(),
+                        context.get_stop_token(),
                         kLeaseRenewInterval
                     );
                     continue;
@@ -875,7 +875,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                                     acquisitionConfigurations_.erase(std::string(nodeId));
                                     for (auto it = derivedExpiry_.begin(); it != derivedExpiry_.end();) {
                                         if (it->second.nodeId == nodeId) {
-                                            it->second.stop->requestStop();
+                                            it->second.stop->request_stop();
                                             it = derivedExpiry_.erase(it);
                                         } else ++it;
                                     }
@@ -955,7 +955,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                     break;
                 }
                 if (projectionFailed) {
-                    (void)co_await ruvia::sleepFor(
+                    (void)co_await ruvia::sleep_for(
                         context.worker(),
                         std::chrono::milliseconds(250)
                     );
@@ -970,10 +970,10 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             }
         }
 
-        for (const auto& [id, expiry] : derivedExpiry_) expiry.stop->requestStop();
+        for (const auto& [id, expiry] : derivedExpiry_) expiry.stop->request_stop();
         derivedExpiry_.clear();
         if (heartbeatStarted && leaseScope_) {
-            leaseScope_->requestStop();
+            leaseScope_->request_stop();
             try {
                 co_await leaseScope_->join();
             } catch (const std::exception& error) {
@@ -1004,26 +1004,26 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         }
     }
 
-    void scheduleDerivedExpiry(ruvia::WebWorkerContext& context, service::message::ParsedDeviceMessage parsed,
+    void scheduleDerivedExpiry(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed,
                                std::string config, std::optional<std::int64_t> deadline) {
         const auto id = parsed.deviceId;
         if (const auto old = derivedExpiry_.find(id); old != derivedExpiry_.end()) {
-            old->second.stop->requestStop();
+            old->second.stop->request_stop();
             derivedExpiry_.erase(old);
         }
         if (!deadline || !running_.load() || leaseLost_.load()) return;
-        auto stop = std::make_shared<ruvia::StopSource>();
+        auto stop = std::make_shared<ruvia::stop_source>();
         derivedExpiry_[id] = {parsed.connectionId, stop};
         leaseScope_->spawn(expireDerived(context, std::move(parsed), std::move(config), *deadline, stop));
     }
 
-    ruvia::Task<void> expireDerived(ruvia::WebWorkerContext& context, service::message::ParsedDeviceMessage parsed,
-                                  std::string config, std::int64_t deadline, std::shared_ptr<ruvia::StopSource> stop) {
-        const auto token = ruvia::combineStopTokens(
-            ruvia::combineStopTokens(context.stopToken(), leaseScope_->stopToken()), stop->token());
-        (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(
+    ruvia::task<void> expireDerived(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed,
+                                  std::string config, std::int64_t deadline, std::shared_ptr<ruvia::stop_source> stop) {
+        const auto token = ruvia::combine_stop_tokens(
+            ruvia::combine_stop_tokens(context.get_stop_token(), leaseScope_->get_stop_token()), stop->token());
+        (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(
             (std::max)(std::int64_t{1}, deadline - service::message::utcNowMilliseconds())), token);
-        if (token.stopRequested() || !running_.load() || leaseLost_.load()) co_return;
+        if (token.stop_requested() || !running_.load() || leaseLost_.load()) co_return;
         derivedExpiry_.erase(parsed.deviceId);
         parsed.messageId = derivedUuid_.next();
         parsed.acquisitionId = parsed.causationId = parsed.messageId;
@@ -1042,13 +1042,13 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
 
     struct DerivedExpiry final {
         std::string nodeId;
-        std::shared_ptr<ruvia::StopSource> stop;
+        std::shared_ptr<ruvia::stop_source> stop;
     };
     std::map<std::string, DerivedExpiry> derivedExpiry_;
     service::common::UuidV7Generator derivedUuid_;
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
-    std::unique_ptr<ruvia::TaskScope> leaseScope_;
+    std::unique_ptr<ruvia::task_scope> leaseScope_;
     std::size_t workerIndex_ = 0;
     std::size_t serviceWorkerCount_ = 0;
     std::atomic_bool running_{ false };

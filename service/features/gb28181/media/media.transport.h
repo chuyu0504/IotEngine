@@ -15,9 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <ruvia/core/EventLoop.h>
-#include <ruvia/web/ContextRequest.h>
-#include <ruvia/web/Controller.h>
+#include <ruvia/core/event_loop.h>
+#include <ruvia/web/context_request.h>
+#include <ruvia/web/controller.h>
 
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/media/media.types.h"
@@ -71,7 +71,7 @@ class ZlmSdk final {
     [[nodiscard]] MediaCapabilities capabilities() const noexcept;
 
     [[nodiscard]] std::optional<OpenRtpServerResult>
-    openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode = "preview");
+    openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId);
     [[nodiscard]] bool closeRtpServer(const std::string& streamId);
     [[nodiscard]] PlayUrls buildPlayUrls(const std::string& streamId) const;
     [[nodiscard]] bool validatePlayToken(std::string_view stream, std::string_view token, std::int64_t expires) const;
@@ -114,7 +114,7 @@ class ZlmSdk final {
     static std::weak_ptr<CallbackState> activeCallbacks_;
     static thread_local OwnerIndex actorOwner_;
 
-    [[nodiscard]] std::string makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) const;
+    [[nodiscard]] std::string makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId) const;
     [[nodiscard]] std::uint16_t allocateRtpPort();
     [[nodiscard]] std::string sdkIni() const;
     [[nodiscard]] std::string makePlayToken(std::string_view stream, std::int64_t expires) const;
@@ -160,9 +160,8 @@ class SdkSupervisor final {
     [[nodiscard]] const MediaConfig& config() const noexcept { return config_; }
 
     [[nodiscard]] ZlmSdk& sdk();
-    [[nodiscard]] const ZlmSdk* sdkIfStarted() const noexcept;
 
-    void registerCollector(OwnerIndex owner, ruvia::EventLoop loop, CollectorCallbacks callbacks);
+    void registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks);
     void unregisterCollector(OwnerIndex owner) noexcept;
 
     [[nodiscard]] MediaServerPorts ports() const noexcept;
@@ -198,9 +197,9 @@ SdkSupervisor& sdkSupervisor();
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/EventLoopPool.h>
-#include <ruvia/core/Task.h>
-#include <ruvia/core/WorkerHandle.h>
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/worker_handle.h>
 
 namespace service::gb28181 {
 
@@ -212,26 +211,26 @@ namespace media_proxy_detail {
 } // namespace media_proxy_detail
 
 class MediaProxyController final
-    : public ruvia::Controller<MediaProxyController> {
+    : public ruvia::controller<MediaProxyController> {
   public:
     RUVIA_CONTROLLER_GROUP("/media")
     RUVIA_ROUTES_BEGIN
     RUVIA_GET_STREAM("/*", proxy);
-    RuviaControllerAccess::addResponseStreamRoute(
-        ruviaRouteScope,
-        ruvia::HttpKnownMethod::kPost,
+    ruvia_controller_access_type::add_response_stream_route(
+        ruvia_route_scope,
+        ruvia::http_known_method::post,
         "/*",
-        RuviaControllerAccess::template bindStream<&RuviaControllerType::proxy>(
+        ruvia_controller_access_type::template bind_stream<&ruvia_controller_type::proxy>(
             this
         ),
-        RuviaControllerAccess::template makeMiddlewares<>()
+        ruvia_controller_access_type::template make_middlewares<>()
     );
     RUVIA_ROUTES_END
 
   private:
     static std::string percentEncode(std::string_view value);
-    static std::string queryString(const ruvia::ContextRequest& request);
-    ruvia::Task<void> proxy(ruvia::Context& context);
+    static std::string queryString(const ruvia::context_request& request);
+    ruvia::task<void> proxy(ruvia::context& context);
 };
 
 } // namespace service::gb28181

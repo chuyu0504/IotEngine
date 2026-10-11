@@ -1,14 +1,14 @@
 #pragma once
 
 #include <algorithm>
-#include <ruvia/web/ModelObject.h>
+#include <ruvia/web/model_object.h>
 #include "service/common/message.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
 namespace service::telemetry::contract {
 template<class Visit> void fields(std::string_view raw, Visit visit) {
-    const auto object = ruvia::JsonValue::parse(raw);
-    if (!object || !object->forEachField([&](std::string_view name, const ruvia::JsonValue& value) {
+    const auto object = ruvia::json_value::parse(raw);
+    if (!object || !object->for_each_field([&](std::string_view name, const ruvia::json_value& value) {
         return visit(name, value.view());
     })) throw std::runtime_error("Invalid telemetry object");
 }
@@ -31,30 +31,30 @@ inline bool isSl651EmptyReport(const message::ParsedDeviceMessage& input) {
 
 // 将采集结果规范化为统一的历史值结构，保留采集端创建的轮次身份。
 inline void normalize(message::ParsedDeviceMessage& input) {
-    const auto root=ruvia::JsonValue::parse(input.valuesJson);
-    if(!root || !root->isObject()) throw std::runtime_error("Telemetry must be a JSON object");
+    const auto root=ruvia::json_value::parse(input.valuesJson);
+    if(!root || !root->is_object()) throw std::runtime_error("Telemetry must be a JSON object");
     const auto values=field(root->view(),"values");
-    const auto parsedValues=ruvia::JsonValue::parse(values);
-    if(!parsedValues || !parsedValues->isObject()) throw std::runtime_error("Telemetry values must be an object");
+    const auto parsedValues=ruvia::json_value::parse(values);
+    if(!parsedValues || !parsedValues->is_object()) throw std::runtime_error("Telemetry values must be an object");
     std::string out="{",points="{";
     bool first=true,media=false;
     fields(values,[&](std::string_view id,std::string_view raw) {
-        const auto point=ruvia::JsonValue::parse(raw);
-        if(!point || !point->isObject()) throw std::runtime_error("Telemetry point must be an object");
+        const auto point=ruvia::json_value::parse(raw);
+        if(!point || !point->is_object()) throw std::runtime_error("Telemetry point must be an object");
         auto value=field(raw,"value");
-        const auto scalar=ruvia::JsonValue::parse(value);
+        const auto scalar=ruvia::json_value::parse(value);
         if(!scalar) throw std::runtime_error("Telemetry point has no value");
-        const auto encoding=point->get<ruvia::String>("type");
+        const auto encoding=point->get<ruvia::string>("type");
         const bool image=encoding && encoding->view()=="JPEG";
         media=media||image;
-        const std::string kind=image?"media":scalar->isNumber()?"number":scalar->isBoolean()?"boolean":
-            scalar->isString()?"string":scalar->isNull()?"null":"json";
-        const auto text=point->get<ruvia::String>("value");
+        const std::string kind=image?"media":scalar->is_number()?"number":scalar->is_boolean()?"boolean":
+            scalar->is_string()?"string":scalar->is_null()?"null":"json";
+        const auto text=point->get<ruvia::string>("value");
         const bool invalid=image && text && text->view()=="INVALID_JPEG";
-        const auto derived = point->get<ruvia::Bool>("derived");
-        const auto reportedQuality = point->get<ruvia::String>("quality");
-        const auto quality = derived && static_cast<bool>(*derived) && reportedQuality ? std::string(reportedQuality->view()) : std::string(invalid?"invalid":scalar->isNull()?"missing":"good");
-        const auto sampleTime = derived && static_cast<bool>(*derived) ? point->get<ruvia::Int64>("sample_time_ms") : std::nullopt;
+        const auto derived = point->get<ruvia::bool_value>("derived");
+        const auto reportedQuality = point->get<ruvia::string>("quality");
+        const auto quality = derived && static_cast<bool>(*derived) && reportedQuality ? std::string(reportedQuality->view()) : std::string(invalid?"invalid":scalar->is_null()?"missing":"good");
+        const auto sampleTime = derived && static_cast<bool>(*derived) ? point->get<ruvia::int64>("sample_time_ms") : std::nullopt;
         if(!first)points+=',';first=false;
         points+=service::utils::jsonQuoted(id)+":{";
         fields(raw,[&](std::string_view key,std::string_view data){
@@ -63,7 +63,7 @@ inline void normalize(message::ParsedDeviceMessage& input) {
             return true;
         });
         points+="\"value_type\":"+service::utils::jsonQuoted(kind)+",\"quality\":"+service::utils::jsonQuoted(quality)+
-            ",\"sample_time_ms\":"+std::to_string(sampleTime ? sampleTime->value : input.observedAtMs)+
+            ",\"sample_time_ms\":"+std::to_string(sampleTime ? sampleTime->value_ : input.observedAtMs)+
             ",\"received_time_ms\":"+std::to_string(input.occurredAtMs)+"}";
         return true;
     });

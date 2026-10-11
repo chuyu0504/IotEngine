@@ -15,9 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/StopToken.h>
-#include <ruvia/core/Task.h>
-#include <ruvia/web/WebWorker.h>
+#include <ruvia/core/stop_token.h>
+#include <ruvia/core/task.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/features/vpn/vpn.service.h"
 #include "service/features/vpn/wireguard/wireguard.transport.h"
@@ -34,7 +34,7 @@ class VpnHubRuntime final {
 
     ~VpnHubRuntime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker) {
+    void start(ruvia::web_worker_handle worker) {
         if (running_.exchange(true)) {
             return;
         }
@@ -42,7 +42,7 @@ class VpnHubRuntime final {
         auto ready = std::make_shared<std::promise<void>>();
         auto stopped = std::make_shared<std::promise<void>>();
         stopped_ = stopped->get_future().share();
-        const auto posted = worker_.post([this, ready, stopped](ruvia::WebWorkerContext& context) {
+        const auto posted = worker_.post([this, ready, stopped](ruvia::web_worker_context& context) {
             return run(context, ready, stopped);
         });
         if (!posted.accepted()) {
@@ -66,19 +66,19 @@ class VpnHubRuntime final {
     }
 
   private:
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, const std::shared_ptr<std::promise<void>>& ready, const std::shared_ptr<std::promise<void>>& stopped) {
+    ruvia::task<void> run(ruvia::web_worker_context& context, const std::shared_ptr<std::promise<void>>& ready, const std::shared_ptr<std::promise<void>>& stopped) {
         try {
             ready->set_value();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            while (running_.load() && !context.get_stop_token().stop_requested()) {
                 try {
                     co_await VpnHubService::reconcile(context, hubConfig_, true);
                 } catch (const std::exception& error) {
                     std::cerr << "VPN runtime reconciliation failed: " << error.what() << '\n';
                 }
                 for (int tick = 0; tick < 10 && running_.load() &&
-                     !context.stopToken().stopRequested();
+                     !context.get_stop_token().stop_requested();
                      ++tick) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1));
                 }
             }
         } catch (...) {
@@ -95,7 +95,7 @@ class VpnHubRuntime final {
 
     std::atomic_bool running_{ false };
     wireguard::HubConfig hubConfig_;
-    ruvia::WebWorkerHandle worker_;
+    ruvia::web_worker_handle worker_;
     std::shared_future<void> stopped_;
 };
 

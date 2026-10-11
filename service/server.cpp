@@ -17,14 +17,13 @@
 #include <thread>
 #include <vector>
 
-#include <ruvia/web/App.h>
-#include <ruvia/web/db/Db.h>
-#include <ruvia/web/db/DbMigration.h>
-#include <ruvia/web/redis/Redis.h>
+#include <ruvia/web/app.h>
+#include <ruvia/web/db/db.h>
+#include <ruvia/web/db/db_migration.h>
+#include <ruvia/web/redis/redis.h>
 
 #include "service/common/http.h"
 #include "service/common/worker.h"
-#include "service/middleware/log.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/config/lifecycle.h"
 #include "service/config/schema.h"
@@ -58,7 +57,6 @@
 #include "service/modules/system/auth/auth.controller.h"
 #include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/operations/operations.controller.h"
-#include "service/modules/system/outbox/outbox.controller.h"
 #include "service/modules/system/role/role.controller.h"
 #include "service/modules/system/user/user.controller.h"
 #include "service/modules/vpn/vpn.controller.h"
@@ -72,37 +70,37 @@ void assign(String& target, std::optional<std::string_view> value) {
     }
 }
 
-ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
-    ruvia::DbConfig config;
-    config.driver = ruvia::DbDriver::kPostgreSql;
-    config.tls.mode = ruvia::client_tls_mode::disabled;
-    assign(config.host, env.get("DB_HOST"));
-    assign(config.username, env.get("DB_USERNAME"));
-    assign(config.password, env.get("DB_PASSWORD"));
-    assign(config.database, env.get("DB_DATABASE"));
-    config.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-    config.acquireTimeout = std::chrono::seconds(2);
-    config.connectTimeout = std::chrono::seconds(5);
-    config.queryTimeout = std::chrono::seconds(30);
+ruvia::db_config databaseConfig(const ruvia::env& env) {
+    ruvia::db_config config;
+    config.driver_ = ruvia::db_driver::postgresql;
+    config.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    assign(config.host_, env.get("DB_HOST"));
+    assign(config.username_, env.get("DB_USERNAME"));
+    assign(config.password_, env.get("DB_PASSWORD"));
+    assign(config.database_, env.get("DB_DATABASE"));
+    config.port_ = env.get<std::uint16_t>("DB_PORT").value_or(5432);
+    config.acquire_timeout_ = std::chrono::seconds(2);
+    config.connect_timeout_ = std::chrono::seconds(5);
+    config.query_timeout_ = std::chrono::seconds(30);
     return config;
 }
 
-ruvia::RedisConfig redisConfig(const ruvia::Env& env) {
-    ruvia::RedisConfig config;
-    config.tls.mode = ruvia::client_tls_mode::disabled;
-    assign(config.host, env.get("REDIS_HOST"));
-    assign(config.password, env.get("REDIS_PASSWORD"));
-    config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
-    config.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
+ruvia::redis_config redisConfig(const ruvia::env& env) {
+    ruvia::redis_config config;
+    config.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    assign(config.host_, env.get("REDIS_HOST"));
+    assign(config.password_, env.get("REDIS_PASSWORD"));
+    config.port_ = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
+    config.database_ = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
     const auto poolSize = env.get<unsigned>("REDIS_POOL_SIZE_PER_WORKER").value_or(2U);
     if (poolSize == 0U || poolSize > 16U) {
         throw std::runtime_error("REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
     }
-    config.poolSizePerWorker = poolSize;
+    config.pool_size_per_worker_ = poolSize;
     return config;
 }
 
-service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::Env& env) {
+service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::env& env) {
     service::vpn::wireguard::HubConfig config;
     assign(config.interfaceName, env.get("VPN_HUB_INTERFACE"));
     assign(config.privateKey, env.get("VPN_HUB_PRIVATE_KEY"));
@@ -124,14 +122,14 @@ std::filesystem::path runtimeDirectory(const char* executable) {
     return path.parent_path();
 }
 
-service::packet_log::Config packetLogConfig(const ruvia::Env& env, const std::filesystem::path& runtime) {
+service::packet_log::Config packetLogConfig(const ruvia::env& env, const std::filesystem::path& runtime) {
     service::packet_log::Config config;
     config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
     config.level = service::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
     return config;
 }
 
-bool envFlag(const ruvia::Env& env, std::string_view name, bool fallback = false) {
+bool envFlag(const ruvia::env& env, std::string_view name, bool fallback = false) {
     const auto value = env.get(name);
     if (!value) {
         return fallback;
@@ -143,7 +141,7 @@ bool envFlag(const ruvia::Env& env, std::string_view name, bool fallback = false
     return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
 }
 
-AppConfig gb28181Config(const ruvia::Env& env) {
+AppConfig gb28181Config(const ruvia::env& env) {
     AppConfig config;
     config.enabled = envFlag(env, "GB28181_ENABLED");
     config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
@@ -154,11 +152,9 @@ AppConfig gb28181Config(const ruvia::Env& env) {
     config.sip.password = std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
     config.sip.transport = std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
     config.sip.registrationTimeoutSeconds = env.get<int>("GB28181_REGISTRATION_TIMEOUT_SECONDS").value_or(180);
-    config.sip.commandTimeoutSeconds = env.get<int>("GB28181_COMMAND_TIMEOUT_SECONDS").value_or(10);
     config.sip.inviteTimeoutSeconds = env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
     config.sip.viewerLeaseTimeoutSeconds = env.get<int>("GB28181_VIEWER_LEASE_TIMEOUT_SECONDS").value_or(90);
     config.sip.nonceTtlSeconds = env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
-    config.sip.deviceTimezoneOffsetMinutes = env.get<int>("GB28181_DEVICE_TIMEZONE_OFFSET_MINUTES").value_or(480);
     config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
     config.media.zlmPublicBaseUrl = std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
     config.media.rtpPublicIp = std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
@@ -198,7 +194,7 @@ CommandLineOptions parseCommandLine(int argc, char* argv[]) {
     return CommandLineOptions{ .migrateOnly = migrateOnly };
 }
 
-void validateEdgeConfiguration(const ruvia::Env& env) {
+void validateEdgeConfiguration(const ruvia::env& env) {
     const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId);
     if (!service::edge::config::validPlatformId(platformId)) {
         throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
@@ -209,18 +205,18 @@ void validateEdgeConfiguration(const ruvia::Env& env) {
     }
 }
 
-ruvia::DbConfig migrateDatabase(
-    const ruvia::Env& env
+ruvia::db_config migrateDatabase(
+    const ruvia::env& env
 ) {
     auto db = databaseConfig(env);
     const auto storagePolicy = service::config::deviceDataStoragePolicy(env);
-    std::vector<ruvia::DbMigration> migrations;
+    std::vector<ruvia::db_migration> migrations;
     migrations.reserve(service::config::kSchemaMigrations.size() + 1);
     migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end());
     migrations.emplace_back(service::config::deviceDataStoragePolicyMigration(storagePolicy));
-    ruvia::DbMigratorOptions migrationOptions;
-    migrationOptions.table = "sys_schema_migrations";
-    const auto report = ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));
+    ruvia::db_migrator_options migrationOptions;
+    migrationOptions.table_ = "sys_schema_migrations";
+    const auto report = ruvia::db_migrator::migrate(db, migrations, std::move(migrationOptions));
     std::cout << "database migrations: applied=" << report.applied().size()
               << ", skipped=" << report.skipped().size() << '\n';
     std::cout << "device_data storage policy: chunk="
@@ -252,7 +248,7 @@ struct WorkerBudget {
 };
 
 WorkerBudget workerBudget(
-    const ruvia::Env& env,
+    const ruvia::env& env,
     const AppConfig& gb28181
 ) {
     const auto cpu = std::max(2U, std::thread::hardware_concurrency());
@@ -280,17 +276,15 @@ WorkerBudget workerBudget(
     };
 }
 
-service::message::outbox::Policy outboxPolicy(const ruvia::Env& env) {
+service::message::outbox::Policy outboxPolicy(const ruvia::env& env) {
     service::message::outbox::Policy policy;
     policy.pendingAlertThreshold = env.get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
     policy.oldestAgeAlertMs = env.get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
     policy.deadLetterAlertThreshold = env.get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
     policy.receiptRetentionDays = env.get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
-    policy.replayCounterRetentionDays = env.get<std::int64_t>("OUTBOX_REPLAY_COUNTER_RETENTION_DAYS").value_or(30);
     if (policy.pendingAlertThreshold < 0 || policy.oldestAgeAlertMs < 0 ||
         policy.deadLetterAlertThreshold < 0 || policy.receiptRetentionDays < 0 ||
-        policy.receiptRetentionDays > 3650 || policy.replayCounterRetentionDays < 1 ||
-        policy.replayCounterRetentionDays > 3650) {
+        policy.receiptRetentionDays > 3650) {
         throw std::runtime_error("OUTBOX policy values are invalid");
     }
     return policy;
@@ -317,9 +311,9 @@ struct ServiceWorkerComponents {
 
 struct ApplicationComponents {
     AppConfig gb28181;
-    ruvia::DbConfig database;
-    ruvia::RedisConfig serviceRedis;
-    ruvia::RedisConfig collectorRedis;
+    ruvia::db_config database;
+    ruvia::redis_config serviceRedis;
+    ruvia::redis_config collectorRedis;
     std::vector<std::shared_ptr<ServiceWorkerComponents>> workers;
     std::shared_ptr<service::collector::CollectorWorkerPool> collectorWorkerPool;
     std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
@@ -328,7 +322,7 @@ struct ApplicationComponents {
 
 void registerRpcHandlers(
     const std::shared_ptr<service::rpc::RpcConsumerRuntime>& rpcConsumer,
-    const ruvia::Env& env
+    const ruvia::env& env
 ) {
     rpcConsumer->add("telemetry", service::telemetry::TelemetryService::executeProjection);
     rpcConsumer->add("alert", service::alert::metadata::executeRefreshOperation);
@@ -344,18 +338,18 @@ void registerRpcHandlers(
     );
     rpcConsumer->add(
         "vpn",
-        [vpnControl](ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
+        [vpnControl](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
             return vpnControl->executeOperation(context, operation, payload, stop);
         }
     );
 }
 
 ApplicationComponents createComponents(
-    const ruvia::Env& env,
+    const ruvia::env& env,
     const AppConfig& gb28181,
     const WorkerBudget& budget,
-    ruvia::DbConfig database,
-    ruvia::RedisConfig serviceRedis
+    ruvia::db_config database,
+    ruvia::redis_config serviceRedis
 ) {
     ApplicationComponents components;
     components.gb28181 = gb28181;
@@ -364,7 +358,7 @@ ApplicationComponents createComponents(
     components.collectorRedis = components.serviceRedis;
     // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
     // The tasks retain separate consumer groups and use the ordinary pool to drain.
-    components.serviceRedis.blockingPoolSizePerWorker = 4;
+    components.serviceRedis.blocking_pool_size_per_worker_ = 4;
 
     components.collectorWorkerPool = std::make_shared<service::collector::CollectorWorkerPool>();
     components.observability = std::make_shared<service::observability::RuntimeDiagnostics>();
@@ -410,22 +404,22 @@ ApplicationComponents createComponents(
     return components;
 }
 
-void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
+void configureWeb(ruvia::application& app, const std::filesystem::path& runtime) {
     const auto webRoot = runtime / "web";
     if (!std::filesystem::is_directory(webRoot)) {
         return;
     }
-    ruvia::DocumentRootConfig config;
-    config.root = webRoot;
-    config.staticOptions.indexFile = "index.html";
-    config.staticOptions.cacheControl = "no-cache";
-    config.staticOptions.fileTypes.kind = ruvia::StaticFileTypePolicy::Kind::kAll;
-    app.documentRoot(std::move(config));
+    ruvia::document_root_config config;
+    config.root_ = webRoot;
+    config.static_options_.index_file_ = "index.html";
+    config.static_options_.cache_control_ = "no-cache";
+    config.static_options_.file_types_.kind_ = ruvia::static_file_type_policy::kind_type::all;
+    app.document_root(std::move(config));
 }
 
-ruvia::Task<ruvia::HttpResponse> handleError(
-    ruvia::Context& c,
-    ruvia::HttpErrorInfo info
+ruvia::task<ruvia::http_response> handleError(
+    ruvia::context& c,
+    ruvia::http_error_info info
 ) {
     c.status(info.status());
     const auto message = info.message().empty() ? std::string_view("请求失败") : info.message();
@@ -435,10 +429,10 @@ ruvia::Task<ruvia::HttpResponse> handleError(
 // Only the supervisor visits the owner collection. Each posted operation owns one
 // worker's components; business workers never receive another worker's handle.
 template <typename Operation>
-void initializeServiceWorker(ruvia::WebWorkerHandle worker, Operation operation) {
+void initializeServiceWorker(ruvia::web_worker_handle worker, Operation operation) {
     auto ready = std::make_shared<std::promise<void>>();
     auto completion = ready->get_future();
-    if (!worker.post([operation = std::move(operation), ready](ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
+    if (!worker.post([operation = std::move(operation), ready](ruvia::web_worker_context& context) mutable -> ruvia::task<void> {
                    try {
                        co_await operation(context);
                        ready->set_value();
@@ -452,7 +446,7 @@ void initializeServiceWorker(ruvia::WebWorkerHandle worker, Operation operation)
     completion.get();
 }
 
-void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, ruvia::WebWorkerHandle worker, std::size_t index, std::size_t count, std::size_t collectors) {
+void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, ruvia::web_worker_handle worker, std::size_t index, std::size_t count, std::size_t collectors) {
     auto& componentLifecycle = *workerComponents.componentLifecycle;
     componentLifecycle.add({ .name = "stream-multiplexer", .start = [m = workerComponents.multiplexer, worker, index] {
                        m->start(worker, index);
@@ -544,7 +538,7 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
     }
 }
 
-auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, std::size_t collectors) {
+auto makeApplicationStart(ruvia::application& app, ApplicationComponents& components, std::size_t collectors) {
     const auto uploadDirectory = std::filesystem::path(app.env().get("EDGE_FIRMWARE_DIR").value_or("firmware"));
     return [&app, &components, collectors, uploadDirectory] {
         const auto workers = app.workers();
@@ -561,9 +555,9 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             preparation.push_back(name);
             supervisor.add({ .name = name, .start = [owner, worker, index, uploadDirectory] {
                                 owner->multiplexer->configure(worker, index);
-                                initializeServiceWorker(worker, [owner, index, uploadDirectory, worker](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                    context.workerState<ruvia::WebWorkerHandle>() = worker;
-                                    context.workerState<service::ServiceWorkerTopology>().index = index;
+                                initializeServiceWorker(worker, [owner, index, uploadDirectory, worker](ruvia::web_worker_context& context) -> ruvia::task<void> {
+                                    context.worker_state<ruvia::web_worker_handle>() = worker;
+                                    context.worker_state<service::ServiceWorkerTopology>().index = index;
                                     service::channel::UploadedFile::recoverAbandoned(uploadDirectory);
                                     (void)co_await service::configuration::ConfigurationService::project(context);
                                 });
@@ -599,8 +593,8 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             const auto owner = components.workers[index];
             registerServiceWorkerLifecycle(*owner, worker, index, count, collectors);
             supervisor.add({ .name = "service-worker-" + std::to_string(index), .dependencies = { "collector" }, .start = [owner, worker, index, count] {
-                                initializeServiceWorker(worker, [index, count, worker](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                    context.workerState<ruvia::WebWorkerHandle>() = worker;
+                                initializeServiceWorker(worker, [index, count, worker](ruvia::web_worker_context& context) -> ruvia::task<void> {
+                                    context.worker_state<ruvia::web_worker_handle>() = worker;
                                     co_await service::telemetry::latest::hydrate(context, index, count);
                                 });
                                 owner->componentLifecycle->start();
@@ -614,72 +608,71 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
 }
 
 void configureServer(
-    ruvia::App& app,
+    ruvia::application& app,
     ApplicationComponents& components,
     const WorkerBudget& budget
 ) {
     auto applicationStart = makeApplicationStart(app, components, budget.collector);
     const auto applicationLifecycle = components.applicationLifecycle;
     const auto observability = components.observability;
-    app.database(ruvia::DbRegistrationConfig{
-        .alias = "telemetry-history",
-        .config = components.database,
+    app.database(ruvia::db_registration_config{
+        .alias_ = "telemetry-history",
+        .config_ = components.database,
     });
-    app.database(ruvia::DbRegistrationConfig{
-        .alias = "control",
-        .config = components.database,
+    app.database(ruvia::db_registration_config{
+        .alias_ = "control",
+        .config_ = components.database,
     });
-    app.database(ruvia::DbRegistrationConfig{
-        .alias = "vpn-coordination",
-        .config = components.database,
+    app.database(ruvia::db_registration_config{
+        .alias_ = "vpn-coordination",
+        .config_ = components.database,
     });
-    app.database(ruvia::DbRegistrationConfig{
-        .alias = "vpn-edge-config",
-        .config = components.database,
+    app.database(ruvia::db_registration_config{
+        .alias_ = "vpn-edge-config",
+        .config_ = components.database,
     });
-    app.useWorkerState<ruvia::WebWorkerHandle>()
-        .useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
+    app.use_worker_state<ruvia::web_worker_handle>()
+        .use_worker_state<service::ServiceWorkerTopology>([count = components.workers.size()] {
             return service::ServiceWorkerTopology{count};
         })
-        .useWorkerState<std::unique_ptr<service::common::UuidV7Generator>>(
+        .use_worker_state<std::unique_ptr<service::common::UuidV7Generator>>(
             [] { return std::make_unique<service::common::UuidV7Generator>(); })
-        .useWorkerState<service::edge::config::PlatformIdentity>(
+        .use_worker_state<service::edge::config::PlatformIdentity>(
             [platformId = std::string(app.env().get("EDGE_PLATFORM_ID").value_or(
                 service::message::edge::kDefaultPlatformId))] {
                 return service::edge::config::PlatformIdentity{platformId};
             })
-        .useWorkerState<service::edge::SessionDispatcher>()
-        .database(ruvia::DbRegistrationConfig{
-            .config = std::move(components.database),
+        .use_worker_state<service::edge::SessionDispatcher>()
+        .database(ruvia::db_registration_config{
+            .config_ = std::move(components.database),
         })
-        .redis(ruvia::RedisRegistrationConfig{
-            .config = std::move(components.serviceRedis),
+        .redis(ruvia::redis_registration_config{
+            .config_ = std::move(components.serviceRedis),
         })
-        .httpClient({.alias = "link-public-ip", .config = {
-            .scheme = ruvia::HttpScheme::kHttp,
-            .host = "ip.sb",
-            .port = 80,
-            .maxResponseBytes = 64U * 1024U,
-            .protocol = ruvia::HttpClientProtocol::kHttp1Only,
-            .userAgent = "curl/8.0",
+        .get_http_client({.alias_ = "link-public-ip", .config_ = {
+            .scheme_ = ruvia::http_scheme::http,
+            .host_ = "ip.sb",
+            .port_ = 80,
+            .max_response_bytes_ = 64U * 1024U,
+            .protocol_ = ruvia::http_client_protocol::http1_only,
+            .user_agent_ = "curl/8.0",
         }})
-        .onStart(std::move(applicationStart))
-        .onStop([applicationLifecycle, observability] {
+        .on_start(std::move(applicationStart))
+        .on_stop([applicationLifecycle, observability] {
             // Keep runtime diagnostics alive until every component has stopped.
             (void)observability;
             applicationLifecycle->stop();
         })
-        .onError(&handleError)
-        .listen(ruvia::ListenConfig{
-            .address = std::string(app.env().get("HOST").value_or("0.0.0.0")),
-            .http = app.env().get<std::uint16_t>("PORT").value_or(1102),
+        .on_error(&handleError)
+        .listen(ruvia::listen_config{
+            .address_ = std::string(app.env().get("HOST").value_or("0.0.0.0")),
+            .http_ = app.env().get<std::uint16_t>("PORT").value_or(1102),
         })
         .server(ruvia::server_config{
-            .worker_count = budget.service,
-            .max_stream_body_bytes = 129U * 1024U * 1024U,
+            .worker_count_ = budget.service,
+            .max_stream_body_bytes_ = 129U * 1024U * 1024U,
             // Ruvia applies this limit to both incoming and outgoing frames.
-            // EventEnvelope still rejects incoming business requests above 64 KiB.
-            .max_web_socket_message_bytes = 16U * 1024U * 1024U,
+            .max_websocket_message_bytes_ = 16U * 1024U * 1024U,
         })
         .run();
 }
@@ -690,7 +683,7 @@ int main(int argc, char* argv[]) {
     try {
         const auto commandLine = parseCommandLine(argc, argv);
         auto& app = ruvia::app();
-        app.loadDotenv();
+        app.load_dotenv();
         validateEdgeConfiguration(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::packet_log::initialize(packetLogConfig(app.env(), runtime));
@@ -707,14 +700,14 @@ int main(int argc, char* argv[]) {
             // port-zero configuration uses the actual bound SDK listener port.
             sdkSupervisor().configure(gb28181.media);
             sdkSupervisor().start();
-            app.httpClient({ .alias = "gb-media", .config = {
-                                                      .scheme = ruvia::HttpScheme::kHttp,
-                                                      .host = "127.0.0.1",
-                                                      .port = sdkSupervisor().ports().http,
-                                                      .connectionCount = 64,
-                                                      .requestTimeout = std::nullopt,
-                                                      .maxResponseBytes = 2U * 1024U * 1024U,
-                                                      .protocol = ruvia::HttpClientProtocol::kHttp1Only,
+            app.get_http_client({ .alias_ = "gb-media", .config_ = {
+                                                      .scheme_ = ruvia::http_scheme::http,
+                                                      .host_ = "127.0.0.1",
+                                                      .port_ = sdkSupervisor().ports().http,
+                                                      .connection_count_ = 64,
+                                                      .request_timeout_ = std::nullopt,
+                                                      .max_response_bytes_ = 2U * 1024U * 1024U,
+                                                      .protocol_ = ruvia::http_client_protocol::http1_only,
                                                   } });
         }
         const auto budget = workerBudget(app.env(), gb28181);

@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <string>
 
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/event_loop_pool.h>
 #include "tests/redis_reply.fixture.h"
 #include "service/features/collector/collector.service.h"
 
@@ -15,7 +15,7 @@ void require(bool condition, const char* message) {
 struct TransmissionRedis {
     mutable std::vector<std::string> arguments;
     enum class Reply { Success, Duplicate, Error } reply = Reply::Success;
-    ruvia::Task<ruvia::RedisValue> command(std::span<const std::string_view> values) const {
+    ruvia::task<ruvia::redis_value> command(std::span<const std::string_view> values) const {
         arguments.assign(values.begin(), values.end());
         const auto resource = std::pmr::get_default_resource();
         if (reply == Reply::Duplicate) co_return test::redisNull(resource);
@@ -24,7 +24,7 @@ struct TransmissionRedis {
     }
 };
 
-ruvia::Task<void> verifyTransmissionReservation() {
+ruvia::task<void> verifyTransmissionReservation() {
     using service::collector::CollectorCommandService;
     using service::collector::TransmissionReservation;
     TransmissionRedis redis;
@@ -60,7 +60,7 @@ std::map<std::string, std::string> hash(const std::vector<service::message::Stre
 
 int main() {
     try {
-        ruvia::EventLoopPool pool({.loopCount = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
         pool.loop(0).start(verifyTransmissionReservation()).get();
         pool.stop();

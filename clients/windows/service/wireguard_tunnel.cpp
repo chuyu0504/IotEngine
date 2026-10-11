@@ -119,21 +119,6 @@ public:
         }
         activeAddress_.clear(); activePublicKey_.clear(); activeHubKey_.clear(); activeRoutes_.clear();
     }
-    Json diagnostics() override {
-        if(!running()) return {{"adapterUp",false},{"linkState","Down"}};
-        DWORD size=sizeof(WIREGUARD_INTERFACE)+sizeof(WIREGUARD_PEER)+8192*sizeof(WIREGUARD_ALLOWED_IP);
-        std::vector<BYTE> bytes(size);
-        struct Wipe { std::vector<BYTE>& data; ~Wipe(){SecureZeroMemory(data.data(),data.size());} } wipe{bytes};
-        if(!api().read(adapter_,reinterpret_cast<WIREGUARD_INTERFACE*>(bytes.data()),&size)) win32Error("Cannot read tunnel statistics");
-        auto interface=reinterpret_cast<const WIREGUARD_INTERFACE*>(bytes.data());
-        if(size<sizeof(*interface)+sizeof(WIREGUARD_PEER)||interface->PeersCount!=1) throw std::runtime_error("Invalid tunnel statistics");
-        auto peer=reinterpret_cast<const WIREGUARD_PEER*>(interface+1);
-        FILETIME time{}; GetSystemTimeAsFileTime(&time);
-        ULARGE_INTEGER current{}; current.LowPart=time.dwLowDateTime; current.HighPart=time.dwHighDateTime;
-        const auto age=peer->LastHandshake && current.QuadPart>=peer->LastHandshake ? (current.QuadPart-peer->LastHandshake)/10000000 : 0;
-        return {{"adapterUp",true},{"linkState",!peer->LastHandshake?"AwaitingHandshake":age>180?"Stale":"Healthy"},
-            {"handshakeAgeSeconds",peer->LastHandshake?Json(age):Json(nullptr)},{"rxBytes",peer->RxBytes},{"txBytes",peer->TxBytes}};
-    }
     void apply(const Json& config, const std::string& privateKey) override {
         validateTunnelConfig(config, privateKey);
         const auto routes = array(config, "allowedRoutes", 8192);
@@ -208,7 +193,6 @@ private:
         WIREGUARD_CLOSE_ADAPTER_FUNC* close{};
         WIREGUARD_GET_ADAPTER_LUID_FUNC* luid{};
         WIREGUARD_SET_CONFIGURATION_FUNC* configure{};
-        WIREGUARD_GET_CONFIGURATION_FUNC* read{};
         WIREGUARD_SET_ADAPTER_STATE_FUNC* setState{};
         WIREGUARD_GET_ADAPTER_STATE_FUNC* getState{};
         template<class T> void load(T& fn,const char* name) {
@@ -221,7 +205,6 @@ private:
             if(!module) win32Error("Cannot load WireGuard driver");
             load(create,"WireGuardCreateAdapter"); load(close,"WireGuardCloseAdapter");
             load(luid,"WireGuardGetAdapterLUID"); load(configure,"WireGuardSetConfiguration");
-            load(read,"WireGuardGetConfiguration");
             load(setState,"WireGuardSetAdapterState"); load(getState,"WireGuardGetAdapterState");
         }
     };
