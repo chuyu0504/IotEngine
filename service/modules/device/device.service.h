@@ -2003,27 +2003,27 @@ return result
             const auto item = items.find(std::string(row[0].value().value_or(std::string_view{})));
             if (item == items.end()) continue;
             const auto config = ruvia::from_json<service::protocol::MqttConfig>(row[1].value().value_or(std::string_view{}));
-            if (!config || !config->get<"commands">() || !config->get<"points">()) continue;
+            if (!config || !config->template get<"commands">() || !config->template get<"points">()) continue;
             ruvia::boxed_array<DeviceCommandOperationDto> operations(ruvia::model_options{.resource_ = c.arena()});
             service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
-            for (const auto& point : *config->get<"points">()) allowed.emplace("$point:" + std::string(point.get<"name">().view()));
-            for (const auto& command : *config->get<"commands">()) {
-                const service::utils::JsonValueTemplate message(command.get<"templateText">().view(), allowed);
+            for (const auto& point : *config->template get<"points">()) allowed.emplace("$point:" + std::string(point.template get<"name">().view()));
+            for (const auto& command : *config->template get<"commands">()) {
+                const service::utils::JsonValueTemplate message(command.template get<"templateText">().view(), allowed);
                 std::set<std::string, std::less<>> topicNames, requiredIds;
-                for (const auto level : service::utils::splitPayload(command.get<"topic">().view(), "/"))
+                for (const auto level : service::utils::splitPayload(command.template get<"topic">().view(), "/"))
                     if (level.starts_with("{point:") && level.ends_with('}')) topicNames.emplace(level.substr(7, level.size() - 8));
-                for (const auto& id : command.get<"requiredPointIds">()) requiredIds.emplace(id.view());
+                for (const auto& id : command.template get<"requiredPointIds">()) requiredIds.emplace(id.view());
                 auto& operation = operations.emplace(ruvia::model_options{.resource_ = c.arena()});
-                operation.template set<"name">(command.get<"name">().view()).template set<"mqttMessageId">(command.get<"id">().view());
+                operation.template set<"name">(command.template get<"name">().view()).template set<"mqttMessageId">(command.template get<"id">().view());
                 ruvia::boxed_array<DeviceCommandOperationElementDto> elements(ruvia::model_options{.resource_ = c.arena()});
-                for (const auto& point : *config->get<"points">()) {
-                    if (!message.references("$point:" + std::string(point.get<"name">().view())) && !topicNames.contains(point.get<"name">().view())) continue;
+                for (const auto& point : *config->template get<"points">()) {
+                    if (!message.references("$point:" + std::string(point.template get<"name">().view())) && !topicNames.contains(point.template get<"name">().view())) continue;
                     auto& element = elements.emplace(ruvia::model_options{.resource_ = c.arena()});
-                    element.template set<"elementId">(point.get<"id">().view()).template set<"name">(point.get<"name">().view())
-                        .template set<"value">("").template set<"dataType">(point.get<"dataType">().view())
-                        .template set<"required">(requiredIds.contains(point.get<"id">().view()));
-                    if (point.get<"unit">()) element.template set<"unit">(point.get<"unit">()->view());
-                    if (point.get<"dataType">().view() == "BOOL") {
+                    element.template set<"elementId">(point.template get<"id">().view()).template set<"name">(point.template get<"name">().view())
+                        .template set<"value">("").template set<"dataType">(point.template get<"dataType">().view())
+                        .template set<"required">(requiredIds.contains(point.template get<"id">().view()));
+                    if (point.template get<"unit">()) element.template set<"unit">(point.template get<"unit">()->view());
+                    if (point.template get<"dataType">().view() == "BOOL") {
                         ruvia::boxed_array<DeviceCommandOptionDto> options(ruvia::model_options{.resource_ = c.arena()});
                         for (const auto value : {"1", "0"}) options.emplace(ruvia::model_options{.resource_ = c.arena()}).template set<"label">(value).template set<"value">(value);
                         element.template set<"options">(std::move(options));
