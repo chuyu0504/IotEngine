@@ -3,9 +3,21 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 #include <ruvia/web/db/db_entity.h>
 
 namespace service::command::persistence {
+
+// Redis 动态连接键使用完整身份和 TTL；命令读取不延长租约。
+struct DeviceConnectionRouteRecord final {
+    static constexpr std::string_view readScript = R"lua(
+if redis.call('PTTL', KEYS[1]) <= 0 then return {} end
+local route = redis.call('HMGET', KEYS[1], 'worker_id', 'instance_id', 'connection_id', 'session_epoch', 'worker_instance_id', 'link_id')
+for index = 1, 6 do if not route[index] or route[index] == '' then return {} end end
+if redis.call('GET', ARGV[1] .. route[6]) ~= route[2] then return {} end
+return route
+)lua";
+};
 
 RUVIA_DB_ENTITY(CommandAttemptEntity, "command_attempt",
     RUVIA_DB_COLUMN(operation_id, std::pmr::string,

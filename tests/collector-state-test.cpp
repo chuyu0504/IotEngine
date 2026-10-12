@@ -80,11 +80,12 @@ int main() {
                     stored.at("vendor_field") == std::string("a\0b", 3),
                 "link snapshot lost dynamic or binary field content");
         require(event.get("updated_at_ms") == "11", "mapping modified the source event");
-        const service::collector::CollectorWorkerRecord worker{3, "version-a", "applied", 1700000000000};
+        const service::collector::CollectorWorkerRecord worker{3, "version-a", "applied", 1700000000000, "worker-incarnation-a"};
         const auto workerHash = hash(worker.fields());
-        require(workerHash.size() == 4 && workerHash.at("worker_id") == "3" &&
+        require(workerHash.size() == 5 && workerHash.at("worker_id") == "3" &&
                     workerHash.at("version") == "version-a" && workerHash.at("state") == "applied" &&
-                    workerHash.at("applied_at_ms") == "1700000000000",
+                    workerHash.at("applied_at_ms") == "1700000000000" &&
+                    workerHash.at("worker_instance_id") == "worker-incarnation-a",
                 "worker snapshot changed the stored field contract");
         constexpr std::string_view instance = "01970000-1234-7000-8000-000000000123";
         constexpr std::string_view restarted = "01970000-1234-7000-8000-000000000124";

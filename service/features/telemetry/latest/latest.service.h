@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -140,6 +141,16 @@ ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId
 
 template <typename Redis>
 ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
+    const auto connection = service::message::collector::connectionKey(deviceId);
+    const auto connectionDeadlines = persistence::DeviceConnectionDeadline::key();
+    const std::array<std::string_view, 2> keys{ connection, connectionDeadlines };
+    const std::array<std::string_view, 1> arguments{ deviceId };
+    const auto reply = co_await redis.eval(
+        persistence::DeviceConnectionDeadline::eraseScript, keys, arguments
+    );
+    if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
+        service::message::redis::throwValue("erase device connection deadline", reply);
+    }
     co_await service::message::redis::eraseHash(redis, runtimeKey(deviceId));
     co_await service::message::redis::eraseHash(redis, latestKey(deviceId));
     (void)co_await service::message::redis::command(
@@ -314,8 +325,31 @@ return count
 }
 
 template <typename Redis>
+ruvia::task<std::int64_t> deadlineTimeMilliseconds(const Redis& redis) {
+    const auto clock = co_await service::message::redis::command(redis, { "TIME" });
+    if (clock.kind() != ruvia::redis_value::kind_type::array ||
+        clock.array().size() != 2 ||
+        clock.array()[0].kind() != ruvia::redis_value::kind_type::string ||
+        clock.array()[1].kind() != ruvia::redis_value::kind_type::string) {
+        service::message::redis::throwValue("read device deadline clock", clock);
+    }
+    const auto seconds = service::utils::parseInt64(
+        std::optional<std::string_view>{ clock.array()[0].string() }
+    );
+    const auto microseconds = service::utils::parseInt64(
+        std::optional<std::string_view>{ clock.array()[1].string() }
+    );
+    if (!seconds || !microseconds || *seconds < 0 || *microseconds < 0 ||
+        *microseconds >= 1000000 ||
+        *seconds > (std::numeric_limits<std::int64_t>::max() - 999) / 1000) {
+        throw std::runtime_error("invalid device deadline clock");
+    }
+    co_return *seconds * 1000 + *microseconds / 1000;
+}
+
+template <typename Redis>
 ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
-    const auto now = std::to_string(service::message::utcNowMilliseconds());
+    const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
     const auto due = co_await service::message::redis::command(
         redis,
         { "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" }
@@ -385,6 +419,23 @@ ruvia::task<void> expireStale(const Redis& redis) {
 }
 
 template <typename Redis>
+ruvia::task<void> expireConnections(const Redis& redis) {
+    const auto deadlines = persistence::DeviceConnectionDeadline::key();
+    const std::array<std::string_view, 2> keys{
+        deadlines, service::message::live::kChanges
+    };
+    const std::array<std::string_view, 1> arguments{
+        service::message::collector::kConnectionPrefix
+    };
+    const auto reply = co_await redis.eval(
+        persistence::DeviceConnectionDeadline::expireScript, keys, arguments
+    );
+    if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() < 0) {
+        service::message::redis::throwValue("expire device connection deadlines", reply);
+    }
+}
+
+template <typename Redis>
 ruvia::task<std::optional<std::int64_t>> nextDeadlineForKey(
     const Redis& redis,
     std::string deadlineKey
@@ -414,7 +465,13 @@ ruvia::task<std::optional<std::int64_t>> nextDeadlineForKey(
 
 template <typename Redis>
 ruvia::task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
-    co_return co_await nextDeadlineForKey(redis, onlineDeadlinesKey());
+    const auto online = co_await nextDeadlineForKey(redis, onlineDeadlinesKey());
+    const auto connection = co_await nextDeadlineForKey(
+        redis, persistence::DeviceConnectionDeadline::key()
+    );
+    if (!online) co_return connection;
+    if (!connection) co_return online;
+    co_return std::min(*online, *connection);
 }
 
 inline std::optional<std::chrono::milliseconds>

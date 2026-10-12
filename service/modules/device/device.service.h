@@ -1610,9 +1610,13 @@ return result
             if (!item->template get<"deviceCode">()) {
                 continue;
             }
-            // The runtime hash also contains worker/session bookkeeping. The list only needs
-            // these two fields, so HMGET avoids transferring and parsing the rest of the hash.
-            pipeline.command("HMGET", service::telemetry::latest::runtimeKey(id), "connection_id", "last_report_at_ms");
+            // 原子核验连接租约与链路归属；读取不会延长租约，也不读取历史连接身份。
+            pipeline.command(
+                "EVAL", entities::DeviceConnectionState::readScript, "2",
+                service::telemetry::latest::runtimeKey(id),
+                service::message::collector::connectionKey(id),
+                service::message::collector::kLinkOwnerPrefix
+            );
             bindings.push_back({ ReplyKind::runtime, item });
             pipeline.hget_all(service::telemetry::latest::latestKey(id));
             bindings.push_back({ ReplyKind::latest, item });

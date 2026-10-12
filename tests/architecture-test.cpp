@@ -482,6 +482,14 @@ void testIncludeGraphBoundaries() {
     }
 }
 
+std::string withoutEntityScriptDefinitions(const std::string& content) {
+    // 实体可声明纯 Redis 映射文本；只排除完整 constexpr 原始字面量声明，
+    // 客户端调用和其他包含命令的表达式仍保留在 I/O 边界检查中。
+    static const std::regex scriptDefinition(
+        R"definition(\bstatic\s+constexpr\s+std::string_view\s+[A-Za-z_]\w*\s*=\s*R"lua\([\s\S]*?\)lua"\s*;)definition");
+    return std::regex_replace(content, scriptDefinition, " ");
+}
+
 void testStorageOwnership() {
     const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bdb_query\b|\bget_repository\s*<)");
     const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hget_all|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
@@ -494,6 +502,24 @@ void testStorageOwnership() {
             "storage ownership check misses raw Hash reads");
     require(!std::regex_search(std::string{"redis.call('GET', KEYS[1]); redis.call('XACK', KEYS[2], ARGV[1])"}, rawHashAccess),
             "storage ownership check mistakes lock and queue commands for Hash records");
+    const std::regex redisExecution(R"((?:\.|->)\s*(?:command|eval|pipeline)\s*\()");
+    const std::string scriptDefinition =
+        "static constexpr std::string_view bindScript = R\"lua(\n"
+        "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])\n)lua\";";
+    require(!std::regex_search(withoutEntityScriptDefinitions(scriptDefinition), rawHashAccess),
+            "pure constexpr entity mapping was mistaken for Redis I/O");
+    for (const auto* execution : {"redis.command({\"HSET\", key, field, value});",
+                                  "return redis . eval(bindScript, keys, args);",
+                                  "auto request = redis->pipeline();"}) {
+        require(std::regex_search(withoutEntityScriptDefinitions(scriptDefinition + execution), redisExecution),
+                "entity mapping allowance hides a Redis client execution");
+    }
+    for (const auto* expression : {"const auto script = R\"lua(redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]))lua\";",
+                                   "return R\"lua(redis.call('HGET', KEYS[1], ARGV[1]))lua\";",
+                                   "command(redis, {\"HSET\", key, field, value});"}) {
+        require(std::regex_search(withoutEntityScriptDefinitions(expression), rawHashAccess),
+                "entity mapping allowance hides a non-declarative Hash operation");
+    }
     const std::regex implicitIdentityGeneration(R"(\b(?:nextUuidV7|nextMessageId)\s*\(|\bUuidV7Generator\s*::|\bruntime\s*::\s*instanceId\s*\()");
     require(std::regex_search(std::string{"message::nextMessageId ()"}, implicitIdentityGeneration),
             "identity boundary check misses a message UUID call");
@@ -521,10 +547,14 @@ void testStorageOwnership() {
             requireFeatureRule(content.find("co_await") == std::string::npos, path,
                                "pure definition or protocol performs asynchronous I/O");
         }
+        if (isEntity)
+            requireFeatureRule(!std::regex_search(content, redisExecution), path,
+                               "storage entity executes Redis I/O instead of declaring its mapping");
         requireFeatureRule(isEntity || !std::regex_search(content, entityDeclaration), path,
                            "storage entity declared outside its entity file");
+        const auto hashOperationContent = isEntity ? withoutEntityScriptDefinitions(content) : content;
         if (std::regex_search(content, databaseAccess) || std::regex_search(content, hashAccess) ||
-            std::regex_search(content, rawHashAccess)) {
+            std::regex_search(hashOperationContent, rawHashAccess)) {
             requireFeatureRule(key.ends_with(".service.h"), path,
                                "database or persistent Redis Hash operation outside business service");
             const auto entityPath = path.parent_path() /

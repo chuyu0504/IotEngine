@@ -736,6 +736,23 @@ struct Contract final {
 
 } // namespace service::rpc
 
+namespace service::message::collector {
+
+inline constexpr std::int64_t kConnectionTtlMilliseconds = 15000;
+inline constexpr std::string_view kConnectionPrefix{"iot:v3:device:connection:"};
+inline constexpr std::string_view kConnectionDeadlinesKey{"iot:v3:device:connection:deadlines"};
+inline constexpr std::string_view kLinkOwnerPrefix{"iot:v2:owner:link:"};
+
+inline std::string connectionKey(std::string_view deviceId) {
+    return std::string(kConnectionPrefix) + std::string(deviceId);
+}
+
+inline std::string linkOwnerKey(std::string_view linkId) {
+    return std::string(kLinkOwnerPrefix) + std::string(linkId);
+}
+
+} // namespace service::message::collector
+
 namespace service::telemetry::latest {
 
 inline std::string latestKey(std::string_view deviceId) {

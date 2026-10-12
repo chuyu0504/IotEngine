@@ -33,6 +33,10 @@ cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
 
+`collector-route` 回归测试会启动独立的内存 Redis，使用随机本地端口，验证连接租约到期、续期、重连保护、截止事件与遥测保留。
+需将 `redis-server` 加入 `PATH`；测试临时目录与日志位于根 `build/`，不连接生产 Redis。
+Linux CI 安装该工具并运行真实 Redis 回归；缺少工具的环境会明确标记该项为跳过，不能据此认定连接租约行为已验证。
+
 Windows：
 
 ```powershell
@@ -53,6 +57,18 @@ Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` tripl
 该版本仅提供 HTTP/1.1，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，
 客户端在所属 `event_loop` 等待 `shutdown()` 后再关闭线程。
+
+## 连接状态租约与升级
+
+Collector 的连接身份保存在 `iot:v3:device:connection:<deviceId>`，TTL 为 15 秒。
+所属 Worker 每 5 秒只为当前实际存活的连接续期，查询与命令路由读取均不续期。
+续期和清理核对实例、Worker incarnation、连接及 session epoch；旧连接的迟到任务不能删除或复活新会话。
+连接到期索引使用 Redis 时钟和最早截止调度，实际到期后发布一次状态变化，供现有 SSE 更新页面。
+
+升级时自动回收已认领链路设备的旧 `iot:v2:runtime:device:<deviceId>` 连接身份字段，
+最后上报时间、在线超时及最新指标继续保留，历史迁移 SQL 和数据库结构不变。
+运行中的全部实例应使用同一版本；旧程序不读取新连接键，回滚后通过真实重连重新建立旧版本路由。
+新 Worker、链路诊断快照同样有期限，历史无 TTL 的链路快照仅在确认链路已归属当前实例后回收。
 
 第三方许可证随制品打包：
 

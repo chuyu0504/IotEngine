@@ -3,9 +3,45 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 #include <ruvia/web/db/db_entity.h>
 
+#include "service/common/message.h"
+
 namespace service::telemetry::latest::persistence {
+
+// 连接截止索引只保存设备 ID 与 Redis 时钟截止值；跨键 TTL 检查及
+// 到期认领需要 Lua，ORM 无法原子认领索引并发布一次状态变化。
+struct DeviceConnectionDeadline final {
+    static std::string key() {
+        return std::string(service::message::collector::kConnectionDeadlinesKey);
+    }
+
+    static constexpr std::string_view eraseScript = R"lua(
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
+)lua";
+
+    static constexpr std::string_view expireScript = R"lua(
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now, 'LIMIT', 0, 1000)
+local expired = 0
+for _, device_id in ipairs(due) do
+  local ttl = redis.call('PTTL', ARGV[1] .. device_id)
+  if ttl > 0 then
+    redis.call('ZADD', KEYS[1], now + ttl, device_id)
+  elseif redis.call('ZREM', KEYS[1], device_id) == 1 then
+    expired = expired + 1
+  end
+end
+if expired > 0 then
+  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
+end
+return expired
+)lua";
+};
 
 RUVIA_DB_ENTITY(DeviceEntity, "device",
     RUVIA_DB_COLUMN(id, std::pmr::string,

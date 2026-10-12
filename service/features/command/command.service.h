@@ -103,24 +103,25 @@ return count
     co_return true;
 }
 
-inline std::string_view field(const std::vector<message::StreamField>& fields,
-                              std::string_view name) noexcept {
-    for (const auto& current : fields)
-        if (current.name == name)
-            return current.value;
-    return {};
-}
-
 template <typename Redis>
 ruvia::task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view deviceId) {
-    const auto fields = co_await message::redis::hashEntries(
-        redis, service::telemetry::latest::runtimeKey(deviceId));
-    const auto worker = field(fields, "worker_id");
-    const auto instance = field(fields, "instance_id");
-    const auto connection = field(fields, "connection_id");
-    const auto epoch = field(fields, "session_epoch");
-    if (instance.empty() || worker.empty() || connection.empty() || epoch.empty())
+    const auto key = message::collector::connectionKey(deviceId);
+    const std::string_view keys[]{key};
+    const std::string_view args[]{message::collector::kLinkOwnerPrefix};
+    const auto reply = co_await redis.eval(persistence::DeviceConnectionRouteRecord::readScript, keys, args);
+    if (reply.kind() != ruvia::redis_value::kind_type::array)
+        message::redis::throwValue("read device collector route", reply);
+    if (reply.array().empty())
         throw DeviceRouteError("device is offline or has no collector route");
+    if (reply.array().size() != 6)
+        throw DeviceRouteError("device collector route is invalid");
+    for (const auto& value : reply.array())
+        if (value.kind() != ruvia::redis_value::kind_type::string || value.string().empty())
+            throw DeviceRouteError("device collector route is invalid");
+    const auto worker = reply.array()[0].string();
+    const auto instance = reply.array()[1].string();
+    const auto connection = reply.array()[2].string();
+    const auto epoch = reply.array()[3].string();
 
     DeviceRoute route;
     const auto [workerEnd, workerError] =
@@ -133,11 +134,6 @@ ruvia::task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
         throw DeviceRouteError("device collector route is invalid");
     route.connectionId = connection;
     route.instanceId = instance;
-    const auto link = field(fields,"link_id");
-    const auto owner = co_await message::redis::command(redis,
-        {"GET","iot:v2:owner:link:" + std::string(link)});
-    if (owner.kind() != ruvia::redis_value::kind_type::string || owner.string() != instance)
-        throw DeviceRouteError("device collector ownership expired");
     co_return route;
 }
 

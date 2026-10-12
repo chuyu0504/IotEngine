@@ -143,7 +143,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make
+          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make redis-server
           clang-19 --version
           clang++-19 --version
           clang-scan-deps-19 --version

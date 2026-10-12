@@ -792,7 +792,7 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis) {
 namespace service::collector::ownership {
 
 inline std::string key(std::string_view linkId) {
-    return "iot:v2:owner:link:" + std::string(linkId);
+    return message::collector::linkOwnerKey(linkId);
 }
 
 inline std::string targetKey(std::string_view linkId, std::string_view targetId) {
@@ -917,24 +917,17 @@ class CollectorStateService final {
     template <typename Redis>
     static ruvia::task<DeviceRouteOwner> bindRoute(const Redis& redis,
         const ProtocolAction& action, std::uint64_t sessionEpoch,
-        std::size_t workerIndex, std::string linkId) {
-        static constexpr std::string_view script = R"lua(
-local previous_worker = redis.call('HGET', KEYS[1], 'worker_id') or ''
-local previous_instance = redis.call('HGET', KEYS[1], 'instance_id') or ''
-local previous_connection = redis.call('HGET', KEYS[1], 'connection_id') or ''
-redis.call('HSET', KEYS[1],
-  'device_id', ARGV[1], 'device_code', ARGV[2], 'worker_id', ARGV[3],
-  'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6],
-  'instance_id', ARGV[7], 'link_id', ARGV[8])
-if previous_connection ~= ARGV[4] then redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
-return {previous_worker, previous_connection, previous_instance}
-)lua";
-        const auto key = service::telemetry::latest::runtimeKey(action.deviceId);
+        std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId) {
+        const auto key = message::collector::connectionKey(action.deviceId);
+        const auto runtimeKey = service::telemetry::latest::runtimeKey(action.deviceId);
+        const auto ownerKey = message::collector::linkOwnerKey(linkId);
         const auto revisionKey = std::string(service::message::live::kChanges);
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{ key, revisionKey };
+        const auto ttl = std::to_string(message::collector::kConnectionTtlMilliseconds);
+        const std::string_view keys[]{ key, runtimeKey, revisionKey, ownerKey,
+            message::collector::kConnectionDeadlinesKey };
         const std::string_view args[]{
             action.deviceId,
             action.deviceCode,
@@ -943,9 +936,11 @@ return {previous_worker, previous_connection, previous_instance}
             epoch,
             now,
             service::runtime::instanceId(),
-            linkId
+            linkId,
+            workerInstanceId,
+            ttl
         };
-        const auto reply = co_await redis.eval(script, keys, args);
+        const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::bindScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() != 3) {
             message::redis::throwValue("bind device route", reply);
         }
@@ -955,35 +950,81 @@ return {previous_worker, previous_connection, previous_instance}
         const auto oldConnection = reply.array()[1].kind() == ruvia::redis_value::kind_type::string
             ? std::string(reply.array()[1].string())
             : std::string{};
-        co_return DeviceRouteOwner{oldWorker, oldConnection, std::string(reply.array()[2].string())};
+        const auto oldInstance = std::string(reply.array()[2].string());
+        co_await message::redis::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness);
+        co_return DeviceRouteOwner{oldWorker, oldConnection, oldInstance};
     }
 
     template <typename Redis>
-    static ruvia::task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId, std::string_view connectionId, std::string_view reason) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('HGET', KEYS[1], 'connection_id') ~= ARGV[1] then return 0 end
-redis.call('HDEL', KEYS[1], 'instance_id', 'worker_id', 'connection_id', 'session_epoch')
-if not redis.call('HGET', KEYS[1], 'last_report_at_ms') then
-  redis.call('HSET', KEYS[1], 'state', 'offline', 'state_reason', ARGV[2])
-end
-redis.call('HSET', KEYS[1], 'updated_at_ms', ARGV[3])
-redis.call('HSET', KEYS[2], '_state', cjson.encode({
-  state = 'offline',
-  reason = ARGV[2],
-  lastReportAt = tonumber(redis.call('HGET', KEYS[1], 'last_report_at_ms') or '0') or 0,
-  onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0') or 0,
-  updatedAt = tonumber(ARGV[3]) or 0
-}), '_updated_at_ms', ARGV[3])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
-return 1
-)lua";
-        const auto key = service::telemetry::latest::runtimeKey(deviceId);
-        const auto latestKey = service::telemetry::latest::latestKey(deviceId);
+    static ruvia::task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId,
+        std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex,
+        std::string_view workerInstanceId, std::string_view reason) {
+        const auto key = message::collector::connectionKey(deviceId);
+        const auto runtimeKey = service::telemetry::latest::runtimeKey(deviceId);
         const auto revisionKey = std::string(service::message::live::kChanges);
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{ key, latestKey, revisionKey };
-        const std::string_view args[]{ connectionId, reason, now };
-        (void)co_await redis.eval(script, keys, args);
+        const auto worker = std::to_string(workerIndex);
+        const auto epoch = std::to_string(sessionEpoch);
+        const std::string_view keys[]{ key, runtimeKey, revisionKey,
+            message::collector::kConnectionDeadlinesKey };
+        const std::string_view args[]{service::runtime::instanceId(), worker,
+            workerInstanceId, connectionId, epoch, reason, now, deviceId};
+        const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseScript, keys, args);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+            message::redis::throwValue("erase device route", reply);
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> renewRoute(const Redis& redis, std::string_view deviceId,
+        std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex,
+        std::string_view workerInstanceId) {
+        const auto key = message::collector::connectionKey(deviceId);
+        const auto worker = std::to_string(workerIndex);
+        const auto epoch = std::to_string(sessionEpoch);
+        const auto ttl = std::to_string(message::collector::kConnectionTtlMilliseconds);
+        const std::string_view keys[]{key, message::collector::kConnectionDeadlinesKey};
+        const std::string_view args[]{service::runtime::instanceId(), worker,
+            workerInstanceId, connectionId, epoch, ttl, message::collector::kLinkOwnerPrefix, deviceId};
+        const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::renewScript, keys, args);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+            message::redis::throwValue("renew device route", reply);
+        co_return reply.integer() == 1;
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const RuntimeSnapshot& snapshot) {
+        const auto now = std::to_string(message::utcNowMilliseconds());
+        const auto changes = std::string(message::live::kChanges);
+        for (const auto& device : snapshot.devices) {
+            const auto key = service::telemetry::latest::runtimeKey(device.id);
+            const auto owner = message::collector::linkOwnerKey(device.linkId);
+            const std::string_view keys[]{key, owner, changes};
+            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now};
+            const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseLegacyScript, keys, args);
+            if (reply.kind() != ruvia::redis_value::kind_type::integer)
+                message::redis::throwValue("erase legacy device route", reply);
+        }
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> eraseLegacyLinkSnapshots(const Redis& redis, const RuntimeSnapshot& snapshot) {
+        for (const auto& link : snapshot.links) {
+            const auto prefix = "iot:runtime:link:" + link.id + ":worker:";
+            const auto ownerKey = message::collector::linkOwnerKey(link.id);
+            for (const auto& key : co_await message::redis::keysMatching(redis, prefix + '*')) {
+                const auto separator = key.find_last_of(':');
+                if (separator == std::string::npos || separator <= prefix.size())
+                    continue;
+                const auto instance = std::string_view(key).substr(prefix.size(), separator - prefix.size());
+                if (instance == service::runtime::instanceId())
+                    continue;
+                const std::string_view keys[]{key, ownerKey};
+                const std::string_view args[]{service::runtime::instanceId(), instance};
+                const auto reply = co_await redis.eval(CollectorLinkRecord::eraseLegacyScript, keys, args);
+                if (reply.kind() != ruvia::redis_value::kind_type::integer)
+                    message::redis::throwValue("erase legacy link snapshot", reply);
+            }
+        }
     }
 
     template <typename Redis>
@@ -992,29 +1033,93 @@ return 1
         const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
         const auto key =
             CollectorLinkRecord::key(event.get("link_id"), workerIndex, service::runtime::instanceId());
-        co_await message::redis::eraseHash(redis, key);
-        co_await message::redis::setHash(redis, key, record.fields);
+        co_await storeSnapshot(redis, key, record.fields);
     }
 
     template <typename Redis>
-    static ruvia::task<void> publishWorker(const Redis& redis, std::size_t workerIndex, std::string_view version) {
+    static ruvia::task<void> publishWorker(const Redis& redis, std::size_t workerIndex,
+        std::string_view workerInstanceId, std::string_view version) {
         const CollectorWorkerRecord record{
-            workerIndex, std::string(version), "applied", message::utcNowMilliseconds()};
-        co_await message::redis::setHash(
-            redis,
-            CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId()), record.fields()
-        );
+            workerIndex, std::string(version), "applied", message::utcNowMilliseconds(), std::string(workerInstanceId)};
+        co_await storeSnapshot(redis,
+            CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId()), record.fields());
     }
 
     template <typename Redis>
-    static ruvia::task<void> eraseWorker(const Redis& redis, std::size_t index) {
-        co_await message::redis::eraseMatching(redis, CollectorLinkRecord::key("*", index, service::runtime::instanceId()));
-        co_await message::redis::eraseHash(redis, CollectorWorkerRecord::key(index, service::runtime::instanceId()));
+    static ruvia::task<void> renewWorkerSnapshot(const Redis& redis, std::size_t workerIndex,
+        std::string_view workerInstanceId, std::string_view version) {
+        const CollectorWorkerRecord record{workerIndex, std::string(version), "applied",
+            message::utcNowMilliseconds(), std::string(workerInstanceId)};
+        const auto key = CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId());
+        co_await retainSnapshot(redis, key, workerInstanceId, record.fields());
     }
 
     template <typename Redis>
-    static ruvia::task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index) {
-        co_await message::redis::eraseHash(redis, CollectorLinkRecord::key(id, index, service::runtime::instanceId()));
+    static ruvia::task<void> retainLinkSnapshot(const Redis& redis,
+        const message::StreamMessage& event, std::size_t workerIndex) {
+        const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
+        const auto key = CollectorLinkRecord::key(event.get("link_id"), workerIndex, service::runtime::instanceId());
+        co_await retainSnapshot(redis, key, event.get("worker_instance_id"), record.fields);
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> eraseWorker(const Redis& redis, std::size_t index,
+        std::string_view workerInstanceId) {
+        const auto keys = co_await message::redis::keysMatching(
+            redis, CollectorLinkRecord::key("*", index, service::runtime::instanceId()));
+        for (const auto& key : keys)
+            co_await eraseSnapshot(redis, key, workerInstanceId);
+        co_await eraseSnapshot(redis, CollectorWorkerRecord::key(index, service::runtime::instanceId()), workerInstanceId);
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index,
+        std::string_view workerInstanceId) {
+        co_await eraseSnapshot(redis, CollectorLinkRecord::key(id, index, service::runtime::instanceId()), workerInstanceId);
+    }
+
+  private:
+    template <typename Redis>
+    static ruvia::task<void> retainSnapshot(const Redis& redis, const std::string& key,
+        std::string_view workerInstanceId, const std::vector<message::StreamField>& fields) {
+        std::vector<std::string> args{std::to_string(message::collector::kConnectionTtlMilliseconds),
+            std::string(workerInstanceId)};
+        args.reserve(2 + fields.size() * 2);
+        for (const auto& field : fields) {
+            args.push_back(field.name);
+            args.push_back(field.value);
+        }
+        const std::vector<std::string_view> views(args.begin(), args.end());
+        const std::string_view keys[]{key};
+        const auto reply = co_await redis.eval(CollectorWorkerRecord::retainScript, keys, views);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+            message::redis::throwValue("retain collector snapshot", reply);
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> eraseSnapshot(const Redis& redis, const std::string& key,
+        std::string_view workerInstanceId) {
+        const std::string_view keys[]{key};
+        const std::string_view args[]{workerInstanceId};
+        const auto reply = co_await redis.eval(CollectorWorkerRecord::eraseScript, keys, args);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+            message::redis::throwValue("erase collector snapshot", reply);
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> storeSnapshot(const Redis& redis, const std::string& key,
+        const std::vector<message::StreamField>& fields) {
+        std::vector<std::string> args{std::to_string(message::collector::kConnectionTtlMilliseconds)};
+        args.reserve(1 + fields.size() * 2);
+        for (const auto& field : fields) {
+            args.push_back(field.name);
+            args.push_back(field.value);
+        }
+        const std::vector<std::string_view> views(args.begin(), args.end());
+        const std::string_view keys[]{key};
+        const auto reply = co_await redis.eval(CollectorWorkerRecord::storeScript, keys, views);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+            message::redis::throwValue("store collector snapshot", reply);
     }
 };
 

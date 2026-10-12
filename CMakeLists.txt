@@ -400,6 +400,19 @@ iot_engine_add_test(collector-state
     SOURCES tests/collector-state-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)
 
+find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server redis-server.exe)
+if(NOT REDIS_SERVER_EXECUTABLE)
+    set(REDIS_SERVER_EXECUTABLE "")
+endif()
+iot_engine_add_test(collector-route LARGE
+    SOURCES tests/collector-route-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto
+    DEFINITIONS
+        "IOT_TEST_REDIS_SERVER=\"${REDIS_SERVER_EXECUTABLE}\""
+        "IOT_TEST_BUILD_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\""
+    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
+set_tests_properties(collector-route PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
 iot_engine_add_test(edge-service LARGE
     SOURCES tests/edge-service-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto

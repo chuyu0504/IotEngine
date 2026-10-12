@@ -136,12 +136,13 @@ class PersistenceRuntime final : public TelemetryService {
                         // The current deadline set is shared by all identical
                         // Service Workers and claimed atomically in Redis.
                         co_await latest::expireStale(redis);
+                        co_await latest::expireConnections(redis);
                         deadline = co_await latest::nextDeadline(redis);
                     }
-                    const auto wait = latest::deadlineWait(
-                        service::message::utcNowMilliseconds(),
-                        deadline
-                    );
+                    const auto now = !alerts && deadline
+                        ? co_await latest::deadlineTimeMilliseconds(redis)
+                        : service::message::utcNowMilliseconds();
+                    const auto wait = latest::deadlineWait(now, deadline);
                     if (wait.has_value() && wait->count() == 0) {
                         continue;
                     }
