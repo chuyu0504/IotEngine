@@ -49,7 +49,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-固定的 Ruvia `f973fbaf7c62348a933d98b5602a992dcb20077b` 通过
+固定的 Ruvia `1a8fb217dd8fc13b5ffa05a16706ce2dc8a5f3b3` 通过
 `ports/cmake/patch-ruvia.cmake` 修正 Clang 对协程内前置调用 `auto wait()` 的编译错误：
 直接等待同一个 worker signal，保持原有关闭与唤醒语义，不改变公开 API。
 MSVC 19.51 编译 HTTP 会话时会因同步 socket 写入的内联触发 `C4737`；
@@ -65,6 +65,8 @@ MSVC 19.51 编译 HTTP 会话时会因同步 socket 写入的内联触发 `C4737
 总预算为 16 MiB；部署重启会重建静态快照，验收须覆盖入口资源、条件请求和固件 Range 下载。
 连接、请求体、HTTP 客户端及 WebSocket 接收使用公开的 `http_io_buffer` 管理准备、提交与消费，
 项目不依赖此前的字符串覆盖写入实现；静态根目录绑定已打开的目录句柄，文件响应读取后复核身份。
+无法从上下文推断类型的 PostgreSQL 无符号参数使用 `numeric`，保留完整 `uint64_t` 范围；
+升级验收包含实际数据库表达式、分页与时间字段读写，异常消息比较和响应头迭代使用该提交的修复。
 
 该版本仅提供 HTTP/1.1，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，
