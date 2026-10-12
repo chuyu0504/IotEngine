@@ -8,6 +8,7 @@ const redis = new Bun.RedisClient(redisUrl);
 const admin = '00000000-0000-7000-8000-000000000002';
 const platform = '00000000-0000-7000-8000-000000000001';
 const node = crypto.randomUUID(), link = crypto.randomUUID(), device = crypto.randomUUID();
+const deniedLink = crypto.randomUUID();
 const other = crypto.randomUUID(), role = crypto.randomUUID();
 const identity = `99${String(Date.now()).slice(-12).padStart(12, '0')}0`;
 const tag = `edge_link_${crypto.randomUUID()}`;
@@ -34,8 +35,8 @@ async function request(method: string, path: string, body?: unknown, code = 0) {
     return result.data;
 }
 
-async function subscribe(userId = admin) {
-    const stream = await openSnapshotSubscription(`/v1/link/events?keyword=${tag}&debugLinkId=${link}`, token(userId));
+async function subscribe(userId = admin, debugLinkId = link) {
+    const stream = await openSnapshotSubscription(`/v1/link/events?keyword=${tag}&debugLinkId=${debugLinkId}`, token(userId));
     streams.push(stream);
     return stream;
 }
@@ -146,17 +147,20 @@ try {
     await db`INSERT INTO sys_user(id,username,password_hash) VALUES(${other},${other},'unused-test-password')`;
     await db`INSERT INTO sys_role(id,name,code,permissions) VALUES(${role},${role},${role},'["iot:link:query","iot:link:edit"]'::jsonb)`;
     await db`INSERT INTO sys_user_role(id,user_id,role_id) VALUES(${crypto.randomUUID()},${other},${role})`;
+    // 未曾建立授权订阅的独立资源，避免已关闭旧 socket 的异步清理影响 TTL 证据。
+    await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,edge_node_id,created_by,debug_enabled)
+        VALUES(${deniedLink},${tag + '_denied'},'Modbus','{"transport":"tcp","interface":"lo","mode":"TCP Client","ip":"127.0.0.1","port":1502}'::jsonb,'disabled','edge',${node},${admin},true)`;
     actor = other;
     await request('PUT', `/v1/link/${link}/debug`, { enabled: false }, 15007);
-    await redis.send('SET', [`iot:debug:lease:link:${link}`, '1', 'PX', '60000']);
-    const deniedTtl = Number(await redis.send('PTTL', [`iot:debug:lease:link:${link}`]));
-    const denied = await subscribe(other);
+    await redis.send('SET', [`iot:debug:lease:link:${deniedLink}`, '1', 'PX', '60000']);
+    const deniedTtl = Number(await redis.send('PTTL', [`iot:debug:lease:link:${deniedLink}`]));
+    const denied = await subscribe(other, deniedLink);
     assert.equal((await snapshot(denied, 'links')).total, 1);
     await snapshot(denied, 'packets', 15007);
     await denied.expectQuiet(16000);
-    const remainingDeniedTtl = Number(await redis.send('PTTL', [`iot:debug:lease:link:${link}`]));
+    const remainingDeniedTtl = Number(await redis.send('PTTL', [`iot:debug:lease:link:${deniedLink}`]));
     assert(remainingDeniedTtl > 0 && remainingDeniedTtl < deniedTtl - 10000,
-        'unauthorized debug SSE renewed another owner\'s debug lease');
+        `unauthorized debug SSE renewed another owner's debug lease: before=${deniedTtl}, after=${remainingDeniedTtl}`);
     await denied.close();
     assert.equal((await db`SELECT debug_enabled FROM link WHERE id=${link}`)[0].debug_enabled, true);
     await db`UPDATE sys_role SET permissions='["iot:link:query"]'::jsonb WHERE id=${role}`;
@@ -182,11 +186,12 @@ try {
 } finally {
     for (const stream of streams) await stream.close();
     await redis.send('DEL', [`iot:debug:lease:link:${link}`, `iot:debug:watch:link:${link}`,
+        `iot:debug:lease:link:${deniedLink}`, `iot:debug:watch:link:${deniedLink}`,
         `iot:edge:config:${node}`, `iot:edge:config-revision:${node}`, `iot:edge:metadata:${node}`]);
     await db`DELETE FROM device WHERE id=${device}`;
     await db`DELETE FROM outbox_event WHERE aggregate_id IN (${link},${device},${model})`;
     await db`DELETE FROM edge_config_revision WHERE node_id=${node}`;
-    await db`DELETE FROM link WHERE id=${link}`;
+    await db`DELETE FROM link WHERE id IN (${link},${deniedLink})`;
     if (model) await db`DELETE FROM protocol_config WHERE id=${model}`;
     await db`DELETE FROM edge_node WHERE id=${node}`;
     await db`DELETE FROM sys_user_role WHERE user_id=${other}`;

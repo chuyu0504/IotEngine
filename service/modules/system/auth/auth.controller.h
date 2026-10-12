@@ -9,10 +9,10 @@
 
 namespace service::auth {
 
-class AuthController final : public ruvia::controller<AuthController> {
+class AuthController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/auth")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(AuthController)
     RUVIA_POST("/login", login, ruvia::json_body<LoginBody>);
     RUVIA_POST("/refresh", refresh, ruvia::json_body<RefreshBody>);
     RUVIA_POST("/logout", logout);

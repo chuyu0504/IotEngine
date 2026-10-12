@@ -19,10 +19,10 @@ RUVIA_MODEL(PresenceBody,
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value, RUVIA_DEFAULT(true)),
     RUVIA_OPTIONAL_FIELD(nullableDefault, ruvia::int64, RUVIA_NULLABLE, RUVIA_DEFAULT(7)));
 
-class ModelMigrationRoutes final : public ruvia::controller<ModelMigrationRoutes> {
+class ModelMigrationRoutes final {
   public:
     RUVIA_CONTROLLER_GROUP("/model-migration")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(ModelMigrationRoutes)
     RUVIA_POST("/presence", presence, ruvia::json_body<PresenceBody>);
     RUVIA_PUT("/errors/:id", accept, ruvia::path_model<service::protocol::ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<service::protocol::UpdateProtocolBody>);
     RUVIA_POST("/protocol", createProtocol, ruvia::json_body<service::protocol::CreateProtocolBody>);

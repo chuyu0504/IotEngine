@@ -17,7 +17,7 @@ inline ruvia::task<void> requirePermission(ruvia::context& c, std::string_view p
 }
 
 template <ruvia::fixed_string Permission>
-class PermissionMiddleware final : public ruvia::middleware {
+class PermissionMiddleware final {
   public:
     ruvia::task<void> handle(ruvia::context& c, ruvia::next& next) {
         co_await requirePermission(c, Permission.view());

@@ -13,10 +13,10 @@
 
 namespace service::dept {
 
-class DeptController final : public ruvia::controller<DeptController> {
+class DeptController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/departments", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(DeptController)
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"system:dept:query">, ruvia::query_model<DeptListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"system:dept:query">);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"system:dept:add">, ruvia::json_body<CreateDeptBody>);

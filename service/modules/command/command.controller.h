@@ -7,10 +7,10 @@
 #include "service/modules/command/command.service.h"
 
 namespace service::command {
-class CommandController final : public ruvia::controller<CommandController> {
+class CommandController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(CommandController)
     RUVIA_POST("/:id/commands", create, service::middleware::PermissionMiddleware<"iot:device:command">, ruvia::path_model<CommandStatusQuery>, ruvia::json_body<SubmitCommandBody>);
     RUVIA_ROUTES_END
 

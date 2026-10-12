@@ -13,10 +13,10 @@
 
 namespace service::role {
 
-class RoleController final : public ruvia::controller<RoleController> {
+class RoleController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/roles", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(RoleController)
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"system:role:query">, ruvia::query_model<RoleListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"system:user:query">);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"system:role:add">, ruvia::json_body<CreateRoleBody>);

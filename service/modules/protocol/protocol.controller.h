@@ -15,10 +15,10 @@
 
 namespace service::protocol {
 
-class ProtocolController final : public ruvia::controller<ProtocolController> {
+class ProtocolController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/protocol/configs", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(ProtocolController)
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::query_model<ProtocolListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::query_model<ProtocolListQuery>);
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::path_model<ProtocolIdParams>);

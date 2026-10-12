@@ -31,10 +31,10 @@
 
 namespace service::edge {
 
-class GatewayController final : public ruvia::controller<GatewayController> {
+class GatewayController final {
   public:
     RUVIA_CONTROLLER_GROUP("/edge/v1")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(GatewayController)
     const auto webSocketOptions = ruvia::websocket_route_config{
         .lifecycle_ = {
             .heartbeat_ = {

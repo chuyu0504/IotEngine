@@ -17,10 +17,10 @@
 
 namespace service::device {
 
-class DeviceController final : public ruvia::controller<DeviceController> {
+class DeviceController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(DeviceController)
     // 共享流按频道独立鉴权，不能把设备、分组及用户频道改成整体 AND 权限。
     RUVIA_GET_SSE("/events", deviceEvents, ruvia::query_model<DeviceEventsQuery>);
     RUVIA_PUT("/:id/debug", setDebug, service::middleware::PermissionMiddleware<"iot:device:edit">, ruvia::path_model<DeviceIdParams>, ruvia::json_body<DeviceDebugBody>);

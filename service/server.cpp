@@ -20,6 +20,7 @@
 #include <ruvia/web/app.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_migration.h>
+#include <ruvia/web/error.h>
 #include <ruvia/web/redis/redis.h>
 
 #include "service/common/http.h"
@@ -725,10 +726,10 @@ int main(int argc, char* argv[]) {
         sdkSupervisor().stop();
         service::packet_log::shutdown();
         return 0;
-    } catch (const std::exception& error) {
+    } catch (...) {
         sdkSupervisor().stop();
         service::packet_log::shutdown();
-        std::cerr << "server failed: " << error.what() << '\n';
+        std::cerr << "server failed: " << ruvia::exception_text(std::current_exception()) << '\n';
         return 1;
     }
 }

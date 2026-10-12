@@ -30,10 +30,10 @@ inline ruvia::http_response jsonData(ruvia::context& c, std::string_view data, s
     return response;
 }
 
-class AccessAdminController final : public ruvia::controller<AccessAdminController> {
+class AccessAdminController final {
   public:
     RUVIA_CONTROLLER_GROUP("/api", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(AccessAdminController)
     RUVIA_GET("/device/options", devices, service::middleware::PermissionMiddleware<"iot:open-access:query">);
     RUVIA_GET("/open-access-key", keys, service::middleware::PermissionMiddleware<"iot:open-access:query">);
     RUVIA_GET("/open-webhook", webhooks, service::middleware::PermissionMiddleware<"iot:open-access:query">, ruvia::query_model<WebhookQueryParams>);
@@ -144,10 +144,10 @@ class AccessAdminController final : public ruvia::controller<AccessAdminControll
     }
 };
 
-class AccessController final : public ruvia::controller<AccessController> {
+class AccessController final {
   public:
     RUVIA_CONTROLLER_GROUP("/open-api/device")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(AccessController)
     RUVIA_GET_SSE("/list", devices);
     RUVIA_GET_SSE("/realtime", realtime);
     RUVIA_GET_SSE("/history", history);

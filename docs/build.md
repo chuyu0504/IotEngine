@@ -49,10 +49,14 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-固定的 Ruvia `5fca1ee5bc708bb0a97baf520b89c78efa460e09` 通过
+固定的 Ruvia `38122bbe19e10817c3903555cbb66cb83b2492f4` 通过
 `ports/cmake/patch-ruvia.cmake` 修正 Clang 对协程内前置调用 `auto wait()` 的编译错误：
 直接等待同一个 worker signal，保持原有关闭与唤醒语义，不改变公开 API。
 补丁核验原始或已修复源码的 SHA-256，支持重复配置并拒绝源码漂移；依赖升级时须重新核对并移除已被上游修复的补丁。
+
+管理端、后台媒体代理及测试 Controller 使用无框架基类的 `final` 类，并通过
+`RUVIA_ROUTES_BEGIN(Type)` 声明路由；Middleware 直接满足公开概念，不再继承框架类型。
+既有路由、权限及字段校验顺序保持一致，入口通过公开 `ruvia::exception_text` 记录 UTF-8 失败原因。
 
 该版本仅提供 HTTP/1.1，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，

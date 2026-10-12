@@ -32,7 +32,7 @@ inline std::int64_t requestErrorCode(const ruvia::context& context, const ruvia:
 // 用请求作用域绑定声明模块错误码，统一错误响应读取它；不重复解析或校验。
 // 放在 path_model 之后、json_body 之前，保持认证、权限及路径校验错误不变。
 template <std::int64_t Code, ruvia::fixed_string Field = "", std::int64_t FieldCode = Code, ruvia::fixed_string IssueCode = "">
-class ValidationErrorCodeMiddleware final : public ruvia::middleware {
+class ValidationErrorCodeMiddleware final {
   public:
     ruvia::task<void> handle(ruvia::context& context, ruvia::next& next) {
         const RequestValidationErrorCodes codes{Code, Field.view(), FieldCode, IssueCode.view()};

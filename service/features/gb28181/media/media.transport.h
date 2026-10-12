@@ -210,11 +210,10 @@ namespace media_proxy_detail {
 
 } // namespace media_proxy_detail
 
-class MediaProxyController final
-    : public ruvia::controller<MediaProxyController> {
+class MediaProxyController final {
   public:
     RUVIA_CONTROLLER_GROUP("/media")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(MediaProxyController)
     RUVIA_GET_STREAM("/*", proxy);
     ruvia_controller_access_type::add_response_stream_route(
         ruvia_route_scope,

@@ -116,10 +116,10 @@ class Origin final {
 
 } // namespace
 
-class PublicIpTestController final : public ruvia::controller<PublicIpTestController> {
+class PublicIpTestController final {
 public:
     RUVIA_CONTROLLER_GROUP("/test")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(PublicIpTestController)
     RUVIA_GET("/ip", ip);
     RUVIA_ROUTES_END
 private:

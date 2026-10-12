@@ -492,10 +492,10 @@ class DebugConnection final {
     bool closing_{};
 };
 
-class EdgeController final : public ruvia::controller<EdgeController> {
+class EdgeController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/edge")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(EdgeController)
     const auto options = ruvia::websocket_route_config{ .lifecycle_ = {
                                                           .heartbeat_ = { .ping_interval_ = std::chrono::seconds(30), .pong_timeout_ = std::chrono::seconds(15) },
                                                           .close_handshake_timeout_ = std::chrono::seconds(5) } };
@@ -769,10 +769,10 @@ class EdgeController final : public ruvia::controller<EdgeController> {
     }
 };
 
-class EdgeManagementController final : public ruvia::controller<EdgeManagementController> {
+class EdgeManagementController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/edge", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(EdgeManagementController)
     RUVIA_GET_SSE("/events", pageEvents, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::query_model<EdgeEventsQuery>, ruvia::query_model<LogsQuery>);
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::query_model<EdgeListQuery>);
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<EdgeIdParams>);
@@ -1037,10 +1037,10 @@ class EdgeManagementController final : public ruvia::controller<EdgeManagementCo
     }
 };
 
-class EdgePublicController final : public ruvia::controller<EdgePublicController> {
+class EdgePublicController final {
   public:
     RUVIA_CONTROLLER_GROUP("/edge/v1/firmware")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(EdgePublicController)
     RUVIA_GET("/:id/download", download, ruvia::path_model<EdgeIdParams>, ruvia::query_model<FirmwareDownloadQuery>);
     RUVIA_ROUTES_END
 

@@ -14,10 +14,10 @@ void require(bool condition, const char* reason) {
 
 RUVIA_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::string, RUVIA_MIN(2, "short")));
 
-class EventProbe final : public ruvia::controller<EventProbe> {
+class EventProbe final {
   public:
     RUVIA_CONTROLLER_GROUP("/probe")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(EventProbe)
     RUVIA_POST("/", probe);
 
     RUVIA_ROUTES_END

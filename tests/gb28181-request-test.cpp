@@ -12,10 +12,10 @@
 namespace {
 using namespace service::gb28181;
 
-class GbRequestRoutes final : public ruvia::controller<GbRequestRoutes> {
+class GbRequestRoutes final {
   public:
     RUVIA_CONTROLLER_GROUP("/gb-request")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(GbRequestRoutes)
     RUVIA_POST("/name", name, ruvia::json_body<GbNameBody>);
     RUVIA_POST("/channel-name", channelName, ruvia::json_body<GbNameBody>);
     RUVIA_POST("/device/:deviceId/channel/:channelId/ptz/:action", ptz, ruvia::path_model<GbPtzParams>, ruvia::json_body<GbPtzBody>);

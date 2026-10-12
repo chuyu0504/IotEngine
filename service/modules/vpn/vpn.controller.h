@@ -12,10 +12,10 @@
 #include "service/utils/json.h"
 
 namespace service::vpn {
-class VpnController final : public ruvia::controller<VpnController> {
+class VpnController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/vpn", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(VpnController)
     RUVIA_GET("/networks", listNetworks, service::middleware::PermissionMiddleware<"iot:vpn:query">, ruvia::query_model<VpnListQuery>);
     RUVIA_PATCH("/routes/:id", updateRoute, service::middleware::PermissionMiddleware<"iot:vpn:edit">, ruvia::path_model<VpnIdParams>, service::middleware::ValidationErrorCodeMiddleware<21001>, ruvia::json_body<VpnRoutePatchBody>);
     RUVIA_POST("/peers", createPeer, service::middleware::PermissionMiddleware<"iot:vpn:add">, service::middleware::ValidationErrorCodeMiddleware<21001>, ruvia::json_body<VpnPeerBody>);

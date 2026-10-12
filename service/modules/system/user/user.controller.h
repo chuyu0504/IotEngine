@@ -10,10 +10,10 @@
 
 namespace service::user {
 
-class UserController final : public ruvia::controller<UserController> {
+class UserController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/users", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(UserController)
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"system:user:query">, ruvia::query_model<UserListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"system:user:query">, ruvia::query_model<UserOptionsQuery>);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"system:user:add">, ruvia::json_body<CreateUserBody>);

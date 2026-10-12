@@ -27,7 +27,7 @@ inline service::auth::JwtPayload requireAuth(ruvia::context& c) {
     }
 }
 
-class AuthMiddleware final : public ruvia::middleware {
+class AuthMiddleware final {
   public:
     ruvia::task<void> handle(ruvia::context& c, ruvia::next& next) {
         (void)requireAuth(c);

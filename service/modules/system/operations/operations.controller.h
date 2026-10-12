@@ -11,10 +11,10 @@
 
 namespace service::system {
 
-class OperationsController final : public ruvia::controller<OperationsController> {
+class OperationsController final {
   public:
     RUVIA_CONTROLLER_GROUP("/internal")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(OperationsController)
     RUVIA_GET("/health/live", live);
     RUVIA_GET("/health/ready", ready);
     RUVIA_GET("/metrics", metrics);

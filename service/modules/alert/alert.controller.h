@@ -9,10 +9,10 @@
 #include "service/modules/alert/alert.service.h"
 
 namespace service::alert {
-class AlertController final : public ruvia::controller<AlertController> {
+class AlertController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/alert", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(AlertController)
     RUVIA_GET("/rules", rules, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
     RUVIA_GET("/templates", templates, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
     RUVIA_GET_SSE("/events", alertEvents, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);

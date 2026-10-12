@@ -19,10 +19,10 @@ RUVIA_MODEL(CreatedResponse,
     RUVIA_REQUIRED_FIELD(created, ruvia::bool_value),
     RUVIA_REQUIRED_FIELD(name, ruvia::string));
 
-class ValidationRoutes final : public ruvia::controller<ValidationRoutes> {
+class ValidationRoutes final {
   public:
     RUVIA_CONTROLLER_GROUP("/validation")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(ValidationRoutes)
     RUVIA_POST("/typed-response", typedResponse);
     RUVIA_POST("/devices", createDevice, ruvia::json_body<service::device::CreateDeviceBody>);
     RUVIA_PUT("/devices", updateDevice, ruvia::json_body<service::device::UpdateDeviceBody>);

@@ -11,10 +11,10 @@
 #include "service/modules/gb28181/gb28181.service.h"
 
 namespace service::gb28181 {
-class Gb28181Controller final : public ruvia::controller<Gb28181Controller> {
+class Gb28181Controller final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/gb28181", service::middleware::AuthMiddleware)
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(Gb28181Controller)
     RUVIA_GET("/health", health, service::middleware::PermissionMiddleware<"iot:gb28181:query">);
     RUVIA_GET_SSE("/devices/events", devicesEvents, service::middleware::PermissionMiddleware<"iot:gb28181:query">);
     RUVIA_GET("/streams/:streamId/recording", recording, service::middleware::PermissionMiddleware<"iot:gb28181:record">, ruvia::path_model<GbStreamParams>);

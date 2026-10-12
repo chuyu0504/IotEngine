@@ -238,10 +238,10 @@ void resultStorageIsReclaimed() {
     }
 }
 
-class OperationMemoryController final : public ruvia::controller<OperationMemoryController> {
+class OperationMemoryController final {
 public:
     RUVIA_CONTROLLER_GROUP("/operation-memory")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(OperationMemoryController)
     RUVIA_GET("", probe);
     RUVIA_ROUTES_END
 
