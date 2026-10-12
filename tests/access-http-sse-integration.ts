@@ -131,7 +131,8 @@ try {
     for (const headers of headerCases) {
         const pattern = "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$";
         const newline = '[\\r\\n]';
-        const oracle = await db`SELECT NOT EXISTS (SELECT 1 FROM jsonb_each(${headers}::text::jsonb) AS header(key,value) WHERE key !~ ${pattern} OR jsonb_typeof(value) <> 'string' OR (value #>> '{}') ~ ${newline} OR lower(key) IN (SELECT jsonb_array_elements_text(${JSON.stringify(reserved)}::text::jsonb))) AS valid`;
+        // 保留原始 JSON 的重复成员，避免后续合法值掩盖前面的非法 Header。
+        const oracle = await db`SELECT NOT EXISTS (SELECT 1 FROM json_each(${headers}::text::json) AS header(key,value) WHERE key !~ ${pattern} OR json_typeof(value) <> 'string' OR (value #>> '{}') ~ ${newline} OR lower(key) IN (SELECT jsonb_array_elements_text(${JSON.stringify(reserved)}::text::jsonb))) AS valid`;
         const before = (await db`SELECT headers FROM open_webhook WHERE id=${webhook}`)[0].headers;
         await request('PUT',`/api/open-webhook/${webhook}`,`{"headers":${headers}}`,oracle[0].valid ? 0 : 19002,admin,true);
         assert.deepEqual((await db`SELECT headers FROM open_webhook WHERE id=${webhook}`)[0].headers, oracle[0].valid ? JSON.parse(headers) : before);
