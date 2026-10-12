@@ -52,6 +52,9 @@ Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` tripl
 固定的 Ruvia `6de332c554f3eb28ab0451560678099331990124` 通过
 `ports/cmake/patch-ruvia.cmake` 修正 Clang 对协程内前置调用 `auto wait()` 的编译错误：
 直接等待同一个 worker signal，保持原有关闭与唤醒语义，不改变公开 API。
+MSVC 19.51 编译 HTTP 会话时会因同步 socket 写入的内联触发 `C4737`；
+同一脚本仅在 MSVC 下将 `http1_response_output::start` 标记为 `noinline`，
+保留非阻塞同步写入、异步续写、错误处理及协程对称转移，其他编译器保持原有内联策略。
 补丁核验原始或已修复源码的 SHA-256，支持重复配置并拒绝源码漂移；依赖升级时须重新核对并移除已被上游修复的补丁。
 
 管理端、后台媒体代理及测试 Controller 使用无框架基类的 `final` 类，并通过
