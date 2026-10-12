@@ -1317,7 +1317,7 @@ class ProtocolService {
         }
         const auto previous = ruvia::json_value::parse(configuration->template get<"config">());
         if (!previous) throw std::runtime_error("invalid stored protocol configuration");
-        const auto points = previous->get<ruvia::json_value>("points");
+        const auto points = previous->template get<ruvia::json_value>("points");
         if (!points || !points->is_array()) throw std::runtime_error("invalid stored protocol points");
         const auto pointId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto requestJson = ruvia::to_json(body);
@@ -1345,7 +1345,7 @@ class ProtocolService {
         fields["points"] = std::move(pointArray);
         if (!static_cast<bool>(body.get<"visible">().value_or(ruvia::bool_value{true}))) {
             std::string visibility = "{";
-            if (const auto existingVisibility = previous->get<ruvia::json_value>("pointVisibility")) {
+            if (const auto existingVisibility = previous->template get<ruvia::json_value>("pointVisibility")) {
                 if (!existingVisibility->is_object()) throw std::runtime_error("invalid stored point visibility");
                 (void)existingVisibility->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
                     if (visibility.size() > 1) visibility += ',';
