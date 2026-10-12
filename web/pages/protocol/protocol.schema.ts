@@ -802,6 +802,17 @@ export const derivedPointSchema = z
             context.addIssue({ code: 'custom', path: ['unitRules'], message: '请添加单位条件' });
     });
 
+export const dlt645PointCreateSchema = z.object({
+    name: z.string().trim().min(1).max(100),
+    unit: z.string().max(32).optional(),
+    dataType: z.enum(['BCD', 'BCD_SIGNED', 'HEX']),
+    identifier: z.string().regex(/^(?:[\dA-Fa-f]{4}|[\dA-Fa-f]{8})$/),
+    length: z.number().int().min(1).max(200),
+    digits: z.number().int().min(0).max(8).optional(),
+    writable: z.boolean().optional(),
+    visible: z.boolean().optional(),
+});
+
 export function industrialConfigSchema(protocol: 'MC' | 'FINS' | 'DLT645') {
     const integer = (max: number, min = 0) => z.number().int().min(min).max(max).optional();
     const connection =

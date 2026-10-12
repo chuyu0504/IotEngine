@@ -1,12 +1,14 @@
 import request, { type RequestConfig } from '@/lib/http';
 import type { PaginatedResult } from '@/types/pagination';
 import {
+    dlt645PointCreateSchema,
     protocolCreateSchema,
     protocolIdSchema,
     protocolTypeSchema,
     protocolUpdateSchema,
 } from './protocol.schema';
 import type {
+    Dlt645PointCreateDto,
     ExpressionTestRequest,
     ExpressionTestResult,
     MqttPreviewRequest,
@@ -27,6 +29,11 @@ export const update = (id: string, data: Protocol.UpdateDto) =>
     request.put<void>(
         `/v1/protocol/configs/${protocolIdSchema.parse(id)}`,
         protocolUpdateSchema.parse(data)
+    );
+export const createDlt645Point = (id: string, data: Dlt645PointCreateDto) =>
+    request.post<void>(
+        `/v1/protocol/configs/${protocolIdSchema.parse(id)}/points`,
+        dlt645PointCreateSchema.parse(data)
     );
 export const remove = (id: string) =>
     request.delete<void>(`/v1/protocol/configs/${protocolIdSchema.parse(id)}`);

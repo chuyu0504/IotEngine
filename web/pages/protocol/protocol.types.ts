@@ -107,6 +107,7 @@ export interface IndustrialConfig extends DeviceTypeTimingConfig {
     };
     points: IndustrialPoint[];
 }
+export type Dlt645PointCreateDto = Omit<IndustrialPoint, 'id'> & { visible?: boolean };
 /** 历史数据存储策略 */
 export type StoragePolicy = 'report' | 'change';
 export interface DerivedPoint {

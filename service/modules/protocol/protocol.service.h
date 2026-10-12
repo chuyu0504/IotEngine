@@ -1302,6 +1302,92 @@ class ProtocolService {
     }
 
     template <typename Context>
+    ruvia::task<void> createDlt645Point(Context& c, std::string_view id, const CreateDlt645PointBody& body) {
+        ruvia::db_find_options options;
+        options.where_ = service::common::database::activeId<ProtocolConfigEntity>(id);
+        const auto existing = co_await c.db().template get_repository<ProtocolConfigEntity>().find_one(options);
+        if (!existing) service::common::fail(16001, "协议配置不存在", 404);
+        co_await requireOwner(c, existing->template get<"created_by">());
+        auto transaction = co_await c.db().begin_transaction();
+        options.lock_ = ruvia::db_lock_options{};
+        const auto configuration = co_await transaction.template get_repository<ProtocolConfigEntity>().find_one(options);
+        if (!configuration) service::common::fail(16001, "协议配置不存在", 404);
+        if (configuration->template get<"protocol">() != "DLT645") {
+            service::common::fail(16004, "此点位接口仅支持 DL/T645", 400);
+        }
+        const auto previous = ruvia::json_value::parse(configuration->template get<"config">());
+        if (!previous) throw std::runtime_error("invalid stored protocol configuration");
+        const auto points = previous->get<ruvia::json_value>("points");
+        if (!points || !points->is_array()) throw std::runtime_error("invalid stored protocol points");
+        const auto pointId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto requestJson = ruvia::to_json(body);
+        const auto request = ruvia::json_value::parse(requestJson);
+        if (!request) throw std::runtime_error("invalid serialized point request");
+        std::string pointJson = "{\"id\":" + service::utils::jsonQuoted(pointId);
+        (void)request->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
+            if (key != "visible") pointJson += ',' + service::utils::jsonQuoted(key) + ':' + std::string(value.view());
+            return true;
+        });
+        pointJson += '}';
+        std::string pointArray = "[";
+        (void)points->for_each_element([&](const ruvia::json_value& point) {
+            if (pointArray.size() > 1) pointArray += ',';
+            pointArray += point.view();
+            return true;
+        });
+        if (pointArray.size() > 1) pointArray += ',';
+        pointArray += pointJson + ']';
+        std::map<std::string, std::string> fields;
+        (void)previous->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
+            fields.emplace(key, value.view());
+            return true;
+        });
+        fields["points"] = std::move(pointArray);
+        if (!static_cast<bool>(body.get<"visible">().value_or(ruvia::bool_value{true}))) {
+            std::string visibility = "{";
+            if (const auto existingVisibility = previous->get<ruvia::json_value>("pointVisibility")) {
+                if (!existingVisibility->is_object()) throw std::runtime_error("invalid stored point visibility");
+                (void)existingVisibility->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
+                    if (visibility.size() > 1) visibility += ',';
+                    visibility += service::utils::jsonQuoted(key) + ':' + std::string(value.view());
+                    return true;
+                });
+            }
+            if (visibility.size() > 1) visibility += ',';
+            fields["pointVisibility"] = visibility + service::utils::jsonQuoted(pointId) + ":false}";
+        }
+        std::string merged = "{";
+        for (const auto& [key, value] : fields) {
+            if (merged.size() > 1) merged += ',';
+            merged += service::utils::jsonQuoted(key) + ':' + value;
+        }
+        merged += '}';
+        const auto parsed = ruvia::json_value::parse(merged);
+        ProtocolConfigurationRules::validateConfig(parsed, "DLT645", true);
+        validateDerivedConfig(*parsed);
+        ruvia::db_expressions expressions(c.pool());
+        (void)co_await transaction.template get_repository<ProtocolConfigEntity>().update(
+            service::common::database::activeId<ProtocolConfigEntity>(id),
+            { { "config", expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
+              { "updated_at", expressions.call("now") } });
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id,
+            c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await transaction.commit();
+        try {
+            (void)co_await service::rpc::call(c, "telemetry", "project-protocol", std::string(id));
+        } catch (...) {
+            // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
+        }
+        try {
+            co_await syncEdgeNodes(c, id);
+        } catch (const std::exception& error) {
+            logPostUpdateFailure("edge-sync", id, error.what());
+        } catch (...) {
+            logPostUpdateFailure("edge-sync", id, "unknown exception");
+        }
+    }
+
+    template <typename Context>
     ruvia::task<void> remove(Context& c, std::string_view id) {
         ruvia::db_find_options options;
         options.where_ = service::common::database::activeId<ProtocolConfigEntity>(id);

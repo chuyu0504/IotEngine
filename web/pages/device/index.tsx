@@ -1423,10 +1423,12 @@ const edgeNodeLabel = (device: Device.Overview) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
 const edgeEndpointLabel = (device: Device.Overview) => {
     if (device.edge_transport === 'serial') {
+        const parity =
+            device.serial_parity === 'even' ? 'E' : device.serial_parity === 'odd' ? 'O' : 'N';
         const settings = [
             device.serial_baud_rate,
             device.serial_data_bits && device.serial_stop_bits
-                ? `${device.serial_data_bits}N${device.serial_stop_bits}`
+                ? `${device.serial_data_bits}${parity}${device.serial_stop_bits}`
                 : '',
         ]
             .filter(Boolean)

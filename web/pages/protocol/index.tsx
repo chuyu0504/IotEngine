@@ -104,6 +104,7 @@ import {
     supportsS7Decimals,
     testProtocolExpression,
     useProtocolConfigDelete,
+    useDlt645PointCreate,
     useProtocolConfigImport,
     useProtocolConfigList,
     useProtocolConfigSave,
@@ -5543,6 +5544,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
         config: IndustrialConfig;
     }>();
     const [pointForm] = Form.useForm<IndustrialPoint & { visible: boolean }>();
+    const create645Point = useDlt645PointCreate();
     const pointType = Form.useWatch('dataType', pointForm);
     const label =
         protocol === 'MC' ? '三菱 MC / SLMP' : protocol === 'FINS' ? '欧姆龙 FINS' : 'DL/T645';
@@ -5636,7 +5638,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
         pointForm.resetFields();
         pointForm.setFieldsValue(
             point ?? {
-                id: createUuid(),
+                ...(protocol === 'DLT645' ? {} : { id: createUuid() }),
                 name: '',
                 dataType: protocol === 'DLT645' ? 'BCD' : 'UINT16',
                 writable: false,
@@ -5870,12 +5872,16 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                                     scroll={{ x: 920, y: tableBodyHeight }}
                                     columns={[
                                         { title: '名称', dataIndex: 'name', width: 160 },
-                                        {
-                                            title: '点位标识',
-                                            dataIndex: 'id',
-                                            width: 170,
-                                            ellipsis: true,
-                                        },
+                                        ...(protocol === 'DLT645'
+                                            ? []
+                                            : [
+                                                  {
+                                                      title: '点位标识',
+                                                      dataIndex: 'id',
+                                                      width: 170,
+                                                      ellipsis: true,
+                                                  },
+                                              ]),
                                         {
                                             title: protocol === 'DLT645' ? '数据标识 DI' : '地址',
                                             width: 140,
@@ -6075,12 +6081,25 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                 open={pointOpen}
                 title={editingPoint ? '编辑点位' : '新增点位'}
                 onCancel={() => setPointOpen(false)}
-                confirmLoading={save.isPending}
+                confirmLoading={save.isPending || create645Point.isPending}
                 onOk={async () => {
                     const target = types.find((item) => item.id === pointTypeId);
                     if (!target) return;
                     const targetConfig = target.config as IndustrialConfig;
-                    const { visible, ...point } = await pointForm.validateFields();
+                    const { visible, ...values } = await pointForm.validateFields();
+                    if (protocol === 'DLT645' && !editingPoint) {
+                        const { id: _id, ...point } = values;
+                        await create645Point.mutateAsync({
+                            id: target.id,
+                            point: { ...point, visible },
+                        });
+                        setPointOpen(false);
+                        return;
+                    }
+                    const point = {
+                        ...values,
+                        id: editingPoint ?? values.id,
+                    };
                     const points = editingPoint
                         ? targetConfig.points.map((item) =>
                               item.id === editingPoint ? point : item
@@ -6108,10 +6127,20 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                         基础信息
                     </Divider>
                     <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item name="id" label="点位标识" rules={[{ required: true, max: 64 }]}>
-                            <Input disabled={Boolean(editingPoint)} />
-                        </Form.Item>
-                        <Form.Item name="name" label="名称" rules={[{ required: true, max: 128 }]}>
+                        {protocol !== 'DLT645' && (
+                            <Form.Item
+                                name="id"
+                                label="点位标识"
+                                rules={[{ required: true, max: 64 }]}
+                            >
+                                <Input disabled={Boolean(editingPoint)} />
+                            </Form.Item>
+                        )}
+                        <Form.Item
+                            name="name"
+                            label="名称"
+                            rules={[{ required: true, max: protocol === 'DLT645' ? 100 : 128 }]}
+                        >
                             <Input />
                         </Form.Item>
                     </div>

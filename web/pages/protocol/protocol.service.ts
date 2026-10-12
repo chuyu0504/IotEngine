@@ -8,6 +8,7 @@ import { createQueryKeys } from '@/utils/query';
 import * as api from './protocol.api';
 import { formatTsapValue } from './protocol.schema';
 import type {
+    Dlt645PointCreateDto,
     DerivedPoint,
     DeviceTypeFormValues,
     DeviceTypeTimingConfig,
@@ -230,6 +231,14 @@ export function useProtocolConfigSave() {
         },
         createMessage: '创建成功',
         updateMessage: '更新成功',
+        invalidateKeys: [protocolQueryKeys.all],
+    });
+}
+export function useDlt645PointCreate() {
+    return useMutationWithMessage({
+        mutationFn: ({ id, point }: { id: string; point: Dlt645PointCreateDto }) =>
+            api.createDlt645Point(id, point),
+        successMessage: '新增点位成功',
         invalidateKeys: [protocolQueryKeys.all],
     });
 }

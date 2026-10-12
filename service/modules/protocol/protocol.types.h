@@ -150,6 +150,16 @@ RUVIA_MODEL(MqttPreviewRecord,
 RUVIA_MODEL(MqttPreviewResult, RUVIA_REQUIRED_FIELD(records, ruvia::array<MqttPreviewRecord>));
 RUVIA_MODEL(MqttPreviewResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, MqttPreviewResult));
 
+RUVIA_MODEL(CreateDlt645PointBody,
+    RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "点位名称不能为空"), RUVIA_MAX(100, "点位名称过长")),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::string, RUVIA_MAX(32, "单位过长")),
+    RUVIA_REQUIRED_FIELD(dataType, ruvia::string, RUVIA_ONE_OF("DL/T645 数据类型无效", "BCD", "BCD_SIGNED", "HEX")),
+    RUVIA_REQUIRED_FIELD(identifier, ruvia::string, RUVIA_MIN(4, "数据标识 DI 无效"), RUVIA_MAX(8, "数据标识 DI 无效")),
+    RUVIA_REQUIRED_FIELD(length, ruvia::int64, RUVIA_MIN(1, "数据长度无效"), RUVIA_MAX(200, "数据长度无效")),
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::int64, RUVIA_DEFAULT(0), RUVIA_MIN(0, "小数位数无效"), RUVIA_MAX(8, "小数位数无效")),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value, RUVIA_DEFAULT(false)),
+    RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value, RUVIA_DEFAULT(true)));
+
 RUVIA_MODEL(CreateProtocolBody,
     RUVIA_REQUIRED_FIELD(protocol, ruvia::string, RUVIA_MIN(1, "协议不能为空"), RUVIA_MAX(16, "协议过长")),
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "配置名称不能为空"), RUVIA_MAX(64, "配置名称过长")),

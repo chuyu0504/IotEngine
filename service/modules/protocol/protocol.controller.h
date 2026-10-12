@@ -23,6 +23,7 @@ class ProtocolController final {
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::query_model<ProtocolListQuery>);
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::path_model<ProtocolIdParams>);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"iot:protocol:add">, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<CreateProtocolBody>);
+    RUVIA_POST("/:id/points", createDlt645Point, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::path_model<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16004>, ruvia::json_body<CreateDlt645PointBody>);
     RUVIA_POST("/test-expression", testExpression, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::json_body<ExpressionTestBody>);
     RUVIA_POST("/preview-mqtt", previewMqtt, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::json_body<MqttPreviewBody>);
     RUVIA_PUT("/:id", update, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::path_model<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<UpdateProtocolBody>);
@@ -78,6 +79,12 @@ class ProtocolController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await protocolService().create(request, c.req().validated<CreateProtocolBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
+    }
+
+    ruvia::task<ruvia::http_response> createDlt645Point(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await protocolService().createDlt645Point(request, id(c), c.req().validated<CreateDlt645PointBody>());
+        co_return c.json(service::common::operation(c, "点位已添加"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
