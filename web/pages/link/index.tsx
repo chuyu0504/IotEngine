@@ -347,8 +347,8 @@ export function IotLinkPage() {
             fixed: 'right',
             render: (_, record) => (
                 <Space>
-                    {record.execution === 'edge' && <Tag>由设备配置，只读</Tag>}
-                    {canEdit && record.execution !== 'edge' && (
+                    {record.execution === 'edge' && <Tag>配置由边缘节点管理</Tag>}
+                    {canEdit && (
                         <LinkDebug
                             item={record}
                             params={listParams}

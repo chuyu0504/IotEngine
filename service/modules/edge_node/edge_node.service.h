@@ -31,6 +31,7 @@
 #include "service/modules/edge_node/edge_node.entity.h"
 #include "service/modules/edge_node/edge_node.types.h"
 #include "service/modules/link/link.entity.h"
+#include "service/modules/system/outbox/outbox.service.h"
 #include "service/modules/system/auth/auth.service.h"
 #include "service/modules/vpn/vpn.service.h"
 #include "service/utils/base64.h"
@@ -587,16 +588,39 @@ class EdgeService {
             service::common::fail(17003, "节点名称不能为空", 400);
         }
         const std::string name(nameValue.view());
+        auto transaction = co_await c.db().begin_transaction();
+        ruvia::db_query current(c.pool());
+        current.select(current.column(EdgeNodeEntity::column_name<"name">()))
+            .from(EdgeNodeEntity::table_name())
+            .where((EdgeNodeEntity::column<"id">() == id).expression(current))
+            .lock(ruvia::db_lock_options{});
+        const auto nodes = co_await transaction.query(current);
+        if (nodes.empty())
+            service::common::fail(17001, "边缘节点不存在", 404);
+        if (nodes.front()[0].value().value_or("") == name) {
+            co_await transaction.commit();
+            co_return;
+        }
         ruvia::db_query update(c.pool());
         update.update(EdgeNodeEntity::table_name())
             .set("name", update.value(name))
             .set("updated_at", update.call("now"))
             .where(update.binary(update.column("id"), ruvia::db_binary_operator::equal, update.cast(update.value(id), ruvia::db_data_type::uuid)))
             .returning({ update.column("id") });
-        const auto updated = co_await c.db().query(update);
+        const auto updated = co_await transaction.query(update);
         if (updated.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
+        ruvia::db_query links(c.pool());
+        links.select(links.value(1)).from(service::link::LinkEntity::table_name())
+            .where((service::link::LinkEntity::column<"edge_node_id">() == id &&
+                service::link::LinkEntity::column<"execution">() == "edge" &&
+                service::link::LinkEntity::column<"deleted_at">().is_null()).expression(links))
+            .limit(1);
+        if (!(co_await transaction.query(links)).empty())
+            co_await service::system::OutboxService::enqueueQueryChange(transaction, "link", "link",
+                c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await transaction.commit();
     }
 
     template <typename Context>

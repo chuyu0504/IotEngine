@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <optional>
 #include <string>
 
@@ -62,11 +63,15 @@ class LinkController final : public ruvia::controller<LinkController> {
                                 co_return service::live::json(co_await queryList(c, request));
                             } });
         std::string debugId;
+        bool debugAuthorized = false;
         if (const auto& value = c.req().validated<LinkEventsQuery>().get<"debugLinkId">()) {
             debugId = std::string(value->view());
-            channels.push_back({ "packets", "packet-debug", [this, &c, linkId = debugId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+            channels.push_back({ "packets", "packet-debug", [this, &c, &debugAuthorized, linkId = debugId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+                                    debugAuthorized = false;
                                     co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:edit");
-                                    co_return service::live::json(co_await queryDebugPackets(c, request, linkId));
+                                    const auto payload = service::live::json(co_await queryDebugPackets(c, request, linkId));
+                                    debugAuthorized = true;
+                                    co_return payload;
                                 } });
         }
         co_await service::live::serveSnapshotChannels(
@@ -74,9 +79,10 @@ class LinkController final : public ruvia::controller<LinkController> {
             access.userId,
             std::move(channels),
             [&c] { (void)service::middleware::requireAuth(c); },
-            [&c, debugId]() -> ruvia::task<void> {
-                if (!debugId.empty()) {
-                    co_await service::debug_idle::touch(c.redis(), "link", debugId);
+            [&c, &debugAuthorized, debugId]() -> ruvia::task<void> {
+                if (!debugId.empty() && debugAuthorized) {
+                    (void)co_await c.redis().expire(service::debug_idle::leaseKey("link", debugId),
+                        std::chrono::duration_cast<std::chrono::seconds>(service::debug_idle::kIdle));
                 }
                 co_return;
             });

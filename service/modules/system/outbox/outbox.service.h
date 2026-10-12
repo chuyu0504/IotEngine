@@ -15,6 +15,16 @@ namespace service::system {
 class OutboxService final {
   public:
     template <typename Database>
+    static ruvia::task<void> enqueueQueryChange(Database& database, std::string_view topic,
+        std::string_view aggregateId, std::string_view eventId) {
+        ruvia::db_query query;
+        query.insert_into(OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version" })
+            .values({query.cast(query.value(eventId), ruvia::db_data_type::uuid), query.value("query.changed"),
+                query.value(topic), query.value(aggregateId), query.value("UPDATE"), query.value(std::int32_t{1})});
+        (void)co_await database.execute(query);
+    }
+
+    template <typename Database>
     static ruvia::task<void> enqueueConfigEvent(Database& database, std::string_view aggregate, std::string_view action, std::string_view aggregateId, std::string_view eventId) {
         if (aggregate != "link" && aggregate != "device" && aggregate != "protocol" &&
             aggregate != "access_key" && aggregate != "webhook") {
