@@ -24,7 +24,8 @@ let resultSubscriptions = 0;
 let pendingResult: {socket: Bun.Socket<{buffer: Buffer; subscribed: boolean}>; payload: Record<string, unknown>} | undefined;
 const devices: string[] = [];
 const clients = new Set<Bun.Socket<{ buffer: Buffer; subscribed: boolean }>>();
-const time = Date.now();
+// 设备上报时间早于接收时间，派生值不得因此被误判为来自未来。
+const time = Date.now() - 5000;
 
 function packet(header: number, body: Buffer) {
     const length: number[] = [];

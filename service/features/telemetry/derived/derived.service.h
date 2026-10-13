@@ -46,7 +46,8 @@ class DerivedService final {
         if (!expiration) {
             (void)values->for_each_field([&](std::string_view id, const ruvia::json_value& wire) {
                 if (inputIds.contains(std::string(id))) {
-                    incoming[std::string(id)] = StateRecord::sample(wire, message.observedAtMs);
+                    // 输入与本次计算使用同一设备事件时间，避免传输延迟使输入落在计算时间之后。
+                    incoming[std::string(id)] = StateRecord::sample(wire, message.occurredAtMs);
                 }
                 return true;
             });
