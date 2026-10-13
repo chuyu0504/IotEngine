@@ -59,7 +59,8 @@ bool adjacent(const void* first, const void* second) {
 }
 
 // Minimal PostgreSQL peer for public-client ownership checks. It completes the
-// startup and extended query exchange and always returns one owned text field.
+// startup and extended query exchange, returning one owned text field or a
+// statement failure followed by ReadyForQuery on the same connection.
 class PostgreSqlReplyServer final {
 public:
     PostgreSqlReplyServer()
@@ -108,20 +109,29 @@ private:
             send('S', std::string("server_version\00018.0\0", 20));
             send('K', number(1) + number(2));
             send('Z', "I");
+            bool statementFailure = false;
             for (;;) {
                 char type{};
                 asio::read(socket, asio::buffer(&type, 1));
-                (void)payload();
+                const auto input = payload();
                 if (type == 'X') return;
-                if (type == 'P') send('1', {});
+                if (type == 'P') {
+                    statementFailure = input.find("fixture_failure") != std::string::npos;
+                    send('1', {});
+                }
                 if (type == 'B') send('2', {});
                 if (type == 'D' || type == 'Q') {
                     send('T', number(1, 2) + std::string("value\0", 6) + number(0) +
                         number(0, 2) + number(25) + number(0xffff, 2) + number(0xffffffff) + number(0, 2));
                 }
                 if (type == 'E' || type == 'Q') {
-                    send('D', number(1, 2) + number(2048) + std::string(2048, 'r'));
-                    send('C', std::string("SELECT 1\0", 9));
+                    if (statementFailure) {
+                        constexpr char error[] = "SERROR\0C22012\0Mfixture statement failed\0\0";
+                        send('E', std::string_view(error, sizeof(error) - 1));
+                    } else {
+                        send('D', number(1, 2) + number(2048) + std::string(2048, 'r'));
+                        send('C', std::string("SELECT 1\0", 9));
+                    }
                 }
                 if (type == 'S' || type == 'Q') send('Z', "I");
             }
@@ -186,6 +196,22 @@ ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
             check(transient.front()[0].value()->size() == 2048, "DB result value mismatch");
             check(retained.front()["value"].value() == std::string(2048, 'r'),
                 "later DB query invalidated a retained result");
+        }
+        for (const bool query : {true, false}) {
+            bool rejected = false;
+            try {
+                if (query) {
+                    (void)co_await databaseHandle.query("SELECT fixture_failure");
+                } else {
+                    (void)co_await databaseHandle.execute("SELECT fixture_failure");
+                }
+            } catch (const ruvia::db_error& error) {
+                rejected = error.code() == ruvia::db_error::code_type::statement_failed;
+            }
+            check(rejected, "PostgreSQL statement failure lost its original error");
+            const auto recovered = co_await databaseHandle.query("SELECT $1", std::string(2048, 'r'));
+            check(recovered.front()["value"].value() == std::string(2048, 'r'),
+                "PostgreSQL statement failure left its connection unusable");
         }
     }
     co_await redis.shutdown();

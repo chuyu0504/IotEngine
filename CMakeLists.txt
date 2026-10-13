@@ -56,12 +56,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 # Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    URL https://github.com/hyird/Ruvia/archive/1a8fb217dd8fc13b5ffa05a16706ce2dc8a5f3b3.tar.gz
-    URL_HASH SHA256=fd220eecab74a2612e3d9d75544b2085622b1d0856833ffedef8a403b0c033ac
-    PATCH_COMMAND
-        "${CMAKE_COMMAND}"
-        "-DSOURCE_DIR=<SOURCE_DIR>"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/patch-ruvia.cmake")
+    URL https://github.com/hyird/Ruvia/archive/f3f10b7d230f100e70f11149fc3667226dce7b1a.tar.gz
+    URL_HASH SHA256=0d748567779f7e93c2bd947e9b5f5441f794fd3f8e2d2e9188cee133a49a53f1)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -387,6 +383,11 @@ iot_engine_add_test(edge-config LARGE
 iot_engine_add_test(api-upload
     SOURCES tests/api-upload-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)
+
+iot_engine_add_test(firmware-download
+    SOURCES tests/firmware-download-test.cpp
+    LIBRARIES ruvia::web)
+set_tests_properties(firmware-download PROPERTIES TIMEOUT 30)
 
 iot_engine_add_test(edge-debug-request LARGE
     SOURCES tests/edge-debug-request-test.cpp

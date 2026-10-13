@@ -49,26 +49,24 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-固定的 Ruvia `1a8fb217dd8fc13b5ffa05a16706ce2dc8a5f3b3` 通过
-`ports/cmake/patch-ruvia.cmake` 修正 Clang 对协程内前置调用 `auto wait()` 的编译错误：
-直接等待同一个 worker signal，保持原有关闭与唤醒语义，不改变公开 API。
-MSVC 19.51 编译 HTTP 会话时会因同步 socket 写入的内联触发 `C4737`；
-同一脚本仅在 MSVC 下将 `http1_response_output::start` 标记为 `noinline`，
-保留非阻塞同步写入、异步续写、错误处理及协程对称转移，其他编译器保持原有内联策略。
-补丁核验原始或已修复源码的 SHA-256，支持重复配置并拒绝源码漂移；依赖升级时须重新核对并移除已被上游修复的补丁。
+当前固定 Ruvia `f3f10b7d230f100e70f11149fc3667226dce7b1a`，直接使用经 SHA-256 校验的上游归档。
+该版本已修复 Clang 对 `auto wait()` 定义顺序的要求，以及 MSVC 在 HTTP 同步写入和 PostgreSQL
+`throw co_await` 表达式上的编译问题，构建不再应用本地 Ruvia 补丁。
+`file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；
+`firmware-download` 回归测试覆盖路径生命周期、中文文件名、完整下载、HEAD 和 Range。
 
 管理端、后台媒体代理及测试 Controller 使用无框架基类的 `final` 类，并通过
 `RUVIA_ROUTES_BEGIN(Type)` 声明路由；Middleware 直接满足公开概念，不再继承框架类型。
 既有路由、权限及字段校验顺序保持一致，入口通过公开 `ruvia::exception_text` 记录 UTF-8 失败原因。
 
-该提交优化 HTTP、文件下载与 WebSocket 写入。`document_root` 默认驻留不超过 64 KiB 的文件，
+`document_root` 默认驻留不超过 64 KiB 的文件，
 总预算为 16 MiB；部署重启会重建静态快照，验收须覆盖入口资源、条件请求和固件 Range 下载。
 连接、请求体、HTTP 客户端及 WebSocket 接收使用公开的 `http_io_buffer` 管理准备、提交与消费，
 项目不依赖此前的字符串覆盖写入实现；静态根目录绑定已打开的目录句柄，文件响应读取后复核身份。
 无法从上下文推断类型的 PostgreSQL 无符号参数使用 `numeric`，保留完整 `uint64_t` 范围；
-升级验收包含实际数据库表达式、分页与时间字段读写，异常消息比较和响应头迭代使用该提交的修复。
+升级验收包含实际数据库表达式、分页与时间字段读写，以及语句失败后连接的继续使用。
 
-该版本仅提供 HTTP/1.1，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
+服务通过 HTTP/1.1 提供接口，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，
 客户端在所属 `event_loop` 等待 `shutdown()` 后再关闭线程。
 

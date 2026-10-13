@@ -1059,7 +1059,7 @@ class EdgePublicController final {
         }
         c.header("Content-Disposition", "attachment; filename=firmware.bin");
         co_return c.file(ruvia::file_response_options{
-            .path_ = std::move(path),
+            .path_ = path,
             .content_type_ = "application/octet-stream",
         });
     }
