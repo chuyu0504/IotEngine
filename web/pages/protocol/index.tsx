@@ -6861,7 +6861,7 @@ export function MqttConfigPage() {
                             items={[
                                 {
                                     key: 'points',
-                                    label: `属性（${points.length}）`,
+                                    label: `设备属性（${points.length}）`,
                                     forceRender: true,
                                     children: (
                                         <>
@@ -7099,27 +7099,6 @@ export function MqttConfigPage() {
                                             >
                                                 添加属性
                                             </Button>
-                                        </>
-                                    ),
-                                },
-                                {
-                                    key: 'topics',
-                                    label: 'Topic',
-                                    forceRender: true,
-                                    children: (
-                                        <>
-                                            <Form.Item
-                                                name="topic"
-                                                label="上报 Topic"
-                                                extra="用 {deviceCode} 标记设备编码。订阅 Topic 不能引用尚未收到的属性值；共享 Topic 时，在消息中使用 $deviceCode。"
-                                            >
-                                                <MqttMessageInput
-                                                    label="上报 Topic"
-                                                    points={points}
-                                                    topic
-                                                    report
-                                                />
-                                            </Form.Item>
                                             <Form.Item
                                                 name="deviceParameters"
                                                 label="设备参数（JSON）"
@@ -7140,87 +7119,27 @@ export function MqttConfigPage() {
                                                     }
                                                 />
                                             </Form.Item>
-                                            <Divider titlePlacement="start">控制消息 Topic</Divider>
-                                            {commands.map((command, index) => (
-                                                <Card
-                                                    key={command.id}
-                                                    size="small"
-                                                    className="mb-3"
-                                                    title={`控制消息 ${index + 1}`}
-                                                    extra={
-                                                        <Button
-                                                            size="small"
-                                                            type="text"
-                                                            danger
-                                                            onClick={() =>
-                                                                form.setFieldValue(
-                                                                    'commands',
-                                                                    commands.filter(
-                                                                        (item) =>
-                                                                            item.id !== command.id
-                                                                    )
-                                                                )
-                                                            }
-                                                        >
-                                                            删除控制消息
-                                                        </Button>
-                                                    }
-                                                >
-                                                    <div className="mb-4">
-                                                        <div className="mb-2">消息名称</div>
-                                                        <Input
-                                                            aria-label={`控制消息 ${index + 1} 名称`}
-                                                            maxLength={100}
-                                                            placeholder="例如：设置目标温度"
-                                                            value={command.name}
-                                                            onChange={(event) =>
-                                                                form.setFieldValue(
-                                                                    ['commands', index, 'name'],
-                                                                    event.target.value
-                                                                )
-                                                            }
-                                                        />
-                                                    </div>
-                                                    <div className="mb-4">
-                                                        <div className="mb-2">控制 Topic</div>
-                                                        <MqttMessageInput
-                                                            label={`控制消息 ${index + 1} Topic`}
-                                                            points={points}
-                                                            topic
-                                                            value={command.topic}
-                                                            onChange={(value) =>
-                                                                form.setFieldValue(
-                                                                    ['commands', index, 'topic'],
-                                                                    value
-                                                                )
-                                                            }
-                                                        />
-                                                        <div className="mt-1 text-xs text-slate-500">
-                                                            可插入 {'{deviceCode}'} 或{' '}
-                                                            {'{point:属性名称}'}
-                                                            ，每个占位符独占一层。
-                                                        </div>
-                                                    </div>
-                                                </Card>
-                                            ))}
-                                            <Button
-                                                className="mb-4"
-                                                disabled={commands.length >= 32}
-                                                onClick={() =>
-                                                    form.setFieldValue('commands', [
-                                                        ...commands,
-                                                        {
-                                                            id: crypto.randomUUID(),
-                                                            name: '',
-                                                            topic: 'devices/{deviceCode}/command',
-                                                            template: '{}',
-                                                            requiredPointIds: [],
-                                                        },
-                                                    ])
-                                                }
+                                        </>
+                                    ),
+                                },
+                                {
+                                    key: 'report',
+                                    label: '上报消息',
+                                    forceRender: true,
+                                    children: (
+                                        <>
+                                            <Form.Item
+                                                name="topic"
+                                                label="上报 Topic"
+                                                extra="用 {deviceCode} 标记设备编码。订阅 Topic 不能引用尚未收到的属性值；共享 Topic 时，在消息中使用 $deviceCode。"
                                             >
-                                                添加控制 Topic
-                                            </Button>
+                                                <MqttMessageInput
+                                                    label="上报 Topic"
+                                                    points={points}
+                                                    topic
+                                                    report
+                                                />
+                                            </Form.Item>
                                             <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
                                                 <Form.Item name="qos" label="订阅 QoS">
                                                     <Select
@@ -7250,15 +7169,6 @@ export function MqttConfigPage() {
                                                     />
                                                 </Form.Item>
                                             </div>
-                                        </>
-                                    ),
-                                },
-                                {
-                                    key: 'report',
-                                    label: '上报消息',
-                                    forceRender: true,
-                                    children: (
-                                        <>
                                             <Form.Item
                                                 name="reportTemplate"
                                                 label="上报消息模板"
@@ -7464,19 +7374,36 @@ export function MqttConfigPage() {
                                                                         </Popconfirm>
                                                                     }
                                                                 >
-                                                                    <div className="mb-3 break-all text-sm text-slate-500">
-                                                                        Topic：
-                                                                        {command?.topic || '未配置'}{' '}
-                                                                        <Button
-                                                                            size="small"
-                                                                            type="link"
-                                                                            onClick={() =>
-                                                                                setTab('topics')
-                                                                            }
-                                                                        >
-                                                                            修改名称与 Topic
-                                                                        </Button>
-                                                                    </div>
+                                                                    <Form.Item
+                                                                        name={[field.name, 'name']}
+                                                                        label="消息名称"
+                                                                        rules={[
+                                                                            {
+                                                                                required: true,
+                                                                                whitespace: true,
+                                                                                max: 100,
+                                                                                message:
+                                                                                    '请输入消息名称',
+                                                                            },
+                                                                        ]}
+                                                                    >
+                                                                        <Input
+                                                                            aria-label={`控制消息 ${field.name + 1} 名称`}
+                                                                            maxLength={100}
+                                                                            placeholder="例如：设置目标温度"
+                                                                        />
+                                                                    </Form.Item>
+                                                                    <Form.Item
+                                                                        name={[field.name, 'topic']}
+                                                                        label="控制 Topic"
+                                                                        extra="可插入 {deviceCode} 或 {point:属性名称}，每个占位符独占一层。"
+                                                                    >
+                                                                        <MqttMessageInput
+                                                                            label={`控制消息 ${field.name + 1} Topic`}
+                                                                            points={points}
+                                                                            topic
+                                                                        />
+                                                                    </Form.Item>
                                                                     <Form.Item
                                                                         name={[
                                                                             field.name,
@@ -7552,7 +7479,6 @@ export function MqttConfigPage() {
                                                                     template: '{}',
                                                                     requiredPointIds: [],
                                                                 });
-                                                                setTab('topics');
                                                             }}
                                                         >
                                                             添加控制消息

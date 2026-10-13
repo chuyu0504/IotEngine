@@ -1,4 +1,4 @@
-import { json, jsonParseLinter } from '@codemirror/lang-json';
+import { json, jsonLanguage, jsonParseLinter } from '@codemirror/lang-json';
 import { type Diagnostic, forEachDiagnostic, linter, lintGutter } from '@codemirror/lint';
 import CodeMirror, { EditorView, keymap, type ViewUpdate } from '@uiw/react-codemirror';
 import { Button, theme } from 'antd';
@@ -63,7 +63,22 @@ export function JsonEditor({
                 (view) => {
                     if (!view.state.doc.length) return [];
                     const syntax = parseLint(view);
-                    if (syntax.length) return syntax;
+                    if (syntax.length) {
+                        // 部分浏览器的 SyntaxError 不带位置，使用语法树定位实际出错的 token。
+                        let found = false;
+                        jsonLanguage.parser.parse(view.state.doc.toString()).iterate({
+                            enter(node) {
+                                if (!node.type.isError || found) return;
+                                syntax[0].from = node.from;
+                                syntax[0].to = Math.min(
+                                    Math.max(node.to, node.from + 1),
+                                    view.state.doc.length
+                                );
+                                found = true;
+                            },
+                        });
+                        return syntax;
+                    }
                     try {
                         format(view.state.doc.toString());
                         return [];
