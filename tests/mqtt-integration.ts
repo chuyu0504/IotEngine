@@ -16,6 +16,7 @@ const point = crypto.randomUUID(),
 const name = `mqtt-${crypto.randomUUID()}`;
 let link = '',
     model = '',
+    legacyModel = '',
     published = false,
     acknowledgements = 0,
     commands = 0;
@@ -373,7 +374,9 @@ try {
     await ok('PUT', `/v1/protocol/configs/${model}`, {config:{pointVisibility:{[point]:false}}});
     await until(async () => JSON.stringify((await card()).cardPointIds) === JSON.stringify([enabledPoint, derived]),
         'explicitly hidden report point remained on the card');
-    await ok('PUT', `/v1/protocol/configs/${model}`, {config:{reports:null,pointVisibility:{}}});
+    await ok('POST', '/v1/protocol/configs', {protocol:'MQTT',name:`${name}-legacy`,config:{...config,reports:undefined}});
+    legacyModel = (await db`SELECT id FROM protocol_config WHERE name=${`${name}-legacy`}`)[0].id;
+    await ok('PUT', `/v1/device/${devices[0]}`, {protocol_config_id:legacyModel});
     await until(async () => JSON.stringify((await card()).cardPointIds) === JSON.stringify([point, enabledPoint, derived]),
         'legacy single-message field mappings were not included on the card');
     console.log(
@@ -383,6 +386,7 @@ try {
     for (const device of devices) await http('DELETE', `/v1/device/${device}`);
     if (link) await http('DELETE', `/v1/link/${link}`);
     if (model) await http('DELETE', `/v1/protocol/configs/${model}`);
+    if (legacyModel) await http('DELETE', `/v1/protocol/configs/${legacyModel}`);
     for (const socket of clients) socket.end();
     broker.stop(true);
     redis.close();
