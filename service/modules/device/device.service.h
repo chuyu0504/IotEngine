@@ -1479,9 +1479,11 @@ return result
 
     template <typename Context, typename Row>
     static void fillItem(Context& c, DeviceItemDto& item, Row&& row, const DeviceActor& actor) {
-        auto parameters = ruvia::from_json<ruvia::json_object>(row[44].value().value_or("{}"), {.resource_ = c.arena()});
+        auto parameters = ruvia::json_object::parse(row[44].value().value_or("{}"));
         if (!parameters) throw std::runtime_error("设备参数不是 JSON 对象");
-        item.template set<"parameters">(std::move(*parameters));
+        ruvia::json_object ownedParameters({.resource_ = c.arena()});
+        ownedParameters = std::move(*parameters);
+        item.template set<"parameters">(std::move(ownedParameters));
         item.template set<"id">(row[0].value().value_or(std::string_view{}));
         item.template set<"name">(row[1].value().value_or(std::string_view{}));
         item.template set<"debugEnabled">(row[42].value().value_or("") == "t");
