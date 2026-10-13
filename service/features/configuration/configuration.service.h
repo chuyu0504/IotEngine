@@ -259,7 +259,8 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             defaultText(connection, "sourceUnit", "0"),
             defaultText(connection, "wakeupBytes", "4"),
             defaultText(connection, "writePassword", ""),
-            defaultText(connection, "operatorCode", ""), deviceQuery.cast(config, Type::text) })
+            defaultText(connection, "operatorCode", ""), deviceQuery.cast(config, Type::text),
+            defaultText(parameters, "parameters", "{}") })
         .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
         .join(ruvia::db_join_type::inner, service::configuration::persistence::LinkEntity::table_name(),
             deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Op::equal, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "d")), "l")
@@ -308,6 +309,7 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         device.s7ProbeMode = cell(row, 23);
         device.readInterval = cellInt(row, 24);
         device.calculationConfig = cell(row, 49);
+        device.parameters = cell(row, 50);
         device.storagePolicy = cell(row, 25);
         device.commandFastReadDuration = cellInt(row, 26);
         device.commandFastReadInterval = cellInt(row, 27);

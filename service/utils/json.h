@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <map>
@@ -135,11 +136,11 @@ class JsonValueTemplate final {
     using Values = std::map<std::string, std::string, std::less<>>;
 
     JsonValueTemplate(std::string_view input, const Tokens& allowed, const Tokens& sparse = {}, bool unique = false,
-                      std::size_t maxBytes = 16384, unsigned maxDepth = 32) : capacity_(input.size()) {
+                      std::size_t maxBytes = 16384, unsigned maxDepth = 32, const Tokens& prefixes = {}) : capacity_(input.size()) {
         if (input.empty() || input.size() > maxBytes) throw std::invalid_argument("JSON 模板字节长度无效");
         const auto root = ruvia::json_value::parse(input);
         if (!root || !root->is_object()) throw std::invalid_argument("JSON 模板根节点必须是对象");
-        root_ = parse(*root, allowed, sparse, unique, 0, maxDepth);
+        root_ = parse(*root, allowed, sparse, unique, 0, maxDepth, prefixes);
     }
 
     bool references(std::string_view token) const { return references_.contains(token); }
@@ -168,7 +169,7 @@ class JsonValueTemplate final {
         Node value;
     };
 
-    Node parse(const ruvia::json_value& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth) {
+    Node parse(const ruvia::json_value& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth, const Tokens& prefixes) {
         if (depth > maxDepth) throw std::invalid_argument("JSON 模板嵌套层数过多");
         Node node;
         if (raw.is_object()) {
@@ -176,18 +177,19 @@ class JsonValueTemplate final {
             Tokens keys;
             (void)raw.for_each_field([&](std::string_view key, const ruvia::json_value& child) {
                 if (!keys.emplace(key).second) throw std::invalid_argument("JSON 模板对象键重复");
-                node.members.emplace_back(jsonQuoted(key), parse(child, allowed, sparse, unique, depth + 1, maxDepth));
+                node.members.emplace_back(jsonQuoted(key), parse(child, allowed, sparse, unique, depth + 1, maxDepth, prefixes));
                 return true;
             });
         } else if (raw.is_array()) {
             node.kind = Node::Kind::Array;
             (void)raw.for_each_element([&](const ruvia::json_value& child) {
-                node.elements.push_back(parse(child, allowed, sparse, unique, depth + 1, maxDepth));
+                node.elements.push_back(parse(child, allowed, sparse, unique, depth + 1, maxDepth, prefixes));
                 return true;
             });
         } else if (const auto text = raw.get<ruvia::string>(); text && text->view().starts_with('$')) {
             const auto token = text->view();
-            if (!allowed.contains(token)) throw std::invalid_argument("JSON 模板包含未知占位符: " + std::string(token));
+            const bool named = std::any_of(prefixes.begin(), prefixes.end(), [&](const auto& prefix) { return token.starts_with(prefix) && token.size() > prefix.size(); });
+            if (!allowed.contains(token) && !named) throw std::invalid_argument("JSON 模板包含未知占位符: " + std::string(token));
             if (!references_.emplace(token).second && unique) throw std::invalid_argument("JSON 模板占位符重复");
             node.kind = Node::Kind::Token;
             node.value = token;

@@ -132,6 +132,7 @@ function mqttCommandReferences(text: string, names: ReadonlySet<string>, legacyV
         } else if (
             marker.startsWith('$') &&
             marker !== '$deviceCode' &&
+            marker !== '$deviceId' &&
             marker !== '$commandId' &&
             !marker.startsWith('$param:') &&
             !(legacyValues && marker === '$values')
@@ -221,19 +222,7 @@ export const mqttConfigSchema = z
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
-        deviceParameters: z.preprocess(
-            mqttJsonInput,
-            z
-                .array(
-                    z.object({
-                        deviceCode: z.string().min(1).max(100),
-                        name: z.string().trim().min(1).max(100),
-                        value: z.unknown(),
-                    })
-                )
-                .max(10000)
-                .optional()
-        ),
+        deviceParameters: z.never().optional(),
         commands: z
             .array(
                 z.object({
@@ -294,19 +283,6 @@ export const mqttConfigSchema = z
         const identity = config.identitySource ?? (config.deviceCodeField ? 'payload' : 'bound');
         const issue = (path: (string | number)[], message: string) =>
             context.addIssue({ code: 'custom', path, message });
-        const parameterKeys = new Set<string>();
-        const parameterNames = new Set<string>();
-        config.deviceParameters?.forEach((parameter, index) => {
-            const key = JSON.stringify([parameter.deviceCode, parameter.name]);
-            if (
-                parameterKeys.has(key) ||
-                parameter.value === undefined ||
-                JSON.stringify(parameter.value).length > 16384
-            )
-                issue(['deviceParameters', index], '设备参数重复或值无效');
-            parameterKeys.add(key);
-            parameterNames.add(parameter.name);
-        });
         const selector = (value: string, path: (string | number)[]) => {
             if (format === 'text' && (!/^(0|[1-9]\d*)$/.test(value) || Number(value) > 4096))
                 issue(path, '文本字段填写从 0 开始的列号，最多 4096');
@@ -383,8 +359,13 @@ export const mqttConfigSchema = z
                 let hasCommandId = false;
                 visitMqttTemplate(template, (marker) => {
                     if (marker === '$commandId') hasCommandId = true;
-                    if (marker.startsWith('$param:') && !parameterNames.has(marker.slice(7)))
-                        throw new Error(`设备参数未定义：${marker.slice(7)}`);
+                    if (
+                        marker.startsWith('$param:') &&
+                        (!marker.slice(7).trim() ||
+                            marker.slice(7) !== marker.slice(7).trim() ||
+                            new TextEncoder().encode(marker.slice(7)).length > 100)
+                    )
+                        throw new Error('设备参数名须为 1–100 字节且不能有首尾空格');
                 });
                 if (command.response) {
                     const valueAt = (path: string): unknown => {
@@ -588,9 +569,6 @@ function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
         commandTopic: commandTopic ?? '',
         commandTemplate: commandTemplate ?? '',
         ...(draft.commands !== undefined ? { commands: draft.commands } : {}),
-        ...(draft.deviceParameters !== undefined
-            ? { deviceParameters: draft.deviceParameters }
-            : {}),
         reportTemplate: draft.reportTemplate,
         points,
     });
@@ -754,9 +732,6 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         ...(config.timeFormat ? { timeFormat: config.timeFormat } : {}),
         ...(config.commandTopic ? { commandTopic: config.commandTopic } : {}),
         ...(config.commandTemplate ? { commandTemplate: config.commandTemplate } : {}),
-        ...(config.deviceParameters
-            ? { deviceParameters: config.deviceParameters.map((parameter) => ({ ...parameter })) }
-            : {}),
         ...(config.commands !== undefined
             ? {
                   commands: config.commands.map((command) => ({

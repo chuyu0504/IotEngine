@@ -31,7 +31,6 @@ export interface MqttConfig extends DeviceTypeTimingConfig {
     commandTopic?: string;
     commandTemplate?: string;
     commands?: MqttCommandMessage[];
-    deviceParameters?: MqttDeviceParameter[];
     reportTemplate?: string;
     qos: 0 | 1 | 2;
     points: MqttPoint[];
@@ -57,11 +56,6 @@ export interface MqttCommandMessage {
     requiredPointIds: string[];
     response?: MqttCommandResponse;
 }
-export interface MqttDeviceParameter {
-    deviceCode: string;
-    name: string;
-    value: unknown;
-}
 export interface MqttCommandResponse {
     topic: string;
     matchFields: string[];
@@ -80,7 +74,6 @@ export interface MqttTemplateDraft
     commandTopic?: string;
     commandTemplate?: string;
     commands?: MqttCommandMessage[];
-    deviceParameters?: MqttDeviceParameter[];
     qos: 0 | 1 | 2;
     storagePolicy: 'report' | 'change';
     timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';

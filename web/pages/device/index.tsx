@@ -54,6 +54,7 @@ import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } fr
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DeviceCardItem } from '@/components/device_card';
 import DeviceCard from '@/components/device_card';
+import { JsonEditor } from '@/components/json_editor';
 import { FormModal } from '@/components/form_modal';
 import { PacketDebugPanel } from '@/components/packet_debug_panel';
 import { PageContainer } from '@/components/page_container';
@@ -372,8 +373,9 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
     );
 };
 
-export type DeviceFormValues = Device.CreateDto &
-    EdgeConnection & {
+export type DeviceFormValues = Omit<Device.CreateDto, 'parameters'> & {
+    parameters?: Record<string, unknown> | string;
+} & EdgeConnection & {
         id?: string;
         edge_protocol?: Link.Protocol;
     };
@@ -938,6 +940,23 @@ export function DeviceFormModal({
                                 const value = `${minutes >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, '0')}:${String(Math.abs(minutes) % 60).padStart(2, '0')}`;
                                 return { value, label: `UTC${value}` };
                             })}
+                        />
+                    </Form.Item>
+                    <Form.Item
+                        className="col-span-full"
+                        name="parameters"
+                        label="设备参数（JSON）"
+                        extra='维护这台设备的固有属性；控制模板用 "$param:参数名" 引用，保留数字、布尔、对象等 JSON 类型。留空或 {} 清空。'
+                        getValueProps={(value: unknown) => ({
+                            value:
+                                typeof value === 'string'
+                                    ? value
+                                    : JSON.stringify(value ?? {}, null, 2),
+                        })}
+                    >
+                        <JsonEditor
+                            label="设备参数 JSON"
+                            placeholder={'{"stationAddress":"A001","channel":1}'}
                         />
                     </Form.Item>
                     <Form.Item className="col-span-full" name="remark" label="备注">
@@ -2836,7 +2855,10 @@ const DevicePage = () => {
             message.error(parsed.error.issues[0]?.message ?? '设备参数无效');
             return;
         }
-        saveMutation.mutate({ ...values, id: editing?.id }, { onSuccess: closeForm });
+        saveMutation.mutate(
+            { ...values, parameters: parsed.data.parameters, id: editing?.id },
+            { onSuccess: closeForm }
+        );
     };
     const remove = useCallback(
         (device: Device.Overview) => {

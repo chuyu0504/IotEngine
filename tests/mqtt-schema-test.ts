@@ -1,3 +1,4 @@
+import { deviceParametersSchema } from '../web/pages/device/device.schema';
 import { expect, test } from 'bun:test';
 import {
     compileMqttTemplate,
@@ -451,20 +452,17 @@ test('MQTT legacy or stale configurations fail explicitly instead of discarding 
     }
 });
 
-test('MQTT generic command IDs, device parameters and result rules survive editing', () => {
+test('MQTT device identity and parameter references survive editing', () => {
     const draft = {
         topic: 'devices/{deviceCode}/up', reportTemplate: '{"value":"$point:温度"}',
         storagePolicy: 'report' as const, qos: 1 as const, points: [point],
-        deviceParameters: [{deviceCode: 'D001', name: 'address', value: 'A001'}],
         commands: [{id: crypto.randomUUID(), name: 'Set', topic: 'devices/{deviceCode}/down',
-            template: '{"id":"$commandId","address":"$param:address","value":"$point:温度"}', requiredPointIds: [point.id],
+            template: '{"id":"$commandId","address":"$param:address","deviceUuid":"$deviceId","deviceCode":"$deviceCode","value":"$point:温度"}', requiredPointIds: [point.id],
             response: {topic: 'devices/{deviceCode}/result', matchFields: ['/id','/address'], codeField: '/result/code', successCode: 0, timeoutMs: 10000}}],
     };
     const compiled = compileMqttTemplate(draft);
     expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
     for (const changes of [
-        {deviceParameters: []},
-        {deviceParameters: [...draft.deviceParameters, ...draft.deviceParameters]},
         {commands: [{...draft.commands[0], response: {...draft.commands[0].response, matchFields: ['/address']}}]},
         {commands: [{...draft.commands[0], response: {...draft.commands[0].response, topic: 'devices/+/result'}}]},
         {commands: [{...draft.commands[0], response: {...draft.commands[0].response, timeoutMs: 0}}]},
@@ -532,4 +530,14 @@ test('multiple MQTT reports keep independent topics and mappings and can be remo
     expect(()=>compileMqttTemplate({...draft,reports:[]})).toThrow();
     expect(()=>compileMqttTemplate({...draft,reports:[reports[0],reports[0]]})).toThrow();
     expect(()=>compileMqttTemplate({...draft,reports:[{...reports[0],reportTemplate:'{}'}]})).toThrow();
+});
+
+
+test('device parameters are object values owned by each device', () => {
+    const values = {address:'A001', channel:2, enabled:true, metadata:{x:null}, array:[1,'a']};
+    expect(deviceParametersSchema.parse(JSON.stringify(values))).toEqual(values);
+    expect(deviceParametersSchema.parse('')).toEqual({});
+    expect(deviceParametersSchema.parse('{}')).toEqual({});
+    for (const value of ['null','[]','1','{"a":1,"a":2}','{" a":1}','{bad']) expect(deviceParametersSchema.safeParse(value).success).toBe(false);
+    expect(mqttConfigSchema.safeParse({...config, deviceParameters: []}).success).toBe(false);
 });

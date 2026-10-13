@@ -297,8 +297,11 @@ void testMultipleMessagesAndRequiredPoints() {
 
 void testConfiguredCommandResponses() {
     Fixture fixture(true);
-    const std::string config = R"({"topic":"devices/{deviceCode}/up","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","deviceParameters":[{"deviceCode":"0","name":"route","value":"A0"},{"deviceCode":"1","name":"route","value":"A1"}],"points":[{"id":"temperature","name":"温度","field":"value","dataType":"DOUBLE","writable":true}],"commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/down","template":"{\"id\":\"$commandId\",\"route\":\"$param:route\",\"operation\":\"set\",\"value\":\"$point:温度\"}","requiredPointIds":["temperature"],"response":{"topic":"devices/{deviceCode}/result","matchFields":["/id","/route","/operation"],"codeField":"/result/code","successCode":0,"timeoutMs":10000}}]})";
-    for (auto& device : fixture.snapshot->devices) device.calculationConfig = config;
+    const std::string config = R"({"topic":"devices/{deviceCode}/up","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","points":[{"id":"temperature","name":"温度","field":"value","dataType":"DOUBLE","writable":true}],"commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/down","template":"{\"id\":\"$commandId\",\"route\":\"$param:route\",\"uuid\":\"$deviceId\",\"code\":\"$deviceCode\",\"channel\":\"$param:channel\",\"enabled\":\"$param:enabled\",\"meta\":\"$param:meta\",\"operation\":\"set\",\"value\":\"$point:温度\"}","requiredPointIds":["temperature"],"response":{"topic":"devices/{deviceCode}/result","matchFields":["/id","/route","/operation"],"codeField":"/result/code","successCode":0,"timeoutMs":10000}}]})";
+    for (auto& device : fixture.snapshot->devices) {
+        device.calculationConfig = config;
+        device.parameters = "{\"route\":\"A" + device.code + "\",\"channel\":2,\"enabled\":true,\"meta\":{\"type\":\"water\"}}";
+    }
     fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     (void)fixture.session->connected();
     const auto subscriptions = fixture.receive({0x20, 2, 0, 0});
@@ -315,6 +318,8 @@ void testConfiguredCommandResponses() {
         const service::utils::PayloadRecord sent(payload, "json", ",");
         const auto id = sent.field("id");
         require(id && std::holds_alternative<double>(*id) && std::get<double>(*id) > 0 && std::get<double>(*id) <= 9007199254740991., "command ID is not a safe positive JSON integer");
+        require(sent.field("uuid") == service::utils::PayloadScalar{"0"} && sent.field("code") == service::utils::PayloadScalar{"0"}, "device identity was not substituted");
+        require(sent.field("channel") == service::utils::PayloadScalar{2.0} && sent.field("enabled") == service::utils::PayloadScalar{true}, "parameter JSON types were changed");
         require(sent.field("route") == service::utils::PayloadScalar{"A0"}, "device parameter was not substituted");
         return service::utils::payloadScalarJson(*id);
     };
@@ -344,6 +349,19 @@ void testConfiguredCommandResponses() {
     (void)fixture.receive({0x40, 2, 0, 4});
     const auto timeout = dynamic_cast<DeadlineCapabilitySession*>(fixture.session.get())->deadline(third.back().deadlineToken);
     require(timeout.size() == 1 && timeout.front().kind == ProtocolActionKind::FailCommand && timeout.front().reason == "mqtt_device_response_timeout", "response timeout retried or closed unrelated devices");
+    const auto other = issue("device-two", "1");
+    const std::string frame(other.front().bytes.begin(), other.front().bytes.end());
+    const auto payload = frame.substr(frame.find('{'));
+    const service::utils::PayloadRecord otherSent(payload, "json", ",");
+    require(otherSent.field("route") == service::utils::PayloadScalar{"A1"} && otherSent.field("uuid") == service::utils::PayloadScalar{"1"}, "another device reused parameters or identity");
+    fixture.snapshot->devices.front().parameters = "{}";
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    (void)fixture.session->connected();
+    (void)fixture.receive({0x20, 2, 0, 0});
+    (void)fixture.receive({0x90, 6, 0, 1, 1, 1, 1, 1});
+    const auto missing = issue("missing-parameter");
+    require(missing.size() == 1 && missing.front().kind == ProtocolActionKind::FailCommand && missing.front().reason.find("$param:") != std::string::npos, "missing parameter published an incomplete command");
+
 }
 
 void testMultipleReports() {

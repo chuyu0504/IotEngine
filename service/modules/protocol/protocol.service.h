@@ -447,6 +447,8 @@ class ProtocolConfigurationRules final {
             service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         }
 
+        if (hasField(*config, "deviceParameters")) service::common::fail(16004, "设备参数请在设备管理中配置", 400);
+
         // MQTT 属性与消息的跨字段约束在加锁后的合并配置上统一校验。
         if (protocol == "MQTT" && !required) return;
         if (protocol == "MQTT" && config->get<ruvia::json_value>("reports")) {
@@ -475,17 +477,6 @@ class ProtocolConfigurationRules final {
                 service::common::fail(16004, "MQTT Topic 过滤器无效", 400);
             const auto& commandTopic = typed->get<"commandTopic">();
             const auto& commands = typed->get<"commands">();
-            service::utils::JsonValueTemplate::Tokens parameterTokens;
-            if (const auto& parameters = typed->get<"deviceParameters">(); parameters) {
-                std::set<std::pair<std::string, std::string>> keys;
-                if (parameters->size() > 10000) service::common::fail(16004, "最多配置 10000 个设备参数", 400);
-                for (const auto& parameter : *parameters) {
-                    const auto code = parameter.get<"deviceCode">().view(), name = parameter.get<"name">().view();
-                    if (code.empty() || code.size() > 100 || name.empty() || name.size() > 100 || name.front() == ' ' || name.back() == ' ' || parameter.get<"value">().view().size() > 16384 || !keys.emplace(code, name).second)
-                        service::common::fail(16004, "设备参数名、值无效或重复", 400);
-                    parameterTokens.emplace("$param:" + std::string(name));
-                }
-            }
             if (commands && (commands->size() > 32 || (commandTopic && !commandTopic->view().empty()) ||
                 (typed->get<"commandTemplate">() && !typed->get<"commandTemplate">()->view().empty())))
                 service::common::fail(16004, "控制消息最多 32 条，且不能与旧版单条控制配置同时使用", 400);
@@ -557,14 +548,14 @@ class ProtocolConfigurationRules final {
             try {
                 const auto validateTemplate = [&](std::string_view input, bool report = false, bool legacyValues = true) {
                     service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
-                    if (!report) { allowed.insert("$commandId"); allowed.insert(parameterTokens.begin(), parameterTokens.end()); }
+                    if (!report) { allowed.insert("$deviceId"); allowed.insert("$commandId"); }
                     if (!report && !legacyValues) allowed.erase("$values");
                     for (const auto& [name, writable] : templatePoints) {
                         const auto token = "$point:" + name;
                         allowed.insert(token);
                         sparse.insert(token);
                     }
-                    const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report);
+                    const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report, 16384, 32, report ? utils::JsonValueTemplate::Tokens{} : utils::JsonValueTemplate::Tokens{"$param:"});
                     for (const auto& [name, writable] : templatePoints) {
                         if (!parsed.references("$point:" + name)) continue;
                         if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
@@ -622,8 +613,8 @@ class ProtocolConfigurationRules final {
                                 throw std::invalid_argument("回执状态路径无效");
                             (void)utils::jsonFieldSegments(response->get<"codeField">().view());
                         }
-                        utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}, {"$commandId", "1"}};
-                        for (const auto& token : parameterTokens) requiredValues.emplace(token, "null");
+                        utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}, {"$deviceId", "\"device-id\""}, {"$commandId", "1"}};
+                        for (const auto& token : parsed.references()) if (token.starts_with("$param:")) requiredValues.emplace(token, "null");
                         for (const auto& id : message.get<"requiredPointIds">()) {
                             if (!referenced.contains(id.view()) || !requiredIds.emplace(id.view()).second)
                                 throw std::invalid_argument("必填控制点必须属于当前消息且不能重复");

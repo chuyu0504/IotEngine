@@ -203,14 +203,14 @@ void testTemplateValueSemantics() {
 
 void testCommandResponseConfiguration() {
     const auto make = [](std::string_view fields, std::string_view topic = "devices/{deviceCode}/result", int timeout = 10000) {
-        const auto command = "{\"id\":\"00000000-0000-7000-8000-000000000010\",\"name\":\"设置\",\"topic\":\"devices/{deviceCode}/down\",\"template\":" + service::utils::jsonQuoted(R"({"id":"$commandId","route":"$param:route","value":"$point:温度"})") +
+        const auto command = "{\"id\":\"00000000-0000-7000-8000-000000000010\",\"name\":\"设置\",\"topic\":\"devices/{deviceCode}/down\",\"template\":" + service::utils::jsonQuoted(R"({"id":"$commandId","route":"$param:route","uuid":"$deviceId","value":"$point:温度"})") +
             ",\"requiredPointIds\":[" + service::utils::jsonQuoted(kPoint) + "],\"response\":{\"topic\":" + service::utils::jsonQuoted(topic) + ",\"matchFields\":" + std::string(fields) + ",\"codeField\":\"/code\",\"successCode\":0,\"timeoutMs\":" + std::to_string(timeout) + "}}";
-        return configuration("\"deviceParameters\":[{\"deviceCode\":\"D001\",\"name\":\"route\",\"value\":\"A001\"}],\"commands\":[" + command + "],", R"(,"writable":true)");
+        return configuration("\"commands\":[" + command + "],", R"(,"writable":true)");
     };
     const auto valid = make(R"(["/id","/route"])");
     (void)preview(valid, "devices", R"({"temperature":8})", "D001");
     const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
-    require(parsed && parsed->get<"deviceParameters">() && parsed->get<"commands">()->front().get<"response">(), "generic result or parameter configuration lost");
+    require(parsed && parsed->get<"commands">()->front().get<"response">(), "generic result configuration lost");
     for (const auto& invalid : {make(R"(["/route"])"), make(R"(["/id","/unknown"])"), make(R"(["/id","/id"])"), make(R"(["/id"])", "devices/+/result"), make(R"(["/id"])", "devices/{deviceCode}/result", 0)}) {
         bool rejected = false;
         try { (void)preview(invalid, "devices", "{}", "D001"); } catch (const std::exception&) { rejected = true; }

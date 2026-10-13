@@ -70,6 +70,7 @@ struct ElementDefinition {
 
 struct DeviceDefinition {
     std::string calculationConfig;
+    std::string parameters = "{}";
     bool debugEnabled = false;
     std::string id;
     std::string modelId;

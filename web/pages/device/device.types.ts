@@ -130,6 +130,8 @@ export interface CreateDeviceDto {
     /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
+    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    parameters?: Record<string, unknown>;
 }
 /** 更新设备 DTO */
 export interface UpdateDeviceDto {
@@ -156,6 +158,8 @@ export interface UpdateDeviceDto {
     /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
+    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    parameters?: Record<string, unknown>;
 }
 /** 设备静态数据（不包含实时数据） */
 export interface DeviceStaticData extends EdgeConnection {
@@ -199,6 +203,8 @@ export interface DeviceStaticData extends EdgeConnection {
     can_share?: boolean;
     can_command?: boolean;
     access_level?: DeviceAccessLevel;
+    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    parameters?: Record<string, unknown>;
 }
 /** 设备实时数据 */
 export interface DeviceRealtimeSnapshot {

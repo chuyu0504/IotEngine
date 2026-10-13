@@ -176,15 +176,12 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             subscription.format = stringOption(config.get<"payloadFormat">(), "json");
             subscription.delimiter = stringOption(config.get<"delimiter">(), ",");
             subscription.recordDelimiter = stringOption(config.get<"recordDelimiter">(), "\n");
-            service::utils::JsonValueTemplate::Tokens parameterTokens;
-            if (const auto& parameters = config.get<"deviceParameters">(); parameters) {
-                for (const auto& parameter : *parameters) {
-                    const auto token = "$param:" + std::string(parameter.get<"name">().view());
-                    parameterTokens.insert(token);
-                    if (parameter.get<"deviceCode">().view() == device->code)
-                        subscription.parameters.emplace(token, parameter.get<"value">().view());
-                }
-            }
+            const auto parameters = ruvia::json_value::parse(std::string_view(device->parameters));
+            if (!parameters || !parameters->is_object()) throw std::invalid_argument("设备参数必须是 JSON 对象");
+            (void)parameters->for_each_field([&](std::string_view name, const ruvia::json_value& value) {
+                subscription.parameters.emplace("$param:" + std::string(name), value.view());
+                return true;
+            });
             subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);
             if (const auto& topic = config.get<"commandTopic">(); topic && !topic->view().empty()) {
                 subscription.commandTopic = deviceTopic(std::string(topic->view()), device->code);
@@ -204,14 +201,14 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             }
             const auto compileTemplate = [&](std::string_view input, bool report = false, const std::set<std::string, std::less<>>& required = {}, bool legacyValues = true) {
                 service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
-                if (!report) { allowed.insert("$commandId"); allowed.insert(parameterTokens.begin(), parameterTokens.end()); }
+                if (!report) { allowed.insert("$deviceId"); allowed.insert("$commandId"); }
                 if (!report && !legacyValues) allowed.erase("$values");
                 for (const auto& [name, writable] : templatePoints) {
                     const auto token = "$point:" + name;
                     allowed.insert(token);
                     if (!required.contains(token)) sparse.insert(token);
                 }
-                service::utils::JsonValueTemplate result(input, allowed, sparse, report);
+                service::utils::JsonValueTemplate result(input, allowed, sparse, report, 16384, 32, report ? service::utils::JsonValueTemplate::Tokens{} : service::utils::JsonValueTemplate::Tokens{"$param:"});
                 for (const auto& [name, writable] : templatePoints) {
                     if (!result.references("$point:" + name)) continue;
                     if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
@@ -245,8 +242,8 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         }
                     }
                     auto compiled = compileTemplate(message.get<"templateText">().view(), false, required, false);
-                    service::utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}, {"$commandId", "1"}};
-                    for (const auto& token : parameterTokens) requiredValues.emplace(token, "null");
+                    service::utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}, {"$deviceId", "\"device-id\""}, {"$commandId", "1"}};
+                    for (const auto& token : compiled.references()) if (token.starts_with("$param:")) requiredValues.emplace(token, "null");
                     for (const auto& token : required) {
                         if (!compiled.references(token) && !topicTokens.contains(token)) throw std::invalid_argument("必填控制点不属于当前消息");
                         requiredValues.emplace(token, "null");
@@ -424,7 +421,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             }
             const auto* commandTemplate = selected ? &selected->payload : (subscription->commandTemplate ? &*subscription->commandTemplate : nullptr);
             PayloadObject payloadObject;
-            service::utils::JsonValueTemplate::Values namedValues;
+            service::utils::JsonValueTemplate::Values namedValues{{"$deviceId", service::utils::jsonQuoted(subscription->device->id)}};
             if (commandTemplate && commandTemplate->references("$commandId")) {
                 const auto now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                 lastCommandNumber_ = std::max(lastCommandNumber_ + 1, now);

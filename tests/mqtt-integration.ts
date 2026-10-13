@@ -259,6 +259,7 @@ try {
             protocol_config_id: model,
             online_timeout: 60,
             remote_control: true,
+            parameters: { address: code === 'D001' ? 'A001' : 'A002', channel: 2, enabled: true, metadata: { type: 'water' } },
             timezone: '+08:00',
             status: 'enabled',
         });
@@ -301,9 +302,8 @@ try {
     );
     const responseConfig = {
         ...config, commandTopic: '', commandTemplate: '',
-        deviceParameters: [{deviceCode: 'D001', name: 'address', value: 'A001'}],
         commands: [{id: commandMessageId, name: '设置并确认', topic: 'factory/commands',
-            template: '{"requestId":"$commandId","address":"$param:address","cmd":"set","value":"$point:温度"}',
+            template: '{"requestId":"$commandId","address":"$param:address","deviceUuid":"$deviceId","deviceCode":"$deviceCode","channel":"$param:channel","enabled":"$param:enabled","metadata":"$param:metadata","cmd":"set","value":"$point:温度"}',
             requiredPointIds: [point], response: {topic: 'factory/{deviceCode}/result', matchFields: ['/requestId','/address','/cmd'], codeField: '/body/code', successCode: 0, timeoutMs: 1000}}],
         points: [{...config.points[0], writable: true}, {...config.points[1], writable: false}],
     };
@@ -320,6 +320,12 @@ try {
     await until(async () => !!pendingResult, 'generic control not published');
     assert.notEqual((await status(confirmed.command_ids[0])).status, 'SUCCEEDED', 'PUBACK reported execution success');
     const sent = pendingResult!.payload;
+    assert.equal(sent.deviceUuid, devices[0]);
+    assert.equal(sent.deviceCode, 'D001');
+    assert.equal(sent.address, 'A001');
+    assert.equal(sent.channel, 2);
+    assert.equal(sent.enabled, true);
+    assert.deepEqual(sent.metadata, {type: 'water'});
     reply({...sent, requestId: 1, body: {code: 0}});
     reply({...sent, body: {code: 0}}, 'factory/D002/result');
     await Bun.sleep(100);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { formatJson } from '@/utils/json';
 
 const statusSchema = z.enum(['enabled', 'disabled']);
 const timezoneSchema = z.string().regex(/^[+-](0\d|1[0-4]):[0-5]\d$/, '设备时区格式必须为 ±HH:MM');
@@ -41,6 +42,39 @@ const packetSchema = z
             });
         }
     });
+export const deviceParametersSchema = z.preprocess(
+    (value, context) => {
+        if (typeof value !== 'string') return value;
+        if (!value.trim()) return {};
+        try {
+            return JSON.parse(formatJson(value));
+        } catch (error) {
+            context.addIssue({ code: 'custom', message: (error as Error).message });
+            return z.NEVER;
+        }
+    },
+    z
+        .record(
+            z
+                .string()
+                .min(1)
+                .refine(
+                    (name) =>
+                        name === name.trim() &&
+                        !/[\r\n\t]/.test(name) &&
+                        new TextEncoder().encode(name).length <= 100,
+                    '设备参数名须为 1–100 字节且不能有首尾空格'
+                ),
+            z.unknown()
+        )
+        .superRefine((value, context) => {
+            if (
+                Object.keys(value).length > 256 ||
+                new TextEncoder().encode(JSON.stringify(value)).length > 262144
+            )
+                context.addIssue({ code: 'custom', message: '设备参数最多 256 项、256 KiB' });
+        })
+);
 export const saveDeviceSchema = z
     .object({
         name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),
@@ -82,6 +116,7 @@ export const saveDeviceSchema = z
         timezone: timezoneSchema.default('+08:00'),
         heartbeat: packetSchema.default({ mode: 'OFF' }),
         registration: packetSchema.default({ mode: 'OFF' }),
+        parameters: deviceParametersSchema.optional(),
         remark: z.string().optional(),
     })
     .refine((value) => Boolean(value.link_id) !== Boolean(value.edge_connection), {

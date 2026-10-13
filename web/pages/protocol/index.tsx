@@ -6593,21 +6593,6 @@ export function MqttConfigPage() {
             width: 80,
             render: (value) => (value ? '可写' : '只读'),
         },
-        {
-            title: '操作',
-            width: 100,
-            fixed: 'right',
-            render: (_, point) =>
-                canEdit && (
-                    <Button
-                        type="link"
-                        size="small"
-                        onClick={() => edit(active, 'points', point.id)}
-                    >
-                        编辑
-                    </Button>
-                ),
-        },
     ];
     if (!canQuery || error)
         return (
@@ -7072,26 +7057,6 @@ export function MqttConfigPage() {
                                             >
                                                 添加属性
                                             </Button>
-                                            <Form.Item
-                                                name="deviceParameters"
-                                                label="设备参数（JSON）"
-                                                extra={
-                                                    '按 deviceCode 绑定参数，控制模板用 "$param:参数名" 引用，保留参数的 JSON 类型。'
-                                                }
-                                                getValueProps={(value: unknown) => ({
-                                                    value:
-                                                        typeof value === 'string'
-                                                            ? value
-                                                            : JSON.stringify(value ?? [], null, 2),
-                                                })}
-                                            >
-                                                <JsonEditor
-                                                    label="设备参数 JSON"
-                                                    placeholder={
-                                                        '[{"deviceCode":"D001","name":"address","value":"A001"}]'
-                                                    }
-                                                />
-                                            </Form.Item>
                                         </>
                                     ),
                                 },
@@ -7487,7 +7452,7 @@ export function MqttConfigPage() {
                                                                         ]}
                                                                         label="控制消息模板"
                                                                         extra={
-                                                                            '属性值按类型生成 JSON；"$commandId" 自动生成整数编号，"$param:参数名" 引用当前设备参数。'
+                                                                            '属性值按类型生成 JSON；"$deviceId" 为设备 UUID，"$deviceCode" 为设备编码，"$commandId" 自动生成整数编号，"$param:参数名" 引用设备管理中的参数。'
                                                                         }
                                                                     >
                                                                         <MqttMessageInput

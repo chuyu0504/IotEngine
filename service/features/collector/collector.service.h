@@ -137,6 +137,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         for (const auto& field : ConnectionConfig::fields(device)) { text(field.name); text(field.value); }
         integer(device.readInterval);
         text(device.calculationConfig);
+        text(device.parameters);
         text(device.storagePolicy);
         integer(device.commandFastReadDuration);
         integer(device.commandFastReadInterval);
@@ -442,6 +443,8 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
     ConnectionConfig::apply(result, fields);
     result.readInterval = integer(fields, "read_interval", 300);
     result.calculationConfig = field(fields, "calculation_config");
+    result.parameters = field(fields, "parameters");
+    if (result.parameters.empty()) result.parameters = "{}";
     result.storagePolicy = field(fields, "storage_policy");
     if (result.storagePolicy != "report" && result.storagePolicy != "change") {
         throw std::runtime_error("invalid runtime storage policy");
@@ -632,6 +635,7 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
               { "s7_probe_mode", device.s7ProbeMode },
               { "read_interval", std::to_string(device.readInterval) },
               { "calculation_config", device.calculationConfig },
+              { "parameters", device.parameters },
               { "storage_policy", device.storagePolicy },
               { "command_fast_read_duration", std::to_string(device.commandFastReadDuration) },
               { "command_fast_read_interval", std::to_string(device.commandFastReadInterval) } }

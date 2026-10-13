@@ -65,7 +65,7 @@ try {
     group = (await db`SELECT id FROM device_group WHERE name=${tag}`)[0].id;
     const list = await subscribe('/v1/device/events');
     await collectEvents(list, ['devices', 'groups', 'realtime']);
-    await request('POST', '/v1/device', {name:tag,device_code:`MB-${tag}`,link_id:link,protocol_config_id:model,group_id:group,status:'disabled',online_timeout:120,remote_control:true,modbus_mode:'TCP',slave_id:1,timezone:'+08:00',heartbeat:{mode:'OFF'},registration:{mode:'ASCII',content:tag},remark:'retained'});
+    await request('POST', '/v1/device', {name:tag,device_code:`MB-${tag}`,link_id:link,protocol_config_id:model,group_id:group,status:'disabled',online_timeout:120,remote_control:true,modbus_mode:'TCP',slave_id:1,timezone:'+08:00',heartbeat:{mode:'OFF'},registration:{mode:'ASCII',content:tag},parameters:{address:'A001', channel:2, enabled:true, empty:null, nested:{empty:null}},remark:'retained'});
     const created = await collectEvents(list, ['devices', 'groups', 'realtime']);
     const item = created.get('devices').list.find((row: {name:string}) => row.name === tag);
     assert(item);
@@ -76,6 +76,7 @@ try {
     const detail = () => request('GET', `/v1/device/${device}`);
     assert.equal((await detail()).created_by, admin);
     assert.equal((await detail()).online_timeout, 120);
+    assert.deepEqual((await detail()).parameters, {address:'A001',channel:2,enabled:true,empty:null,nested:{empty:null}});
     const realtime = list;
     assert(created.get('realtime').list.some((row: {id:string}) => row.id === device));
     // Drain the create notification before isolating a telemetry-only change.
@@ -102,6 +103,14 @@ try {
     await request('PUT', `/v1/device/${device}`, {name:`${tag}_updated`,remote_control:false});
     assert.equal((await detail()).name, `${tag}_updated`);
     assert.equal((await detail()).remark, 'retained');
+    assert.equal((await detail()).parameters.address, 'A001', 'an omitted field must retain device parameters');
+    await request('PUT', `/v1/device/${device}`, {parameters: {address:'A002',nested:{enabled:false},empty:null}});
+    assert.deepEqual((await detail()).parameters, {address:'A002',nested:{enabled:false},empty:null});
+    for (const parameters of [null, [], 'string']) await request('PUT', `/v1/device/${device}`, {parameters}, 10001);
+    await request('PUT', `/v1/device/${device}`, {parameters:{' bad':1}}, 18002);
+    await request('PUT', `/v1/device/${device}`, {parameters:{}});
+    assert.deepEqual((await detail()).parameters, {});
+
     await request('PUT', `/v1/device/${device}`, {device_code:`MB-${tag}`,remark:'unchanged legacy code saves'});
     await request('PUT', `/v1/device/${device}`, {device_code:'invalid/code'}, 18002);
     assert.equal((await detail()).device_code, `MB-${tag}`);
@@ -175,6 +184,7 @@ try {
     const shared = await subscribe('/v1/device/events', user);
     assert((await snapshot(shared, 'devices')).list.some((row: {id:string}) => row.id === device));
     await request('PUT', `/v1/device/${device}`, {name:'forbidden'}, 18005, user);
+    await request('PUT', `/v1/device/${device}`, {parameters:{address:'forbidden'}}, 18005, user);
     await request('DELETE', `/v1/device/${device}`, undefined, 18005, user);
     await request('PUT', `/v1/device/${device}/shares`, {shares:[]});
     assert(!(await snapshot(shared, 'devices')).list.some((row: {id:string}) => row.id === device));
