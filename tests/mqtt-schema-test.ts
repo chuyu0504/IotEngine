@@ -1,4 +1,4 @@
-import { deviceParametersSchema } from '../web/pages/device/device.schema';
+import { deviceParametersSchema, deviceParameterValues } from '../web/pages/device/device.schema';
 import { expect, test } from 'bun:test';
 import {
     compileMqttTemplate,
@@ -541,3 +541,20 @@ test('device parameters are object values owned by each device', () => {
     for (const value of ['null','[]','1','{"a":1,"a":2}','{" a":1}','{bad']) expect(deviceParametersSchema.safeParse(value).success).toBe(false);
     expect(mqttConfigSchema.safeParse({...config, deviceParameters: []}).success).toBe(false);
 });
+
+
+test('MQTT parameter definitions survive editing and validate names and types', () => {
+    const configured={...config,parameters:[{name:'stationAddress',dataType:'STRING' as const},{name:'channel',dataType:'DOUBLE' as const}]};
+    expect(compileMqttTemplate(mqttTemplateDraft(configured)).parameters).toEqual(configured.parameters);
+    expect(mqttConfigSchema.safeParse({...config,parameters:[{name:'same',dataType:'STRING'},{name:'same',dataType:'BOOL'}]}).success).toBe(false);
+    expect(mqttConfigSchema.safeParse({...config,parameters:[{name:'x',dataType:'unknown'}]}).success).toBe(false);
+});
+test('device parameter fields keep JSON types, clear one value and retain unrelated values',()=>{
+    const definitions=[{name:'address',dataType:'STRING' as const},{name:'channel',dataType:'DOUBLE' as const},{name:'enabled',dataType:'BOOL' as const},{name:'extra',dataType:'JSON' as const}];
+    expect(deviceParameterValues(definitions,{address:'A001',channel:2,enabled:'false',extra:'{"nested":null}'},{retained:7})).toEqual({address:'A001',channel:2,enabled:false,extra:{nested:null},retained:7});
+    expect(deviceParameterValues(definitions,{}, {address:'old',retained:7})).toEqual({retained:7});
+    expect(()=>deviceParameterValues(definitions,{channel:'bad'})).toThrow();
+    expect(()=>deviceParameterValues(definitions,{extra:'{bad'})).toThrow();
+});
+
+test('an untouched empty field preserves an existing explicit null',()=>{expect(deviceParameterValues([{name:'nullable',dataType:'STRING'}],{},{nullable:null})).toEqual({nullable:null});});

@@ -65,7 +65,11 @@ import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/e
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
-import { saveDeviceSchema } from './device.schema';
+import {
+    deviceParameterInputSchema,
+    deviceParameterValues,
+    saveDeviceSchema,
+} from './device.schema';
 import {
     getDeviceDetail,
     isDeviceOnline,
@@ -374,7 +378,8 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
 };
 
 export type DeviceFormValues = Omit<Device.CreateDto, 'parameters'> & {
-    parameters?: Record<string, unknown> | string;
+    parameterInputs?: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
 } & EdgeConnection & {
         id?: string;
         edge_protocol?: Link.Protocol;
@@ -423,6 +428,7 @@ export function DeviceFormModal({
             label: editing.edge_node_name || editing.edge_node_imei || editing.edge_node_id,
         });
     }
+    const modelId = Form.useWatch('protocol_config_id', form);
     const linkId = Form.useWatch('link_id', form);
     const channel = linkOptions.find((value) => value.id === linkId);
     const protocol = source === 'edge' ? edgeProtocol : channel?.protocol;
@@ -435,6 +441,10 @@ export function DeviceFormModal({
     const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', {
         enabled: open && !!protocol,
     });
+    const parameterDefinitions =
+        models?.list.find((model) => model.id === modelId)?.parameters ??
+        (modelId === editing?.protocol_config_id ? editing?.parameterDefinitions : undefined) ??
+        [];
     const flatten = (
         nodes: DeviceGroup.TreeItem[]
     ): {
@@ -617,6 +627,12 @@ export function DeviceFormModal({
                             values.device_code = values.device_code.padStart(10, '0');
                         if (protocol === 'DLT645')
                             values.device_code = values.device_code.padStart(12, '0');
+                        values.parameters = deviceParameterValues(
+                            parameterDefinitions,
+                            values.parameterInputs ?? {},
+                            editing?.parameters
+                        );
+                        delete values.parameterInputs;
                         onFinish(values);
                     }}
                 >
@@ -942,23 +958,72 @@ export function DeviceFormModal({
                             })}
                         />
                     </Form.Item>
-                    <Form.Item
-                        className="col-span-full"
-                        name="parameters"
-                        label="设备参数（JSON）"
-                        extra='维护这台设备的固有属性；控制模板用 "$param:参数名" 引用，保留数字、布尔、对象等 JSON 类型。留空或 {} 清空。'
-                        getValueProps={(value: unknown) => ({
-                            value:
-                                typeof value === 'string'
-                                    ? value
-                                    : JSON.stringify(value ?? {}, null, 2),
-                        })}
-                    >
-                        <JsonEditor
-                            label="设备参数 JSON"
-                            placeholder={'{"stationAddress":"A001","channel":1}'}
-                        />
-                    </Form.Item>
+                    <Divider className="col-span-full" titlePlacement="start">
+                        设备参数
+                    </Divider>
+                    {!parameterDefinitions.length && (
+                        <p className="col-span-full text-sm text-slate-500">
+                            该设备类型尚未定义参数，可在协议配置的设备属性中添加。
+                        </p>
+                    )}
+                    {parameterDefinitions.map((parameter) => {
+                        const value = editing?.parameters?.[parameter.name];
+                        const initialValue =
+                            parameter.dataType === 'JSON'
+                                ? value === undefined
+                                    ? ''
+                                    : JSON.stringify(value, null, 2)
+                                : parameter.dataType === 'BOOL'
+                                  ? value === true
+                                      ? 'true'
+                                      : value === false
+                                        ? 'false'
+                                        : undefined
+                                  : (value ?? undefined);
+                        return (
+                            <Form.Item
+                                key={`${modelId}:${parameter.name}:${parameter.dataType}`}
+                                name={['parameterInputs', parameter.name]}
+                                label={parameter.name}
+                                className={
+                                    parameter.dataType === 'JSON' ? 'col-span-full' : undefined
+                                }
+                                initialValue={initialValue}
+                                preserve={false}
+                                rules={[
+                                    {
+                                        validator: (_, value) => {
+                                            const parsed = deviceParameterInputSchema(
+                                                parameter.dataType
+                                            ).safeParse(value);
+                                            return parsed.success
+                                                ? Promise.resolve()
+                                                : Promise.reject(
+                                                      new Error(parsed.error.issues[0]?.message)
+                                                  );
+                                        },
+                                    },
+                                ]}
+                            >
+                                {parameter.dataType === 'DOUBLE' ? (
+                                    <InputNumber className="w-full" placeholder="请输入数值" />
+                                ) : parameter.dataType === 'BOOL' ? (
+                                    <Select
+                                        allowClear
+                                        placeholder="请选择"
+                                        options={[
+                                            { value: 'true', label: '是' },
+                                            { value: 'false', label: '否' },
+                                        ]}
+                                    />
+                                ) : parameter.dataType === 'JSON' ? (
+                                    <JsonEditor label={`${parameter.name}参数值`} height="140px" />
+                                ) : (
+                                    <Input placeholder="请输入参数值" />
+                                )}
+                            </Form.Item>
+                        );
+                    })}
                     <Form.Item className="col-span-full" name="remark" label="备注">
                         <Input.TextArea />
                     </Form.Item>

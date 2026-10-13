@@ -57,7 +57,7 @@ async function collectEvents(stream: Awaited<ReturnType<typeof subscribe>>, name
 }
 try {
     await request('GET', '/v1/device', undefined, 11004, null);
-    await request('POST', '/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[]}});
+    await request('POST', '/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[],parameters:[{name:'address',dataType:'STRING'},{name:'channel',dataType:'DOUBLE'},{name:'enabled',dataType:'BOOL'},{name:'empty',dataType:'JSON'},{name:'nested',dataType:'JSON'}]}});
     model = (await db`SELECT id FROM protocol_config WHERE name=${tag}`)[0].id;
     await request('POST', '/v1/link', {execution:'collector',name:tag,protocol:'Modbus',endpoint:{transport:'tcp',mode:'TCP Server',ip:'0.0.0.0',port:59961,targets:[]},status:'disabled'});
     link = (await db`SELECT id FROM link WHERE name=${tag}`)[0].id;
@@ -76,6 +76,9 @@ try {
     const detail = () => request('GET', `/v1/device/${device}`);
     assert.equal((await detail()).created_by, admin);
     assert.equal((await detail()).online_timeout, 120);
+    assert.equal((await detail()).parameterDefinitions.length,5);
+    const modelOptions=await request('GET','/v1/protocol/configs/options?protocol=Modbus');
+    assert.equal(modelOptions.list.find((row:{id:string})=>row.id===model).parameters.length,5);
     assert.deepEqual((await detail()).parameters, {address:'A001',channel:2,enabled:true,empty:null,nested:{empty:null}});
     const realtime = list;
     assert(created.get('realtime').list.some((row: {id:string}) => row.id === device));
@@ -108,6 +111,7 @@ try {
     assert.deepEqual((await detail()).parameters, {address:'A002',nested:{enabled:false},empty:null});
     for (const parameters of [null, [], 'string']) await request('PUT', `/v1/device/${device}`, {parameters}, 10001);
     await request('PUT', `/v1/device/${device}`, {parameters:{' bad':1}}, 18002);
+    for (const parameters of [{address:123},{channel:'wrong'},{enabled:1}]) await request('PUT', `/v1/device/${device}`, {parameters}, 18002);
     await request('PUT', `/v1/device/${device}`, {parameters:{}});
     assert.deepEqual((await detail()).parameters, {});
 

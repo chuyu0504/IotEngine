@@ -1,4 +1,5 @@
 #pragma once
+#include "service/common/device_parameter.h"
 
 #include "service/common/uuid.h"
 #include <ruvia/web/validation.h>
@@ -124,6 +125,7 @@ RUVIA_MODEL(MqttCommandMessage,
     RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::string),
     RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::array<ruvia::string>), RUVIA_OPTIONAL_FIELD(response, MqttCommandResponse));
 RUVIA_MODEL(MqttConfig,
+    RUVIA_OPTIONAL_FIELD(parameters, ruvia::array<service::common::DeviceParameterDefinition>),
     RUVIA_OPTIONAL_FIELD(storagePolicy, ruvia::string),
     RUVIA_OPTIONAL_FIELD(topic, ruvia::string),
     RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::string),

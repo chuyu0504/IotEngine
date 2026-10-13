@@ -5,6 +5,10 @@ import type { PageParams } from '@/types/pagination';
 /** 协议类型 */
 export type ProtocolType = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645' | 'MQTT';
 
+export interface DeviceParameterDefinition {
+    name: string;
+    dataType: 'STRING' | 'DOUBLE' | 'BOOL' | 'JSON';
+}
 export interface MqttPoint {
     id: string;
     name: string;
@@ -64,7 +68,7 @@ export interface MqttCommandResponse {
     timeoutMs?: number;
 }
 export interface MqttTemplateDraft
-    extends Pick<DeviceTypeTimingConfig, 'derivedPoints' | 'pointVisibility'> {
+    extends Pick<DeviceTypeTimingConfig, 'derivedPoints' | 'pointVisibility' | 'parameters'> {
     reports?: Pick<
         MqttReportMessage,
         'id' | 'name' | 'topic' | 'reportTemplate' | 'qos' | 'timeFormat'
@@ -151,6 +155,7 @@ export interface DerivedPoint {
 }
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
+    parameters?: DeviceParameterDefinition[];
     derivedPoints?: DerivedPoint[];
     pointVisibility?: Record<string, boolean>;
     /** 定时读取/边缘上报间隔（秒），默认 1 */
@@ -402,6 +407,7 @@ export interface ProtocolConfigItem {
 export interface ProtocolConfigOption {
     id: string;
     name: string;
+    parameters?: DeviceParameterDefinition[];
 }
 /** 协议配置查询参数 */
 export interface ProtocolConfigQuery extends PageParams {

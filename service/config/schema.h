@@ -12,6 +12,7 @@
 #include "service/config/current_device_model.h"
 #include "service/config/native_points.h"
 #include "service/config/device_parameters.h"
+#include "service/config/device_parameter_definitions.h"
 #include "service/config/industrial_protocols.h"
 #include "service/config/channels.h"
 
@@ -1934,6 +1935,7 @@ END $schema$;
     }(),
     ruvia::db_migration({.id_="0054_native_point_calculations", .sql_=std::string(kNativePointCalculationsMigration)}),
     ruvia::db_migration({.id_="0055_device_parameters", .sql_=std::string(kDeviceParametersMigration)}),
+    ruvia::db_migration({.id_="0056_device_parameter_definitions", .sql_=std::string(kDeviceParameterDefinitionsMigration)}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

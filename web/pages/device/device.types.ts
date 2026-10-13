@@ -1,5 +1,9 @@
 import type { Link } from '../link/link.types';
-import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
+import type {
+    DeviceParameterDefinition,
+    Protocol,
+    StoragePolicy,
+} from '../protocol/protocol.types';
 /**
  * 设备分组类型定义
  */
@@ -163,6 +167,7 @@ export interface UpdateDeviceDto {
 }
 /** 设备静态数据（不包含实时数据） */
 export interface DeviceStaticData extends EdgeConnection {
+    parameterDefinitions?: DeviceParameterDefinition[];
     debug_enabled?: boolean;
     link_debug_enabled?: boolean;
     // 基本信息

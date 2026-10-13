@@ -7057,6 +7057,106 @@ export function MqttConfigPage() {
                                             >
                                                 添加属性
                                             </Button>
+                                            <Divider titlePlacement="start">设备参数</Divider>
+                                            <p className="mb-3 text-sm text-slate-500">
+                                                在这里定义参数名称和类型，具体值在设备管理中逐项填写。控制消息用
+                                                "$param:参数名" 引用。
+                                            </p>
+                                            <Form.List name="parameters">
+                                                {(fields, { add, remove }) => (
+                                                    <>
+                                                        <Table
+                                                            rowKey="key"
+                                                            size="small"
+                                                            pagination={false}
+                                                            dataSource={fields}
+                                                            scroll={{ x: 480 }}
+                                                            columns={[
+                                                                {
+                                                                    title: '参数名称',
+                                                                    render: (_, field) => (
+                                                                        <Form.Item
+                                                                            name={[
+                                                                                field.name,
+                                                                                'name',
+                                                                            ]}
+                                                                            className="mb-0"
+                                                                            rules={[
+                                                                                {
+                                                                                    required: true,
+                                                                                    whitespace: true,
+                                                                                    message:
+                                                                                        '请输入参数名称',
+                                                                                },
+                                                                            ]}
+                                                                        >
+                                                                            <Input
+                                                                                aria-label={`参数 ${field.name + 1} 名称`}
+                                                                                maxLength={100}
+                                                                                placeholder="例如 stationAddress"
+                                                                            />
+                                                                        </Form.Item>
+                                                                    ),
+                                                                },
+                                                                {
+                                                                    title: '类型',
+                                                                    width: 130,
+                                                                    render: (_, field) => (
+                                                                        <Form.Item
+                                                                            name={[
+                                                                                field.name,
+                                                                                'dataType',
+                                                                            ]}
+                                                                            className="mb-0"
+                                                                            rules={[
+                                                                                { required: true },
+                                                                            ]}
+                                                                        >
+                                                                            <Select
+                                                                                aria-label={`参数 ${field.name + 1} 类型`}
+                                                                                options={[
+                                                                                    ...MQTT_POINT_TYPES,
+                                                                                    {
+                                                                                        value: 'JSON',
+                                                                                        label: 'JSON',
+                                                                                    },
+                                                                                ]}
+                                                                            />
+                                                                        </Form.Item>
+                                                                    ),
+                                                                },
+                                                                {
+                                                                    title: '操作',
+                                                                    width: 80,
+                                                                    render: (_, field) => (
+                                                                        <Button
+                                                                            type="link"
+                                                                            danger
+                                                                            onClick={() =>
+                                                                                remove(field.name)
+                                                                            }
+                                                                        >
+                                                                            删除
+                                                                        </Button>
+                                                                    ),
+                                                                },
+                                                            ]}
+                                                        />
+                                                        <Button
+                                                            className="mt-3"
+                                                            disabled={fields.length >= 256}
+                                                            onClick={() =>
+                                                                add({
+                                                                    name: '',
+                                                                    dataType: 'STRING',
+                                                                })
+                                                            }
+                                                        >
+                                                            添加参数
+                                                        </Button>
+                                                    </>
+                                                )}
+                                            </Form.List>
                                         </>
                                     ),
                                 },

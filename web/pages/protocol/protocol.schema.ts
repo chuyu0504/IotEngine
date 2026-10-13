@@ -222,6 +222,24 @@ export const mqttConfigSchema = z
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
+        parameters: z
+            .array(
+                z.object({
+                    name: z
+                        .string()
+                        .min(1)
+                        .refine(
+                            (name) =>
+                                name === name.trim() &&
+                                !/[\r\n\t]/.test(name) &&
+                                new TextEncoder().encode(name).length <= 100,
+                            '参数名须为 1–100 字节且不能有首尾空格'
+                        ),
+                    dataType: z.enum(['STRING', 'DOUBLE', 'BOOL', 'JSON']),
+                })
+            )
+            .max(256)
+            .optional(),
         deviceParameters: z.never().optional(),
         commands: z
             .array(
@@ -279,6 +297,16 @@ export const mqttConfigSchema = z
             .max(256),
     })
     .superRefine((config, context) => {
+        const parameterNames = new Set<string>();
+        config.parameters?.forEach((parameter, index) => {
+            if (parameterNames.has(parameter.name))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['parameters', index, 'name'],
+                    message: '参数名不能重复',
+                });
+            parameterNames.add(parameter.name);
+        });
         const format = config.payloadFormat ?? 'json';
         const identity = config.identitySource ?? (config.deviceCodeField ? 'payload' : 'bound');
         const issue = (path: (string | number)[], message: string) =>
@@ -556,6 +584,7 @@ function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
     const result = mqttConfigSchema.safeParse({
         ...(draft.derivedPoints ? { derivedPoints: draft.derivedPoints } : {}),
         ...(draft.pointVisibility ? { pointVisibility: draft.pointVisibility } : {}),
+        ...(draft.parameters !== undefined ? { parameters: draft.parameters } : {}),
         topic: draft.topic,
         storagePolicy: draft.storagePolicy,
         qos: draft.qos,
@@ -723,6 +752,9 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         reportTemplate = JSON.stringify(root, null, 2);
     }
     const draft: MqttTemplateDraft = {
+        ...(config.parameters !== undefined
+            ? { parameters: config.parameters.map((parameter) => ({ ...parameter })) }
+            : {}),
         topic,
         ...(config.derivedPoints ? { derivedPoints: config.derivedPoints } : {}),
         ...(config.pointVisibility ? { pointVisibility: config.pointVisibility } : {}),

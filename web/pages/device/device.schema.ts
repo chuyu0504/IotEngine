@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { formatJson } from '@/utils/json';
+import type { DeviceParameterDefinition } from '../protocol/protocol.types';
 
 const statusSchema = z.enum(['enabled', 'disabled']);
 const timezoneSchema = z.string().regex(/^[+-](0\d|1[0-4]):[0-5]\d$/, '设备时区格式必须为 ±HH:MM');
@@ -75,6 +76,49 @@ export const deviceParametersSchema = z.preprocess(
                 context.addIssue({ code: 'custom', message: '设备参数最多 256 项、256 KiB' });
         })
 );
+export function deviceParameterInputSchema(type: DeviceParameterDefinition['dataType']) {
+    if (type === 'BOOL')
+        return z
+            .enum(['true', 'false'])
+            .transform((value) => value === 'true')
+            .optional();
+    if (type === 'DOUBLE')
+        return z
+            .number()
+            .finite()
+            .nullish()
+            .transform((value) => value ?? undefined);
+    if (type === 'JSON')
+        return z
+            .string()
+            .transform((value, context) => {
+                if (!value.trim()) return undefined;
+                try {
+                    return JSON.parse(formatJson(value));
+                } catch (error) {
+                    context.addIssue({ code: 'custom', message: (error as Error).message });
+                    return z.NEVER;
+                }
+            })
+            .optional();
+    return z.string().optional();
+}
+export function deviceParameterValues(
+    definitions: DeviceParameterDefinition[],
+    inputs: Record<string, unknown>,
+    current: Record<string, unknown> = {}
+) {
+    const values = { ...current };
+    for (const definition of definitions) {
+        const value = deviceParameterInputSchema(definition.dataType).parse(
+            inputs[definition.name]
+        );
+        if (value === undefined) {
+            if (current[definition.name] !== null) delete values[definition.name];
+        } else values[definition.name] = value;
+    }
+    return values;
+}
 export const saveDeviceSchema = z
     .object({
         name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),

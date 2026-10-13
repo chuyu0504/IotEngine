@@ -825,7 +825,8 @@ return result
             const auto endpointId = co_await service::link::LinkService::instance().configureDeviceEndpoint(c, transaction, *body.template get<"edgeConnection">(), id);
             resolvedLinkId = endpointId;
         }
-        co_await validate(c, transaction, resolvedLinkId, body, false);
+        const std::string validationLink = resolvedLinkId.empty() ? std::string(rows.front()[0].value().value_or("")) : resolvedLinkId;
+        co_await validate(c, transaction, validationLink, body, false, rows.front()[2].value().value_or(""));
 
         const auto& current = rows.front();
         const std::string currentLinkId(
@@ -1474,7 +1475,7 @@ return result
             query.case_when({ { query.binary(query.column("protocol", "p"), ruvia::db_binary_operator::equal, query.value("SL651")), query.coalesce({ query.subquery(functionCount), DeviceAccessService::integer(query, 0) }) } }, query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "points"), emptyArray }) }))
         );
 
-        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.case_when({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l"), query.coalesce({ DeviceAccessService::jsonValue(query, protocolParams, "parameters"), query.cast(query.value("{}"), ruvia::db_data_type::jsonb) }) });
+        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.case_when({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l"), query.coalesce({ DeviceAccessService::jsonValue(query, protocolParams, "parameters"), query.cast(query.value("{}"), ruvia::db_data_type::jsonb) }), query.column("config", "p") });
     }
 
     template <typename Context, typename Row>
@@ -1484,6 +1485,9 @@ return result
         ruvia::json_object ownedParameters({.resource_ = c.arena()});
         ownedParameters = std::move(*parameters);
         item.template set<"parameters">(std::move(ownedParameters));
+        auto parameterConfig = ruvia::from_json<service::common::DeviceParameterConfiguration>(row[45].value().value_or("{}"), {.resource_ = c.arena()});
+        if (parameterConfig && parameterConfig->get<"parameters">())
+            item.template set<"parameterDefinitions">(std::move(*parameterConfig->get<"parameters">()));
         item.template set<"id">(row[0].value().value_or(std::string_view{}));
         item.template set<"name">(row[1].value().value_or(std::string_view{}));
         item.template set<"debugEnabled">(row[42].value().value_or("") == "t");
@@ -2369,7 +2373,7 @@ return result
     // 扁平字段（必填/长度/枚举/范围/UUID/timezone）由声明式校验器保证；
     // 此处只做跨字段、依赖 DB 与协议相关的校验（保留 18002/18003 域码）。
     template <typename Context, typename Body>
-    ruvia::task<void> validate(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required) {
+    ruvia::task<void> validate(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required, std::string_view currentConfigId = {}) {
         if (const auto& parameters = body.template get<"parameters">(); parameters) {
             if (parameters->view().size() > 262144) service::common::fail(18002, "设备参数最多 256 KiB", 400);
             std::set<std::string> names;
@@ -2382,7 +2386,8 @@ return result
         validatePacket(body.template get<"heartbeat">());
         validatePacket(body.template get<"registration">());
         const auto linkId = std::string(resolvedLinkId);
-        const auto configId = str(body.template get<"protocolConfigId">());
+        const auto requestedConfigId = str(body.template get<"protocolConfigId">());
+        const auto configId = requestedConfigId.empty() ? std::string(currentConfigId) : requestedConfigId;
         if (required && linkId.empty()) {
             service::common::fail(18003, "请选择通道", 400);
         }
@@ -2425,13 +2430,23 @@ return result
 
         ruvia::db_query relationQuery(c.pool());
         relationQuery
-            .select(relationQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l"))
+            .select({ relationQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l"), relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"config">(), "p") })
             .from(service::device::entities::LinkEntity::table_name(), "l")
             .join(ruvia::db_join_type::inner, service::device::entities::ProtocolConfigEntity::table_name(), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, relationQuery.column(service::device::entities::LinkEntity::column_name<"protocol">(), "l")), "p")
             .where(andAll(relationQuery, relationQuery.binary(relationQuery.column(service::device::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(relationQuery, linkId)), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"id">(), "p"), ruvia::db_binary_operator::equal, DeviceAccessService::uuid(relationQuery, configId)), relationQuery.unary(ruvia::db_unary_operator::is_null, relationQuery.column(service::device::entities::LinkEntity::column_name<"deleted_at">(), "l")), relationQuery.unary(ruvia::db_unary_operator::is_null, relationQuery.column(service::device::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "p"))));
         const auto relation = co_await transaction.query(relationQuery);
         if (relation.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
+        }
+        if (const auto& values = body.template get<"parameters">(); values) {
+            const auto definition = ruvia::from_json<service::common::DeviceParameterConfiguration>(relation.front()[1].value().value_or("{}"));
+            if (!definition) service::common::fail(18002, "设备参数定义无效", 400);
+            if (const auto& fields = definition->get<"parameters">(); fields) for (const auto& field : *fields) {
+                const auto name = field.get<"name">().view();
+                const auto value = values->template get<ruvia::json_value>(name);
+                if (value && !service::common::deviceParameterValueMatches(field.get<"dataType">().view(), *value))
+                    service::common::fail(18002, "设备参数类型不匹配: " + std::string(name), 400);
+            }
         }
         const std::string configProtocol(relation.front()[0].value().value_or(""));
         if (configProtocol == "SL651" &&

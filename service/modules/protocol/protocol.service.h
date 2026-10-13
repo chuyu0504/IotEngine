@@ -449,6 +449,13 @@ class ProtocolConfigurationRules final {
 
         if (hasField(*config, "deviceParameters")) service::common::fail(16004, "设备参数请在设备管理中配置", 400);
 
+        const auto parameterConfig = ruvia::from_json<service::common::DeviceParameterConfiguration>(config->view());
+        if (!parameterConfig) service::common::fail(16004, "设备参数定义须为数组", 400);
+        try {
+            if (const auto& definitions = parameterConfig->get<"parameters">(); definitions)
+                service::common::validateDeviceParameterDefinitions(*definitions);
+        } catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+
         // MQTT 属性与消息的跨字段约束在加锁后的合并配置上统一校验。
         if (protocol == "MQTT" && !required) return;
         if (protocol == "MQTT" && config->get<ruvia::json_value>("reports")) {
@@ -1169,7 +1176,14 @@ class ProtocolService {
             }
             first = false;
             result += "{\"id\":" + service::utils::jsonQuoted(row.template get<"id">()) +
-                ",\"name\":" + service::utils::jsonQuoted(row.template get<"name">()) + "}";
+                ",\"name\":" + service::utils::jsonQuoted(row.template get<"name">());
+            const auto config = ruvia::from_json<service::common::DeviceParameterConfiguration>(row.template get<"config">());
+            result += ",\"parameters\":";
+            if (config && config->get<"parameters">()) {
+                const auto json = ruvia::to_json(*config->get<"parameters">());
+                result.append(json.data(), json.size());
+            } else result += "[]";
+            result += "}";
         }
         result += "],\"total\":" + std::to_string(total) + ",\"page\":" + std::to_string(page) +
             ",\"pageSize\":" + std::to_string(pageSize) + "}";
