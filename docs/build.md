@@ -49,7 +49,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-当前固定 Ruvia `eb7a41006f4b260adea8168012a8d0298c499eff`，使用经 SHA-256 校验的上游归档；`ports/cmake/patch-ruvia.cmake` 仅消除字符分类、lambda 捕获和生成比较运算符的编译告警，不改变公开 API 或协议。补丁按精确原文匹配，并验证重复执行与源码漂移。
+当前固定 Ruvia `eb7a41006f4b260adea8168012a8d0298c499eff`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
 该版本在响应编码协商失败时保留已有的 4xx/5xx 状态，统一 HTTP 客户端连接池的取消处理，
 并清理未使用的内部实现；项目继续使用上游公开 API。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；
