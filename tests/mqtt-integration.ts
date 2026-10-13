@@ -61,6 +61,7 @@ function telemetry(socket: Bun.Socket<{ buffer: Buffer; subscribed: boolean }>) 
     );
     socket.write(frame.subarray(0, 3));
     socket.write(frame.subarray(3));
+    socket.write(packet(0x32,Buffer.concat([text('factory/state'),Buffer.from([0,8]),Buffer.from(JSON.stringify({device:'D001',state:{enabled:true},time}))])));
 }
 const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
     hostname: '127.0.0.1',
@@ -100,7 +101,7 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                     for (let offset = 2; offset < body.length;) {
                         const size = body.readUInt16BE(offset);
                         const filter = body.subarray(offset + 2, offset + 2 + size).toString();
-                        assert(['factory/telemetry', 'factory/D001/result', 'factory/D002/result'].includes(filter));
+                        assert(['factory/telemetry', 'factory/state', 'factory/D001/result', 'factory/D002/result'].includes(filter));
                         if (filter.endsWith('/result')) ++resultSubscriptions;
                         granted.push(1);
                         offset += 3 + size;
@@ -109,7 +110,7 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                     socket.write(packet(0x90, Buffer.from([body[0], body[1], ...granted])));
                     telemetry(socket);
                 } else if (header === 0x40) {
-                    assert.equal(body.readUInt16BE(), 7);
+                    assert([7,8].includes(body.readUInt16BE()));
                     ++acknowledgements;
                 } else if (header === 0xc0) socket.write(Buffer.from([0xd0, 0]));
                 else if (header >> 4 === 3) {
@@ -183,6 +184,10 @@ try {
         commandTemplate: '{"cmd":"set","device":"$deviceCode","control":{"targetTemperature":"$point:温度","enabled":"$point:开关"}}',
         qos: 1,
         derivedPoints: [{id:derived,name:'温度换算',kind:'expression',valueType:'number',expression:'x * 0.1 - 1',inputs:[{alias:'x',pointId:point}],unit:'℃',unitMode:'fixed',maxAgeSeconds:300,visible:true}],
+        reports: [
+            {id:crypto.randomUUID(),name:'测量',topic:'factory/telemetry',qos:1,recordsPath:'/devices',identitySource:'payload',deviceCodeField:'/code',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"code":"$deviceCode","time":"$time","metrics":{"temperature":"$point:温度"}}',pointFields:[{pointId:point,field:'/metrics/temperature'}]},
+            {id:crypto.randomUUID(),name:'状态',topic:'factory/state',qos:1,identitySource:'payload',deviceCodeField:'/device',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"device":"$deviceCode","time":"$time","state":{"enabled":"$point:开关"}}',pointFields:[{pointId:enabledPoint,field:'/state/enabled'}]},
+        ],
         points: [
             {
                 id: point,
@@ -269,11 +274,17 @@ try {
     );
     for (const [index, id] of devices.entries()) {
         const [row] =
-            await db`SELECT data->'values'->${point}->>'value' AS value, data->'values'->${derived}->>'value' AS derived_value, EXTRACT(EPOCH FROM occurred_at)*1000 AS time FROM device_data WHERE device_id=${id} ORDER BY occurred_at DESC LIMIT 1`;
+            await db`SELECT data->'values'->${point}->>'value' AS value, data->'values'->${derived}->>'value' AS derived_value, EXTRACT(EPOCH FROM occurred_at)*1000 AS time FROM device_data WHERE device_id=${id} AND (data->'values') ? ${point} ORDER BY occurred_at DESC LIMIT 1`;
         assert(Math.abs(Number(row.value) - (index === 0 ? 256 : 281)) < 0.00001);
         assert(Math.abs(Number(row.derived_value) - (index === 0 ? 24.6 : 27.1)) < 0.00001);
         assert.equal(Number(row.time), time);
     }
+    await until(async()=> (await db`SELECT id FROM device_data WHERE device_id=${devices[0]} AND data->'values'->${enabledPoint}->>'value'='true' LIMIT 1`).length===1,'second MQTT report did not use its own mapping');
+    const statePreview=await ok('POST','/v1/protocol/configs/preview-mqtt',{config,topic:'factory/state',payload:JSON.stringify({device:'D001',state:{enabled:true},time}),deviceCode:'D001'});
+    assert.equal(statePreview.records[0].points.length,1);
+    assert.equal(statePreview.records[0].points[0].id,enabledPoint);
+    await ok('PUT',`/v1/protocol/configs/${model}`,{config:{reports:[config.reports[0]]}});
+    assert.equal((await ok('GET',`/v1/protocol/configs/${model}`)).config.reports.length,1,'deleted report survived save');
     await until(async () => acknowledgements > 0, 'Broker did not receive PUBACK');
     const command = await ok('POST', `/v1/device/${devices[0]}/commands`, {
         idempotency_key: crypto.randomUUID(),

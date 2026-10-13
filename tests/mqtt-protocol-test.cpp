@@ -346,8 +346,25 @@ void testConfiguredCommandResponses() {
     require(timeout.size() == 1 && timeout.front().kind == ProtocolActionKind::FailCommand && timeout.front().reason == "mqtt_device_response_timeout", "response timeout retried or closed unrelated devices");
 }
 
+void testMultipleReports() {
+    Fixture fixture;
+    auto& device=fixture.snapshot->devices.front();
+    device.calculationConfig=R"json({"reports":[{"id":"00000000-0000-4000-8000-000000000001","name":"温度","topic":"devices/{deviceCode}/temperature","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","pointFields":[{"pointId":"temperature","field":"/value"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"状态","topic":"devices/{deviceCode}/state","qos":1,"reportTemplate":"{\"enabled\":\"$point:开关\"}","pointFields":[{"pointId":"enabled","field":"/enabled"}]}],"points":[{"id":"temperature","name":"温度","field":"","dataType":"DOUBLE"},{"id":"enabled","name":"开关","field":"","dataType":"BOOL"}]})json";
+    fixture.session=mqtt::Factory{}.createSession(fixture.snapshot->links.front(),"connection","broker",fixture.snapshot);
+    (void)fixture.session->connected();
+    const auto subscribe=fixture.receive({0x20,2,0,0});
+    require(subscribe.front().bytes.front()==0x82,"multiple report topics not subscribed");
+    const auto subscribed=fixture.receive({0x90,4,0,1,1,1});
+    require(subscribed.front().kind==ProtocolActionKind::CancelDeadline,"multiple report SUBACK rejected");
+    const auto temperature=fixture.receive(publication("devices/0/temperature",R"({"value":25,"enabled":false})",0));
+    require(temperature.size()==2 && temperature.front().parsed.valuesJson.find("25")!=std::string::npos && temperature.front().parsed.valuesJson.find("enabled")==std::string::npos,"first report used another message mapping");
+    const auto state=fixture.receive(publication("devices/0/state",R"({"enabled":true,"value":100})",0));
+    require(state.size()==2 && state.front().parsed.valuesJson.find("true")!=std::string::npos && state.front().parsed.valuesJson.find("temperature")==std::string::npos,"second report used another message mapping");
+}
+
 int main() {
     try {
+        testMultipleReports();
         testConfiguredCommandResponses();
         testFramingAndRouting();
         testQos2AndCommand();

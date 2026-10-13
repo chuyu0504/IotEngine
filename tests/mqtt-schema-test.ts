@@ -511,3 +511,25 @@ test('MQTT editing retains shared derived calculations and visibility', () => {
         expect(mqttConfigSchema.safeParse({...config,points:[{...point,...conversion}]}).success).toBe(false);
     }
 });
+
+
+test('multiple MQTT reports keep independent topics and mappings and can be removed', () => {
+    const reports = [
+        {id:crypto.randomUUID(),name:'温度',topic:'devices/{deviceCode}/temperature',qos:1 as const,reportTemplate:'{"temperature":"$point:温度"}'},
+        {id:crypto.randomUUID(),name:'状态',topic:'devices/{deviceCode}/state',qos:2 as const,reportTemplate:'{"nested":{"value":"$point:温度"}}'},
+    ];
+    const draft = {...templateDraft(),reports};
+    const compiled = compileMqttTemplate(draft);
+    expect(compiled.reports?.map(report=>report.pointFields)).toEqual([
+        [{pointId:point.id,field:'/temperature'}], [{pointId:point.id,field:'/nested/value'}],
+    ]);
+    expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
+    const after = compileMqttTemplate({...mqttTemplateDraft(compiled),reports:[reports[1]]});
+    expect(after.reports).toHaveLength(1);
+    expect(after.reports?.[0].topic).toBe(reports[1].topic);
+    expect(after.points[0].id).toBe(point.id);
+    expect(after.points[0].field).toBe('/nested/value');
+    expect(()=>compileMqttTemplate({...draft,reports:[]})).toThrow();
+    expect(()=>compileMqttTemplate({...draft,reports:[reports[0],reports[0]]})).toThrow();
+    expect(()=>compileMqttTemplate({...draft,reports:[{...reports[0],reportTemplate:'{}'}]})).toThrow();
+});

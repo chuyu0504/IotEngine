@@ -34,6 +34,7 @@
 #include "service/utils/json.h"
 #include "service/utils/payload.h"
 #include "service/common/derived_point.h"
+#include "service/common/mqtt_report.h"
 
 namespace service::protocol {
 
@@ -446,6 +447,15 @@ class ProtocolConfigurationRules final {
             service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         }
 
+        if (protocol == "MQTT" && config->get<ruvia::json_value>("reports")) {
+            try {
+                for (const auto& wire : service::common::mqttReportConfigurations(*config)) {
+                    const auto single = ruvia::json_value::parse(std::string_view(wire));
+                    validateConfig(single, protocol, required);
+                }
+            } catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+            return;
+        }
         if (protocol == "MQTT") {
             const auto typed = ruvia::from_json<MqttConfig>(config->view());
             if (!typed) service::common::fail(16004, "MQTT 配置字段类型无效", 400);
@@ -1012,7 +1022,16 @@ class ProtocolService {
             const auto parsedConfig = ruvia::json_value::parse(rawConfig.view());
             ProtocolConfigurationRules::validateConfig(parsedConfig, "MQTT", true);
             validateDerivedConfig(rawConfig);
-            const auto decodedConfig = ruvia::from_json<MqttConfig>(rawConfig.view());
+            const auto reports = service::common::mqttReportConfigurations(rawConfig);
+            const auto requestedTopic = body.get<"topic">().view();
+            const auto& requestedCode = body.get<"deviceCode">();
+            const auto selected = std::find_if(reports.begin(), reports.end(), [&](const std::string& wire) {
+                const auto report = ruvia::json_value::parse(std::string_view(wire));
+                const auto topic = report ? report->get<ruvia::string>("topic") : std::optional<ruvia::string>{};
+                return topic && service::common::mqttReportTopicMatches(std::string(topic->view()), requestedTopic, requestedCode ? requestedCode->view() : std::string_view{});
+            });
+            if (selected == reports.end()) throw std::invalid_argument("示例 Topic 未匹配上报消息");
+            const auto decodedConfig = ruvia::from_json<MqttConfig>(*selected);
             if (!decodedConfig) throw std::invalid_argument("MQTT 配置字段类型无效");
             const auto& config = *decodedConfig;
             const auto topic = body.get<"topic">().view();

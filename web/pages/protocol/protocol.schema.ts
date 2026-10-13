@@ -180,6 +180,28 @@ const mqttJsonInput = (value: unknown) => {
 };
 export const mqttConfigSchema = z
     .object({
+        reports: z
+            .array(
+                z.object({
+                    id: z.uuid(),
+                    name: z.string().trim().min(1).max(100),
+                    topic: mqttTopicSchema,
+                    reportTemplate: z.string().min(1).max(16384),
+                    pointFields: z
+                        .array(z.object({ pointId: z.uuid(), field: mqttPathSchema }))
+                        .min(1)
+                        .max(256),
+                    qos: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+                    deviceCodeField: mqttPathSchema.optional(),
+                    identitySource: z.enum(['bound', 'payload', 'topic']).optional(),
+                    topicDeviceSegment: z.number().int().min(0).optional(),
+                    timeField: mqttPathSchema.optional(),
+                    timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
+                })
+            )
+            .min(1)
+            .max(32)
+            .optional(),
         derivedPoints: z
             .array(z.lazy(() => derivedPointSchema))
             .max(32)
@@ -496,7 +518,7 @@ function mqttCanonicalField(field: string): string {
     return field;
 }
 
-export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
+function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
     const report = mqttReportMappings(draft.reportTemplate);
     const attributeNames = new Set(draft.points.map((point) => point.name));
     for (const name of report.points.keys()) {
@@ -579,7 +601,100 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
     return result.data;
 }
 
+export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
+    if (draft.reports === undefined) return compileMqttReport(draft);
+    const reports = draft.reports;
+    if (!reports.length || reports.length > 32) throw new Error('请配置 1–32 条上报消息');
+    const ids = new Set<string>(),
+        names = new Set<string>(),
+        topics = new Set<string>();
+    const compiled = draft.reports.map((report, index) => {
+        if (
+            !z.uuid().safeParse(report.id).success ||
+            ids.has(report.id) ||
+            !report.name.trim() ||
+            report.name.length > 100 ||
+            names.has(report.name.trim()) ||
+            topics.has(report.topic)
+        )
+            throw new Error(`上报消息 ${index + 1} 的标识、名称和 Topic 必须有效且唯一`);
+        const overlaps = (left: string, right: string): boolean => {
+            const a = left.split('/'),
+                b = right.split('/');
+            for (let i = 0; i < a.length && i < b.length; i++) {
+                if (a[i] === '#' || b[i] === '#') return true;
+                if (
+                    a[i] !== b[i] &&
+                    !['+', '{deviceCode}'].includes(a[i]) &&
+                    !['+', '{deviceCode}'].includes(b[i])
+                )
+                    return false;
+            }
+            if (a.length === b.length) return true;
+            return a.length < b.length ? b[a.length] === '#' : a[b.length] === '#';
+        };
+        if ([...topics].some((topic) => overlaps(topic, report.topic)))
+            throw new Error(`上报消息 ${index + 1} 的 Topic 与其他消息交叉匹配`);
+        ids.add(report.id);
+        names.add(report.name.trim());
+        topics.add(report.topic);
+        try {
+            const config = compileMqttReport({ ...draft, reports: undefined, ...report });
+            if (!config.points.some((point) => point.field))
+                throw new Error('每条上报消息至少绑定一个属性');
+            return config;
+        } catch (error) {
+            throw new Error(
+                `上报消息 ${index + 1}：${error instanceof Error ? error.message : '配置无效'}`
+            );
+        }
+    });
+    return {
+        ...compiled[0],
+        reports: compiled.map((config, index) => ({
+            id: reports[index].id,
+            name: reports[index].name.trim(),
+            topic: config.topic,
+            reportTemplate: reports[index].reportTemplate,
+            qos: config.qos,
+            pointFields: config.points
+                .filter((point) => point.field)
+                .map((point) => ({ pointId: point.id, field: point.field })),
+            deviceCodeField: config.deviceCodeField,
+            identitySource: config.identitySource,
+            topicDeviceSegment: config.topicDeviceSegment,
+            timeField: config.timeField,
+            timeFormat: config.timeFormat,
+        })),
+    };
+}
+
 export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
+    if (config.reports) {
+        const reports = config.reports.map((report) => {
+            const single = mqttTemplateDraft({
+                ...config,
+                reports: undefined,
+                ...report,
+                points: config.points.map((point) => ({
+                    ...point,
+                    field:
+                        report.pointFields.find((field) => field.pointId === point.id)?.field ?? '',
+                })),
+            });
+            return {
+                id: report.id,
+                name: report.name,
+                topic: single.topic,
+                reportTemplate: single.reportTemplate,
+                qos: single.qos,
+                timeFormat: single.timeFormat,
+            };
+        });
+        if (!reports.length) throw new Error('上报消息不能为空');
+        return { ...config, ...reports[0], reports, reportTemplate: reports[0].reportTemplate };
+    }
+
     const unsupported = (reason: string): never => {
         throw new Error(
             `此 MQTT 配置无法使用 JSON 模板编辑：${reason}；请通过原配置/API 保留并处理，不能自动丢弃映射`

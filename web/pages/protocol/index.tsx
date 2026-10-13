@@ -6467,6 +6467,16 @@ export function MqttConfigPage() {
             message.error(error instanceof Error ? error.message : '无法读取消息模板');
             return;
         }
+        draft.reports ??= [
+            {
+                id: crypto.randomUUID(),
+                name: '上报消息',
+                topic: draft.topic,
+                reportTemplate: draft.reportTemplate,
+                qos: draft.qos,
+                timeFormat: draft.timeFormat,
+            },
+        ];
         invalidatePreview();
         setFormError('');
         setEditing(item);
@@ -6553,7 +6563,22 @@ export function MqttConfigPage() {
     const columns: ColumnsType<MqttPoint> = [
         { title: '名称', dataIndex: 'name', width: 160 },
         { title: '点位标识', dataIndex: 'id', width: 170, ellipsis: true },
-        { title: '消息路径', dataIndex: 'field', width: 200, ellipsis: true },
+        {
+            title: '消息路径',
+            dataIndex: 'field',
+            width: 200,
+            ellipsis: true,
+            render: (value, point) =>
+                config?.reports
+                    ? config.reports
+                          .flatMap((report) =>
+                              report.pointFields
+                                  .filter((field) => field.pointId === point.id)
+                                  .map((field) => `${report.name}：${field.field}`)
+                          )
+                          .join('；') || '—'
+                    : value || '—',
+        },
         {
             title: '数据类型',
             dataIndex: 'dataType',
@@ -6738,7 +6763,15 @@ export function MqttConfigPage() {
                         {active ? (
                             <>
                                 <div className="mb-3 shrink-0 space-y-1 break-all text-sm">
-                                    <div>上报 Topic：{config?.topic}</div>
+                                    {config?.reports ? (
+                                        config.reports.map((report) => (
+                                            <div key={report.id}>
+                                                {report.name}：{report.topic}
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div>上报 Topic：{config?.topic}</div>
+                                    )}
                                     {config?.commandTopic && (
                                         <div>控制 Topic：{config.commandTopic}</div>
                                     )}
@@ -7068,59 +7101,162 @@ export function MqttConfigPage() {
                                     forceRender: true,
                                     children: (
                                         <>
-                                            <Form.Item
-                                                name="topic"
-                                                label="上报 Topic"
-                                                extra="用 {deviceCode} 标记设备编码。订阅 Topic 不能引用尚未收到的属性值；共享 Topic 时，在消息中使用 $deviceCode。"
-                                            >
-                                                <MqttMessageInput
-                                                    label="上报 Topic"
-                                                    points={points}
-                                                    topic
-                                                    report
-                                                />
+                                            <Form.Item name="storagePolicy" label="存储策略">
+                                                <Select options={STORAGE_POLICY_OPTIONS} />
                                             </Form.Item>
-                                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                                                <Form.Item name="qos" label="订阅 QoS">
-                                                    <Select
-                                                        options={[0, 1, 2].map((value) => ({
-                                                            value,
-                                                            label: `QoS ${value}`,
-                                                        }))}
-                                                    />
-                                                </Form.Item>
-                                                <Form.Item name="storagePolicy" label="存储策略">
-                                                    <Select options={STORAGE_POLICY_OPTIONS} />
-                                                </Form.Item>
-                                                <Form.Item
-                                                    name="timeFormat"
-                                                    label="设备时间格式"
-                                                    extra="模板未配置 $time 时，使用接收时间。"
-                                                >
-                                                    <Select
-                                                        options={[
-                                                            {
-                                                                value: 'unix_ms',
-                                                                label: 'Unix 毫秒',
-                                                            },
-                                                            { value: 'unix_s', label: 'Unix 秒' },
-                                                            { value: 'iso8601', label: 'ISO 8601' },
-                                                        ]}
-                                                    />
-                                                </Form.Item>
-                                            </div>
-                                            <Form.Item
-                                                name="reportTemplate"
-                                                label="上报消息模板"
-                                                extra="用 $point:属性名称 绑定已定义的属性；$time 为设备时间。可在光标位置插入占位符；常量与不采集的字段可保留。"
-                                            >
-                                                <MqttMessageInput
-                                                    label="上报消息模板"
-                                                    points={points}
-                                                    report
-                                                />
-                                            </Form.Item>
-                                            <Button onClick={validateMessages}>校验消息配置</Button>
+                                            <Form.List name="reports">
+                                                {(fields, { add, remove }) => (
+                                                    <>
+                                                        <div className="space-y-4">
+                                                            {fields.map((field) => (
+                                                                <Card
+                                                                    key={field.key}
+                                                                    size="small"
+                                                                    title={`上报消息 ${field.name + 1}`}
+                                                                    extra={
+                                                                        <Popconfirm
+                                                                            title="删除此上报消息？"
+                                                                            onConfirm={() => {
+                                                                                remove(field.name);
+                                                                                invalidatePreview();
+                                                                            }}
+                                                                            disabled={
+                                                                                fields.length === 1
+                                                                            }
+                                                                        >
+                                                                            <Button
+                                                                                size="small"
+                                                                                type="text"
+                                                                                danger
+                                                                                disabled={
+                                                                                    fields.length ===
+                                                                                    1
+                                                                                }
+                                                                            >
+                                                                                删除消息
+                                                                            </Button>
+                                                                        </Popconfirm>
+                                                                    }
+                                                                >
+                                                                    <Form.Item
+                                                                        name={[field.name, 'id']}
+                                                                        hidden
+                                                                    >
+                                                                        <Input />
+                                                                    </Form.Item>
+                                                                    <Form.Item
+                                                                        name={[field.name, 'name']}
+                                                                        label="消息名称"
+                                                                        rules={[
+                                                                            {
+                                                                                required: true,
+                                                                                whitespace: true,
+                                                                                max: 100,
+                                                                                message:
+                                                                                    '请输入消息名称',
+                                                                            },
+                                                                        ]}
+                                                                    >
+                                                                        <Input
+                                                                            aria-label={`上报消息 ${field.name + 1} 名称`}
+                                                                            maxLength={100}
+                                                                        />
+                                                                    </Form.Item>
+                                                                    <Form.Item
+                                                                        name={[field.name, 'topic']}
+                                                                        label="上报 Topic"
+                                                                        extra="用 {deviceCode} 标记设备编码；共享 Topic 时，在消息中使用 $deviceCode。"
+                                                                    >
+                                                                        <MqttMessageInput
+                                                                            label={`上报消息 ${field.name + 1} Topic`}
+                                                                            points={points}
+                                                                            topic
+                                                                            report
+                                                                        />
+                                                                    </Form.Item>
+                                                                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                                                        <Form.Item
+                                                                            name={[
+                                                                                field.name,
+                                                                                'qos',
+                                                                            ]}
+                                                                            label="订阅 QoS"
+                                                                        >
+                                                                            <Select
+                                                                                options={[
+                                                                                    0, 1, 2,
+                                                                                ].map((value) => ({
+                                                                                    value,
+                                                                                    label: `QoS ${value}`,
+                                                                                }))}
+                                                                            />
+                                                                        </Form.Item>
+                                                                        <Form.Item
+                                                                            name={[
+                                                                                field.name,
+                                                                                'timeFormat',
+                                                                            ]}
+                                                                            label="设备时间格式"
+                                                                            extra="未配置 $time 时，使用接收时间。"
+                                                                        >
+                                                                            <Select
+                                                                                options={[
+                                                                                    {
+                                                                                        value: 'unix_ms',
+                                                                                        label: 'Unix 毫秒',
+                                                                                    },
+                                                                                    {
+                                                                                        value: 'unix_s',
+                                                                                        label: 'Unix 秒',
+                                                                                    },
+                                                                                    {
+                                                                                        value: 'iso8601',
+                                                                                        label: 'ISO 8601',
+                                                                                    },
+                                                                                ]}
+                                                                            />
+                                                                        </Form.Item>
+                                                                    </div>
+                                                                    <Form.Item
+                                                                        name={[
+                                                                            field.name,
+                                                                            'reportTemplate',
+                                                                        ]}
+                                                                        label="上报消息模板"
+                                                                        extra="用 $point:属性名称 绑定属性；$time 为设备时间。每条消息可绑定不同属性或字段路径。"
+                                                                    >
+                                                                        <MqttMessageInput
+                                                                            label={`上报消息 ${field.name + 1} 模板`}
+                                                                            points={points}
+                                                                            report
+                                                                        />
+                                                                    </Form.Item>
+                                                                </Card>
+                                                            ))}
+                                                        </div>
+                                                        <Space wrap className="mt-3">
+                                                            <Button
+                                                                disabled={fields.length >= 32}
+                                                                onClick={() =>
+                                                                    add({
+                                                                        id: crypto.randomUUID(),
+                                                                        name: `上报消息 ${fields.length + 1}`,
+                                                                        topic: '',
+                                                                        reportTemplate: '{}',
+                                                                        qos: 1,
+                                                                        timeFormat: 'unix_ms',
+                                                                    })
+                                                                }
+                                                            >
+                                                                添加上报消息
+                                                            </Button>
+                                                            <Button onClick={validateMessages}>
+                                                                校验消息配置
+                                                            </Button>
+                                                        </Space>
+                                                    </>
+                                                )}
+                                            </Form.List>
                                             <Collapse
                                                 className="mt-4"
                                                 items={[

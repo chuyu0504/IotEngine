@@ -15,6 +15,7 @@ export interface MqttPoint {
     enumValues?: { input: string; output: string }[];
 }
 export interface MqttConfig extends DeviceTypeTimingConfig {
+    reports?: MqttReportMessage[];
     storagePolicy: 'report' | 'change';
     topic: string;
     recordsPath?: string;
@@ -34,6 +35,19 @@ export interface MqttConfig extends DeviceTypeTimingConfig {
     reportTemplate?: string;
     qos: 0 | 1 | 2;
     points: MqttPoint[];
+}
+export interface MqttReportMessage {
+    id: string;
+    name: string;
+    topic: string;
+    reportTemplate: string;
+    pointFields: { pointId: string; field: string }[];
+    qos: 0 | 1 | 2;
+    deviceCodeField?: string;
+    identitySource?: 'bound' | 'payload' | 'topic';
+    topicDeviceSegment?: number;
+    timeField?: string;
+    timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';
 }
 export interface MqttCommandMessage {
     id: string;
@@ -57,6 +71,10 @@ export interface MqttCommandResponse {
 }
 export interface MqttTemplateDraft
     extends Pick<DeviceTypeTimingConfig, 'derivedPoints' | 'pointVisibility'> {
+    reports?: Pick<
+        MqttReportMessage,
+        'id' | 'name' | 'topic' | 'reportTemplate' | 'qos' | 'timeFormat'
+    >[];
     topic: string;
     reportTemplate: string;
     commandTopic?: string;

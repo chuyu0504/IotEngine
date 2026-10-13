@@ -217,10 +217,28 @@ void testCommandResponseConfiguration() {
         require(rejected, "invalid result correlation accepted");
     }
 }
+
+void testMultipleReports() {
+    const auto report = [](std::string_view id, std::string_view name, std::string_view topic, std::string_view field) {
+        return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" + service::utils::jsonQuoted(name) + ",\"topic\":" + service::utils::jsonQuoted(topic) +
+            ",\"qos\":1,\"reportTemplate\":\"{\\\"value\\\":\\\"$point:温度\\\"}\",\"pointFields\":[{\"pointId\":" + service::utils::jsonQuoted(kPoint) + ",\"field\":" + service::utils::jsonQuoted(field) + "}]}";
+    };
+    const auto first = report("00000000-0000-4000-8000-000000000002", "温度", "devices/{deviceCode}/temperature", "/value");
+    const auto second = report("00000000-0000-4000-8000-000000000003", "另一映射", "devices/{deviceCode}/alternate", "/value");
+    const auto config = configuration("\"reports\":[" + first + ',' + second + "],", "");
+    const auto value = preview(config,"devices/D001/alternate", R"({"value":42})", "D001");
+    require(value.get<"records">().size()==1 && value.get<"records">()[0].get<"points">()[0].get<"value">().view()=="42", "preview did not select second report");
+    for (const auto& bad : {configuration("\"reports\":[],", ""), configuration("\"reports\":[" + first + ',' + first + "],", ""), configuration("\"reports\":[" + first + ',' + report("00000000-0000-4000-8000-000000000003","重叠","devices/+/temperature","/value") + "],", "")}) {
+        bool rejected=false;
+        try { (void)preview(bad,"devices/D001/temperature","{}","D001"); } catch(const std::exception&) {rejected=true;}
+        require(rejected,"invalid report list or overlapping topics accepted");
+    }
+}
 } // namespace
 
 int main() {
     try {
+        testMultipleReports();
         testFormatsAndTime();
         testRejectedConfiguration();
         testTemplates();

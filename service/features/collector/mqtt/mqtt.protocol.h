@@ -4,6 +4,7 @@
 #include <set>
 
 #include "service/features/collector/collector.protocol.h"
+#include "service/common/mqtt_report.h"
 #include "service/features/collector/mqtt/mqtt.types.h"
 #include "service/utils/json.h"
 #include "service/utils/payload.h"
@@ -154,7 +155,10 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             throw std::invalid_argument("invalid MQTT client ID or keep alive");
         }
         for (const auto* device : devices) {
-            auto parsed = ruvia::from_json<Config>(device->calculationConfig);
+            const auto configuration = ruvia::json_value::parse(std::string_view(device->calculationConfig));
+            if (!configuration) throw std::invalid_argument("invalid MQTT configuration JSON");
+            const auto reports = service::common::mqttReportConfigurations(*configuration);
+            auto parsed = ruvia::from_json<Config>(reports.front());
             if (!parsed) {
                 throw std::invalid_argument("invalid MQTT device configuration");
             }
@@ -164,8 +168,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 throw std::invalid_argument("invalid MQTT QoS");
             }
             const auto& codeField = config.get<"deviceCodeField">();
-            const auto& recordsPath = config.get<"recordsPath">();
-            Subscription subscription{ .device = device, .topic = deviceTopic(std::string(config.get<"topic">().view()), device->code, true), .deviceCodeField = codeField ? std::string(codeField->view()) : "", .recordsPath = recordsPath ? std::string(recordsPath->view()) : "", .qos = static_cast<std::uint8_t>(qos) };
+            Subscription subscription{ .device = device, .deviceCodeField = codeField ? std::string(codeField->view()) : "", .qos = static_cast<std::uint8_t>(qos) };
             const auto stringOption = [](const auto& value, std::string fallback) {
                 return value ? std::string(value->view()) : fallback;
             };
@@ -173,8 +176,6 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             subscription.format = stringOption(config.get<"payloadFormat">(), "json");
             subscription.delimiter = stringOption(config.get<"delimiter">(), ",");
             subscription.recordDelimiter = stringOption(config.get<"recordDelimiter">(), "\n");
-            subscription.timeField = stringOption(config.get<"timeField">(), "");
-            subscription.timeFormat = stringOption(config.get<"timeFormat">(), "unix_ms");
             service::utils::JsonValueTemplate::Tokens parameterTokens;
             if (const auto& parameters = config.get<"deviceParameters">(); parameters) {
                 for (const auto& parameter : *parameters) {
@@ -184,7 +185,6 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         subscription.parameters.emplace(token, parameter.get<"value">().view());
                 }
             }
-            subscription.topicSegment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::int64{ 1 }).value_);
             subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);
             if (const auto& topic = config.get<"commandTopic">(); topic && !topic->view().empty()) {
                 subscription.commandTopic = deviceTopic(std::string(topic->view()), device->code);
@@ -270,14 +270,20 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 if (subscription.format != "json") throw std::invalid_argument("上报模板仅用于 JSON");
                 (void)compileTemplate(value->view(), true);
             }
-            for (const auto& previous : subscriptions_) {
-                if (previous.topic == subscription.topic && previous.recordsPath == subscription.recordsPath &&
-                    (subscription.identitySource == "bound" || previous.identitySource == "bound" ||
-                     (previous.deviceCodeField == subscription.deviceCodeField && previous.device->code == device->code))) {
-                    throw std::invalid_argument("shared MQTT topic requires a consistent device code field and unique device codes");
+            for (const auto& wire : reports) {
+                const auto reportConfig = ruvia::from_json<Config>(wire);
+                if (!reportConfig) throw std::invalid_argument("invalid MQTT report configuration");
+                auto report = reportFor(*reportConfig, device);
+                for (const auto& previous : subscriptions_) for (const auto& existing : previous.reports) {
+                    if (existing.topic == report.topic && existing.recordsPath == report.recordsPath &&
+                        (report.identitySource == "bound" || existing.identitySource == "bound" ||
+                         (existing.deviceCodeField == report.deviceCodeField && existing.device->code == device->code)))
+                        throw std::invalid_argument("shared MQTT topic requires a consistent device code field and unique device codes");
                 }
+                if (const auto& value = reportConfig->get<"reportTemplate">(); value) (void)compileTemplate(value->view(), true);
+                topics_[report.topic] = std::max(topics_[report.topic], report.qos);
+                subscription.reports.push_back(std::move(report));
             }
-            topics_[subscription.topic] = std::max(topics_[subscription.topic], subscription.qos);
             subscriptions_.push_back(std::move(subscription));
         }
     }
@@ -672,17 +678,50 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::optional<Response> response;
     };
 
-    struct Subscription {
+    struct Report {
         const DeviceDefinition* device;
-        std::string topic, commandTopic, deviceCodeField, recordsPath;
-        service::utils::JsonValueTemplate::Values parameters;
+        std::string topic, deviceCodeField, recordsPath;
         std::uint8_t qos;
         std::vector<Mapping> points;
         std::string identitySource, format, delimiter, recordDelimiter, timeField, timeFormat;
-        std::optional<service::utils::JsonValueTemplate> commandTemplate;
-        std::map<std::string, CompiledCommand, std::less<>> commands;
         std::size_t topicSegment = 1, recordLength = 0;
     };
+
+    struct Subscription {
+        const DeviceDefinition* device;
+        std::vector<Report> reports;
+        std::string commandTopic, deviceCodeField;
+        service::utils::JsonValueTemplate::Values parameters;
+        std::uint8_t qos;
+        std::vector<Mapping> points;
+        std::string identitySource, format, delimiter, recordDelimiter;
+        std::optional<service::utils::JsonValueTemplate> commandTemplate;
+        std::map<std::string, CompiledCommand, std::less<>> commands;
+        std::size_t recordLength = 0;
+    };
+
+    static Report reportFor(const Config& config, const DeviceDefinition* device) {
+        const auto option = [](const auto& value, std::string fallback) { return value ? std::string(value->view()) : fallback; };
+        const auto qos = config.get<"qos">().value_or(ruvia::int64{1}).value_;
+        if (!config.get<"topic">() || qos < 0 || qos > 2) throw std::invalid_argument("invalid MQTT report Topic or QoS");
+        Report report{.device=device, .topic=deviceTopic(std::string(config.get<"topic">()->view()), device->code, true),
+            .deviceCodeField=option(config.get<"deviceCodeField">(), ""), .recordsPath=option(config.get<"recordsPath">(), ""), .qos=static_cast<std::uint8_t>(qos)};
+        report.identitySource = option(config.get<"identitySource">(), report.deviceCodeField.empty() ? "bound" : "payload");
+        report.format = option(config.get<"payloadFormat">(), "json");
+        report.delimiter = option(config.get<"delimiter">(), ",");
+        report.recordDelimiter = option(config.get<"recordDelimiter">(), "\n");
+        report.timeField = option(config.get<"timeField">(), "");
+        report.timeFormat = option(config.get<"timeFormat">(), "unix_ms");
+        report.topicSegment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::int64{1}).value_);
+        report.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{0}).value_);
+        for (const auto& point : config.get<"points">()) {
+            if (point.get<"field">().view().empty()) continue;
+            report.points.push_back({std::string(point.get<"id">().view()),std::string(point.get<"name">().view()),std::string(point.get<"field">().view()),std::string(point.get<"dataType">().view()),option(point.get<"unit">(), "")});
+            if (const auto& mappings = point.get<"enumValues">(); mappings) for (const auto& mapping : *mappings)
+                report.points.back().enums.emplace_back(mapping.get<"input">().view(),mapping.get<"output">().view());
+        }
+        return report;
+    }
 
     struct Inbound {
         std::uint8_t qos;
@@ -899,7 +938,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 } catch (const std::invalid_argument&) { ++pending; }
             }
         }
-        for (const auto& item : subscriptions_) {
+        for (const auto& subscription : subscriptions_) for (const auto& item : subscription.reports) {
             if (!topicMatches(item.topic, message.topic)) {
                 continue;
             }
@@ -926,7 +965,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         }
     }
 
-    void publishRecord(const Subscription& item, const service::utils::PayloadRecord& record, Inbound& message, std::uint16_t id, std::vector<ProtocolAction>& actions) {
+    void publishRecord(const Report& item, const service::utils::PayloadRecord& record, Inbound& message, std::uint16_t id, std::vector<ProtocolAction>& actions) {
         if (item.identitySource == "payload") {
             const auto code = record.field(item.deviceCodeField);
             if (!code || service::utils::payloadScalarText(*code) != item.device->code) {
