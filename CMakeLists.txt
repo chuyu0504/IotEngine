@@ -56,8 +56,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 # Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    URL https://github.com/hyird/Ruvia/archive/f3f10b7d230f100e70f11149fc3667226dce7b1a.tar.gz
-    URL_HASH SHA256=0d748567779f7e93c2bd947e9b5f5441f794fd3f8e2d2e9188cee133a49a53f1)
+    URL https://github.com/hyird/Ruvia/archive/eb7a41006f4b260adea8168012a8d0298c499eff.tar.gz
+    URL_HASH SHA256=62404ab7e983ac73bf621b16cd503c6d7e458363d3ef100149a06c65415a794b)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
