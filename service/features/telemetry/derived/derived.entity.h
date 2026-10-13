@@ -8,7 +8,8 @@ namespace service::telemetry::derived {
 // Redis ORM. The stored value is the complete bounded calculation state.
 struct StateRecord final {
     static std::string key(std::string_view deviceId, std::string_view configuration) {
-        return "iot:derived:state:" + std::string(deviceId) + ':' + utils::sha256(configuration);
+        // 时间基准升级后不复用按接收时间保存的输入；原状态保留原有 TTL 自动回收。
+        return "iot:derived:state:" + std::string(deviceId) + ':' + utils::sha256("event-time-v1:" + std::string(configuration));
     }
 
     static std::string encode(const State& state) {
