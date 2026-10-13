@@ -150,7 +150,9 @@ class CommandProcessingRuntime final {
                         );
                         nextRecoverySweep = std::chrono::steady_clock::now() +
                             kPendingRecoveryInterval;
-                    } else {
+                    }
+                    // 恢复扫描为空时，新结果仍可能等待“>”读取，不能直接再次等待唤醒。
+                    if (!recovering && batches.empty()) {
                         batches = co_await message::redis::readGroupMany(
                             redis,
                             streams,
