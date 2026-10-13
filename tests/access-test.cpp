@@ -22,7 +22,7 @@ void require(bool condition, const char* message) {
 
 int main() {
     try {
-        using WebhookDelivery = service::access::webhook::DeliveryService;
+        using WebhookDelivery = service::access::delivery::DeliveryService;
         require(WebhookDelivery::mergeEventData(R"({"id":"trusted"})",
                     R"({"device":{"id":"spoofed"},"status":"online"})") ==
                     R"({"device":{"id":"trusted"},"status":"online"})",
@@ -130,7 +130,7 @@ int main() {
         const auto ipv6Url =
             service::access::parseWebhookUrl("https://[2001:db8::1]:8443/callback");
         const auto ipv6Request =
-            service::access::WebhookHttpClient::request(ipv6Url, "{}", {});
+            service::access::DeliveryClient::request(ipv6Url, "{}", {});
         require(ipv6Request.find("\r\nHost: [2001:db8::1]:8443\r\n") != std::string::npos,
                 "IPv6 webhook request produced an invalid Host header");
         for (const auto& headers :
@@ -138,7 +138,7 @@ int main() {
               std::vector<std::pair<std::string, std::string>>{{"Content-Length", "0"}}}) {
             bool rejected = false;
             try {
-                (void)service::access::WebhookHttpClient::request(ipv6Url, "{}", headers);
+                (void)service::access::DeliveryClient::request(ipv6Url, "{}", headers);
             } catch (const std::invalid_argument&) {
                 rejected = true;
             }
@@ -147,9 +147,9 @@ int main() {
         require(service::access::managedWebhookHeader("Transfer-Encoding", true) &&
                     service::access::managedWebhookHeader("X-IOT-Signature", true),
                 "custom webhook headers could override transport or signature metadata");
-        require(service::access::WebhookHttpClient::tlsVerifyMode(false) ==
+        require(service::access::DeliveryClient::tlsVerifyMode(false) ==
                         asio::ssl::verify_peer &&
-                    service::access::WebhookHttpClient::tlsVerifyMode(true) ==
+                    service::access::DeliveryClient::tlsVerifyMode(true) ==
                         asio::ssl::verify_none,
                 "webhook TLS verification opt-out policy changed");
         bool unsafeUrlRejected = false;
@@ -164,13 +164,13 @@ int main() {
                                     "HTTP/1.1 200 OK\r\n"}) {
             bool rejected = false;
             try {
-                (void)service::access::WebhookHttpClient::parseResponse(response);
+                (void)service::access::DeliveryClient::parseResponse(response);
             } catch (const std::runtime_error&) {
                 rejected = true;
             }
             require(rejected, "malformed webhook response was accepted as HTTP success");
         }
-        const auto informational = service::access::WebhookHttpClient::parseResponse(
+        const auto informational = service::access::DeliveryClient::parseResponse(
             "HTTP/1.1 103 Early Hints\r\nLink: </schema>; rel=preload\r\n\r\n"
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         require(informational.status == 200 && informational.body == "ok",

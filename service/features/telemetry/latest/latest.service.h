@@ -267,6 +267,7 @@ for element_id, point in pairs(payload.values or {}) do
         value = value,
         dataType = data_type,
         unit = unit,
+        access = previous.access == 'rw' and 'rw' or 'ro',
         visible = point.visible ~= false and previous.visible ~= false,
         quality = point.quality or 'good',
         scale = scale,
@@ -662,8 +663,25 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
         const auto configuration = query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"config">(), "p");
         const auto visibility = query.binary(query.binary(configuration, Op::json_get, query.value("pointVisibility")), Op::json_get,
             query.binary(element, Op::json_get_text, query.value("id")));
+        auto writable = query.value(false);
+        if (arrayKey != "derivedPoints") {
+            if (protocol == "SL651") {
+                const auto inputCount = query.call("jsonb_array_length", {query.coalesce({
+                    query.binary(query.column("function"), Op::json_get, query.value("elements")), query.cast(query.value("[]"), Type::jsonb)})});
+                writable = query.binary(query.binary(
+                    query.binary(query.column("function"), Op::json_get_text, query.value("dir")), Op::equal, query.value("DOWN")), Op::and_value,
+                    query.binary(query.column("element_position"), Op::less_equal, inputCount));
+                writable = query.binary(writable, Op::and_value, query.binary(query.coalesce({
+                    query.binary(element, Op::json_get_text, query.value("encode")), query.value("")}), Op::not_equal, query.value("JPEG")));
+            } else {
+                writable = query.binary(query.call("lower", {query.coalesce({
+                    query.binary(element, Op::json_get_text, query.value("writable")), query.value("false")})}),
+                    Op::in, query.list({query.value("true"), query.value("t"), query.value("1")}));
+            }
+        }
         columns[3] = query.binary(element, Op::json_concat, query.call("jsonb_build_object", {
-            query.cast(query.value("visible"), Type::text), query.coalesce({visibility, query.binary(element, Op::json_get, query.value("visible")), query.cast(query.value("true"), Type::jsonb)})}));
+            query.cast(query.value("visible"), Type::text), query.coalesce({visibility, query.binary(element, Op::json_get, query.value("visible")), query.cast(query.value("true"), Type::jsonb)}),
+            query.cast(query.value("access"), Type::text), query.case_when({{writable, query.value("rw")}}, query.value("ro"))}));
         query.select(columns);
         return query;
     };
@@ -706,6 +724,7 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto observedUnit = points.coalesce({points.binary(storedPoint, Op::json_get_text, points.value("unit")), defaultText("unit", "")});
     const auto json = points.call("jsonb_build_object", {
         points.cast(points.value("id"), ruvia::db_data_type::text), elementText("id"), points.cast(points.value("name"), ruvia::db_data_type::text), elementText("name"), points.cast(points.value("value"), ruvia::db_data_type::text), displayValue,
+        points.cast(points.value("access"), Type::text), defaultText("access", "ro"),
         points.cast(points.value("dataType"), ruvia::db_data_type::text), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::db_data_type::text), observedUnit,
         points.cast(points.value("visible"), Type::text), points.cast(defaultText("visible", "true"), Type::boolean),
         points.cast(points.value("quality"), Type::text), points.coalesce({points.binary(storedPoint, Op::json_get_text, points.value("quality")), points.value("missing")}),

@@ -301,7 +301,7 @@ struct ServiceWorkerComponents {
     std::shared_ptr<service::live::QueryRuntime> apiQueries;
     std::shared_ptr<service::rpc::RpcConsumerRuntime> rpcConsumer;
     std::shared_ptr<service::command::CommandProcessingRuntime> commandProcessing;
-    std::shared_ptr<service::access::WebhookRuntime> openWebhooks;
+    std::shared_ptr<service::access::DeliveryRuntime> openDeliveries;
     std::shared_ptr<service::runtime::Reconciler> configReconciler;
     std::shared_ptr<service::edge::EdgeProjectionRuntime> edgeProjection;
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
@@ -379,7 +379,7 @@ ApplicationComponents createComponents(
         workerComponents.rpcConsumer = std::make_shared<service::rpc::RpcConsumerRuntime>();
         registerRpcHandlers(workerComponents.rpcConsumer, env);
         workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
-        workerComponents.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
+        workerComponents.openDeliveries = std::make_shared<service::access::DeliveryRuntime>();
         workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
         workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>(
             *workerComponents.observability,
@@ -485,10 +485,10 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
                     .stop = [r = workerComponents.commandProcessing] {
                         r->stop();
                     } });
-    componentLifecycle.add({ .name = "webhooks", .start = [r = workerComponents.openWebhooks, worker, index, count] {
+    componentLifecycle.add({ .name = "open-access-delivery", .start = [r = workerComponents.openDeliveries, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = workerComponents.openWebhooks] {
+                    .stop = [r = workerComponents.openDeliveries] {
                         r->stop();
                     } });
     componentLifecycle.add({ .name = "edge-dispatcher", .start = [r = workerComponents.sessionDispatcherRuntime, worker, index, count] {

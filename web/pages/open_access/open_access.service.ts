@@ -3,6 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/use_mutation';
 import {
     createKey,
+    createMqtt,
+    deleteMqtt,
+    getMqtt,
+    updateMqtt,
     createWebhook,
     deleteKey,
     deleteWebhook,
@@ -20,6 +24,7 @@ const accessQueryKeys = {
     ...keys,
     devices: () => [...keys.all, 'devices'] as const,
     keys: () => [...keys.all, 'keys'] as const,
+    mqtt: () => [...keys.all, 'mqtt'] as const,
     webhooks: (accessKeyId?: string) => [...keys.all, 'webhooks', accessKeyId] as const,
     logs: (query: Access.LogQuery) => [...keys.all, 'logs', query] as const,
 };
@@ -67,6 +72,7 @@ export const useKeyUpdate = () =>
         invalidateKeys: [
             accessQueryKeys.keys(),
             [...accessQueryKeys.all, 'webhooks'],
+            accessQueryKeys.mqtt(),
             [...accessQueryKeys.all, 'logs'],
         ],
     });
@@ -83,6 +89,7 @@ export const useKeyDelete = () =>
         invalidateKeys: [
             accessQueryKeys.keys(),
             [...accessQueryKeys.all, 'webhooks'],
+            accessQueryKeys.mqtt(),
             [...accessQueryKeys.all, 'logs'],
         ],
     });
@@ -110,4 +117,32 @@ export const useWebhookDelete = () =>
             [...accessQueryKeys.all, 'webhooks'],
             [...accessQueryKeys.all, 'logs'],
         ],
+    });
+
+export const useOpenMqtt = () =>
+    useQuery({
+        queryKey: accessQueryKeys.mqtt(),
+        queryFn: ({ signal }) => getMqtt(signal),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+    });
+export const useMqttCreate = () =>
+    useMutationWithMessage({
+        mutationFn: createMqtt,
+        successMessage: 'MQTT 配置已创建',
+        invalidateKeys: [accessQueryKeys.mqtt()],
+    });
+export const useMqttUpdate = () =>
+    useMutationWithMessage({
+        mutationFn: ({ id, data }: { id: string; data: Access.MqttSaveDto }) =>
+            updateMqtt(id, data),
+        successMessage: 'MQTT 配置已更新',
+        invalidateKeys: [accessQueryKeys.mqtt(), [...accessQueryKeys.all, 'logs']],
+    });
+export const useMqttDelete = () =>
+    useMutationWithMessage({
+        mutationFn: deleteMqtt,
+        successMessage: 'MQTT 配置已删除',
+        invalidateKeys: [accessQueryKeys.mqtt(), [...accessQueryKeys.all, 'logs']],
     });

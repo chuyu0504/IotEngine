@@ -43,6 +43,7 @@ export const webhookSaveSchema = z.object({
 export const logQuerySchema = pageParamsSchema.extend({
     accessKeyId: uuidSchema.optional(),
     webhookId: uuidSchema.optional(),
+    mqttId: uuidSchema.optional(),
     direction: z.enum(['pull', 'push']).optional(),
     status: z.enum(['success', 'failed']).optional(),
     action: z.string().max(50).optional(),
@@ -101,6 +102,8 @@ export const logItemSchema = z.object({
     accessKeyName: nullableString,
     webhookId: uuidSchema.nullable(),
     webhookName: nullableString,
+    mqttId: uuidSchema.nullable(),
+    mqttName: nullableString,
     direction: z.enum(['pull', 'push']),
     action: z.string(),
     eventType: nullableString,
@@ -122,4 +125,67 @@ export const logPageSchema = z.object({
     page: z.number().int(),
     pageSize: z.number().int(),
     totalPages: z.number().int(),
+});
+
+const mqttBrokerSchema = z
+    .string({ error: '请输入 Broker 地址' })
+    .max(2048)
+    .refine((value) => {
+        try {
+            const url = new URL(value);
+            return (
+                ['mqtt:', 'mqtts:'].includes(url.protocol) &&
+                !!url.hostname &&
+                !url.username &&
+                !url.password &&
+                !url.search &&
+                !url.hash &&
+                (!url.pathname || url.pathname === '/') &&
+                (!url.port || Number(url.port) > 0)
+            );
+        } catch {
+            return false;
+        }
+    }, '请输入 mqtt:// 或 mqtts:// Broker 地址，不含凭据、路径或查询参数');
+export const mqttSaveSchema = z
+    .object({
+        accessKeyId: uuidSchema,
+        name: z
+            .string({ error: '请输入 MQTT 配置名称' })
+            .trim()
+            .min(1, '请输入 MQTT 配置名称')
+            .max(64),
+        brokerUrl: mqttBrokerSchema,
+        status: openStatusSchema,
+        timeoutSeconds: z.coerce.number().int().min(1).max(30),
+        eventTypes: z.array(webhookEventSchema).min(1, '至少选择一个事件'),
+        username: z
+            .string()
+            .max(65535)
+            .refine((value) => !value.includes('\0'), '用户名不能包含 NUL')
+            .nullable()
+            .optional(),
+        password: z.string().max(65535).nullable().optional(),
+    })
+    .refine((value) => !value.password || !!value.username, {
+        path: ['username'],
+        message: '设置密码时必须提供用户名',
+    });
+export const mqttItemSchema = z.object({
+    id: uuidSchema,
+    accessKeyId: uuidSchema,
+    accessKeyName: z.string(),
+    name: z.string(),
+    brokerUrl: z.string(),
+    status: openStatusSchema,
+    timeoutSeconds: z.number().int(),
+    eventTypes: z.array(webhookEventSchema),
+    username: nullableString,
+    hasPassword: z.boolean(),
+    lastTriggeredAt: nullableString,
+    lastSuccessAt: nullableString,
+    lastFailureAt: nullableString,
+    lastError: nullableString,
+    createdAt: z.string(),
+    updatedAt: z.string(),
 });

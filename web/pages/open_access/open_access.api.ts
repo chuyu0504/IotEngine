@@ -1,6 +1,8 @@
 import request from '@/lib/http';
 import {
     accessIdSchema,
+    mqttItemSchema,
+    mqttSaveSchema,
     deviceOptionSchema,
     keyItemSchema,
     keySaveSchema,
@@ -54,3 +56,12 @@ export const getLogs = async (query: Access.LogQuery, signal?: AbortSignal) =>
             signal,
         })
     );
+
+export const getMqtt = async (signal?: AbortSignal) =>
+    mqttItemSchema.array().parse(await request.get<unknown>('/api/open-mqtt', { signal }));
+export const createMqtt = (data: Access.MqttSaveDto) =>
+    request.post<void>('/api/open-mqtt', mqttSaveSchema.parse(data));
+export const updateMqtt = (id: string, data: Access.MqttSaveDto) =>
+    request.put<void>(`/api/open-mqtt/${accessIdSchema.parse(id)}`, mqttSaveSchema.parse(data));
+export const deleteMqtt = (id: string) =>
+    request.delete<void>(`/api/open-mqtt/${accessIdSchema.parse(id)}`);

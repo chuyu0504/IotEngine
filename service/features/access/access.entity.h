@@ -87,6 +87,8 @@ RUVIA_DB_ENTITY(OpenAccessLogEntity, "open_access_log",
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
     RUVIA_DB_COLUMN(webhook_id, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
+    RUVIA_DB_COLUMN(mqtt_id, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
     RUVIA_DB_COLUMN(direction, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20}),
     RUVIA_DB_COLUMN(action, std::pmr::string,
@@ -154,9 +156,43 @@ RUVIA_DB_ENTITY(OpenWebhookEntity, "open_webhook",
     RUVIA_DB_COLUMN(skip_tls_verify, bool,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}))
 
+RUVIA_DB_ENTITY(OpenMqttEntity, "open_mqtt",
+    RUVIA_DB_COLUMN(id, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
+    RUVIA_DB_COLUMN(access_key_id, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
+    RUVIA_DB_COLUMN(name, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64}),
+    RUVIA_DB_COLUMN(broker_url, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text}),
+    RUVIA_DB_COLUMN(username, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .nullable_ = true}),
+    RUVIA_DB_COLUMN(password, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .nullable_ = true}),
+    RUVIA_DB_COLUMN(status, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .default_expression_ = ruvia::fixed_string{"'enabled'"}}),
+    RUVIA_DB_COLUMN(event_types, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'[\"device.data.reported\"]'::jsonb"}}),
+    RUVIA_DB_COLUMN(timeout_seconds, std::int32_t,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"5"}}),
+    RUVIA_DB_COLUMN(last_triggered_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
+    RUVIA_DB_COLUMN(last_success_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
+    RUVIA_DB_COLUMN(last_failure_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
+    RUVIA_DB_COLUMN(last_error, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .nullable_ = true}),
+    RUVIA_DB_COLUMN(created_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
+    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
+    RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
+        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}))
+
 } // namespace service::access::persistence
 
-namespace service::access::webhook {
+namespace service::access::delivery {
 
 // Existing Hash stores completed target IDs as dynamic fields, with value 1.
 // Ruvia Redis ORM cannot map this key format and dynamic fields; the result message
@@ -183,9 +219,9 @@ struct DeliveryProgressRecord final {
     }
 };
 
-} // namespace service::access::webhook
+} // namespace service::access::delivery
 
-namespace service::access::webhook {
+namespace service::access::delivery {
 
 // Existing telemetry Hash uses dynamic point fields and JSON values. Redis ORM
 // cannot map this fixed key format and heterogeneous fields. Preserve missing
@@ -200,6 +236,7 @@ struct LatestValuesRecord final {
         std::string unit;
         std::string dataType;
         std::string encode;
+        std::string access{"ro"};
     };
 
     std::set<std::string, std::less<>> configured;
@@ -272,6 +309,9 @@ struct LatestValuesRecord final {
                         point.dataType
                     );
                 }
+                if (const auto value = parsed->get<ruvia::string>("access"); value && value->view() == "rw") {
+                    point.access = "rw";
+                }
                 latest.insert_or_assign(point.id, std::move(point));
             }
         }
@@ -279,4 +319,4 @@ struct LatestValuesRecord final {
     }
 };
 
-} // namespace service::access::webhook
+} // namespace service::access::delivery

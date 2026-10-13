@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/utils/number.h"
+#include "service/utils/mqtt.h"
 #include "service/features/access/access.types.h"
 
 #include <algorithm>
@@ -142,9 +143,9 @@ inline WebhookUrl parseWebhookUrl(std::string_view value) {
     return result;
 }
 
-class WebhookHttpClient final {
+class DeliveryClient final {
   public:
-    WebhookHttpClient()
+    DeliveryClient()
         : tls_(asio::ssl::context::tls_client), work_(asio::make_work_guard(io_)),
           thread_([this] {
               io_.run();
@@ -153,7 +154,7 @@ class WebhookHttpClient final {
         tls_.set_verify_mode(asio::ssl::verify_peer);
     }
 
-    ~WebhookHttpClient() {
+    ~DeliveryClient() {
         work_.reset();
         io_.stop();
         if (thread_.joinable()) {
@@ -161,19 +162,19 @@ class WebhookHttpClient final {
         }
     }
 
-    WebhookHttpClient(const WebhookHttpClient&) = delete;
-    WebhookHttpClient& operator=(const WebhookHttpClient&) = delete;
+    DeliveryClient(const DeliveryClient&) = delete;
+    DeliveryClient& operator=(const DeliveryClient&) = delete;
 
-    void post(WebhookUrl url, std::string request, std::chrono::seconds timeout, bool skipTlsVerify, std::function<void(WebhookHttpResponse)> done) {
+    void post(WebhookUrl url, std::string request, std::chrono::seconds timeout, bool skipTlsVerify, std::function<void(DeliveryResponse)> done) {
         asio::co_spawn(
             io_,
-            [this, url = std::move(url), request = std::move(request), timeout, skipTlsVerify]() -> asio::awaitable<WebhookHttpResponse> {
+            [this, url = std::move(url), request = std::move(request), timeout, skipTlsVerify]() -> asio::awaitable<DeliveryResponse> {
                 if (url.tls) {
                     co_return co_await exchangeTls(url, request, timeout, skipTlsVerify);
                 }
                 co_return co_await exchangePlain(url, request, timeout);
             },
-            [done = std::move(done)](std::exception_ptr error, WebhookHttpResponse response) {
+            [done = std::move(done)](std::exception_ptr error, DeliveryResponse response) {
                 if (error) {
                     try {
                         std::rethrow_exception(error);
@@ -216,7 +217,7 @@ class WebhookHttpClient final {
         return skipTlsVerify ? asio::ssl::verify_none : asio::ssl::verify_peer;
     }
 
-    static WebhookHttpResponse parseResponse(std::string response) {
+    static DeliveryResponse parseResponse(std::string response) {
         std::size_t offset = 0;
         for (int informational = 0; informational < 8; ++informational) {
             const auto body = response.find("\r\n\r\n", offset);
@@ -251,7 +252,7 @@ class WebhookHttpClient final {
                 offset = body + 4;
                 continue;
             }
-            WebhookHttpResponse result;
+            DeliveryResponse result;
             result.status = *status;
             result.body = response.substr(body + 4, 8192);
             return result;
@@ -266,7 +267,7 @@ class WebhookHttpClient final {
         return host + (defaultPort ? "" : ":" + url.port);
     }
 
-    asio::awaitable<WebhookHttpResponse>
+    asio::awaitable<DeliveryResponse>
     exchangePlain(const WebhookUrl& url, const std::string& request, std::chrono::seconds timeout) {
         auto executor = co_await asio::this_coro::executor;
         auto socket = std::make_shared<asio::ip::tcp::socket>(executor);
@@ -288,7 +289,7 @@ class WebhookHttpClient final {
         co_return parseResponse(std::move(response));
     }
 
-    asio::awaitable<WebhookHttpResponse>
+    asio::awaitable<DeliveryResponse>
     exchangeTls(const WebhookUrl& url, const std::string& request, std::chrono::seconds timeout, bool skipTlsVerify) {
         auto executor = co_await asio::this_coro::executor;
         using Stream = asio::ssl::stream<asio::ip::tcp::socket>;
@@ -332,6 +333,80 @@ class WebhookHttpClient final {
             "\r\nConnection: close\r\n\r\n";
         result.append(body);
         return result;
+    }
+
+  public:
+    void publishMqtt(service::utils::mqtt::BrokerAddress address, std::string clientId,
+                     std::string username, std::string password, std::string topic,
+                     std::string payload, std::chrono::seconds timeout,
+                     std::function<void(DeliveryResponse)> done) {
+        auto connectPacket = service::utils::mqtt::connect(clientId, username, password);
+        auto publishPacket = service::utils::mqtt::publish(topic, payload);
+        asio::co_spawn(io_,
+            [this, address = std::move(address), connectPacket = std::move(connectPacket),
+             publishPacket = std::move(publishPacket), timeout]() -> asio::awaitable<void> {
+                if (address.tls) {
+                    using Stream = asio::ssl::stream<asio::ip::tcp::socket>;
+                    auto stream = std::make_shared<Stream>(io_, tls_);
+                    stream->set_verify_mode(asio::ssl::verify_peer);
+                    stream->set_verify_callback(asio::ssl::host_name_verification(address.host));
+                    if (SSL_set_tlsext_host_name(stream->native_handle(), address.host.c_str()) != 1)
+                        throw std::runtime_error("MQTT TLS SNI setup failed");
+                    co_await connectMqtt(stream, address, connectPacket, publishPacket, timeout);
+                } else {
+                    auto stream = std::make_shared<asio::ip::tcp::socket>(io_);
+                    co_await connectMqtt(stream, address, connectPacket, publishPacket, timeout);
+                }
+            },
+            [done = std::move(done)](std::exception_ptr error) {
+                DeliveryResponse response;
+                if (error) {
+                    try { std::rethrow_exception(error); }
+                    catch (const std::exception& exception) { response.error = exception.what(); }
+                    catch (...) { response.error = "unknown MQTT publish failure"; }
+                }
+                done(std::move(response));
+            });
+    }
+
+  private:
+    template <typename Stream>
+    asio::awaitable<void> connectMqtt(std::shared_ptr<Stream> stream,
+        const service::utils::mqtt::BrokerAddress& address, const std::string& connectPacket,
+        const std::string& publishPacket, std::chrono::seconds timeout) {
+        auto resolver = std::make_shared<asio::ip::tcp::resolver>(io_);
+        auto timer = std::make_shared<asio::steady_timer>(io_, timeout);
+        timer->async_wait([resolver, stream](const std::error_code& error) {
+            if (!error) {
+                resolver->cancel();
+                std::error_code ignored;
+                stream->lowest_layer().close(ignored);
+            }
+        });
+        try {
+            const auto endpoints = co_await resolver->async_resolve(address.host, address.port, asio::use_awaitable);
+            co_await asio::async_connect(stream->lowest_layer(), endpoints, asio::use_awaitable);
+            if constexpr (requires { stream->async_handshake(asio::ssl::stream_base::client, asio::use_awaitable); })
+                co_await stream->async_handshake(asio::ssl::stream_base::client, asio::use_awaitable);
+            co_await asio::async_write(*stream, asio::buffer(connectPacket), asio::use_awaitable);
+            std::array<char, 4> acknowledgement{};
+            co_await asio::async_read(*stream, asio::buffer(acknowledgement), asio::use_awaitable);
+            service::utils::mqtt::checkConnack({acknowledgement.data(), acknowledgement.size()});
+            co_await asio::async_write(*stream, asio::buffer(publishPacket), asio::use_awaitable);
+            co_await asio::async_read(*stream, asio::buffer(acknowledgement), asio::use_awaitable);
+            service::utils::mqtt::checkPuback({acknowledgement.data(), acknowledgement.size()});
+            // PUBACK is the delivery boundary; a failed best-effort DISCONNECT cannot undo it.
+            std::error_code ignored;
+            const std::array<char, 2> disconnect{static_cast<char>(0xe0), 0};
+            co_await asio::async_write(*stream, asio::buffer(disconnect), asio::redirect_error(asio::use_awaitable, ignored));
+            timer->cancel();
+            stream->lowest_layer().close(ignored);
+        } catch (...) {
+            timer->cancel();
+            std::error_code ignored;
+            stream->lowest_layer().close(ignored);
+            throw;
+        }
     }
 
   private:

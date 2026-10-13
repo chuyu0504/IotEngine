@@ -107,6 +107,7 @@ jobs:
           ./tests/command-validation-test.ts
           ./tests/protocol-schema-test.ts
           ./tests/mqtt-schema-test.ts
+          ./tests/open-access-mqtt-schema-test.ts
           ./tests/device-status-test.ts
           ./tests/sse-test.ts
           ./tests/snapshot-stream-test.ts

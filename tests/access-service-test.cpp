@@ -71,7 +71,7 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 
 void requireAccessQueriesUseOrm(std::string_view source) {
     require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::column_name<\"skip_tls_verify\">(), \"webhook\")") !=
+                source.find("catalog.column(Entity::template column_name<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos &&
@@ -91,12 +91,12 @@ void requireAccessQueriesUseOrm(std::string_view source) {
                     std::string_view::npos,
             "access projections lost aggregate FILTER or LATERAL JSON semantics");
     require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::column_name<\"skip_tls_verify\">(), \"webhook\")") !=
+                source.find("catalog.column(Entity::template column_name<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos,
             "access webhook projection does not preserve boolean CASE semantics");
-    require(source.find(".distinct_on({latest.column(\"webhook_id\", \"incoming\")})") !=
+    require(source.find(".distinct_on({latest.column(\"target_id\", \"incoming\")})") !=
                 std::string_view::npos &&
                 source.find(".distinct_on({latestUsage.column(\"access_key_id\", \"incoming\")})") !=
                     std::string_view::npos,

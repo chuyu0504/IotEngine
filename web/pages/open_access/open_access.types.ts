@@ -77,12 +77,35 @@ export namespace Access {
         eventTypes: EventType[];
         secret?: string | null;
     }
+    export interface MqttSaveDto {
+        accessKeyId: string;
+        name: string;
+        brokerUrl: string;
+        status: Status;
+        timeoutSeconds: number;
+        eventTypes: EventType[];
+        username?: string | null;
+        password?: string | null;
+    }
+    export interface MqttItem extends Omit<MqttSaveDto, 'password'> {
+        id: string;
+        accessKeyName: string;
+        hasPassword: boolean;
+        lastTriggeredAt: string | null;
+        lastSuccessAt: string | null;
+        lastFailureAt: string | null;
+        lastError: string | null;
+        createdAt: string;
+        updatedAt: string;
+    }
     export interface LogItem {
         id: string;
         accessKeyId: string | null;
         accessKeyName: string | null;
         webhookId: string | null;
         webhookName: string | null;
+        mqttId: string | null;
+        mqttName: string | null;
         direction: 'pull' | 'push';
         action: string;
         eventType: string | null;
@@ -101,6 +124,7 @@ export namespace Access {
     export interface LogQuery extends PageParams {
         accessKeyId?: string;
         webhookId?: string;
+        mqttId?: string;
         direction?: 'pull' | 'push';
         status?: 'success' | 'failed';
         action?: string;

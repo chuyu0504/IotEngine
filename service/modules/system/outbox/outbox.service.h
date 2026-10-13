@@ -27,7 +27,7 @@ class OutboxService final {
     template <typename Database>
     static ruvia::task<void> enqueueConfigEvent(Database& database, std::string_view aggregate, std::string_view action, std::string_view aggregateId, std::string_view eventId) {
         if (aggregate != "link" && aggregate != "device" && aggregate != "protocol" &&
-            aggregate != "access_key" && aggregate != "webhook") {
+            aggregate != "access_key" && aggregate != "webhook" && aggregate != "mqtt") {
             throw std::invalid_argument("unsupported outbox aggregate: " + std::string(aggregate));
         }
         ruvia::db_query query;

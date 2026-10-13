@@ -13,6 +13,7 @@ import {
     Descriptions,
     Drawer,
     Form,
+    Grid,
     Input,
     InputNumber,
     Modal,
@@ -37,8 +38,12 @@ import { StatusTag } from '@/components/status_tag';
 import { usePermissions } from '@/hooks/use_permission';
 import { formatDateTime } from '@/utils/date_time';
 import { validateForm } from '@/utils/validation';
-import { keySaveSchema, webhookSaveSchema } from './open_access.schema';
+import { keySaveSchema, webhookSaveSchema, mqttSaveSchema } from './open_access.schema';
 import {
+    useOpenMqtt,
+    useMqttCreate,
+    useMqttUpdate,
+    useMqttDelete,
     useKeyCreate,
     useKeyDelete,
     useKeyRotate,
@@ -56,6 +61,7 @@ import type { Access } from './open_access.types';
 const { Search, TextArea } = Input;
 const TAB_WEBHOOK = 'webhook';
 const TAB_LOG = 'access-log';
+const TAB_MQTT = 'mqtt';
 const SCOPE_OPTIONS: Array<{
     label: string;
     shortLabel: string;
@@ -88,7 +94,7 @@ const STATUS_OPTIONS: Array<{
 ];
 const LOG_DIRECTION_OPTIONS = [
     { label: '主动调用', value: 'pull' },
-    { label: 'Webhook 推送', value: 'push' },
+    { label: '事件推送', value: 'push' },
 ];
 const LOG_STATUS_OPTIONS = [
     { label: '成功', value: 'success' },
@@ -101,37 +107,38 @@ const LOG_ACTION_OPTIONS = [
     { label: '控制下发', value: 'command' },
     { label: '告警查询', value: 'alert' },
     { label: 'Webhook 推送', value: 'webhook' },
+    { label: 'MQTT 推送', value: 'mqtt' },
 ];
 const EXAMPLE_DEVICE_ID = '018f8ad8-7b9a-7ef1-bd92-6a90127d5d44';
 const AUTH_HEADER_EXAMPLE = 'X-Access-Key: <你的AccessKey>';
 const DEVICE_LIST_EXAMPLE = [
-    'curl -X GET "https://your-host/open/devices?page=1&pageSize=50" \\',
+    'curl -X GET "https://your-host/open-api/device/list?page=1&pageSize=50" \\',
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 返回授权范围内设备的 id / code / name',
 ].join('\n');
 const REALTIME_EXAMPLE = [
-    `curl -X GET "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/realtime" \\`,
+    `curl -X GET "https://your-host/open-api/device/realtime?deviceId=${EXAMPLE_DEVICE_ID}" \\`,
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 返回 device + points，未采集点位的 value 为 null',
 ].join('\n');
 const HISTORY_EXAMPLE = [
-    `curl -X GET "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/history?startTime=2026-07-22T00:00:00Z&endTime=2026-07-22T23:59:59Z&page=1&pageSize=20" \\`,
+    `curl -X GET "https://your-host/open-api/device/history?deviceId=${EXAMPLE_DEVICE_ID}&startTime=2026-07-22T00:00:00Z&endTime=2026-07-22T23:59:59Z&page=1&pageSize=20" \\`,
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# startTime / endTime 必填，时间统一使用带时区的 ISO 8601',
 ].join('\n');
 const COMMAND_EXAMPLE = [
-    `curl -X POST "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/commands" \\`,
+    `curl -X POST "https://your-host/open-api/device/command" \\`,
     '  -H "Content-Type: application/json" \\',
     '  -H "X-Access-Key: <你的AccessKey>" \\',
-    '  -d \'{"elements":[{"elementId":"001","value":"1"}]}\'',
+    `  -d '{"deviceId":"${EXAMPLE_DEVICE_ID}","idempotency_key":"019f0000-0000-7000-8000-000000000005","elements":[{"elementId":"019f0000-0000-7000-8000-000000000004","value":"1"}]}'`,
     '',
     '# 接口受理成功不等于设备已经执行，最终结果以命令响应为准',
 ].join('\n');
 const ALERT_EXAMPLE = [
-    'curl -X GET "https://your-host/open/alerts?status=active&severity=critical&page=1&pageSize=20" \\',
+    'curl -X GET "https://your-host/open-api/device/alert?status=active&severity=critical&page=1&pageSize=20" \\',
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 可追加 deviceId，仅能查询当前 AccessKey 授权范围',
@@ -153,10 +160,19 @@ const WEBHOOK_PAYLOAD_EXAMPLE = JSON.stringify(
             device: { id: EXAMPLE_DEVICE_ID, code: 'ST001', name: '泵站一号' },
             points: [
                 {
-                    id: 'water_level',
+                    id: '019f0000-0000-7000-8000-000000000003',
+                    access: 'ro',
                     name: '水位',
                     value: 12.34,
                     unit: 'm',
+                    time: '2026-07-22T07:59:58Z',
+                },
+                {
+                    id: '019f0000-0000-7000-8000-000000000004',
+                    name: '水泵开关',
+                    access: 'rw',
+                    value: 0,
+                    unit: '',
                     time: '2026-07-22T07:59:58Z',
                 },
             ],
@@ -395,7 +411,7 @@ function AccessKeyFormModal({
                     }
                     name="deviceIds"
                     required
-                    extra="该设备范围同时用于主动调用和 Webhook 推送"
+                    extra="该设备范围同时用于主动调用、Webhook 和 MQTT 推送"
                 >
                     <Select
                         mode="multiple"
@@ -662,11 +678,149 @@ function WebhookFormModal({
         </FormModal>
     );
 }
+function MqttFormModal({
+    open,
+    editing,
+    loading,
+    accessKeys,
+    onCancel,
+    onFinish,
+}: {
+    open: boolean;
+    editing: Access.MqttItem | null;
+    loading: boolean;
+    accessKeys: Access.KeyItem[];
+    onCancel: () => void;
+    onFinish: (values: Access.MqttSaveDto) => void;
+}) {
+    const [form] = Form.useForm<Access.MqttSaveDto & { clearPassword?: boolean }>();
+    const keyId = Form.useWatch('accessKeyId', form);
+    const selected = accessKeys.find((key) => key.id === keyId);
+    const availableEvents = EVENT_TYPE_OPTIONS.filter((event) =>
+        selected?.scopes.includes(
+            event.value.startsWith('device.alert.')
+                ? 'alert:read'
+                : event.value.startsWith('device.command.')
+                  ? 'device:command'
+                  : 'device:realtime'
+        )
+    );
+    return (
+        <FormModal
+            open={open}
+            title={editing ? '编辑 MQTT 推送' : '新建 MQTT 推送'}
+            onCancel={onCancel}
+            onOk={() => form.submit()}
+            confirmLoading={loading}
+            destroyOnHidden
+            afterOpenChange={(visible) => {
+                if (!visible) return;
+                form.resetFields();
+                form.setFieldsValue(
+                    editing
+                        ? { ...editing, password: '', clearPassword: false }
+                        : {
+                              accessKeyId: accessKeys.length === 1 ? accessKeys[0]?.id : undefined,
+                              status: 'enabled',
+                              timeoutSeconds: 5,
+                              eventTypes: [],
+                          }
+                );
+            }}
+        >
+            <Form
+                form={form}
+                layout="vertical"
+                onFinish={(values) => {
+                    const { clearPassword, ...fields } = values;
+                    const payload = {
+                        ...fields,
+                        username: fields.username || null,
+                        password: clearPassword ? null : fields.password || undefined,
+                    };
+                    const validated = validateForm(form, mqttSaveSchema, payload);
+                    if (validated) onFinish(validated);
+                }}
+            >
+                <Alert
+                    className="mb-4"
+                    type="info"
+                    showIcon
+                    title="按授权范围推送"
+                    description="继承调用配置的设备和权限。Topic 固定为 iot/{deviceId}，通过 JSON 的 event 字段区分事件。使用 MQTT 3.1.1 / QoS 1；接收方请按 deliveryId 去重。"
+                />
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <Form.Item
+                        label="绑定调用配置"
+                        name="accessKeyId"
+                        required
+                        extra={
+                            selected
+                                ? `当前继承 ${selected.deviceIds.length} 台设备`
+                                : '先选择调用配置'
+                        }
+                    >
+                        <Select
+                            options={accessKeys.map((key) => ({ label: key.name, value: key.id }))}
+                            onChange={() => form.setFieldValue('eventTypes', [])}
+                        />
+                    </Form.Item>
+                    <Form.Item label="状态" name="status" required>
+                        <Select options={STATUS_OPTIONS} />
+                    </Form.Item>
+                    <Form.Item label="名称" name="name" required>
+                        <Input maxLength={64} />
+                    </Form.Item>
+                    <Form.Item label="投递超时（秒）" name="timeoutSeconds" required>
+                        <InputNumber min={1} max={30} className="w-full" />
+                    </Form.Item>
+                </div>
+                <Form.Item
+                    label="Broker 地址"
+                    name="brokerUrl"
+                    required
+                    extra="mqtt://host:1883 或 mqtts://host:8883；TLS 会验证服务器证书和主机名。"
+                >
+                    <Input placeholder="mqtts://broker.example.com:8883" />
+                </Form.Item>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <Form.Item label="用户名" name="username">
+                        <Input autoComplete="off" />
+                    </Form.Item>
+                    <Form.Item
+                        label="密码"
+                        name="password"
+                        extra={editing?.hasPassword ? '已保存密码；留空保留原值' : '可选'}
+                    >
+                        <Input.Password autoComplete="new-password" />
+                    </Form.Item>
+                </div>
+                {editing?.hasPassword && (
+                    <Form.Item label="清除已保存密码" name="clearPassword" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                )}
+                <Form.Item label="推送事件" name="eventTypes" required>
+                    <Select
+                        mode="multiple"
+                        options={availableEvents}
+                        placeholder="选择调用配置授权的事件"
+                    />
+                </Form.Item>
+            </Form>
+        </FormModal>
+    );
+}
+
 function AccessContent() {
+    const screens = Grid.useBreakpoint();
     const { modal } = App.useApp();
     const { has } = usePermissions();
     const [activeTab, setActiveTab] = useState(TAB_WEBHOOK);
     const [webhookKeyword, setWebhookKeyword] = useState('');
+    const [mqttKeyword, setMqttKeyword] = useState('');
+    const [mqttModalOpen, setMqttModalOpen] = useState(false);
+    const [editingMqtt, setEditingMqtt] = useState<Access.MqttItem | null>(null);
     const [logKeyword, setLogKeyword] = useState('');
     const [logQuery, setLogQuery] = useState<Access.LogQuery>({ page: 1, pageSize: 20 });
     const [accessKeyModalOpen, setAccessKeyModalOpen] = useState(false);
@@ -701,6 +855,15 @@ function AccessContent() {
     const webhookCreate = useWebhookCreate();
     const webhookUpdate = useWebhookUpdate();
     const webhookDelete = useWebhookDelete();
+    const {
+        data: mqtt = [],
+        isLoading: loadingMqtt,
+        isFetching: refreshingMqtt,
+        refetch: refreshMqtt,
+    } = useOpenMqtt();
+    const mqttCreate = useMqttCreate();
+    const mqttUpdate = useMqttUpdate();
+    const mqttDelete = useMqttDelete();
     const canAdd = has('iot:open-access:add');
     const canEdit = has('iot:open-access:edit');
     const canDelete = has('iot:open-access:delete');
@@ -891,7 +1054,7 @@ function AccessContent() {
             title: '操作',
             key: 'actions',
             width: 220,
-            fixed: 'right',
+            fixed: screens.md ? 'right' : undefined,
             render: (_, record) => (
                 <Space wrap>
                     {canEdit && (
@@ -934,7 +1097,7 @@ function AccessContent() {
                                 modal.confirm({
                                     title: `确认删除「${record.name}」吗？`,
                                     content:
-                                        '删除后主动调用和关联 Webhook 都会失效，此操作不可撤销。',
+                                        '删除后主动调用、关联 Webhook 和 MQTT 推送都会失效，此操作不可撤销。',
                                     okText: '确定删除',
                                     okButtonProps: { danger: true },
                                     onOk: () => keyDelete.mutateAsync(record.id),
@@ -1044,7 +1207,7 @@ function AccessContent() {
             title: '操作',
             key: 'actions',
             width: 160,
-            fixed: 'right',
+            fixed: screens.md ? 'right' : undefined,
             render: (_, record) => (
                 <Space wrap>
                     {canEdit && (
@@ -1101,6 +1264,82 @@ function AccessContent() {
             </Popover>
         );
     };
+    const mqttColumns: ColumnsType<Access.MqttItem> = [
+        {
+            title: '名称 / 调用配置',
+            key: 'name',
+            width: 210,
+            render: (_, row) => (
+                <>
+                    <div>{row.name}</div>
+                    <Typography.Text type="secondary">{row.accessKeyName}</Typography.Text>
+                </>
+            ),
+        },
+        {
+            title: 'Broker / Topic',
+            key: 'broker',
+            width: 320,
+            render: (_, row) => (
+                <>
+                    <div className="break-all">{row.brokerUrl}</div>
+                    <Typography.Text type="secondary">{'iot/{deviceId}（固定）'}</Typography.Text>
+                </>
+            ),
+        },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            width: 100,
+            render: (value: Access.Status) => <StatusTag status={value} />,
+        },
+        { title: '事件', dataIndex: 'eventTypes', width: 240, render: renderEventTypes },
+        { title: '最近成功', dataIndex: 'lastSuccessAt', width: 180, render: formatDateTime },
+        { title: '最近失败', dataIndex: 'lastFailureAt', width: 180, render: formatDateTime },
+        {
+            title: '错误',
+            dataIndex: 'lastError',
+            width: 260,
+            render: (value: string | null) => value || '--',
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 160,
+            fixed: screens.md ? 'right' : undefined,
+            render: (_, row) => (
+                <Space>
+                    {canEdit && (
+                        <Button
+                            type="link"
+                            onClick={() => {
+                                setEditingMqtt(row);
+                                setMqttModalOpen(true);
+                            }}
+                        >
+                            编辑
+                        </Button>
+                    )}
+                    {canDelete && (
+                        <Button
+                            type="link"
+                            danger
+                            onClick={() =>
+                                modal.confirm({
+                                    title: '删除 MQTT 推送？',
+                                    content: row.name,
+                                    okButtonProps: { danger: true },
+                                    onOk: () => mqttDelete.mutateAsync(row.id),
+                                })
+                            }
+                        >
+                            删除
+                        </Button>
+                    )}
+                </Space>
+            ),
+        },
+    ];
     const logColumns: ColumnsType<Access.LogItem> = [
         { title: '时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
         {
@@ -1111,7 +1350,11 @@ function AccessContent() {
                 <div className="leading-5">
                     <div>{record.accessKeyName ?? '--'}</div>
                     <div className="text-xs text-slate-500">
-                        {record.webhookName ? `Webhook：${record.webhookName}` : '--'}
+                        {record.mqttName
+                            ? `MQTT：${record.mqttName}`
+                            : record.webhookName
+                              ? `Webhook：${record.webhookName}`
+                              : '--'}
                     </div>
                 </div>
             ),
@@ -1122,7 +1365,7 @@ function AccessContent() {
             width: 120,
             render: (value: 'pull' | 'push') => (
                 <Tag color={value === 'pull' ? 'blue' : 'purple'}>
-                    {value === 'pull' ? '主动调用' : 'Webhook 推送'}
+                    {value === 'pull' ? '主动调用' : '事件推送'}
                 </Tag>
             ),
         },
@@ -1192,7 +1435,11 @@ function AccessContent() {
                     >
                         {record.status === 'success' ? '成功' : '失败'}
                     </Tag>
-                    <div className="text-xs text-slate-500">HTTP {record.httpStatus ?? '--'}</div>
+                    <div className="text-xs text-slate-500">
+                        {record.action === 'mqtt'
+                            ? 'MQTT / QoS 1'
+                            : `HTTP ${record.httpStatus ?? '--'}`}
+                    </div>
                 </div>
             ),
         },
@@ -1223,7 +1470,7 @@ function AccessContent() {
             title: '操作',
             key: 'actions',
             width: 90,
-            fixed: 'right',
+            fixed: screens.md ? 'right' : undefined,
             render: (_, record) => (
                 <Button type="link" onClick={() => setSelectedLog(record)}>
                     详情
@@ -1257,15 +1504,25 @@ function AccessContent() {
                     <Space wrap>
                         <Search
                             allowClear
-                            value={activeTab === TAB_WEBHOOK ? webhookKeyword : logKeyword}
+                            value={
+                                activeTab === TAB_WEBHOOK
+                                    ? webhookKeyword
+                                    : activeTab === TAB_MQTT
+                                      ? mqttKeyword
+                                      : logKeyword
+                            }
                             placeholder={
                                 activeTab === TAB_WEBHOOK
                                     ? '搜索名称 / 回调地址 / 调用配置 / 设备 / 错误信息'
-                                    : '搜索调用配置 / 设备 / 目标 / 事件 / 摘要'
+                                    : activeTab === TAB_MQTT
+                                      ? '搜索名称 / Broker / Topic / 调用配置'
+                                      : '搜索调用配置 / 设备 / 目标 / 事件 / 摘要'
                             }
                             onChange={(event) => {
                                 if (activeTab === TAB_WEBHOOK) {
                                     setWebhookKeyword(event.target.value);
+                                } else if (activeTab === TAB_MQTT) {
+                                    setMqttKeyword(event.target.value);
                                 } else {
                                     setLogKeyword(event.target.value);
                                 }
@@ -1274,10 +1531,16 @@ function AccessContent() {
                         />
                         <Button
                             icon={<ReloadOutlined />}
-                            loading={refreshingKeys || refreshingWebhooks || refreshingLogs}
+                            loading={
+                                refreshingKeys ||
+                                refreshingWebhooks ||
+                                refreshingMqtt ||
+                                refreshingLogs
+                            }
                             onClick={() => {
                                 void refreshKeys();
                                 if (activeTab === TAB_WEBHOOK) void refreshWebhooks();
+                                else if (activeTab === TAB_MQTT) void refreshMqtt();
                                 else void refreshLogs();
                             }}
                         >
@@ -1299,6 +1562,18 @@ function AccessContent() {
                                 }}
                             >
                                 新建调用配置
+                            </Button>
+                        )}
+                        {activeTab === TAB_MQTT && canAdd && (
+                            <Button
+                                icon={<PlusOutlined />}
+                                disabled={!accessKeys.length}
+                                onClick={() => {
+                                    setEditingMqtt(null);
+                                    setMqttModalOpen(true);
+                                }}
+                            >
+                                新建 MQTT 推送
                             </Button>
                         )}
                         {activeTab === TAB_WEBHOOK && canAdd && (
@@ -1358,7 +1633,7 @@ function AccessContent() {
                         </div>
                         <div className="mt-2 text-3xl font-semibold text-slate-900">{logTotal}</div>
                         <div className="mt-2 text-sm text-slate-500">
-                            包含主动调用与 Webhook 推送结果
+                            包含主动调用、Webhook 与 MQTT 推送结果
                         </div>
                     </Card>
                 </div>
@@ -1368,7 +1643,7 @@ function AccessContent() {
                         type="info"
                         showIcon
                         title="调用配置说明"
-                        description="支持创建多个 AccessKey；每个调用配置可单独设置设备范围与访问权限，Webhook 再绑定到对应配置。"
+                        description="支持创建多个 AccessKey；每个调用配置可单独设置设备范围与访问权限，Webhook 和 MQTT 推送再绑定到对应配置。"
                     />
                     <Table<Access.KeyItem>
                         rowKey="id"
@@ -1416,6 +1691,38 @@ function AccessContent() {
                                 ),
                             },
                             {
+                                key: TAB_MQTT,
+                                label: `MQTT (${mqtt.length})`,
+                                children: (
+                                    <div className="space-y-4">
+                                        <Alert
+                                            type="info"
+                                            showIcon
+                                            title="MQTT 事件推送"
+                                            description="推送授权设备的数据、图片、命令状态和告警。QoS 1 确认成功后完成投递，失败自动重试；可手动刷新查看结果。"
+                                        />
+                                        <Table<Access.MqttItem>
+                                            rowKey="id"
+                                            columns={mqttColumns}
+                                            loading={loadingMqtt}
+                                            dataSource={mqtt.filter((row) =>
+                                                [row.name, row.brokerUrl, row.accessKeyName].some(
+                                                    (value) =>
+                                                        value
+                                                            .toLowerCase()
+                                                            .includes(
+                                                                mqttKeyword.trim().toLowerCase()
+                                                            )
+                                                )
+                                            )}
+                                            pagination={false}
+                                            sticky
+                                            scroll={{ x: 1650, y: 340 }}
+                                        />
+                                    </div>
+                                ),
+                            },
+                            {
                                 key: TAB_LOG,
                                 label: `调用记录 (${logTotal})`,
                                 children: (
@@ -1424,7 +1731,7 @@ function AccessContent() {
                                             type="info"
                                             showIcon
                                             title="记录说明"
-                                            description="主动调用记录第三方查询与控制请求；Webhook 推送记录平台向第三方地址投递事件后的结果。"
+                                            description="主动调用记录第三方查询与控制请求；Webhook 和 MQTT 推送记录平台投递事件的结果。"
                                         />
                                         <div className="flex flex-wrap gap-3">
                                             <Select
@@ -1537,6 +1844,26 @@ function AccessContent() {
                 }}
             />
 
+            <MqttFormModal
+                open={mqttModalOpen}
+                editing={editingMqtt}
+                accessKeys={accessKeys}
+                loading={mqttCreate.isPending || mqttUpdate.isPending}
+                onCancel={() => {
+                    setMqttModalOpen(false);
+                    setEditingMqtt(null);
+                }}
+                onFinish={(data) => {
+                    const options = {
+                        onSuccess: () => {
+                            setMqttModalOpen(false);
+                            setEditingMqtt(null);
+                        },
+                    };
+                    if (editingMqtt) mqttUpdate.mutate({ id: editingMqtt.id, data }, options);
+                    else mqttCreate.mutate(data, options);
+                }}
+            />
             <WebhookFormModal
                 open={webhookModalOpen}
                 editing={editingWebhook}
@@ -1623,6 +1950,32 @@ function AccessContent() {
                             ),
                         },
                         {
+                            key: 'usage-mqtt',
+                            label: 'MQTT 推送',
+                            children: (
+                                <div className="space-y-4">
+                                    <Alert
+                                        type="info"
+                                        showIcon
+                                        title="接收 MQTT 事件"
+                                        description="先创建调用配置，再在 MQTT 页签绑定该配置并填写 Broker 和需要的事件。Topic 固定为 iot/{deviceId}，订阅端使用自己的 Broker 账号。MQTT 推送体与 Webhook 相同，按 deliveryId 去重；所有时间为 UTC。"
+                                    />
+                                    <UsageCodeBlock
+                                        title="订阅示例"
+                                        description="Topic 固定为 iot/{deviceId}；按设备 UUID 或通配符订阅，通过 JSON 的 event 字段区分事件。"
+                                        code={
+                                            "mosquitto_sub -h broker.example.com -p 8883 --capath /etc/ssl/certs -u subscriber -t 'iot/+' -q 1"
+                                        }
+                                    />
+                                    <UsageCodeBlock
+                                        title="事件体示例"
+                                        description="QoS 1 可能重复投递；Broker 确认表示已接收，不代表下游业务已处理。"
+                                        code={WEBHOOK_PAYLOAD_EXAMPLE}
+                                    />
+                                </div>
+                            ),
+                        },
+                        {
                             key: 'usage-webhook',
                             label: 'Webhook 推送',
                             children: (
@@ -1694,7 +2047,11 @@ function AccessContent() {
                                             >
                                                 {selectedLog.status === 'success' ? '成功' : '失败'}
                                             </Tag>
-                                            <span>HTTP {selectedLog.httpStatus ?? '--'}</span>
+                                            <span>
+                                                {selectedLog.action === 'mqtt'
+                                                    ? 'MQTT / QoS 1'
+                                                    : `HTTP ${selectedLog.httpStatus ?? '--'}`}
+                                            </span>
                                         </Space>
                                     ),
                                 },
@@ -1705,8 +2062,9 @@ function AccessContent() {
                                 },
                                 {
                                     key: 'webhook',
-                                    label: 'Webhook',
-                                    children: selectedLog.webhookName ?? '--',
+                                    label: '推送配置',
+                                    children:
+                                        selectedLog.mqttName ?? selectedLog.webhookName ?? '--',
                                 },
                                 {
                                     key: 'direction',
@@ -1719,7 +2077,7 @@ function AccessContent() {
                                         >
                                             {selectedLog.direction === 'pull'
                                                 ? '主动调用'
-                                                : 'Webhook 推送'}
+                                                : '事件推送'}
                                         </Tag>
                                     ),
                                 },
@@ -1741,7 +2099,7 @@ function AccessContent() {
                                 },
                                 {
                                     key: 'httpMethod',
-                                    label: 'HTTP 方法',
+                                    label: '请求方法',
                                     children: selectedLog.httpMethod?.toUpperCase() ?? '--',
                                 },
                                 {

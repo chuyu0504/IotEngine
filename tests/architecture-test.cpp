@@ -573,7 +573,8 @@ void testStorageOwnership() {
              match != std::sregex_iterator(); ++match) {
             const auto name = (*match)[1].str();
             requireFeatureRule(consumers.find(name + "::") != std::string::npos ||
-                                   consumers.find("<" + name + ">") != std::string::npos,
+                                   consumers.find("<" + name + ">") != std::string::npos ||
+                                   consumers.find("::" + name + ">") != std::string::npos,
                                path, "entity is not used by its owning component: " + name);
         }
     }

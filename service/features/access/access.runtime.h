@@ -44,13 +44,13 @@
 
 namespace service::access {
 
-class WebhookRuntime final {
+class DeliveryRuntime final {
   public:
-    WebhookRuntime() = default;
-    WebhookRuntime(const WebhookRuntime&) = delete;
-    WebhookRuntime& operator=(const WebhookRuntime&) = delete;
+    DeliveryRuntime() = default;
+    DeliveryRuntime(const DeliveryRuntime&) = delete;
+    DeliveryRuntime& operator=(const DeliveryRuntime&) = delete;
 
-    ~WebhookRuntime() { stop(); }
+    ~DeliveryRuntime() { stop(); }
 
     void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (running_.exchange(true)) {
@@ -119,10 +119,10 @@ class WebhookRuntime final {
     static constexpr std::size_t kEventConcurrency = 4;
     static constexpr std::size_t kTargetConcurrency = 4;
 
-    using Delivery = webhook::Delivery;
-    using Target = webhook::Target;
-    using Catalog = webhook::Catalog;
-    using DeviceCatalog = webhook::DeviceCatalog;
+    using Delivery = delivery::Delivery;
+    using Target = delivery::Target;
+    using Catalog = delivery::Catalog;
+    using DeviceCatalog = delivery::DeviceCatalog;
 
     enum class StreamKind {
         Catalog,
@@ -151,9 +151,9 @@ class WebhookRuntime final {
                 co_await message::redis::ensureGroup(redis, streamName, kGroup);
                 streams.push_back(streamName);
             }
-            WebhookHttpClient http;
+            DeliveryClient http;
             co_await session::ensure(context);
-            auto catalog = co_await webhook::loadCatalog(context);
+            auto catalog = co_await delivery::loadCatalog(context);
             ready->set_value();
             bool recovering = true;
             const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
@@ -299,7 +299,7 @@ class WebhookRuntime final {
                              catalogChange(message));
                     }
                     if (reloadCatalog) {
-                        catalog = co_await webhook::loadCatalog(context);
+                        catalog = co_await delivery::loadCatalog(context);
                     }
                     co_await service::message::idempotency::markProcessed(
                         context,
@@ -323,7 +323,7 @@ class WebhookRuntime final {
                         if (streamKinds.at(batch.stream) != StreamKind::DeliveryResult) {
                             continue;
                         }
-                        co_await webhook::persistResults(context, batch.messages);
+                        co_await delivery::persistResults(context, batch.messages);
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis,
                             batch.stream,
@@ -335,7 +335,7 @@ class WebhookRuntime final {
                         if (streamKinds.at(batch.stream) != StreamKind::Audit) {
                             continue;
                         }
-                        co_await webhook::persistAudits(context, batch.messages);
+                        co_await delivery::persistAudits(context, batch.messages);
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis,
                             batch.stream,
@@ -355,7 +355,7 @@ class WebhookRuntime final {
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(5));
                 }
             }
         } catch (...) {
@@ -372,7 +372,7 @@ class WebhookRuntime final {
 
     static bool catalogChange(const message::StreamMessage& message) {
         const auto aggregate = message.get("aggregate");
-        return aggregate == "access_key" || aggregate == "webhook" ||
+        return aggregate == "access_key" || aggregate == "webhook" || aggregate == "mqtt" ||
             aggregate == "device" || aggregate == "protocol";
     }
 
@@ -392,7 +392,7 @@ class WebhookRuntime final {
         bool blocked{ false };
     };
 
-    ruvia::task<void> deliverCaptured(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http, DeliveryAttempt& attempt) {
+    ruvia::task<void> deliverCaptured(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http, DeliveryAttempt& attempt) {
         try {
             co_await deliver(context, message, catalog, http);
             attempt.succeeded = true;
@@ -408,7 +408,7 @@ class WebhookRuntime final {
         std::string_view sourceStream,
         const std::vector<message::StreamMessage>& messages,
         const Catalog& catalog,
-        WebhookHttpClient& http
+        DeliveryClient& http
     ) {
         if (messages.empty()) {
             co_return;
@@ -478,7 +478,7 @@ class WebhookRuntime final {
         }
     }
 
-    ruvia::task<void> deliver(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, WebhookHttpClient& http) {
+    ruvia::task<void> deliver(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http) {
         const auto eventType = message.get("event_type");
         const auto deviceId = message.get("device_id");
         if (!service::message::supportedEvent(eventType) || !service::common::isUuid(deviceId)) {
@@ -503,8 +503,8 @@ class WebhookRuntime final {
         if (targets.empty()) {
             co_return;
         }
-        const auto delivery = co_await webhook::DeliveryService::buildDelivery(context, message, device->second);
-        const auto completed = co_await webhook::DeliveryService::completedTargets(context.redis(), delivery);
+        const auto delivery = co_await delivery::DeliveryService::buildDelivery(context, message, device->second);
+        const auto completed = co_await delivery::DeliveryService::completedTargets(context.redis(), delivery);
         std::erase_if(targets, [&completed](const Target* target) {
             return completed.contains(target->id);
         });
@@ -524,7 +524,29 @@ class WebhookRuntime final {
         }
     }
 
-    ruvia::task<void> deliverTarget(ruvia::web_worker_context& context, WebhookHttpClient& http, const Target& target, const Delivery& delivery) {
+    ruvia::task<void> deliverTarget(ruvia::web_worker_context& context, DeliveryClient& http, const Target& target, const Delivery& delivery) {
+        if (target.mqtt) {
+            DeliveryResponse response;
+            try {
+                auto [completion, receiver] = ruvia::make_one_shot<DeliveryResponse>(context.worker());
+                auto shared = std::make_shared<ruvia::one_shot_completion<DeliveryResponse>>(std::move(completion));
+                http.publishMqtt(service::utils::mqtt::parseBroker(target.url),
+                    "iot-" + service::utils::sha256(target.id + delivery.id).substr(0, 19),
+                    target.mqtt->username, target.mqtt->password,
+                    service::message::openMqttTopic(delivery.deviceId),
+                    delivery.body, std::chrono::seconds(target.timeout),
+                    [shared](DeliveryResponse result) mutable { (void)shared->complete(std::move(result)); });
+                auto outcome = co_await receiver.wait();
+                if (outcome.has_value()) response = std::move(outcome).take_value();
+                else response.error = "MQTT publish was cancelled";
+            } catch (const std::exception& error) {
+                response.error = error.what();
+            }
+            const bool success = response.error.empty();
+            co_await delivery::DeliveryService::enqueueResult(context, target, delivery, response, success);
+            if (!success) throw std::runtime_error(response.error);
+            co_return;
+        }
         const auto requestTimestamp = service::common::utcTimestampNow();
         auto headers = parseHeaders(target.headers);
         headers.emplace_back("X-IOT-Event", delivery.eventType);
@@ -534,14 +556,14 @@ class WebhookRuntime final {
             headers.emplace_back("X-IOT-Signature", "sha256=" + service::utils::hmacSha256(target.secret, delivery.body));
         }
 
-        WebhookHttpResponse response;
+        DeliveryResponse response;
         try {
             const auto url = parseWebhookUrl(target.url);
-            auto [completion, receiver] = ruvia::make_one_shot<WebhookHttpResponse>(context.worker());
-            auto shared = std::make_shared<ruvia::one_shot_completion<WebhookHttpResponse>>(
+            auto [completion, receiver] = ruvia::make_one_shot<DeliveryResponse>(context.worker());
+            auto shared = std::make_shared<ruvia::one_shot_completion<DeliveryResponse>>(
                 std::move(completion)
             );
-            http.post(url, WebhookHttpClient::request(url, delivery.body, headers), std::chrono::seconds(target.timeout), target.skipTlsVerify, [shared](WebhookHttpResponse result) mutable {
+            http.post(url, DeliveryClient::request(url, delivery.body, headers), std::chrono::seconds(target.timeout), target.skipTlsVerify, [shared](DeliveryResponse result) mutable {
                 (void)shared->complete(std::move(result));
             });
             auto outcome = co_await receiver.wait();
@@ -559,7 +581,7 @@ class WebhookRuntime final {
             response.error =
                 "HTTP " + std::to_string(response.status) + " " + service::utils::sanitize(response.body, 500);
         }
-        co_await webhook::DeliveryService::enqueueResult(context, target, delivery, response, success);
+        co_await delivery::DeliveryService::enqueueResult(context, target, delivery, response, success);
     }
 
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {

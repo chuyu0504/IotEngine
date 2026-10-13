@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <type_traits>
+#include "service/utils/mqtt.h"
 
 #include "service/utils/number.h"
 #include "service/features/access/access.entity.h"
@@ -156,10 +158,28 @@ template <typename Context> ruvia::task<void> ensure(Context& context) {
 #include "service/common/message.h"
 #include "service/features/access/access.types.h"
 
-namespace service::access::webhook {
+namespace service::access::delivery {
 
-inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
+template <typename Entity>
+ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& result) {
+        constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
         ruvia::db_query catalog(context.pool());
+        const auto option = [&]<bool enabled>(std::string_view column) {
+            if constexpr (enabled) return catalog.coalesce({catalog.column(column, "webhook"), catalog.value("")});
+            else return catalog.value("");
+        };
+        const auto url = [&] {
+            if constexpr (mqtt) return catalog.column(Entity::template column_name<"broker_url">(), "webhook");
+            else return catalog.column(Entity::template column_name<"url">(), "webhook");
+        }();
+        const auto skipTls = [&] {
+            if constexpr (mqtt) return catalog.value("0");
+            else return catalog.case_when({{catalog.column(Entity::template column_name<"skip_tls_verify">(), "webhook"), catalog.value("1")}}, catalog.value("0"));
+        }();
+        const auto headers = [&] {
+            if constexpr (mqtt) return catalog.value("{}");
+            else return catalog.cast(catalog.column(Entity::template column_name<"headers">(), "webhook"), ruvia::db_data_type::text);
+        }();
         const auto expiresAtMs = catalog.cast(
             catalog.coalesce({
                 catalog.cast(
@@ -177,10 +197,10 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
             {catalog.case_when(
                 {{catalog.binary(
                       catalog.call("jsonb_typeof",
-                                   {catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"event_types">(), "webhook")}),
+                                   {catalog.column(Entity::template column_name<"event_types">(), "webhook")}),
                       ruvia::db_binary_operator::equal,
                       catalog.value("array")),
-                  catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"event_types">(), "webhook")}},
+                  catalog.column(Entity::template column_name<"event_types">(), "webhook")}},
                 catalog.cast(catalog.value("[]"), ruvia::db_data_type::jsonb))});
         catalog
             .select({catalog.cast(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"),
@@ -191,28 +211,24 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
                                         ruvia::db_binary_operator::json_get_text,
                                         catalog.value("device_code")),
                          catalog.value("")}),
-                     catalog.cast(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"id">(), "webhook"),
+                     catalog.cast(catalog.column(Entity::template column_name<"id">(), "webhook"),
                                   ruvia::db_data_type::text),
-                     catalog.cast(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"access_key_id">(), "webhook"),
+                     catalog.cast(catalog.column(Entity::template column_name<"access_key_id">(), "webhook"),
                                   ruvia::db_data_type::text),
-                     catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"url">(), "webhook"),
-                     catalog.coalesce({catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"secret">(), "webhook"),
-                                       catalog.value("")}),
-                     catalog.cast(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"headers">(), "webhook"),
-                                  ruvia::db_data_type::text),
-                     catalog.cast(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"timeout_seconds">(), "webhook"),
-                                  ruvia::db_data_type::text),
-                     catalog.case_when(
-                         {{catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"skip_tls_verify">(), "webhook"),
-                           catalog.value("1")}},
-                         catalog.value("0")),
+                     url,
+                     option.template operator()<!mqtt>("secret"),
+                     headers,
+                     catalog.cast(catalog.column(Entity::template column_name<"timeout_seconds">(), "webhook"), ruvia::db_data_type::text),
+                     skipTls,
                      expiresAtMs,
-                     catalog.column("value", "event_type")})
-            .from(service::access::persistence::OpenWebhookEntity::table_name(), "webhook")
+                     catalog.column("value", "event_type"),
+                     option.template operator()<mqtt>("username"),
+                     option.template operator()<mqtt>("password")})
+            .from(Entity::table_name(), "webhook")
             .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyEntity::table_name(),
                   catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key"),
                                  ruvia::db_binary_operator::equal,
-                                 catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"access_key_id">(), "webhook")),
+                                 catalog.column(Entity::template column_name<"access_key_id">(), "webhook")),
                   "key")
             .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(),
                   catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"),
@@ -227,8 +243,8 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
             .join_function(ruvia::db_join_type::cross, eventTypes, {}, "event_type",
                           {.lateral_ = true, .columns_ = {{.name_ = "value"}}})
             .where(catalog.unary(ruvia::db_unary_operator::is_null,
-                                 catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"deleted_at">(), "webhook")))
-            .and_where(catalog.binary(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"status">(), "webhook"),
+                                 catalog.column(Entity::template column_name<"deleted_at">(), "webhook")))
+            .and_where(catalog.binary(catalog.column(Entity::template column_name<"status">(), "webhook"),
                                     ruvia::db_binary_operator::equal,
                                     catalog.value("enabled")))
             .and_where(catalog.unary(ruvia::db_unary_operator::is_null,
@@ -247,9 +263,15 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
                                     catalog.column(service::access::persistence::DeviceEntity::column_name<"deleted_at">(), "device")))
             .order_by(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"))
             .add_order_by(catalog.column("value", "event_type"))
-            .add_order_by(catalog.column(service::access::persistence::OpenWebhookEntity::column_name<"id">(), "webhook"));
+            .add_order_by(catalog.column(Entity::template column_name<"id">(), "webhook"));
+        if constexpr (mqtt) {
+            const auto scope = catalog.case_when({
+                {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.alert.triggered"), catalog.value("device.alert.resolved")})), catalog.value("alert:read")},
+                {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.command.accepted"), catalog.value("device.command.updated")})), catalog.value("device:command")}
+            }, catalog.value("device:realtime"));
+            catalog.and_where(catalog.call("jsonb_exists", {catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"scopes">(), "key"), scope}));
+        }
         const auto rows = co_await context.db().query(catalog);
-        Catalog result;
         for (const auto& row : rows) {
             const std::string deviceId(row[0].value().value_or(std::string_view{}));
             auto& device = result[deviceId];
@@ -265,14 +287,28 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
                 {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
                  std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})),
                  std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{5},
-                 row[9].value().value_or(std::string_view{}) == "1", expiresAtMs});
+                 row[9].value().value_or(std::string_view{}) == "1", expiresAtMs, std::nullopt});
+            if constexpr (mqtt) {
+                auto& target = device.targets[std::string(row[11].value().value_or(std::string_view{}))].back();
+                target.mqtt = MqttDestination{std::string(row[12].value().value_or(std::string_view{})),
+                    std::string(row[13].value().value_or(std::string_view{}))};
+            }
         }
-        co_return result;
+        co_return;
     }
 
-inline ruvia::task<void> persistResults(
+inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
+    Catalog result;
+    co_await loadTargets<service::access::persistence::OpenWebhookEntity>(context, result);
+    co_await loadTargets<service::access::persistence::OpenMqttEntity>(context, result);
+    co_return result;
+}
+
+template <typename Entity>
+ruvia::task<void> persistTargetResults(
     ruvia::web_worker_context& context,
     const std::vector<message::StreamMessage>& messages) {
+        constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
         if (messages.empty())
             co_return;
         ruvia::db_query incoming(context.pool());
@@ -288,7 +324,7 @@ inline ruvia::task<void> persistResults(
                               ruvia::db_data_type::uuid),
                 incoming.cast(incoming.value(messages[index].get("access_key_id")),
                               ruvia::db_data_type::uuid),
-                incoming.cast(incoming.value(messages[index].get("webhook_id")),
+                incoming.cast(incoming.value(messages[index].get(mqtt ? "mqtt_id" : "webhook_id")),
                               ruvia::db_data_type::uuid),
                 incoming.cast(incoming.value(messages[index].get("event_type")),
                               ruvia::db_data_type::text),
@@ -317,9 +353,9 @@ inline ruvia::task<void> persistResults(
         ruvia::db_query latest(context.pool());
         latest
             .select(latest.star())
-            .distinct_on({latest.column("webhook_id", "incoming")})
+            .distinct_on({latest.column("target_id", "incoming")})
             .from("incoming", "incoming")
-            .order_by(latest.column("webhook_id", "incoming"))
+            .order_by(latest.column("target_id", "incoming"))
             .add_order_by(latest.column("completed_at_ms", "incoming"),
                         ruvia::db_order_direction::desc)
             .add_order_by(latest.column("sequence", "incoming"),
@@ -337,11 +373,11 @@ inline ruvia::task<void> persistResults(
                            ruvia::db_binary_operator::equal,
                            summary.value("failed")));
         summary
-            .select({summary.column("webhook_id", "incoming"),
+            .select({summary.column("target_id", "incoming"),
                      summary.alias(successfulAt, "last_success_ms"),
                      summary.alias(failedAt, "last_failure_ms")})
             .from("incoming", "incoming")
-            .group_by({summary.column("webhook_id", "incoming")});
+            .group_by({summary.column("target_id", "incoming")});
 
         ruvia::db_query updated(context.pool());
         const auto asTimestamp = [&updated](ruvia::db_expression milliseconds) {
@@ -361,75 +397,78 @@ inline ruvia::task<void> persistResults(
             updated.column("last_failure_ms", "summary"));
         const auto latestIsNewer = updated.binary(
             updated.unary(ruvia::db_unary_operator::is_null,
-                          updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_triggered_at">(), "webhook")),
+                          updated.column(Entity::template column_name<"last_triggered_at">(), "webhook")),
             ruvia::db_binary_operator::or_value,
-            updated.binary(updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_triggered_at">(), "webhook"),
+            updated.binary(updated.column(Entity::template column_name<"last_triggered_at">(), "webhook"),
                            ruvia::db_binary_operator::less_equal,
                            latestTimestamp));
         updated
-            .update(service::access::persistence::OpenWebhookEntity::table_name(), "webhook")
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"last_triggered_at">(),
+            .update(Entity::table_name(), "webhook")
+            .set(Entity::template column_name<"last_triggered_at">(),
                  updated.greatest({
-                     updated.coalesce({updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_triggered_at">(), "webhook"),
+                     updated.coalesce({updated.column(Entity::template column_name<"last_triggered_at">(), "webhook"),
                                        epoch}),
                      latestTimestamp
                  }))
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"last_success_at">(),
+            .set(Entity::template column_name<"last_success_at">(),
                  updated.case_when(
                      {{updated.unary(
                            ruvia::db_unary_operator::is_null,
                            updated.column("last_success_ms", "summary")),
-                       updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_success_at">(), "webhook")}},
+                       updated.column(Entity::template column_name<"last_success_at">(), "webhook")}},
                      updated.greatest({
-                         updated.coalesce({updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_success_at">(), "webhook"),
+                         updated.coalesce({updated.column(Entity::template column_name<"last_success_at">(), "webhook"),
                                            epoch}),
                          successTimestamp
                      })))
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"last_failure_at">(),
+            .set(Entity::template column_name<"last_failure_at">(),
                  updated.case_when(
                      {{updated.unary(
                            ruvia::db_unary_operator::is_null,
                            updated.column("last_failure_ms", "summary")),
-                       updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_failure_at">(), "webhook")}},
+                       updated.column(Entity::template column_name<"last_failure_at">(), "webhook")}},
                      updated.greatest({
-                         updated.coalesce({updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_failure_at">(), "webhook"),
+                         updated.coalesce({updated.column(Entity::template column_name<"last_failure_at">(), "webhook"),
                                            epoch}),
                          failureTimestamp
                      })))
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"last_http_status">(),
-                 updated.case_when(
-                     {{latestIsNewer,
-                       updated.null_if(updated.column("http_status", "latest"),
-                                      updated.value(std::int64_t{0}))}},
-                     updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_http_status">(), "webhook")))
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"last_error">(),
+            .set(Entity::template column_name<"last_error">(),
                  updated.case_when(
                      {{latestIsNewer,
                        updated.null_if(updated.column("message", "latest"),
                                       updated.value(""))}},
-                     updated.column(service::access::persistence::OpenWebhookEntity::column_name<"last_error">(), "webhook")))
-            .set(service::access::persistence::OpenWebhookEntity::column_name<"updated_at">(), updated.call("now"))
+                     updated.column(Entity::template column_name<"last_error">(), "webhook")))
+            .set(Entity::template column_name<"updated_at">(), updated.call("now"))
             .update_from("summary", "summary")
             .join(ruvia::db_join_type::inner, "latest",
-                  updated.binary(updated.column("webhook_id", "latest"),
+                  updated.binary(updated.column("target_id", "latest"),
                                  ruvia::db_binary_operator::equal,
-                                 updated.column("webhook_id", "summary")),
+                                 updated.column("target_id", "summary")),
                   "latest")
-            .where(updated.binary(updated.column(service::access::persistence::OpenWebhookEntity::column_name<"id">(), "webhook"),
+            .where(updated.binary(updated.column(Entity::template column_name<"id">(), "webhook"),
                                   ruvia::db_binary_operator::equal,
-                                  updated.column("webhook_id", "summary")))
+                                  updated.column("target_id", "summary")))
             .and_where(updated.unary(ruvia::db_unary_operator::is_null,
-                                    updated.column(service::access::persistence::OpenWebhookEntity::column_name<"deleted_at">(), "webhook")))
-            .returning({updated.column(service::access::persistence::OpenWebhookEntity::column_name<"id">(), "webhook")});
+                                    updated.column(Entity::template column_name<"deleted_at">(), "webhook")))
+            .returning({updated.column(Entity::template column_name<"id">(), "webhook")});
+        if constexpr (!mqtt) {
+            updated            .set(Entity::template column_name<"last_http_status">(),
+                 updated.case_when(
+                     {{latestIsNewer,
+                       updated.null_if(updated.column("http_status", "latest"),
+                                      updated.value(std::int64_t{0}))}},
+                     updated.column(Entity::template column_name<"last_http_status">(), "webhook")));
+        }
 
         ruvia::db_query logRows(context.pool());
         logRows
             .select({logRows.column("log_id", "incoming"),
                      logRows.column("access_key_id", "incoming"),
-                     logRows.column("webhook_id", "incoming"),
-                     logRows.value("push"), logRows.value("webhook"),
+                     mqtt ? logRows.null_value() : logRows.column("target_id", "incoming"),
+                     mqtt ? logRows.column("target_id", "incoming") : logRows.null_value(),
+                     logRows.value("push"), logRows.value(mqtt ? "mqtt" : "webhook"),
                      logRows.column("event_type", "incoming"),
-                     logRows.column("status", "incoming"), logRows.value("POST"),
+                     logRows.column("status", "incoming"), logRows.value(mqtt ? "PUBLISH" : "POST"),
                      logRows.column("target", "incoming"),
                      logRows.null_if(logRows.column("http_status", "incoming"),
                                     logRows.value(std::int64_t{0})),
@@ -445,7 +484,7 @@ inline ruvia::task<void> persistResults(
         ruvia::db_query write(context.pool());
         write
             .with("incoming", incoming,
-                  {.columns_ = {"sequence", "log_id", "access_key_id", "webhook_id",
+                  {.columns_ = {"sequence", "log_id", "access_key_id", "target_id",
                                "event_type", "status", "target", "http_status",
                                "device_id", "device_code", "message", "request_payload",
                                "response_payload", "completed_at_ms"}})
@@ -453,7 +492,7 @@ inline ruvia::task<void> persistResults(
             .with("summary", summary)
             .with("updated", updated)
             .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(),
-                        {"id", "access_key_id", "webhook_id", "direction", "action",
+                        {"id", "access_key_id", "webhook_id", "mqtt_id", "direction", "action",
                          "event_type", "status", "http_method", "target", "http_status",
                          "device_id", "device_code", "message", "request_payload",
                          "response_payload"})
@@ -461,6 +500,17 @@ inline ruvia::task<void> persistResults(
             .on_conflict({.columns_ = {"id"}, .do_nothing_ = true});
         (void)co_await context.db().execute(write);
     }
+
+inline ruvia::task<void> persistResults(ruvia::web_worker_context& context,
+    const std::vector<message::StreamMessage>& messages) {
+    std::vector<message::StreamMessage> webhooks, mqtt;
+    for (const auto& message : messages) {
+        if (message.get("mqtt_id").empty()) webhooks.push_back(message);
+        else mqtt.push_back(message);
+    }
+    co_await persistTargetResults<service::access::persistence::OpenWebhookEntity>(context, webhooks);
+    co_await persistTargetResults<service::access::persistence::OpenMqttEntity>(context, mqtt);
+}
 
 inline ruvia::task<void> persistAudits(
         ruvia::web_worker_context& context,
@@ -592,9 +642,9 @@ inline ruvia::task<void> persistAudits(
         (void)co_await context.db().execute(write);
     }
 
-} // namespace service::access::webhook
+} // namespace service::access::delivery
 
-namespace service::access::webhook {
+namespace service::access::delivery {
 
 class DeliveryService final {
   public:
@@ -701,6 +751,7 @@ class DeliveryService final {
                 : std::string("null");
             body += "{\"id\":" + service::utils::jsonQuoted(points[index].id) +
                 ",\"name\":" + service::utils::jsonQuoted(points[index].name) +
+                ",\"access\":" + service::utils::jsonQuoted(points[index].access) +
                 ",\"value\":" + points[index].value +
                 ",\"unit\":" + service::utils::jsonQuoted(points[index].unit) +
                 ",\"time\":" + time + "}";
@@ -758,20 +809,22 @@ class DeliveryService final {
         co_return DeliveryProgressRecord::decode(reply).completedTargets;
     }
 
-    static ruvia::task<void> enqueueResult(ruvia::web_worker_context& context, const Target& target, const Delivery& delivery, const WebhookHttpResponse& response, bool success) {
+    static ruvia::task<void> enqueueResult(ruvia::web_worker_context& context, const Target& target, const Delivery& delivery, const DeliveryResponse& response, bool success) {
         const auto error = service::utils::sanitize(response.error, 1000);
         const auto status = success ? "success" : "failed";
         const auto logId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        const auto responseJson = "{\"httpStatus\":" + std::to_string(response.status) +
+        const auto responseJson = (target.mqtt ? std::string("{\"qos\":1,\"acknowledged\":") + (success ? "true" : "false") : "{\"httpStatus\":" + std::to_string(response.status)) +
             ",\"body\":" + service::utils::jsonQuoted(service::utils::sanitize(response.body, 2000)) +
             (error.empty() ? "" : ",\"error\":" + service::utils::jsonQuoted(error)) + "}";
         static constexpr std::string_view script = R"lua(
 if redis.call('HEXISTS', KEYS[2], ARGV[1]) ~= 0 then return false end
 local arguments = {'MAXLEN', '~', ARGV[2], '*'}
-for index = 6, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+for index = 7, #ARGV do arguments[#arguments + 1] = ARGV[index] end
 local id = redis.call('XADD', KEYS[1], unpack(arguments))
+if ARGV[6] == '1' then
 redis.call('HSET', KEYS[2], ARGV[1], '1')
 redis.call('EXPIRE', KEYS[2], ARGV[3])
+end
 redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
 return id
 )lua";
@@ -786,18 +839,19 @@ return id
             std::to_string(kDeliveryProgressTtlSeconds),
             std::to_string(service::message::kWorkerWakeCapacity),
             std::string(service::message::workerStreamTaskName(service::message::WorkerStreamTask::Webhook)),
+            (success || !target.mqtt) ? "1" : "0",
             "log_id",
             logId,
             "access_key_id",
             target.accessKeyId,
-            "webhook_id",
+            target.mqtt ? "mqtt_id" : "webhook_id",
             target.id,
             "event_type",
             delivery.eventType,
             "status",
             status,
             "target",
-            target.url,
+            target.mqtt ? target.url + "/" + service::message::openMqttTopic(delivery.deviceId) : target.url,
             "http_status",
             std::to_string(response.status),
             "device_id",
@@ -823,7 +877,7 @@ return id
 
 };
 
-} // namespace service::access::webhook
+} // namespace service::access::delivery
 
 namespace service::access::event {
 

@@ -45,6 +45,10 @@ class AccessAdminController final {
     RUVIA_POST("/open-webhook", createWebhook, service::middleware::PermissionMiddleware<"iot:open-access:add">, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::json_body<CreateWebhookBody>);
     RUVIA_PUT("/open-webhook/:id", updateWebhook, service::middleware::PermissionMiddleware<"iot:open-access:edit">, ruvia::path_model<AccessIdParams>, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::json_body<UpdateWebhookBody>);
     RUVIA_DELETE("/open-webhook/:id", removeWebhook, service::middleware::PermissionMiddleware<"iot:open-access:delete">, ruvia::path_model<AccessIdParams>);
+    RUVIA_GET("/open-mqtt", mqtt, service::middleware::PermissionMiddleware<"iot:open-access:query">, ruvia::query_model<WebhookQueryParams>);
+    RUVIA_POST("/open-mqtt", createMqtt, service::middleware::PermissionMiddleware<"iot:open-access:add">, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::json_body<MqttSaveBody>);
+    RUVIA_PUT("/open-mqtt/:id", updateMqtt, service::middleware::PermissionMiddleware<"iot:open-access:edit">, ruvia::path_model<AccessIdParams>, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::json_body<MqttSaveBody>);
+    RUVIA_DELETE("/open-mqtt/:id", removeMqtt, service::middleware::PermissionMiddleware<"iot:open-access:delete">, ruvia::path_model<AccessIdParams>);
     RUVIA_ROUTES_END
   private:
     static std::string id(ruvia::context& c) {
@@ -134,6 +138,27 @@ class AccessAdminController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await accessService().updateWebhook(request, id(c), c.req().validated<UpdateWebhookBody>());
         co_return c.json(service::common::operation(c, "操作成功"));
+    }
+
+    ruvia::task<ruvia::http_response> mqtt(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        auto data = co_await accessService().listMqtt(request,c.req().validated<WebhookQueryParams>());
+        co_return c.json(service::common::ok<MqttListResponse>(c,std::move(data)));
+    }
+    ruvia::task<ruvia::http_response> createMqtt(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await accessService().saveMqtt(request,std::nullopt,c.req().validated<MqttSaveBody>());
+        co_return c.json(service::common::operation(c,"MQTT 配置已创建"));
+    }
+    ruvia::task<ruvia::http_response> updateMqtt(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await accessService().saveMqtt(request,id(c),c.req().validated<MqttSaveBody>());
+        co_return c.json(service::common::operation(c,"MQTT 配置已更新"));
+    }
+    ruvia::task<ruvia::http_response> removeMqtt(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await accessService().removeMqtt(request,id(c));
+        co_return c.json(service::common::operation(c,"MQTT 配置已删除"));
     }
 
     ruvia::task<ruvia::http_response> removeWebhook(ruvia::context& c) {

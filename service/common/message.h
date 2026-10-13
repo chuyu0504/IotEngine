@@ -84,6 +84,10 @@ inline bool supportedEvent(std::string_view value) {
     return std::find(kWebhookEvents.begin(), kWebhookEvents.end(), value) != kWebhookEvents.end();
 }
 
+inline std::string openMqttTopic(std::string_view deviceId) {
+    return "iot/" + std::string(deviceId);
+}
+
 inline std::string webhookEnvelope(std::string_view eventType, std::string_view occurredAt,
                                     std::string_view deliveryId, std::string_view dataJson) {
     return "{\"event\":" + service::utils::jsonQuoted(eventType) +

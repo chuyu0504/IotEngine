@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,7 @@ struct WebhookUrl final {
 
 } // namespace service::access
 
-namespace service::access::webhook {
+namespace service::access::delivery {
 
     struct Delivery final {
         std::string id;
@@ -25,6 +26,11 @@ namespace service::access::webhook {
         std::string deviceCode;
         std::string occurredAt;
         std::string body;
+    };
+
+    struct MqttDestination final {
+        std::string username;
+        std::string password;
     };
 
     struct Target final {
@@ -36,6 +42,7 @@ namespace service::access::webhook {
         std::int64_t timeout{5};
         bool skipTlsVerify{false};
         std::int64_t expiresAtMs{0};
+        std::optional<MqttDestination> mqtt;
     };
 
     struct DeviceCatalog final {
@@ -46,11 +53,11 @@ namespace service::access::webhook {
 
     using Catalog = std::map<std::string, DeviceCatalog, std::less<>>;
 
-} // namespace service::access::webhook
+} // namespace service::access::delivery
 
 namespace service::access {
 
-struct WebhookHttpResponse final {
+struct DeliveryResponse final {
     std::int64_t status{ 0 };
     std::string body;
     std::string error;

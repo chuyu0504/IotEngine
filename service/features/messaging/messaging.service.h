@@ -41,7 +41,7 @@ ruvia::task<void> publishConfigEnvelope(
 ) {
     const bool runtimeChange =
         aggregate == "link" || aggregate == "device" || aggregate == "protocol";
-    const bool webhookChange = aggregate == "access_key" || aggregate == "webhook" ||
+    const bool webhookChange = aggregate == "access_key" || aggregate == "webhook" || aggregate == "mqtt" ||
         aggregate == "device" || aggregate == "protocol";
     const bool accessSessionChange = aggregate == "access_key" || aggregate == "device";
     if (!runtimeChange && !webhookChange && !accessSessionChange) {

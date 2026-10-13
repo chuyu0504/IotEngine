@@ -1898,6 +1898,38 @@ END $schema$;
         sql += "EXECUTE $ddl$" + std::string(kMqttDeviceAddressMigration) + "$ddl$;\nEND $mqtt$;";
         return ruvia::db_migration({.id_="0052_mqtt_client", .sql_=std::move(sql)});
     }(),
+    [] {
+        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
+        ruvia::db_query q;
+        schema.create_table({.name_="open_mqtt", .columns_={
+            {.name_="id", .type_={.data_type_=Type::uuid}, .primary_key_=true},
+            {.name_="access_key_id", .type_={.data_type_=Type::uuid}},
+            {.name_="name", .type_={.data_type_=Type::varchar, .length_=64}},
+            {.name_="broker_url", .type_={.data_type_=Type::text}},
+            {.name_="username", .type_={.data_type_=Type::text}, .nullable_=true},
+            {.name_="password", .type_={.data_type_=Type::text}, .nullable_=true},
+            {.name_="status", .type_={.data_type_=Type::text}, .default_value_=q.value("enabled")},
+            {.name_="event_types", .type_={.data_type_=Type::jsonb}, .default_value_=q.cast(q.value("[\"device.data.reported\"]"), Type::jsonb)},
+            {.name_="timeout_seconds", .type_={.data_type_=Type::integer}, .default_value_=q.value(5)},
+            {.name_="last_triggered_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
+            {.name_="last_success_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
+            {.name_="last_failure_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
+            {.name_="last_error", .type_={.data_type_=Type::text}, .nullable_=true},
+            {.name_="created_at", .type_={.data_type_=Type::timestamp_tz}, .default_value_=q.call("now")},
+            {.name_="updated_at", .type_={.data_type_=Type::timestamp_tz}, .default_value_=q.call("now")},
+            {.name_="deleted_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true}},
+            .constraints_={
+                {.name_="open_mqtt_access_key_fkey", .kind_=ruvia::db_constraint_kind::foreign_key, .columns_={"access_key_id"}, .referenced_table_="open_access_key", .referenced_columns_={"id"}, .on_delete_=ruvia::db_referential_action::cascade},
+                {.name_="open_mqtt_status_check", .kind_=ruvia::db_constraint_kind::check, .check_=q.binary(q.column("status"), ruvia::db_binary_operator::in, q.list({q.value("enabled"),q.value("disabled")}))},
+                {.name_="open_mqtt_timeout_check", .kind_=ruvia::db_constraint_kind::check, .check_=q.binary(q.binary(q.column("timeout_seconds"), ruvia::db_binary_operator::greater_equal,q.value(1)),ruvia::db_binary_operator::and_value,q.binary(q.column("timeout_seconds"),ruvia::db_binary_operator::less_equal,q.value(30)))}}});
+        schema.create_index({.name_="idx_open_mqtt_name_active", .table_="open_mqtt",
+            .keys_={{.column_="access_key_id"},{.column_="name"}}, .unique_=true, .where_=q.unary(ruvia::db_unary_operator::is_null,q.column("deleted_at"))});
+        schema.add_column("open_access_log", {.name_="mqtt_id", .type_={.data_type_=Type::uuid}, .nullable_=true});
+        schema.add_constraint("open_access_log", {.name_="open_access_log_mqtt_fkey", .kind_=ruvia::db_constraint_kind::foreign_key,
+            .columns_={"mqtt_id"}, .referenced_table_="open_mqtt", .referenced_columns_={"id"}, .on_delete_=ruvia::db_referential_action::set_null});
+        auto result = schema.compile("0053_open_mqtt");
+        return std::move(result.front());
+    }(),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

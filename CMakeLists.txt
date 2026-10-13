@@ -356,6 +356,10 @@ iot_engine_add_test(access LARGE
 iot_engine_add_test(access-webhook
     SOURCES tests/access-webhook-test.cpp)
 
+iot_engine_add_test(open-mqtt
+    SOURCES tests/open-mqtt-test.cpp
+    LIBRARIES ruvia::web OpenSSL::SSL OpenSSL::Crypto)
+
 iot_engine_add_test(storage-policy LARGE
     SOURCES tests/storage-policy-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)

@@ -13,7 +13,8 @@ param(
     [switch]$ReplayCounterMigration,
     [switch]$PacketDebugMigration,
     [switch]$IndustrialProtocolsMigration,
-    [switch]$DeadLetterQueryMigration
+    [switch]$DeadLetterQueryMigration,
+    [switch]$OpenMqttMigration
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -72,7 +73,7 @@ function Start-FixtureApi([string]$Label, [string]$ExpectedFailure = '') {
     }
 }
 function Invoke-CounterMigrationPhase([string]$Phase) {
-    $migrationTest = if ($DeadLetterQueryMigration) { 'tests/dead-letter-query-migration-integration.ts' } elseif ($IndustrialProtocolsMigration) { 'tests/industrial-protocol-migration-integration.ts' } elseif ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
+    $migrationTest = if ($OpenMqttMigration) { 'tests/open-mqtt-migration-integration.ts' } elseif ($DeadLetterQueryMigration) { 'tests/dead-letter-query-migration-integration.ts' } elseif ($IndustrialProtocolsMigration) { 'tests/industrial-protocol-migration-integration.ts' } elseif ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
     & $Bun run (Join-Path $repository $migrationTest) $Phase
     if ($LASTEXITCODE -ne 0) { throw "Migration phase $Phase failed; inspect $fixture" }
 }
@@ -140,7 +141,7 @@ EDGE_PLATFORM_ID=$EdgePlatformId
         & $Bun run (Join-Path $repository ('tests/' + $test))
         if ($LASTEXITCODE -ne 0) { throw "$test failed; logs retained at $fixture" }
     }
-    if ($ReplayCounterMigration -or $PacketDebugMigration -or $IndustrialProtocolsMigration -or $DeadLetterQueryMigration) {
+    if ($ReplayCounterMigration -or $PacketDebugMigration -or $IndustrialProtocolsMigration -or $DeadLetterQueryMigration -or $OpenMqttMigration) {
         $env:ARCHITECTURE_MIGRATION_STATE = Join-Path $fixture 'migration-state.json'
         Invoke-CounterMigrationPhase 'initial'
         Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
