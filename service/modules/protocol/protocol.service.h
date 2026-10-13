@@ -1179,8 +1179,8 @@ class ProtocolService {
                 ",\"name\":" + service::utils::jsonQuoted(row.template get<"name">());
             const auto config = ruvia::from_json<service::common::DeviceParameterConfiguration>(row.template get<"config">());
             result += ",\"parameters\":";
-            if (config && config->get<"parameters">()) {
-                const auto json = ruvia::to_json(*config->get<"parameters">());
+            if (config && config->template get<"parameters">()) {
+                const auto json = ruvia::to_json(*config->template get<"parameters">());
                 result.append(json.data(), json.size());
             } else result += "[]";
             result += "}";

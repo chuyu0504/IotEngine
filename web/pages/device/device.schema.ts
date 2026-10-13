@@ -114,7 +114,8 @@ export function deviceParameterValues(
             inputs[definition.name]
         );
         if (value === undefined) {
-            if (current[definition.name] !== null) delete values[definition.name];
+            if (definition.dataType === 'JSON' || current[definition.name] !== null)
+                delete values[definition.name];
         } else values[definition.name] = value;
     }
     return values;

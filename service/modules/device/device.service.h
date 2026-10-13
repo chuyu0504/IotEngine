@@ -1486,8 +1486,8 @@ return result
         ownedParameters = std::move(*parameters);
         item.template set<"parameters">(std::move(ownedParameters));
         auto parameterConfig = ruvia::from_json<service::common::DeviceParameterConfiguration>(row[45].value().value_or("{}"), {.resource_ = c.arena()});
-        if (parameterConfig && parameterConfig->get<"parameters">())
-            item.template set<"parameterDefinitions">(std::move(*parameterConfig->get<"parameters">()));
+        if (parameterConfig && parameterConfig->template get<"parameters">())
+            item.template set<"parameterDefinitions">(std::move(*parameterConfig->template get<"parameters">()));
         item.template set<"id">(row[0].value().value_or(std::string_view{}));
         item.template set<"name">(row[1].value().value_or(std::string_view{}));
         item.template set<"debugEnabled">(row[42].value().value_or("") == "t");
@@ -2441,10 +2441,10 @@ return result
         if (const auto& values = body.template get<"parameters">(); values) {
             const auto definition = ruvia::from_json<service::common::DeviceParameterConfiguration>(relation.front()[1].value().value_or("{}"));
             if (!definition) service::common::fail(18002, "设备参数定义无效", 400);
-            if (const auto& fields = definition->get<"parameters">(); fields) for (const auto& field : *fields) {
-                const auto name = field.get<"name">().view();
+            if (const auto& fields = definition->template get<"parameters">(); fields) for (const auto& field : *fields) {
+                const auto name = field.template get<"name">().view();
                 const auto value = values->template get<ruvia::json_value>(name);
-                if (value && !service::common::deviceParameterValueMatches(field.get<"dataType">().view(), *value))
+                if (value && !service::common::deviceParameterValueMatches(field.template get<"dataType">().view(), *value))
                     service::common::fail(18002, "设备参数类型不匹配: " + std::string(name), 400);
             }
         }

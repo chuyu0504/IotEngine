@@ -285,9 +285,15 @@ try {
     const statePreview=await ok('POST','/v1/protocol/configs/preview-mqtt',{config,topic:'factory/state',payload:JSON.stringify({device:'D001',state:{enabled:true},time}),deviceCode:'D001'});
     assert.equal(statePreview.records[0].points.length,1);
     assert.equal(statePreview.records[0].points[0].id,enabledPoint);
+    const connectionKey = `iot:v3:device:connection:${devices[0]}`;
+    const previousConnection = await redis.send('HGET', [connectionKey, 'connection_id']);
+    const previousAcknowledgements = acknowledgements;
     await ok('PUT',`/v1/protocol/configs/${model}`,{config:{reports:[config.reports[0]]}});
     assert.equal((await ok('GET',`/v1/protocol/configs/${model}`)).config.reports.length,1,'deleted report survived save');
-    await until(async () => acknowledgements > 0, 'Broker did not receive PUBACK');
+    await until(async () => {
+        const connection = await redis.send('HGET', [connectionKey, 'connection_id']);
+        return !!connection && connection !== previousConnection && acknowledgements > previousAcknowledgements;
+    }, 'device did not reconnect and acknowledge telemetry after report configuration changed');
     const command = await ok('POST', `/v1/device/${devices[0]}/commands`, {
         idempotency_key: crypto.randomUUID(),
         elements: [{ elementId: point, value: '15' }, { elementId: enabledPoint, value: '0' }],
@@ -307,8 +313,12 @@ try {
             requiredPointIds: [point], response: {topic: 'factory/{deviceCode}/result', matchFields: ['/requestId','/address','/cmd'], codeField: '/body/code', successCode: 0, timeoutMs: 1000}}],
         points: [{...config.points[0], writable: true}, {...config.points[1], writable: false}],
     };
+    const reportConnection = await redis.send('HGET', [connectionKey, 'connection_id']);
     await ok('PUT', `/v1/protocol/configs/${model}`, {config: responseConfig});
-    await until(async () => resultSubscriptions >= 2, 'result subscriptions not projected');
+    await until(async () => {
+        const connection = await redis.send('HGET', [connectionKey, 'connection_id']);
+        return resultSubscriptions >= 2 && !!connection && connection !== reportConnection;
+    }, 'result subscriptions and device connection were not projected');
     const submit = () => ok('POST', `/v1/device/${devices[0]}/commands`, {idempotency_key: crypto.randomUUID(), mqttMessageId: commandMessageId, elements: [{elementId: point, value: '15'}]});
     const status = async (id: string) => (await db`SELECT status,reason FROM command_operation WHERE id=${id}`)[0];
     const reply = (body: unknown, topic = 'factory/D001/result') => {

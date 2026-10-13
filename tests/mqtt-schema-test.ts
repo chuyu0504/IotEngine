@@ -558,3 +558,5 @@ test('device parameter fields keep JSON types, clear one value and retain unrela
 });
 
 test('an untouched empty field preserves an existing explicit null',()=>{expect(deviceParameterValues([{name:'nullable',dataType:'STRING'}],{},{nullable:null})).toEqual({nullable:null});});
+
+test('clearing an individual JSON parameter removes its null value',()=>{expect(deviceParameterValues([{name:'value',dataType:'JSON'}],{value:''},{value:null})).toEqual({});});
