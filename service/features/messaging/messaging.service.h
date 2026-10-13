@@ -404,9 +404,10 @@ class OutboxService {
     }
 
     ruvia::task<void> collectStream(ruvia::web_worker_context& context, std::string metricSuffix, std::string stream, std::string_view group) {
+        const std::vector<std::string> lengthArguments{ "XLEN", stream };
         const auto length = co_await service::message::redis::command(
             context.redis(),
-            { "XLEN", stream }
+            lengthArguments
         );
         if (length.kind() == ruvia::redis_value::kind_type::integer) {
             observability_.setGauge("iot_engine_stream_" + metricSuffix + "_entries", length.integer());
@@ -414,9 +415,10 @@ class OutboxService {
         if (group.empty()) {
             co_return;
         }
+        const std::vector<std::string> pendingArguments{ "XPENDING", stream, std::string(group) };
         const auto pending = co_await service::message::redis::command(
             context.redis(),
-            { "XPENDING", stream, std::string(group) }
+            pendingArguments
         );
         if (pending.kind() == ruvia::redis_value::kind_type::array &&
             !pending.array().empty() &&
@@ -467,19 +469,22 @@ class RpcReceiptService final {
   public:
     static ruvia::task<std::optional<RpcReplyRecord>> beginRequest(
         const ruvia::redis_handle& redis, const std::string& id) {
-        const auto previous = co_await service::message::redis::command(redis, {"GET", Contract::reply(id)});
+        const std::vector<std::string> previousArguments{"GET", Contract::reply(id)};
+        const auto previous = co_await service::message::redis::command(redis, previousArguments);
         if (previous.kind() == ruvia::redis_value::kind_type::string)
             co_return RpcReplyRecord{std::string(previous.string())};
         if (previous.kind() == ruvia::redis_value::kind_type::error)
             service::message::redis::throwValue("RPC receipt", previous);
+        const std::vector<std::string> claimedArguments{"SET", Contract::claim(id), "1", "NX", "EX", "86400"};
         const auto claimed = co_await service::message::redis::command(redis,
-            {"SET", Contract::claim(id), "1", "NX", "EX", "86400"});
+            claimedArguments);
         if (claimed.kind() == ruvia::redis_value::kind_type::error)
             service::message::redis::throwValue("RPC claim", claimed);
         if (claimed.kind() != ruvia::redis_value::kind_type::string)
             service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
+        const std::vector<std::string> cancelledArguments{"EXISTS", Contract::cancelled(id)};
         const auto cancelled = co_await service::message::redis::command(redis,
-            {"EXISTS", Contract::cancelled(id)});
+            cancelledArguments);
         if (cancelled.kind() == ruvia::redis_value::kind_type::error)
             service::message::redis::throwValue("RPC cancellation", cancelled);
         if (cancelled.kind() == ruvia::redis_value::kind_type::integer && cancelled.integer() != 0)

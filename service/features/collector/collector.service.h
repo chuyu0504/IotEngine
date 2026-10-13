@@ -498,15 +498,17 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
 
 template <typename Redis>
 ruvia::task<std::vector<std::string>> members(const Redis& redis, std::string key) {
+    const std::vector<std::string> arguments{ "SMEMBERS", std::move(key) };
     co_return sortedStrings(
-        stringArray(co_await redis::command(redis, { "SMEMBERS", std::move(key) }), "SMEMBERS runtime")
+        stringArray(co_await redis::command(redis, arguments), "SMEMBERS runtime")
     );
 }
 
 template <typename Redis>
 ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
     const auto keysSet = prefix(version) + ":keys";
-    auto keys = stringArray(co_await redis::command(redis, { "SMEMBERS", keysSet }), "SMEMBERS runtime snapshot keys");
+    const std::vector<std::string> keysArguments{ "SMEMBERS", keysSet };
+    auto keys = stringArray(co_await redis::command(redis, keysArguments), "SMEMBERS runtime snapshot keys");
     keys.push_back(keysSet);
     constexpr std::size_t batchSize = 128;
     for (std::size_t offset = 0; offset < keys.size(); offset += batchSize) {
@@ -521,11 +523,11 @@ ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 
 template <typename Redis>
 ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds, std::string_view preserveVersion) {
+    const std::vector<std::string> expiredArguments{
+        "ZRANGEBYSCORE", std::string(kVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)
+    };
     const auto expired = detail::stringArray(
-        co_await redis::command(
-            redis,
-            { "ZRANGEBYSCORE", std::string(kVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds) }
-        ),
+        co_await redis::command(redis, expiredArguments),
         "ZRANGEBYSCORE runtime versions"
     );
     for (const auto& candidate : expired) {
@@ -533,8 +535,9 @@ ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
             continue;
         }
         co_await detail::eraseSnapshot(redis, candidate);
+        const std::vector<std::string> removeArguments{ "ZREM", std::string(kVersionsKey), candidate };
         (void)detail::integerReply(
-            co_await redis::command(redis, { "ZREM", std::string(kVersionsKey), candidate }),
+            co_await redis::command(redis, removeArguments),
             "ZREM runtime version"
         );
     }
@@ -542,8 +545,9 @@ ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
 
 template <typename Redis>
 ruvia::task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds) {
+    const std::vector<std::string> activeReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
     const auto activeReply =
-        co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
+        co_await redis::command(redis, activeReplyArguments);
     if (activeReply.null()) {
         co_return;
     }
@@ -559,12 +563,14 @@ ruvia::task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMi
 template <typename Redis>
 ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7Generator& uuidGenerator) {
     const auto snapshotSignature = signature(snapshot);
+    const std::vector<std::string> activeReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
     const auto activeReply =
-        co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
+        co_await redis::command(redis, activeReplyArguments);
     if (!activeReply.null()) {
         const auto active = detail::stringReply(activeReply, "GET active runtime");
+        const std::vector<std::string> signatureReplyArguments{ "HGET", metadataKey(active), "signature" };
         const auto signatureReply =
-            co_await redis::command(redis, { "HGET", metadataKey(active), "signature" });
+            co_await redis::command(redis, signatureReplyArguments);
         if (!signatureReply.null() &&
             detail::stringReply(signatureReply, "HGET runtime signature") ==
                 snapshotSignature) {
@@ -574,11 +580,9 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     const auto version = uuidGenerator.next();
     const auto createdAt = message::utcNowMilliseconds();
+    const std::vector<std::string> versionArguments{ "ZADD", std::string(kVersionsKey), std::to_string(createdAt), version };
     (void)detail::integerReply(
-        co_await redis::command(
-            redis,
-            { "ZADD", std::string(kVersionsKey), std::to_string(createdAt), version }
-        ),
+        co_await redis::command(redis, versionArguments),
         "ZADD runtime version"
     );
     const auto snapshotPrefix = prefix(version);
@@ -665,22 +669,25 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
     }
     co_await detail::flush(redis, commands);
 
+    const std::vector<std::string> previousReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
     const auto previousReply =
-        co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
+        co_await redis::command(redis, previousReplyArguments);
     if (!previousReply.null()) {
         const auto previous = detail::stringReply(previousReply, "GET active runtime");
         if (!previous.empty() && previous != version) {
+            const std::vector<std::string> previousVersionArguments{ "ZADD", std::string(kVersionsKey), std::to_string(createdAt), previous };
             (void)detail::integerReply(
                 // The score is the time this version stopped being active, not its creation
                 // time. Refresh it on every switch so readers that captured the old pointer
                 // receive the complete grace window even after a long-lived generation.
-                co_await redis::command(redis, { "ZADD", std::string(kVersionsKey), std::to_string(createdAt), previous }),
+                co_await redis::command(redis, previousVersionArguments),
                 "ZADD previous runtime version"
             );
         }
     }
+    const std::vector<std::string> activateArguments{ "SET", std::string(kRuntimeActiveVersionKey), version };
     detail::requireOk(
-        co_await redis::command(redis, { "SET", std::string(kRuntimeActiveVersionKey), version }),
+        co_await redis::command(redis, activateArguments),
         "SET active runtime version"
     );
 
@@ -692,8 +699,9 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
 template <typename Redis>
 ruvia::task<std::string> activeVersion(const Redis& redis) {
+    const std::vector<std::string> versionReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
     const auto versionReply =
-        co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
+        co_await redis::command(redis, versionReplyArguments);
     if (versionReply.null()) {
         throw std::runtime_error("runtime is not ready");
     }
@@ -802,7 +810,8 @@ inline std::string targetKey(std::string_view linkId, std::string_view targetId)
 template <typename Redis>
 ruvia::task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
                             std::string_view expectedOwner) {
-    const auto owner = co_await message::redis::command(redis, {"GET", key(linkId)});
+    const std::vector<std::string> ownerArguments{"GET", key(linkId)};
+    const auto owner = co_await message::redis::command(redis, ownerArguments);
     co_return owner.kind() == ruvia::redis_value::kind_type::string &&
         owner.string() == expectedOwner;
 }
@@ -902,8 +911,9 @@ class CollectorCommandService final {
             co_return TransmissionReservation::Expired;
         // 发送前的幂等认领锁：保留一天，避免同一命令被重复发送。
         const auto key = "iot:v2:command:sent:" + task.messageId;
+        const std::vector<std::string> claimedArguments{"SET", key, "1", "NX", "EX", "86400"};
         const auto claimed = co_await message::redis::command(
-            redis, {"SET", key, "1", "NX", "EX", "86400"});
+            redis, claimedArguments);
         if (claimed.kind() == ruvia::redis_value::kind_type::null)
             co_return TransmissionReservation::Duplicate;
         if (claimed.kind() == ruvia::redis_value::kind_type::error)

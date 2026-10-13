@@ -255,9 +255,10 @@ class QueryRuntime final {
             }
         }
         try {
+            const std::vector<std::string> xgroupArguments{ "XGROUP", "DESTROY", std::string(service::message::live::kChanges), group };
             (void)co_await service::message::redis::command(
                 redis,
-                { "XGROUP", "DESTROY", std::string(service::message::live::kChanges), group }
+                xgroupArguments
             );
         } catch (...) {
         }

@@ -14,6 +14,10 @@ Ruvia 使用带 SHA-256 校验的归档，其依赖由本项目清单统一提�
 
 具体工具安装步骤与 CI 保持一致，见 `.github/workflows/build.yml`。
 
+GCC 13 在协程的 `co_await` 表达式中处理含 `std::string` 等非平凡元素的临时初始化列表时会触发内部编译错误。
+Redis 参数、消息字段及 ORM 更新字段先保存到具名局部容器，再传入异步调用，保证其生命周期覆盖挂起与恢复。
+请求模型的默认值规则保存为具名 `inline constexpr` 元数据，通过 `decltype` 供模型使用，避免匿名闭包引发链接属性告警；不修改 Ruvia 源码或降低编译检查。
+
 本机使用 mise 管理工具时，可通过 `mise exec bun@1.3.14 -- <命令>` 为配置、构建和测试临时选择 CI 同版本的 Bun；
 其他工具同样按上述工具链准备，不需要修改全局 mise 配置。CMake 首次配置须在该环境中运行，避免缓存其他版本的可执行文件路径。
 
@@ -49,8 +53,8 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-当前固定 Ruvia `0e71d3bcc48aceb2dd475a9ecef9a6303b81197a`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
-该版本由上游修复模型比较、字符扫描和响应写出的 Clang 告警，并继续清理内部无用实现；项目继续使用上游公开 API。
+当前固定 Ruvia `8c738b6317bc4efebbe3c80eb89a569492eab26c`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
+该版本包含上游对模型比较、字符扫描和响应写出告警的修复，以及数组元素延迟析构的前置声明支持；项目继续使用上游公开 API。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；
 `firmware-download` 回归测试覆盖路径生命周期、中文文件名、完整下载、HEAD 和 Range。
 

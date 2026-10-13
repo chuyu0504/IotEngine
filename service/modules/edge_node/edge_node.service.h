@@ -367,7 +367,8 @@ class EdgeService {
             .where(current.binary(current.column("id"), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid)))
             .and_where(current.unary(ruvia::db_unary_operator::is_null, current.column("deleted_at")))
             .limit(1);
-        if ((co_await c.db().query(current)).empty()) {
+        const auto currentRows = co_await c.db().query(current);
+        if (currentRows.empty()) {
             service::common::fail(17001, "边缘节点分组不存在", 404);
         }
         const auto name = std::string(body.get<"name">().view());
@@ -386,7 +387,8 @@ class EdgeService {
             ))
             .and_where(duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column("deleted_at")))
             .limit(1);
-        if (!(co_await c.db().query(duplicate)).empty()) {
+        const auto duplicateRows = co_await c.db().query(duplicate);
+        if (!duplicateRows.empty()) {
             service::common::fail(17002, "边缘节点分组名称已存在", 409);
         }
         const auto status = body.get<"status">()
@@ -419,7 +421,8 @@ class EdgeService {
             .where(current.binary(current.column("id"), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid)))
             .and_where(current.unary(ruvia::db_unary_operator::is_null, current.column("deleted_at")))
             .limit(1);
-        if ((co_await c.db().query(current)).empty()) {
+        const auto currentRows = co_await c.db().query(current);
+        if (currentRows.empty()) {
             service::common::fail(17001, "边缘节点分组不存在", 404);
         }
 
@@ -617,7 +620,8 @@ class EdgeService {
                 service::link::LinkEntity::column<"execution">() == "edge" &&
                 service::link::LinkEntity::column<"deleted_at">().is_null()).expression(links))
             .limit(1);
-        if (!(co_await transaction.query(links)).empty())
+        const auto linksRows = co_await transaction.query(links);
+        if (!linksRows.empty())
             co_await service::system::OutboxService::enqueueQueryChange(transaction, "link", "link",
                 c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -638,7 +642,8 @@ class EdgeService {
                 .and_where(group.binary(group.column("status"), ruvia::db_binary_operator::equal, group.cast(group.value("enabled"), { .custom_name_ = "status_enum" })))
                 .and_where(group.unary(ruvia::db_unary_operator::is_null, group.column("deleted_at")))
                 .limit(1);
-            if ((co_await c.db().query(group)).empty()) {
+            const auto groupRows = co_await c.db().query(group);
+            if (groupRows.empty()) {
                 service::common::fail(17001, "边缘节点分组不存在或已停用", 404);
             }
         }
@@ -1377,7 +1382,8 @@ class EdgeService {
             .where(parent.binary(parent.column("id"), Op::equal, parent.cast(parent.value(parentId), Type::uuid)))
             .and_where(parent.unary(Unary::is_null, parent.column("deleted_at")))
             .limit(1);
-        if ((co_await c.db().query(parent)).empty()) {
+        const auto parentRows = co_await c.db().query(parent);
+        if (parentRows.empty()) {
             service::common::fail(17001, "上级分组不存在", 404);
         }
         if (!groupId.empty()) {

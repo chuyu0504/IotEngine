@@ -223,9 +223,11 @@ class UserService {
             service::common::fail(12004, "内置管理员不能删除", 400);
         }
         ruvia::db_expressions expressions(c.pool());
+        const ruvia::db_assignment deletionChanges[]{
+            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+        };
         (void)co_await c.db().template get_repository<UserEntity>().update(
-            UserEntity::column<"id">() == id,
-            { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
+            UserEntity::column<"id">() == id, deletionChanges
         );
     }
 

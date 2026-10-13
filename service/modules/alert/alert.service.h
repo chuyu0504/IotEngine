@@ -51,7 +51,8 @@ class AlertService final {
         appendTextFilter(parameters.get<"status">(), "status", filtered, filtered.cast(filtered.column(service::alert::entities::AlertRuleEntity::column_name<"status">(), "rule"), Type::text));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
-        co_return co_await pageResult(c, parameters, filtered, listed, { "id", "name", "device_id", "device_name", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" }, "created_at");
+        const std::vector<std::string_view> fields{ "id", "name", "device_id", "device_name", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" };
+        co_return co_await pageResult(c, parameters, filtered, listed, fields, "created_at");
     }
 
     template <typename Context>
@@ -131,7 +132,8 @@ class AlertService final {
         appendTextFilter(parameters.get<"category">(), "category", filtered, filtered.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"category">(), "template"));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
-        co_return co_await pageResult(c, parameters, filtered, listed, { "id", "name", "category", "description", "severity", "logic", "silence_duration", "protocol_config_id", "config_name", "protocol_type", "created_at" }, "created_at");
+        const std::vector<std::string_view> fields{ "id", "name", "category", "description", "severity", "logic", "silence_duration", "protocol_config_id", "config_name", "protocol_type", "created_at" };
+        co_return co_await pageResult(c, parameters, filtered, listed, fields, "created_at");
     }
 
     template <typename Context>
@@ -248,7 +250,8 @@ class AlertService final {
             .from("page_rows")
             .join(ruvia::db_join_type::left, service::alert::entities::AlertRuleEntity::table_name(), listed.binary(listed.column(service::alert::entities::AlertRuleEntity::column_name<"id">(), "rule"), Op::equal, listed.column("rule_id", "page_rows")), "rule")
             .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), listed.binary(listed.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"), Op::equal, listed.column("device_id", "page_rows")));
-        co_return co_await pageResult(c, parameters, filtered, listed, { "id", "rule_id", "rule_name", "device_id", "device_name", "severity", "status", "message", "detail", "triggered_at", "acknowledged_at", "acknowledged_by", "resolved_at" }, "triggered_at");
+        const std::vector<std::string_view> fields{ "id", "rule_id", "rule_name", "device_id", "device_name", "severity", "status", "message", "detail", "triggered_at", "acknowledged_at", "acknowledged_by", "resolved_at" };
+        co_return co_await pageResult(c, parameters, filtered, listed, fields, "triggered_at");
     }
 
     template <typename Context>

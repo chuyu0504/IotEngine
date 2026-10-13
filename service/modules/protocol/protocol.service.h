@@ -1404,10 +1404,12 @@ class ProtocolService {
         ProtocolConfigurationRules::validateConfig(parsed, "DLT645", true);
         validateDerivedConfig(*parsed);
         ruvia::db_expressions expressions(c.pool());
+        const ruvia::db_assignment configurationChanges[]{
+            { "config", expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
+            { "updated_at", expressions.call("now") }
+        };
         (void)co_await transaction.template get_repository<ProtocolConfigEntity>().update(
-            service::common::database::activeId<ProtocolConfigEntity>(id),
-            { { "config", expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
-              { "updated_at", expressions.call("now") } });
+            service::common::database::activeId<ProtocolConfigEntity>(id), configurationChanges);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id,
             c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -1442,9 +1444,11 @@ class ProtocolService {
         }
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_expressions expressions(c.pool());
+        const ruvia::db_assignment deletionChanges[]{
+            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+        };
         (void)co_await transaction.template get_repository<ProtocolConfigEntity>().update(
-            service::common::database::activeId<ProtocolConfigEntity>(id),
-            { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
+            service::common::database::activeId<ProtocolConfigEntity>(id), deletionChanges
         );
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();

@@ -6,6 +6,13 @@
 
 namespace service::protocol {
 
+inline constexpr auto kDefaultDigits = RUVIA_DEFAULT(0){};
+inline constexpr auto kDefaultWritable = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultVisible = RUVIA_DEFAULT(true){};
+inline constexpr auto kDefaultEnabled = RUVIA_DEFAULT(true){};
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(10){};
+
 RUVIA_MODEL(ExpressionTestInput,
     RUVIA_REQUIRED_FIELD(alias, ruvia::string, RUVIA_MIN(1, "变量名不能为空"), RUVIA_MAX(32, "变量名过长")),
     RUVIA_REQUIRED_FIELD(value, ruvia::double_value));
@@ -162,15 +169,15 @@ RUVIA_MODEL(CreateDlt645PointBody,
     RUVIA_REQUIRED_FIELD(dataType, ruvia::string, RUVIA_ONE_OF("DL/T645 数据类型无效", "BCD", "BCD_SIGNED", "HEX")),
     RUVIA_REQUIRED_FIELD(identifier, ruvia::string, RUVIA_MIN(4, "数据标识 DI 无效"), RUVIA_MAX(8, "数据标识 DI 无效")),
     RUVIA_REQUIRED_FIELD(length, ruvia::int64, RUVIA_MIN(1, "数据长度无效"), RUVIA_MAX(200, "数据长度无效")),
-    RUVIA_OPTIONAL_FIELD(digits, ruvia::int64, RUVIA_DEFAULT(0), RUVIA_MIN(0, "小数位数无效"), RUVIA_MAX(8, "小数位数无效")),
-    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value, RUVIA_DEFAULT(false)),
-    RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value, RUVIA_DEFAULT(true)));
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::int64, decltype(kDefaultDigits), RUVIA_MIN(0, "小数位数无效"), RUVIA_MAX(8, "小数位数无效")),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value, decltype(kDefaultWritable)),
+    RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value, decltype(kDefaultVisible)));
 
 RUVIA_MODEL(CreateProtocolBody,
     RUVIA_REQUIRED_FIELD(protocol, ruvia::string, RUVIA_MIN(1, "协议不能为空"), RUVIA_MAX(16, "协议过长")),
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "配置名称不能为空"), RUVIA_MAX(64, "配置名称过长")),
     RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(500, "remark 长度超出限制")),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value, RUVIA_NULLABLE, RUVIA_DEFAULT(true)),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value, RUVIA_NULLABLE, decltype(kDefaultEnabled)),
     RUVIA_OPTIONAL_FIELD(config, ruvia::json_value, RUVIA_NULLABLE));
 RUVIA_MODEL(UpdateProtocolBody,
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::string, RUVIA_NULLABLE, RUVIA_MAX(16, "协议过长")),
@@ -180,8 +187,8 @@ RUVIA_MODEL(UpdateProtocolBody,
     RUVIA_OPTIONAL_FIELD(config, ruvia::json_value, RUVIA_NULLABLE));
 
 RUVIA_MODEL(ProtocolListQuery,
-    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
-    RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "pageSize 必须在 1 - 1000 之间")),
+    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")),
+    RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "pageSize 必须在 1 - 1000 之间")),
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::string, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT")));
 RUVIA_MODEL(ProtocolIdParams,
     RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));

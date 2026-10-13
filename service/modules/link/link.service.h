@@ -383,7 +383,8 @@ return result
             .where((LinkEntity::column<"id">() == id && LinkEntity::column<"deleted_at">().is_null()).expression(query))
             .and_where(query.binary(query.column(LinkEntity::column_name<"debug_enabled">()), ruvia::db_binary_operator::equal, query.value(true)))
             .returning({query.column(LinkEntity::column_name<"id">())});
-        if ((co_await transaction.query(query)).empty()) {
+        const auto queryRows = co_await transaction.query(query);
+        if (queryRows.empty()) {
             co_await transaction.commit();
             co_return;
         }
@@ -474,9 +475,12 @@ return result
         }
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_expressions expressions(c.pool());
+        const ruvia::db_assignment deletionChanges[]{
+            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+        };
         (void)co_await transaction.template get_repository<LinkEntity>().update(
             LinkEntity::column<"id">() == id && LinkEntity::column<"deleted_at">().is_null(),
-            { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
+            deletionChanges
         );
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -600,7 +604,8 @@ return result
                 attached.select(attached.value(1)).from(entities::DeviceEntity::table_name())
                     .where((entities::DeviceEntity::column<"link_id">() == id && entities::DeviceEntity::column<"deleted_at">().is_null()).expression(attached));
                 if (!deviceId.empty() && matches.front()[2].value().value_or("") == protocol) attached.and_where((entities::DeviceEntity::column<"id">() != deviceId).expression(attached));
-                if (!(co_await tx.query(attached)).empty()) {
+                const auto attachedRows = co_await tx.query(attached);
+                if (!attachedRows.empty()) {
                     service::common::fail(15002, "该接口已被设备使用，连接协议及共享串口参数必须一致", 409);
                 }
             }

@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <ruvia/core/task.h>
 #include <ruvia/web/redis/redis_types.h>
@@ -117,13 +118,17 @@ ruvia::task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
     if (!owner) {
         co_return;
     }
+    const std::vector<service::message::StreamField> fields{
+        { "kind", std::string(kNodeKind) }, { "node_id", std::string(nodeId) }
+    };
     (void)co_await service::message::redis::publish(
         redis,
         stream(owner->workerIndex, owner->instanceId),
-        { { "kind", std::string(kNodeKind) }, { "node_id", std::string(nodeId) } },
+        fields,
         10000
     );
-    (void)co_await service::message::redis::publish(redis, service::message::workerWakeStream(owner->workerIndex, owner->instanceId), { { "task", "edge-dispatcher" } }, 10000);
+    const std::vector<service::message::StreamField> wakeFields{{ "task", "edge-dispatcher" }};
+    (void)co_await service::message::redis::publish(redis, service::message::workerWakeStream(owner->workerIndex, owner->instanceId), wakeFields, 10000);
 }
 
 template <typename Redis>

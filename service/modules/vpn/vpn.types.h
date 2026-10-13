@@ -16,6 +16,10 @@
 #include "service/utils/network.h"
 
 namespace service::vpn {
+
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
+
 namespace module {
 using service::message::vpn::kVirtualLanPool;
 using service::message::vpn::mappedVirtualCidr;
@@ -46,7 +50,7 @@ inline bool validVpnNodeSelection(const ruvia::array<ruvia::string>& values) {
 }
 
 RUVIA_MODEL(VpnIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("VPN ID 必须是 UUID", service::common::isUuidField)));
-RUVIA_MODEL(VpnListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
+RUVIA_MODEL(VpnListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
 RUVIA_MODEL(VpnRoutePatchBody,
     RUVIA_OPTIONAL_FIELD(targetCidr, ruvia::string, RUVIA_MAX(18, "targetCidr 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(lanInterface, ruvia::string, RUVIA_MAX(64, "lanInterface 长度超出限制")),

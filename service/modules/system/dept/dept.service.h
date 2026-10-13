@@ -188,9 +188,11 @@ class DeptService {
             service::common::fail(14005, "部门存在子部门，不能删除", 409);
         }
         ruvia::db_expressions expressions(c.pool());
+        const ruvia::db_assignment deletionChanges[]{
+            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+        };
         (void)co_await c.db().template get_repository<DeptEntity>().update(
-            DeptEntity::column<"id">() == id,
-            { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
+            DeptEntity::column<"id">() == id, deletionChanges
         );
     }
 

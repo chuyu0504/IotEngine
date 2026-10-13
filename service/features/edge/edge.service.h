@@ -323,8 +323,9 @@ ruvia::task<void> storeNode(const Redis& redis, std::string_view nodeId,
 
 template <typename Redis>
 ruvia::task<NodeSnapshot> loadNode(const Redis& redis, std::string_view nodeId) {
+    const std::vector<std::string> replyArguments{"HGETALL", key(nodeId)};
     const auto reply =
-        co_await service::message::redis::command(redis, {"HGETALL", key(nodeId)});
+        co_await service::message::redis::command(redis, replyArguments);
     if (reply.kind() != ruvia::redis_value::kind_type::array)
         service::message::redis::throwValue("load edge metadata", reply);
     NodeSnapshot snapshot;
@@ -3687,18 +3688,20 @@ return 1
             }
             const auto key = deviceStatusKey(nodeId, deviceId);
             co_await service::message::redis::eraseHash(context.redis(), key);
-            co_await service::message::redis::setHash(
-                context.redis(), key,
-                {{"node_id", std::string(nodeId)},
+            const std::vector<message::StreamField> fields{
+                 {"node_id", std::string(nodeId)},
                  {"device_id", deviceId},
                  {"state", status.state()},
                  {"reason", status.reason()},
                  {"client_count", std::to_string(status.client_count())},
                  {"clients", clients},
                  {"last_activity_at_ms", std::to_string(status.last_activity_at_ms())},
-                 {"updated_at_ms", std::to_string(service::message::utcNowMilliseconds())}});
+                 {"updated_at_ms", std::to_string(service::message::utcNowMilliseconds())}
+            };
+            co_await service::message::redis::setHash(context.redis(), key, fields);
+            const std::vector<std::string> pexpireArguments{"PEXPIRE", key, "900000"};
             (void)co_await service::message::redis::command(
-                context.redis(), {"PEXPIRE", key, "900000"});
+                context.redis(), pexpireArguments);
             updated = true;
         }
         if (updated)
@@ -3802,9 +3805,10 @@ return redis.call('DEL', KEYS[1])
 
     template <typename Redis>
     static ruvia::task<void> registerStream(const Redis& redis, std::string_view streamName) {
+        const std::vector<std::string> replyArguments{ "SADD", std::string(projector_stream::kStreamRegistry), std::string(streamName) };
         const auto reply = co_await service::message::redis::command(
             redis,
-            { "SADD", std::string(projector_stream::kStreamRegistry), std::string(streamName) }
+            replyArguments
         );
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("register edge projector stream", reply);
@@ -3996,9 +4000,10 @@ if redis.call('EXISTS', KEYS[2]) == 0 then
 end
 return 0
 )lua";
+        const std::vector<std::string> replyArguments{ "SMEMBERS", std::string(projector_stream::kStreamRegistry) };
         const auto reply = co_await service::message::redis::command(
             redis,
-            { "SMEMBERS", std::string(projector_stream::kStreamRegistry) }
+            replyArguments
         );
         if (reply.kind() == ruvia::redis_value::kind_type::error &&
             reply.error().starts_with("WRONGTYPE")) {

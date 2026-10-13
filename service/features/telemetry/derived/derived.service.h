@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "service/common/message.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/derived/derived.entity.h"
@@ -50,7 +52,8 @@ class DerivedService final {
             });
         }
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
-            const auto previous = co_await message::redis::command(redis, { "GET", key });
+            const std::vector<std::string> previousArguments{ "GET", key };
+            const auto previous = co_await message::redis::command(redis, previousArguments);
             if (previous.kind() != ruvia::redis_value::kind_type::null && previous.kind() != ruvia::redis_value::kind_type::string) {
                 message::redis::throwValue("derived state read", previous);
             }

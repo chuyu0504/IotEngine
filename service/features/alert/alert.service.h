@@ -100,9 +100,10 @@ template <typename Redis>
 ruvia::task<std::optional<std::int64_t>> nextOfflineDeadline(
     const Redis& redis
 ) {
+    const std::vector<std::string> replyArguments{ "ZRANGE", offlineDeadlinesKey(), "0", "0", "WITHSCORES" };
     const auto reply = co_await service::message::redis::command(
         redis,
-        { "ZRANGE", offlineDeadlinesKey(), "0", "0", "WITHSCORES" }
+        replyArguments
     );
     if (reply.kind() != ruvia::redis_value::kind_type::array) {
         service::message::redis::throwValue("read next offline-alert deadline", reply);

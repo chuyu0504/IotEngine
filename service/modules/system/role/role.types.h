@@ -6,6 +6,9 @@
 
 namespace service::role {
 
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(10){};
+
 inline constexpr std::string_view kSuperAdminRoleCode{"superadmin"};
 
 RUVIA_MODEL(CreateRoleBody,
@@ -23,8 +26,8 @@ RUVIA_MODEL(UpdateRoleBody,
     RUVIA_OPTIONAL_FIELD(permissions, ruvia::array<ruvia::string>));
 
 RUVIA_MODEL(RoleListQuery,
-    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
+    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
     RUVIA_OPTIONAL_FIELD(keyword, ruvia::string),
     RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
 

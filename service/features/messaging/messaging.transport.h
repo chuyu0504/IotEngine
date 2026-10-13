@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "service/common/message.h"
 #include "service/features/messaging/messaging.types.h"
 #include "service/utils/redis.h"
@@ -76,7 +78,8 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
 
 template <typename Redis>
 ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, WorkerStreamTask task) {
-    (void)co_await add(redis, workerWakeStream(workerIndex, service::runtime::instanceId()), { { "task", std::string(workerStreamTaskName(task)) } }, kWorkerWakeCapacity);
+    const std::vector<StreamField> fields{{ "task", std::string(workerStreamTaskName(task)) }};
+    (void)co_await add(redis, workerWakeStream(workerIndex, service::runtime::instanceId()), fields, kWorkerWakeCapacity);
 }
 
 template <typename Redis>

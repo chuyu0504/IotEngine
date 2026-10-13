@@ -14,6 +14,8 @@
 
 namespace service::gb28181 {
 
+inline constexpr auto kDefaultSpeed = RUVIA_DEFAULT(80){};
+
 inline bool isGbIdentifier(const ruvia::string& value) { return !service::utils::trim(value.view()).empty(); }
 
 RUVIA_MODEL(GbDeviceParams,
@@ -42,7 +44,7 @@ RUVIA_MODEL(GbNameBody,
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MAX(255, "name 长度超出限制"), RUVIA_CUSTOM("name 不能为空白", isGbIdentifier)));
 
 RUVIA_MODEL(GbPtzBody,
-    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64, RUVIA_NULLABLE, RUVIA_DEFAULT(80), RUVIA_MIN(0, "speed 必须在 0 - 255 之间"), RUVIA_MAX(255, "speed 必须在 0 - 255 之间")));
+    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64, RUVIA_NULLABLE, decltype(kDefaultSpeed), RUVIA_MIN(0, "speed 必须在 0 - 255 之间"), RUVIA_MAX(255, "speed 必须在 0 - 255 之间")));
 
 RUVIA_MODEL(GbPositionBody,
     RUVIA_REQUIRED_FIELD(pan, ruvia::double_value, RUVIA_MIN(0, "pan 必须在 0 - 360 之间"), RUVIA_MAX(360, "pan 必须在 0 - 360 之间"), RUVIA_CUSTOM("pan 必须是有限数字", isGbFiniteNumber)),

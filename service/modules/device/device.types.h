@@ -11,6 +11,10 @@
 #include <ruvia/web/validation.h>
 
 namespace service::device {
+
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
+
 RUVIA_MODEL(DeviceDebugPacketDto, RUVIA_REQUIRED_FIELD_NAME("acquisition_id", acquisitionId, ruvia::string), RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(direction, ruvia::string), RUVIA_OPTIONAL_FIELD(source, ruvia::string), RUVIA_OPTIONAL_FIELD(address, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("edge_node_name", edgeNodeName, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("payload_hex", payloadHex, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("time_ms", timeMs, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("transport_status", transportStatus, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("response_status", responseStatus, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("parse_status", parseStatus, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("revision", revision, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("reply_to_packet_id", replyToPacketId, ruvia::string), RUVIA_OPTIONAL_FIELD(reason, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("parsed_json", parsedJson, ruvia::string));
 RUVIA_MODEL(DeviceDebugAcquisitionDto, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("started_at_ms", startedAtMs, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("finished_at_ms", finishedAtMs, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("last_packet_at_ms", lastPacketAtMs, ruvia::string), RUVIA_OPTIONAL_FIELD(state, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(packets, ruvia::boxed_array<DeviceDebugPacketDto>));
 
@@ -136,7 +140,7 @@ RUVIA_MODEL(UpdateDeviceGroupBody, RUVIA_OPTIONAL_FIELD(name, ruvia::string, RUV
 
 RUVIA_MODEL(DeviceGroupItemDto, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("sort_order", sortOrder, ruvia::int64), RUVIA_OPTIONAL_FIELD(remark, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("deviceCount", deviceCount, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::bool_value));
 
-RUVIA_MODEL(DeviceHistoryQuery, RUVIA_REQUIRED_FIELD(startTime, ruvia::string, RUVIA_MIN(1, "startTime 不能为空")), RUVIA_REQUIRED_FIELD(endTime, ruvia::string, RUVIA_MIN(1, "endTime 不能为空")), RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")));
+RUVIA_MODEL(DeviceHistoryQuery, RUVIA_REQUIRED_FIELD(startTime, ruvia::string, RUVIA_MIN(1, "startTime 不能为空")), RUVIA_REQUIRED_FIELD(endTime, ruvia::string, RUVIA_MIN(1, "endTime 不能为空")), RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")));
 
 RUVIA_MODEL(DeviceDebugPacketsResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, ruvia::boxed_array<DeviceDebugAcquisitionDto>));
 RUVIA_MODEL(DeviceSharesResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, ruvia::boxed_array<DeviceShareItemDto>));

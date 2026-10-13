@@ -277,8 +277,9 @@ class RpcConsumerRuntime final {
             }
             if (Contract::now() >= nextExpiryRefresh) {
                 try {
+                    const std::vector<std::string> expireArguments{"EXPIRE", stream_, "86400"};
                     (void)co_await service::message::redis::command(
-                        context.redis(), {"EXPIRE", stream_, "86400"});
+                        context.redis(), expireArguments);
                     nextExpiryRefresh = Contract::now() + 60000;
                 } catch (...) {
                 }

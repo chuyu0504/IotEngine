@@ -175,9 +175,11 @@ class RoleService {
         if (co_await assigned.get_exists()) {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
+        const ruvia::db_assignment deletionChanges[]{
+            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+        };
         (void)co_await c.db().template get_repository<RoleEntity>().update(
-            RoleEntity::column<"id">() == id,
-            { { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") } }
+            RoleEntity::column<"id">() == id, deletionChanges
         );
     }
 

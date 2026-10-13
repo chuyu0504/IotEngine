@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <memory>
 #include <chrono>
 #include <cstddef>
@@ -32,14 +34,16 @@ class RpcRequestClient final {
             Contract::requests(service::runtime::instanceId(), service::live::bus().workerIndex());
         std::exception_ptr failure;
         try {
-            const auto result = co_await service::message::redis::command(context.redis(), { "XADD", requestStream, "*", "version", std::string(Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) });
+            const std::vector<std::string> resultArguments{ "XADD", requestStream, "*", "version", std::string(Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
+            const auto result = co_await service::message::redis::command(context.redis(), resultArguments);
             if (result.kind() != ruvia::redis_value::kind_type::string) {
                 service::message::redis::throwValue("RPC enqueue", result);
             }
             while (!context.get_stop_token().stop_requested()) {
+                const std::vector<std::string> replyArguments{ "GET", replyKey };
                 const auto reply = co_await service::message::redis::command(
                     context.redis(),
-                    { "GET", replyKey }
+                    replyArguments
                 );
                 if (reply.kind() == ruvia::redis_value::kind_type::string) {
                     co_return decodeReply(reply.string());
@@ -61,7 +65,8 @@ class RpcRequestClient final {
             failure = std::current_exception();
         }
         try {
-            (void)co_await service::message::redis::command(context.redis(), { "SET", Contract::cancelled(id), "1", "EX", std::string(Contract::replyLifetime) });
+            const std::vector<std::string> setArguments{ "SET", Contract::cancelled(id), "1", "EX", std::string(Contract::replyLifetime) };
+            (void)co_await service::message::redis::command(context.redis(), setArguments);
         } catch (...) {
             // The persisted deadline also cancels work when the connection is gone.
         }

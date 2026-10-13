@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -141,8 +143,9 @@ class LoginRateLimiter {
 
     template <typename Context>
     ruvia::task<bool> locked(Context& context, std::string_view username) {
+        const std::vector<std::string> replyArguments{ "GET", LoginFailureCounter::key(username) };
         const auto reply =
-            co_await service::message::redis::command(context.redis(), { "GET", LoginFailureCounter::key(username) });
+            co_await service::message::redis::command(context.redis(), replyArguments);
         if (reply.null()) {
             co_return false;
         }
@@ -159,9 +162,10 @@ local failures = redis.call('INCR', KEYS[1])
 if failures == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return failures
 )lua";
+        const std::vector<std::string> replyArguments{ "EVAL", std::string(script), "1", LoginFailureCounter::key(username), std::string(windowMilliseconds) };
         const auto reply = co_await service::message::redis::command(
             context.redis(),
-            { "EVAL", std::string(script), "1", LoginFailureCounter::key(username), std::string(windowMilliseconds) }
+            replyArguments
         );
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             throw std::runtime_error("invalid login rate limit increment");
@@ -171,7 +175,8 @@ return failures
 
     template <typename Context>
     ruvia::task<void> clear(Context& context, std::string_view username) {
-        (void)co_await service::message::redis::command(context.redis(), { "DEL", LoginFailureCounter::key(username) });
+        const std::vector<std::string> delArguments{ "DEL", LoginFailureCounter::key(username) };
+        (void)co_await service::message::redis::command(context.redis(), delArguments);
     }
 };
 

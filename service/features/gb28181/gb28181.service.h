@@ -1227,9 +1227,10 @@ static ruvia::task<std::optional<service::message::StreamMessage>> readControlRe
     const auto boundedRedis = redis.with_options({ .stop_token_ = stop });
     while (!stop.stop_requested() &&
            std::chrono::system_clock::now() < deadline) {
+        const std::vector<std::string> replyArguments{ "XREAD", "COUNT", "1", "STREAMS", std::string(stream), "0-0" };
         const auto reply = co_await service::message::redis::command(
             boundedRedis,
-            { "XREAD", "COUNT", "1", "STREAMS", std::string(stream), "0-0" }
+            replyArguments
         );
         if (reply.null()) {
             (void)co_await ruvia::sleep_for(worker, std::chrono::milliseconds(100), stop);

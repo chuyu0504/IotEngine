@@ -43,8 +43,9 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
                            ruvia::db_data_type::big_int)}));
     (void)co_await transaction.query(advisoryLock);
     if (onlyIfMissing) {
+        const std::vector<std::string> activeArguments{"GET", std::string(kActiveVersionKey)};
         const auto active = co_await service::message::redis::command(
-            context.redis(), {"GET", std::string(kActiveVersionKey)});
+            context.redis(), activeArguments);
         if (!active.null()) {
             if (active.kind() != ruvia::redis_value::kind_type::string)
                 service::message::redis::throwValue(
@@ -114,11 +115,13 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
         }
         (void)co_await service::message::redis::command(context.redis(), command);
     }
-    if (rows.empty())
-        (void)co_await service::message::redis::command(
-            context.redis(), {"HSET", versionKey, "__ready", "1"});
+    if (rows.empty()) {
+        const std::vector<std::string> readyArguments{"HSET", versionKey, "__ready", "1"};
+        (void)co_await service::message::redis::command(context.redis(), readyArguments);
+    }
+    const std::vector<std::string> expireArguments{"EXPIRE", versionKey, "600"};
     (void)co_await service::message::redis::command(
-        context.redis(), {"EXPIRE", versionKey, "600"});
+        context.redis(), expireArguments);
 
     static constexpr std::string_view swapScript = R"lua(
 local previous = redis.call('GET', KEYS[1])
@@ -141,8 +144,9 @@ return previous or ''
 }
 
 template <typename Context> ruvia::task<void> ensure(Context& context) {
+    const std::vector<std::string> activeArguments{"GET", std::string(kActiveVersionKey)};
     const auto active = co_await service::message::redis::command(
-        context.redis(), {"GET", std::string(kActiveVersionKey)});
+        context.redis(), activeArguments);
     if (!active.null()) {
         if (active.kind() != ruvia::redis_value::kind_type::string)
             service::message::redis::throwValue(
@@ -725,10 +729,8 @@ class DeliveryService final {
     }
 
     static ruvia::task<std::string> realtimeData(ruvia::web_worker_context& context, std::string_view deviceId, const DeviceCatalog& device) {
-        const auto reply = co_await message::redis::command(
-            context.redis(),
-            std::vector<std::string>{ "HGETALL", telemetry::latest::latestKey(deviceId) }
-        );
+        const std::vector<std::string> arguments{ "HGETALL", telemetry::latest::latestKey(deviceId) };
+        const auto reply = co_await message::redis::command(context.redis(), arguments);
         auto record = LatestValuesRecord::decode(reply);
         std::vector<LatestValuesRecord::Point> points;
         points.reserve(record.latest.size());
@@ -799,9 +801,10 @@ class DeliveryService final {
     template <typename Redis>
     static ruvia::task<std::set<std::string, std::less<>>>
     completedTargets(const Redis& redis, const Delivery& delivery) {
+        const std::vector<std::string> replyArguments{ "HKEYS", DeliveryProgressRecord::key(delivery.eventType, delivery.id) };
         const auto reply = co_await message::redis::command(
             redis,
-            { "HKEYS", DeliveryProgressRecord::key(delivery.eventType, delivery.id) }
+            replyArguments
         );
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
             message::redis::throwValue("read webhook delivery progress", reply);

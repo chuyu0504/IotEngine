@@ -440,7 +440,8 @@ class AccessService final {
                 duplicate.binary(duplicate.column(E::column_name<"name">()),ruvia::db_binary_operator::equal,duplicate.value(name)),
                 duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(E::column_name<"deleted_at">()))));
         if (id) duplicate.and_where(duplicate.binary(duplicate.column(E::column_name<"id">()),ruvia::db_binary_operator::not_equal,uuid(duplicate,*id)));
-        if (!(co_await c.db().query(duplicate)).empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
+        const auto duplicateRows = co_await c.db().query(duplicate);
+        if (!duplicateRows.empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
         const auto targetId = id.value_or(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         const auto eventJson = stringArrayJson(events);
         auto transaction = co_await c.db().begin_transaction();
@@ -475,7 +476,8 @@ class AccessService final {
         q.update(E::table_name()).set(E::column_name<"deleted_at">(),q.call("now")).set(E::column_name<"updated_at">(),q.call("now"))
             .where(andAll(q,q.binary(q.column(E::column_name<"id">()),ruvia::db_binary_operator::equal,uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(E::column_name<"deleted_at">()))))
             .returning({q.column(E::column_name<"id">())});
-        if ((co_await transaction.query(q)).empty()) service::common::fail(19001,"MQTT 配置不存在",404);
+        const auto existingRows = co_await transaction.query(q);
+        if (existingRows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
     }
@@ -799,9 +801,10 @@ class AccessService final {
             service::common::fail(19001, "设备不存在", 404);
         }
         const auto latestKey = service::telemetry::latest::latestKey(device->id);
+        const std::vector<std::string> latestArguments{ "HGETALL", latestKey };
         const auto latest = co_await service::message::redis::command(
             c.redis(),
-            std::vector<std::string>{ "HGETALL", latestKey }
+            latestArguments
         );
         std::map<std::string_view, std::string_view, std::less<>> latestFields;
         if (latest.kind() == ruvia::redis_value::kind_type::array) {
@@ -937,9 +940,10 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         ruvia::context& c,
         std::string_view deviceId
     ) {
+        const std::vector<std::string> versionReplyArguments{ "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) };
         const auto versionReply = co_await service::message::redis::command(
             c.redis(),
-            { "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) }
+            versionReplyArguments
         );
         if (versionReply.null()) {
             throw std::runtime_error("runtime is not ready");

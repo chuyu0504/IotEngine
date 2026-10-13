@@ -1871,14 +1871,17 @@ class CollectorWorker final {
             tcp_.close(oldConnection, "device_re_registered");
             co_return;
         }
-        (void)co_await message::redis::publish(
-            redis_,
-            std::string(message::kControlStreamPrefix) + std::string(oldInstance) + ":" + oldWorker,
-            { { "message_id", uuidGenerator_.next() },
+        const std::vector<message::StreamField> fields{
+              { "message_id", uuidGenerator_.next() },
               { "connection_id", oldConnection },
               { "device_code", action.deviceCode },
               { "reason", "device_re_registered" },
-              { "created_at_ms", std::to_string(message::utcNowMilliseconds()) } },
+              { "created_at_ms", std::to_string(message::utcNowMilliseconds()) }
+        };
+        (void)co_await message::redis::publish(
+            redis_,
+            std::string(message::kControlStreamPrefix) + std::string(oldInstance) + ":" + oldWorker,
+            fields,
             1000
         );
     }

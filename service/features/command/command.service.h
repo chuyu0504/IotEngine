@@ -226,9 +226,10 @@ ruvia::task<void> dispatch(Context& context) {
                     item.streamFields.push_back({std::string(values[index][0].value().value_or(std::string_view{})),
                                                   std::string(values[index+1][0].value().value_or(std::string_view{}))});
             }
+            const std::vector<PendingDispatch> pending{std::move(item)};
             published = co_await dispatchPendingBatch(context.redis(), cell(1),
                 list ? PendingQueueKind::List : PendingQueueKind::Stream,
-                std::vector<PendingDispatch>{std::move(item)},
+                pending,
                 static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
             if (!published) failure = "queue_capacity_exceeded";
         } catch (const std::exception& error) { failure = error.what(); }

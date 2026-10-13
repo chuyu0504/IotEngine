@@ -6,6 +6,9 @@
 
 namespace service::dept {
 
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(10){};
+
 RUVIA_MODEL(CreateDeptBody,
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(2, "部门名称长度需在 2 - 128 之间"), RUVIA_MAX(128, "部门名称长度需在 2 - 128 之间")),
     RUVIA_OPTIONAL_FIELD(code, ruvia::string, RUVIA_MAX(64, "部门编码不能超过 64 个字符")),
@@ -23,8 +26,8 @@ RUVIA_MODEL(UpdateDeptBody,
     RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
 
 RUVIA_MODEL(DeptListQuery,
-    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
+    RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
     RUVIA_OPTIONAL_FIELD(keyword, ruvia::string),
     RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("状态无效", "enabled", "disabled")),
     RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::string, RUVIA_CUSTOM("上级部门必须是 UUID", service::common::isOptionalUuidField)));

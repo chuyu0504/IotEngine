@@ -16,6 +16,19 @@
 
 namespace service::alert {
 
+inline constexpr auto kDefaultSeverity = RUVIA_DEFAULT("warning"){};
+inline constexpr auto kDefaultLogic = RUVIA_DEFAULT("and"){};
+inline constexpr auto kDefaultSilenceDuration = RUVIA_DEFAULT(300){};
+inline constexpr auto kDefaultRecoveryCondition = RUVIA_DEFAULT("reverse"){};
+inline constexpr auto kDefaultRecoveryWaitSeconds = RUVIA_DEFAULT(60){};
+inline constexpr auto kDefaultStatus = RUVIA_DEFAULT("enabled"){};
+inline constexpr auto kDefaultRemark = RUVIA_DEFAULT(""){};
+inline constexpr auto kDefaultCategory = RUVIA_DEFAULT(""){};
+inline constexpr auto kDefaultDescription = RUVIA_DEFAULT(""){};
+inline constexpr auto kDefaultProtocolConfigId = RUVIA_DEFAULT(""){};
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
+
 RUVIA_MODEL(AlertCondition,
     RUVIA_REQUIRED_FIELD(type, ruvia::string),
     RUVIA_OPTIONAL_FIELD(elementKey, ruvia::string),
@@ -125,28 +138,28 @@ RUVIA_MODEL(AlertBatchBody,
 RUVIA_MODEL(RuleInput,
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_CUSTOM("规则名称无效", isAlertName)),
     RUVIA_REQUIRED_FIELD_NAME("device_id", deviceId, ruvia::string, RUVIA_CUSTOM("请选择关联设备", service::common::isUuidField)),
-    RUVIA_OPTIONAL_FIELD(severity, ruvia::string, RUVIA_DEFAULT("warning"), RUVIA_ONE_OF("severity 无效", "critical", "warning", "info")),
+    RUVIA_OPTIONAL_FIELD(severity, ruvia::string, decltype(kDefaultSeverity), RUVIA_ONE_OF("severity 无效", "critical", "warning", "info")),
     RUVIA_REQUIRED_FIELD(conditions, ruvia::json_value),
-    RUVIA_OPTIONAL_FIELD(logic, ruvia::string, RUVIA_DEFAULT("and"), RUVIA_ONE_OF("logic 无效", "and", "or")),
-    RUVIA_OPTIONAL_FIELD_NAME("silence_duration", silenceDuration, ruvia::int64, RUVIA_DEFAULT(300), RUVIA_MIN(0, "静默时长不能为负"), RUVIA_MAX(86400, "静默时长过长")),
-    RUVIA_OPTIONAL_FIELD_NAME("recovery_condition", recoveryCondition, ruvia::string, RUVIA_DEFAULT("reverse"), RUVIA_MAX(32, "恢复条件过长")),
-    RUVIA_OPTIONAL_FIELD_NAME("recovery_wait_seconds", recoveryWaitSeconds, ruvia::int64, RUVIA_DEFAULT(60), RUVIA_MIN(0, "恢复等待不能为负"), RUVIA_MAX(86400, "恢复等待过长")),
-    RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_DEFAULT("enabled"), RUVIA_ONE_OF("status 无效", "enabled", "disabled")),
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_DEFAULT(""), RUVIA_MAX(500, "备注过长")));
+    RUVIA_OPTIONAL_FIELD(logic, ruvia::string, decltype(kDefaultLogic), RUVIA_ONE_OF("logic 无效", "and", "or")),
+    RUVIA_OPTIONAL_FIELD_NAME("silence_duration", silenceDuration, ruvia::int64, decltype(kDefaultSilenceDuration), RUVIA_MIN(0, "静默时长不能为负"), RUVIA_MAX(86400, "静默时长过长")),
+    RUVIA_OPTIONAL_FIELD_NAME("recovery_condition", recoveryCondition, ruvia::string, decltype(kDefaultRecoveryCondition), RUVIA_MAX(32, "恢复条件过长")),
+    RUVIA_OPTIONAL_FIELD_NAME("recovery_wait_seconds", recoveryWaitSeconds, ruvia::int64, decltype(kDefaultRecoveryWaitSeconds), RUVIA_MIN(0, "恢复等待不能为负"), RUVIA_MAX(86400, "恢复等待过长")),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::string, decltype(kDefaultStatus), RUVIA_ONE_OF("status 无效", "enabled", "disabled")),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::string, decltype(kDefaultRemark), RUVIA_MAX(500, "备注过长")));
 RUVIA_MODEL(TemplateInput,
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_CUSTOM("模板名称无效", isAlertName)),
-    RUVIA_OPTIONAL_FIELD(category, ruvia::string, RUVIA_DEFAULT(""), RUVIA_MAX(64, "分类过长")),
-    RUVIA_OPTIONAL_FIELD(description, ruvia::string, RUVIA_DEFAULT(""), RUVIA_MAX(500, "描述过长")),
-    RUVIA_OPTIONAL_FIELD(severity, ruvia::string, RUVIA_DEFAULT("warning"), RUVIA_ONE_OF("severity 无效", "critical", "warning", "info")),
+    RUVIA_OPTIONAL_FIELD(category, ruvia::string, decltype(kDefaultCategory), RUVIA_MAX(64, "分类过长")),
+    RUVIA_OPTIONAL_FIELD(description, ruvia::string, decltype(kDefaultDescription), RUVIA_MAX(500, "描述过长")),
+    RUVIA_OPTIONAL_FIELD(severity, ruvia::string, decltype(kDefaultSeverity), RUVIA_ONE_OF("severity 无效", "critical", "warning", "info")),
     RUVIA_REQUIRED_FIELD(conditions, ruvia::json_value),
-    RUVIA_OPTIONAL_FIELD(logic, ruvia::string, RUVIA_DEFAULT("and"), RUVIA_ONE_OF("logic 无效", "and", "or")),
-    RUVIA_OPTIONAL_FIELD_NAME("silence_duration", silenceDuration, ruvia::int64, RUVIA_DEFAULT(300), RUVIA_MIN(0, "静默时长不能为负"), RUVIA_MAX(86400, "静默时长过长")),
-    RUVIA_OPTIONAL_FIELD_NAME("recovery_condition", recoveryCondition, ruvia::string, RUVIA_DEFAULT("reverse"), RUVIA_MAX(32, "恢复条件过长")),
-    RUVIA_OPTIONAL_FIELD_NAME("recovery_wait_seconds", recoveryWaitSeconds, ruvia::int64, RUVIA_DEFAULT(60), RUVIA_MIN(0, "恢复等待不能为负"), RUVIA_MAX(86400, "恢复等待过长")),
+    RUVIA_OPTIONAL_FIELD(logic, ruvia::string, decltype(kDefaultLogic), RUVIA_ONE_OF("logic 无效", "and", "or")),
+    RUVIA_OPTIONAL_FIELD_NAME("silence_duration", silenceDuration, ruvia::int64, decltype(kDefaultSilenceDuration), RUVIA_MIN(0, "静默时长不能为负"), RUVIA_MAX(86400, "静默时长过长")),
+    RUVIA_OPTIONAL_FIELD_NAME("recovery_condition", recoveryCondition, ruvia::string, decltype(kDefaultRecoveryCondition), RUVIA_MAX(32, "恢复条件过长")),
+    RUVIA_OPTIONAL_FIELD_NAME("recovery_wait_seconds", recoveryWaitSeconds, ruvia::int64, decltype(kDefaultRecoveryWaitSeconds), RUVIA_MIN(0, "恢复等待不能为负"), RUVIA_MAX(86400, "恢复等待过长")),
     RUVIA_OPTIONAL_FIELD_NAME("applicable_protocols", applicableProtocols, ruvia::json_value),
-    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::string, RUVIA_DEFAULT(""), RUVIA_CUSTOM("协议配置无效", isAlertOptionalUuid)));
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::string, decltype(kDefaultProtocolConfigId), RUVIA_CUSTOM("协议配置无效", isAlertOptionalUuid)));
 
 RUVIA_MODEL(AlertIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
-RUVIA_MODEL(AlertListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(ruleId, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(severity, ruvia::string), RUVIA_OPTIONAL_FIELD(category, ruvia::string));
+RUVIA_MODEL(AlertListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(ruleId, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(severity, ruvia::string), RUVIA_OPTIONAL_FIELD(category, ruvia::string));
 
 } // namespace service::alert

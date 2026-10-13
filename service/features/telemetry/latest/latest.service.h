@@ -34,9 +34,10 @@ inline constexpr std::string_view kRealtimeChangesStream =
 
 template <typename Redis>
 ruvia::task<void> publishRealtimeChange(const Redis& redis) {
+    const std::vector<std::string> replyArguments{ "XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" };
     const auto reply = co_await service::message::redis::command(
         redis,
-        { "XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" }
+        replyArguments
     );
     if (reply.kind() != ruvia::redis_value::kind_type::string) {
         service::message::redis::throwValue("publish device change", reply);
@@ -119,23 +120,21 @@ ruvia::task<bool> executeProjectionPipeline(Pipeline pipeline, std::string_view 
 template <typename Redis>
 ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId, std::string_view deviceCode) {
     const auto now = std::to_string(service::message::utcNowMilliseconds());
-    co_await service::message::redis::setHash(
-        redis,
-        runtimeKey(deviceId),
-        { { "device_id", std::string(deviceId) },
+    const std::vector<message::StreamField> runtimeFields{
+          { "device_id", std::string(deviceId) },
           { "device_code", std::string(deviceCode) },
           { "state", "offline" },
           { "state_reason", "no_connection" },
-          { "updated_at_ms", now } }
-    );
-    co_await service::message::redis::setHash(
-        redis,
-        latestKey(deviceId),
-        { { "_device_id", std::string(deviceId) },
+          { "updated_at_ms", now }
+    };
+    co_await service::message::redis::setHash(redis, runtimeKey(deviceId), runtimeFields);
+    const std::vector<message::StreamField> latestFields{
+          { "_device_id", std::string(deviceId) },
           { "_device_code", std::string(deviceCode) },
           { "_state", stateJson("offline", "no_connection", {}, {}, now) },
-          { "_updated_at_ms", now } }
-    );
+          { "_updated_at_ms", now }
+    };
+    co_await service::message::redis::setHash(redis, latestKey(deviceId), latestFields);
     co_await publishRealtimeChange(redis);
 }
 
@@ -153,9 +152,10 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
     }
     co_await service::message::redis::eraseHash(redis, runtimeKey(deviceId));
     co_await service::message::redis::eraseHash(redis, latestKey(deviceId));
+    const std::vector<std::string> zremArguments{ "ZREM", onlineDeadlinesKey(), std::string(deviceId) };
     (void)co_await service::message::redis::command(
         redis,
-        { "ZREM", onlineDeadlinesKey(), std::string(deviceId) }
+        zremArguments
     );
     co_await publishRealtimeChange(redis);
 }
@@ -327,7 +327,8 @@ return count
 
 template <typename Redis>
 ruvia::task<std::int64_t> deadlineTimeMilliseconds(const Redis& redis) {
-    const auto clock = co_await service::message::redis::command(redis, { "TIME" });
+    const std::vector<std::string> clockArguments{ "TIME" };
+    const auto clock = co_await service::message::redis::command(redis, clockArguments);
     if (clock.kind() != ruvia::redis_value::kind_type::array ||
         clock.array().size() != 2 ||
         clock.array()[0].kind() != ruvia::redis_value::kind_type::string ||
@@ -351,9 +352,10 @@ ruvia::task<std::int64_t> deadlineTimeMilliseconds(const Redis& redis) {
 template <typename Redis>
 ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
     const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
+    const std::vector<std::string> dueArguments{ "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" };
     const auto due = co_await service::message::redis::command(
         redis,
-        { "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" }
+        dueArguments
     );
     if (due.kind() != ruvia::redis_value::kind_type::array) {
         service::message::redis::throwValue("read device online deadlines", due);
@@ -441,9 +443,10 @@ ruvia::task<std::optional<std::int64_t>> nextDeadlineForKey(
     const Redis& redis,
     std::string deadlineKey
 ) {
+    const std::vector<std::string> replyArguments{ "ZRANGE", deadlineKey, "0", "0", "WITHSCORES" };
     const auto reply = co_await service::message::redis::command(
         redis,
-        { "ZRANGE", deadlineKey, "0", "0", "WITHSCORES" }
+        replyArguments
     );
     if (reply.kind() != ruvia::redis_value::kind_type::array) {
         service::message::redis::throwValue("read next device online deadline", reply);

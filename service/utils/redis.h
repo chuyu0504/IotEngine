@@ -45,9 +45,10 @@ ruvia::task<ruvia::redis_value> command(const Redis& redis, const std::vector<st
 
 template <typename Redis>
 ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group) {
+    const std::vector<std::string> replyArguments{ "XGROUP", "CREATE", std::string(stream), std::string(group), "0", "MKSTREAM" };
     const auto reply = co_await command(
         redis,
-        { "XGROUP", "CREATE", std::string(stream), std::string(group), "0", "MKSTREAM" }
+        replyArguments
     );
     if (reply.kind() == ruvia::redis_value::kind_type::error &&
         !reply.error().starts_with("BUSYGROUP")) {
@@ -60,9 +61,10 @@ ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::
 // from resurrecting a stream that was already drained and removed.
 template <typename Redis>
 ruvia::task<bool> ensureGroupIfPresent(const Redis& redis, std::string_view stream, std::string_view group) {
+    const std::vector<std::string> replyArguments{ "XGROUP", "CREATE", std::string(stream), std::string(group), "0" };
     const auto reply = co_await command(
         redis,
-        { "XGROUP", "CREATE", std::string(stream), std::string(group), "0" }
+        replyArguments
     );
     if (reply.kind() == ruvia::redis_value::kind_type::error) {
         const auto error = reply.error();
@@ -104,16 +106,17 @@ claimGroupMany(
     }
     std::vector<StreamBatch> batches;
     for (const auto& stream : streams) {
-        const auto reply = co_await command(
-            redis,
-            { "XAUTOCLAIM",
+        const std::vector<std::string> replyArguments{ "XAUTOCLAIM",
               stream,
               std::string(group),
               std::string(consumer),
               std::to_string(std::max<std::int64_t>(0, minIdle.count())),
               "0-0",
               "COUNT",
-              std::to_string(count) }
+              std::to_string(count) };
+        const auto reply = co_await command(
+            redis,
+            replyArguments
         );
         if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() < 2) {
             throwValue("XAUTOCLAIM", reply);
@@ -333,8 +336,9 @@ readGroupBlocking(const Redis& redis, std::string_view stream, std::string_view 
 
 template <typename Redis>
 ruvia::task<void> acknowledge(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
+    const std::vector<std::string> replyArguments{ "XACK", std::string(stream), std::string(group), std::string(id) };
     const auto reply =
-        co_await command(redis, { "XACK", std::string(stream), std::string(group), std::string(id) });
+        co_await command(redis, replyArguments);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         throwValue("XACK", reply);
     }
@@ -464,7 +468,8 @@ ruvia::task<void> setHash(const Redis& redis, std::string_view key, const std::v
 
 template <typename Redis>
 ruvia::task<void> eraseHash(const Redis& redis, std::string_view key) {
-    const auto reply = co_await command(redis, { "DEL", std::string(key) });
+    const std::vector<std::string> replyArguments{ "DEL", std::string(key) };
+    const auto reply = co_await command(redis, replyArguments);
     if (reply.kind() != redis_value::kind_type::integer) {
         throwValue("DEL Hash", reply);
     }
@@ -472,7 +477,8 @@ ruvia::task<void> eraseHash(const Redis& redis, std::string_view key) {
 
 template <typename Redis>
 ruvia::task<std::vector<StreamField>> hashEntries(const Redis& redis, std::string_view key) {
-    const auto entries = co_await command(redis, { "HGETALL", std::string(key) });
+    const std::vector<std::string> entriesArguments{ "HGETALL", std::string(key) };
+    const auto entries = co_await command(redis, entriesArguments);
     if (entries.kind() != redis_value::kind_type::array) {
         throwValue("HGETALL", entries);
     }
@@ -498,9 +504,10 @@ ruvia::task<std::vector<std::string>> keysMatching(const Redis& redis, std::stri
     std::vector<std::string> result;
     std::string cursor = "0";
     do {
+        const std::vector<std::string> pageArguments{ "SCAN", cursor, "MATCH", std::string(pattern), "COUNT", "100" };
         const auto page = co_await command(
             redis,
-            { "SCAN", cursor, "MATCH", std::string(pattern), "COUNT", "100" }
+            pageArguments
         );
         if (page.kind() != redis_value::kind_type::array || page.array().size() != 2 ||
             page.array()[0].kind() != redis_value::kind_type::string ||
@@ -521,7 +528,8 @@ ruvia::task<std::vector<std::string>> keysMatching(const Redis& redis, std::stri
 template <typename Redis>
 ruvia::task<void> eraseMatching(const Redis& redis, std::string_view pattern) {
     for (const auto& key : co_await keysMatching(redis, pattern)) {
-        (void)co_await command(redis, { "DEL", key });
+        const std::vector<std::string> delArguments{ "DEL", key };
+        (void)co_await command(redis, delArguments);
     }
 }
 
@@ -529,7 +537,8 @@ ruvia::task<void> eraseMatching(const Redis& redis, std::string_view pattern) {
 
 template <typename Redis>
 ruvia::task<void> erase(const Redis& redis, std::string_view key) {
-    const auto reply = co_await command(redis, { "DEL", std::string(key) });
+    const std::vector<std::string> replyArguments{ "DEL", std::string(key) };
+    const auto reply = co_await command(redis, replyArguments);
     if (reply.kind() != redis_value::kind_type::integer) {
         throwValue("DEL", reply);
     }

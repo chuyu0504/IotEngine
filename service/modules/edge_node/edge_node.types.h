@@ -10,6 +10,18 @@
 
 namespace service::edge {
 
+inline constexpr auto kDefaultDtu = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultLogs = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultVpn = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
+inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
+inline constexpr auto kDefaultSortOrder = RUVIA_DEFAULT(0){};
+inline constexpr auto kDefaultBridge = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultPrefixLength = RUVIA_DEFAULT(0){};
+inline constexpr auto kDefaultRollbackTimeoutSec = RUVIA_DEFAULT(60){};
+inline constexpr auto kDefaultKeepSettings = RUVIA_DEFAULT(true){};
+inline constexpr auto kDefaultLimit = RUVIA_DEFAULT(48){};
+
 inline bool isUciSectionName(const ruvia::string& value) {
     const auto text = value.view();
     if (text.empty() || text.size() > 15) {
@@ -43,9 +55,9 @@ inline bool isEdgeGroupFilter(const ruvia::string& value) {
 
 RUVIA_MODEL(DebugAuthenticationBody, RUVIA_REQUIRED_FIELD(token, ruvia::string, RUVIA_MIN(1, "令牌不能为空")));
 
-RUVIA_MODEL(EdgeEventsQuery, RUVIA_OPTIONAL_FIELD(dtu, ruvia::bool_value, RUVIA_DEFAULT(false)), RUVIA_OPTIONAL_FIELD(nodeId, ruvia::string, RUVIA_CUSTOM("nodeId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value, RUVIA_DEFAULT(false)), RUVIA_OPTIONAL_FIELD(vpn, ruvia::bool_value, RUVIA_DEFAULT(false)));
+RUVIA_MODEL(EdgeEventsQuery, RUVIA_OPTIONAL_FIELD(dtu, ruvia::bool_value, decltype(kDefaultDtu)), RUVIA_OPTIONAL_FIELD(nodeId, ruvia::string, RUVIA_CUSTOM("nodeId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value, decltype(kDefaultLogs)), RUVIA_OPTIONAL_FIELD(vpn, ruvia::bool_value, decltype(kDefaultVpn)));
 
-RUVIA_MODEL(EdgeListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("注册状态无效", "pending", "approved")), RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::string, RUVIA_CUSTOM("节点分组筛选无效", isEdgeGroupFilter)));
+RUVIA_MODEL(EdgeListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("注册状态无效", "pending", "approved")), RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::string, RUVIA_CUSTOM("节点分组筛选无效", isEdgeGroupFilter)));
 
 RUVIA_MODEL(EdgeIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 
@@ -55,19 +67,19 @@ RUVIA_MODEL(NodeNameBody, RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MAX(10
 
 RUVIA_MODEL(NodeGroupBody, RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::string, RUVIA_CUSTOM("节点分组 ID 无效", service::common::isOptionalUuidField)));
 
-RUVIA_MODEL(EdgeGroupBody, RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "分组名称不能为空"), RUVIA_MAX(100, "分组名称不能超过 100 个字符")), RUVIA_OPTIONAL_FIELD_NAME("parentId", parentId, ruvia::string, RUVIA_CUSTOM("上级分组 ID 无效", service::common::isOptionalUuidField)), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("分组状态无效", "enabled", "disabled")), RUVIA_OPTIONAL_FIELD_NAME("sortOrder", sortOrder, ruvia::int64, RUVIA_DEFAULT(0), RUVIA_MIN(0, "分组排序不能小于 0")), RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_MAX(500, "分组备注不能超过 500 个字符")));
+RUVIA_MODEL(EdgeGroupBody, RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "分组名称不能为空"), RUVIA_MAX(100, "分组名称不能超过 100 个字符")), RUVIA_OPTIONAL_FIELD_NAME("parentId", parentId, ruvia::string, RUVIA_CUSTOM("上级分组 ID 无效", service::common::isOptionalUuidField)), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("分组状态无效", "enabled", "disabled")), RUVIA_OPTIONAL_FIELD_NAME("sortOrder", sortOrder, ruvia::int64, decltype(kDefaultSortOrder), RUVIA_MIN(0, "分组排序不能小于 0")), RUVIA_OPTIONAL_FIELD(remark, ruvia::string, RUVIA_MAX(500, "分组备注不能超过 500 个字符")));
 
-RUVIA_MODEL(NetworkInterfaceBody, RUVIA_REQUIRED_FIELD(operation, ruvia::string, RUVIA_ONE_OF("网络操作无效", "upsert", "delete")), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_CUSTOM("逻辑接口名称只能包含字母、数字和下划线", isUciSectionName)), RUVIA_OPTIONAL_FIELD_NAME("previousName", previousName, ruvia::string, RUVIA_CUSTOM("原逻辑接口名称只能包含字母、数字和下划线", isUciSectionName)), RUVIA_OPTIONAL_FIELD(mode, ruvia::string, RUVIA_ONE_OF("地址协议无效", "dhcp", "static")), RUVIA_OPTIONAL_FIELD(device, ruvia::string, RUVIA_CUSTOM("设备名称包含非法字符", isOptionalNetworkDevice)), RUVIA_OPTIONAL_FIELD(bridge, ruvia::bool_value, RUVIA_DEFAULT(false)), RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::array<ruvia::string>, RUVIA_MAX(8, "网桥最多包含 8 个成员")), RUVIA_OPTIONAL_FIELD(ip, ruvia::string, RUVIA_MAX(15, "IPv4 地址格式无效")), RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::int64, RUVIA_DEFAULT(0), RUVIA_MIN(0, "IPv4 前缀必须在 0 - 30 之间"), RUVIA_MAX(30, "IPv4 前缀必须在 0 - 30 之间")), RUVIA_OPTIONAL_FIELD(gateway, ruvia::string, RUVIA_MAX(15, "网关格式无效")));
+RUVIA_MODEL(NetworkInterfaceBody, RUVIA_REQUIRED_FIELD(operation, ruvia::string, RUVIA_ONE_OF("网络操作无效", "upsert", "delete")), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_CUSTOM("逻辑接口名称只能包含字母、数字和下划线", isUciSectionName)), RUVIA_OPTIONAL_FIELD_NAME("previousName", previousName, ruvia::string, RUVIA_CUSTOM("原逻辑接口名称只能包含字母、数字和下划线", isUciSectionName)), RUVIA_OPTIONAL_FIELD(mode, ruvia::string, RUVIA_ONE_OF("地址协议无效", "dhcp", "static")), RUVIA_OPTIONAL_FIELD(device, ruvia::string, RUVIA_CUSTOM("设备名称包含非法字符", isOptionalNetworkDevice)), RUVIA_OPTIONAL_FIELD(bridge, ruvia::bool_value, decltype(kDefaultBridge)), RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::array<ruvia::string>, RUVIA_MAX(8, "网桥最多包含 8 个成员")), RUVIA_OPTIONAL_FIELD(ip, ruvia::string, RUVIA_MAX(15, "IPv4 地址格式无效")), RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::int64, decltype(kDefaultPrefixLength), RUVIA_MIN(0, "IPv4 前缀必须在 0 - 30 之间"), RUVIA_MAX(30, "IPv4 前缀必须在 0 - 30 之间")), RUVIA_OPTIONAL_FIELD(gateway, ruvia::string, RUVIA_MAX(15, "网关格式无效")));
 
-RUVIA_MODEL(NetworkBody, RUVIA_REQUIRED_FIELD(interfaces, ruvia::array<NetworkInterfaceBody>, RUVIA_MIN(1, "请至少配置一个逻辑接口"), RUVIA_MAX(8, "单次最多配置 8 个逻辑接口")), RUVIA_OPTIONAL_FIELD_NAME("rollbackTimeoutSec", rollbackTimeoutSec, ruvia::int64, RUVIA_DEFAULT(60), RUVIA_MIN(30, "回滚等待时间必须在 30 - 300 秒之间"), RUVIA_MAX(300, "回滚等待时间必须在 30 - 300 秒之间")));
+RUVIA_MODEL(NetworkBody, RUVIA_REQUIRED_FIELD(interfaces, ruvia::array<NetworkInterfaceBody>, RUVIA_MIN(1, "请至少配置一个逻辑接口"), RUVIA_MAX(8, "单次最多配置 8 个逻辑接口")), RUVIA_OPTIONAL_FIELD_NAME("rollbackTimeoutSec", rollbackTimeoutSec, ruvia::int64, decltype(kDefaultRollbackTimeoutSec), RUVIA_MIN(30, "回滚等待时间必须在 30 - 300 秒之间"), RUVIA_MAX(300, "回滚等待时间必须在 30 - 300 秒之间")));
 
-RUVIA_MODEL(FirmwareUploadBody, RUVIA_REQUIRED_FIELD_NAME("fileName", fileName, ruvia::string, RUVIA_MIN(1, "固件文件名不能为空"), RUVIA_MAX(255, "固件文件名过长")), RUVIA_REQUIRED_FIELD_NAME("sizeBytes", sizeBytes, ruvia::int64, RUVIA_MIN(1, "固件文件不能为空"), RUVIA_MAX(134217728, "固件不能超过 128 MiB")), RUVIA_OPTIONAL_FIELD_NAME("keepSettings", keepSettings, ruvia::bool_value, RUVIA_DEFAULT(true)));
-RUVIA_MODEL(FirmwareReuseBody, RUVIA_REQUIRED_FIELD(sha256, ruvia::string, RUVIA_MIN(64, "固件摘要无效"), RUVIA_MAX(64, "固件摘要无效")), RUVIA_REQUIRED_FIELD_NAME("sizeBytes", sizeBytes, ruvia::int64, RUVIA_MIN(1, "固件文件不能为空"), RUVIA_MAX(134217728, "固件不能超过 128 MiB")), RUVIA_OPTIONAL_FIELD_NAME("keepSettings", keepSettings, ruvia::bool_value, RUVIA_DEFAULT(true)));
+RUVIA_MODEL(FirmwareUploadBody, RUVIA_REQUIRED_FIELD_NAME("fileName", fileName, ruvia::string, RUVIA_MIN(1, "固件文件名不能为空"), RUVIA_MAX(255, "固件文件名过长")), RUVIA_REQUIRED_FIELD_NAME("sizeBytes", sizeBytes, ruvia::int64, RUVIA_MIN(1, "固件文件不能为空"), RUVIA_MAX(134217728, "固件不能超过 128 MiB")), RUVIA_OPTIONAL_FIELD_NAME("keepSettings", keepSettings, ruvia::bool_value, decltype(kDefaultKeepSettings)));
+RUVIA_MODEL(FirmwareReuseBody, RUVIA_REQUIRED_FIELD(sha256, ruvia::string, RUVIA_MIN(64, "固件摘要无效"), RUVIA_MAX(64, "固件摘要无效")), RUVIA_REQUIRED_FIELD_NAME("sizeBytes", sizeBytes, ruvia::int64, RUVIA_MIN(1, "固件文件不能为空"), RUVIA_MAX(134217728, "固件不能超过 128 MiB")), RUVIA_OPTIONAL_FIELD_NAME("keepSettings", keepSettings, ruvia::bool_value, decltype(kDefaultKeepSettings)));
 RUVIA_MODEL(FirmwareReuseResult, RUVIA_OPTIONAL_FIELD(reused, ruvia::bool_value));
 
 RUVIA_MODEL(FirmwareDownloadQuery, RUVIA_REQUIRED_FIELD(token, ruvia::string, RUVIA_MAX(64, "下载凭据无效")));
 
-RUVIA_MODEL(LogsQuery, RUVIA_OPTIONAL_FIELD(limit, ruvia::int64, RUVIA_DEFAULT(48), RUVIA_MIN(1, "日志条数必须在 1 - 48 之间"), RUVIA_MAX(48, "日志条数必须在 1 - 48 之间")), RUVIA_OPTIONAL_FIELD(level, ruvia::string, RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")), RUVIA_OPTIONAL_FIELD(source, ruvia::string, RUVIA_MAX(16, "日志来源不能超过 16 个字符")));
+RUVIA_MODEL(LogsQuery, RUVIA_OPTIONAL_FIELD(limit, ruvia::int64, decltype(kDefaultLimit), RUVIA_MIN(1, "日志条数必须在 1 - 48 之间"), RUVIA_MAX(48, "日志条数必须在 1 - 48 之间")), RUVIA_OPTIONAL_FIELD(level, ruvia::string, RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")), RUVIA_OPTIONAL_FIELD(source, ruvia::string, RUVIA_MAX(16, "日志来源不能超过 16 个字符")));
 
 RUVIA_MODEL(DtuChannelBody,
     RUVIA_REQUIRED_FIELD(channelId, ruvia::string, RUVIA_CUSTOM("通道 ID 无效", service::common::isUuidField)), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "请输入通道名称"), RUVIA_MAX(100, "通道名称过长")),
