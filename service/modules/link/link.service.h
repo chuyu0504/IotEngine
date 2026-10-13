@@ -911,21 +911,6 @@ return result
         endpoint.set<"rs485">(row[6].value().value_or("false") == "true");
     }
 
-    struct RuntimeStatus {
-        std::map<std::string, std::string> fields;
-
-        [[nodiscard]] std::string text(std::string_view name, std::string_view fallback = {}) const {
-            const auto current = fields.find(std::string(name));
-            return current == fields.end() ? std::string(fallback) : current->second;
-        }
-
-        [[nodiscard]] std::int64_t integer(std::string_view name) const {
-            const auto value = text(name);
-            return service::utils::parseInt64(std::optional<std::string_view>{ value })
-                .value_or(0);
-        }
-    };
-
     static ruvia::int64 toInt(std::string_view value) {
         return static_cast<ruvia::int64>(
             service::utils::parseInt64(std::optional<std::string_view>{ value }).value_or(0)
@@ -999,7 +984,7 @@ return result
     }
 
     template <typename Context>
-    ruvia::task<ruvia::boxed_array<LinkTargetDto>> loadTargets(Context& c, std::string_view id, const RuntimeStatus& runtime) {
+    ruvia::task<ruvia::boxed_array<LinkTargetDto>> loadTargets(Context& c, std::string_view id, const LinkRuntimeRecord& runtime) {
         ruvia::db_query query(c.pool());
         const auto targets = query.coalesce(
             { jsonValue(query, "endpoint", "targets"),
@@ -1042,18 +1027,56 @@ return result
         co_return result;
     }
 
+    static int runtimeStateRank(std::string_view state, std::string_view reason) {
+        if (reason == "target_owned") return -1;
+        if (state == "connected") return 6;
+        if (state == "listening") return 5;
+        if (state == "reconnecting") return 4;
+        if (state == "connecting") return 3;
+        if (state == "error") return 2;
+        if (state == "idle") return 1;
+        return 0;
+    }
+
+    static void mergeRuntimeState(LinkRuntimeRecord& aggregate, const LinkRuntimeRecord& worker,
+                                  const std::string& prefix = {}) {
+        const auto stateKey = prefix + "state";
+        const auto reasonKey = prefix.empty() ? "state_reason" : prefix + "reason";
+        const auto updatedKey = prefix + "updated_at_ms";
+        const auto rank = runtimeStateRank(worker.text(stateKey), worker.text(reasonKey));
+        const auto currentRank = runtimeStateRank(aggregate.text(stateKey), aggregate.text(reasonKey));
+        if (aggregate.fields.contains(stateKey) &&
+            (rank < currentRank || (rank == currentRank &&
+                worker.integer("updated_at_ms") <= aggregate.integer(updatedKey)))) return;
+
+        // 状态、原因、错误和活动时间必须来自同一份 Worker 快照。
+        aggregate.fields[stateKey] = worker.text(stateKey, "stopped");
+        aggregate.fields[reasonKey] = worker.text(reasonKey);
+        aggregate.fields[prefix + "error"] = worker.text(prefix + "error");
+        aggregate.fields[prefix + "last_activity_at_ms"] = worker.text(prefix + "last_activity_at_ms", "0");
+        aggregate.fields[updatedKey] = worker.text("updated_at_ms", "0");
+    }
+
+    static void normalizeStandbyState(LinkRuntimeRecord& status, const std::string& prefix = {}) {
+        const auto reasonKey = prefix.empty() ? "state_reason" : prefix + "reason";
+        if (status.text(reasonKey) != "target_owned") return;
+        // 尚未收到持有者快照时显示连接中，内部认领竞争不代表目标连接失败。
+        status.fields[prefix + "state"] = "connecting";
+        status.fields[reasonKey].clear();
+        status.fields[prefix + "error"].clear();
+    }
+
     template <typename Context>
-    static ruvia::task<RuntimeStatus> loadRuntimeStatus(Context& c, std::string_view id) {
-        RuntimeStatus status;
+    static ruvia::task<LinkRuntimeRecord> loadRuntimeStatus(Context& c, std::string_view id) {
+        LinkRuntimeRecord status;
         try {
-            const auto owner = co_await c.redis().get("iot:v2:owner:link:" + std::string(id));
+            const auto owner = co_await c.redis().get(LinkRuntimeRecord::ownerKey(id));
             if (!owner) {
                 co_return status;
             }
-            const auto pattern = "iot:runtime:link:" + std::string(id) + ":worker:" +
-                std::string(owner->data(), owner->size()) + ":*";
+            const auto pattern = LinkRuntimeRecord::workerPattern(id, {owner->data(), owner->size()});
             std::string cursor = "0";
-            std::vector<std::string> keys;
+            std::set<std::string> keys;
             do {
                 const std::array<std::string_view, 6> scanArgs{ "SCAN", cursor, "MATCH", pattern, "COUNT", "100" };
                 const auto page = co_await c.redis().command(scanArgs);
@@ -1065,7 +1088,7 @@ return result
                 cursor.assign(page.array()[0].string());
                 for (const auto& value : page.array()[1].array()) {
                     if (value.kind() == ruvia::redis_value::kind_type::string) {
-                        keys.emplace_back(value.string());
+                        keys.emplace(value.string());
                     }
                 }
             } while (cursor != "0");
@@ -1073,35 +1096,14 @@ return result
             std::int64_t connectionCount = 0;
             std::int64_t lastActivityAt = 0;
             std::string clients;
-            std::string aggregateState = "stopped";
-            const auto stateRank = [](std::string_view state) {
-                if (state == "connected") {
-                    return 6;
-                }
-                if (state == "listening") {
-                    return 5;
-                }
-                if (state == "reconnecting") {
-                    return 4;
-                }
-                if (state == "connecting") {
-                    return 3;
-                }
-                if (state == "error") {
-                    return 2;
-                }
-                if (state == "idle") {
-                    return 1;
-                }
-                return 0;
-            };
+            std::set<std::string> targetPrefixes;
             for (const auto& key : keys) {
                 const std::array<std::string_view, 2> hashArgs{ "HGETALL", key };
                 const auto reply = co_await c.redis().command(hashArgs);
                 if (reply.kind() != ruvia::redis_value::kind_type::array) {
                     continue;
                 }
-                RuntimeStatus worker;
+                LinkRuntimeRecord worker;
                 const auto values = reply.array();
                 for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
                     if (values[index].kind() != ruvia::redis_value::kind_type::string ||
@@ -1125,26 +1127,16 @@ return result
                     }
                     start = end + 1;
                 }
-                const auto workerState = worker.text("state", "stopped");
-                if (stateRank(workerState) > stateRank(aggregateState)) {
-                    aggregateState = workerState;
-                }
-                if (status.text("state_reason").empty() && !worker.text("state_reason").empty()) {
-                    status.fields["state_reason"] = worker.text("state_reason");
-                }
-                if (status.text("error").empty() && !worker.text("error").empty()) {
-                    status.fields["error"] = worker.text("error");
-                }
+                mergeRuntimeState(status, worker);
                 for (const auto& [name, value] : worker.fields) {
-                    if (!name.starts_with("target:")) {
-                        continue;
-                    }
-                    if (!value.empty() || !status.fields.contains(name)) {
-                        status.fields[name] = value;
-                    }
+                    if (!name.starts_with("target:") || !name.ends_with(":state")) continue;
+                    const auto prefix = name.substr(0, name.size() - 5);
+                    targetPrefixes.insert(prefix);
+                    mergeRuntimeState(status, worker, prefix);
                 }
             }
-            status.fields["state"] = aggregateState;
+            normalizeStandbyState(status);
+            for (const auto& prefix : targetPrefixes) normalizeStandbyState(status, prefix);
             status.fields["connection_count"] = std::to_string(connectionCount);
             status.fields["clients"] = std::move(clients);
             status.fields["last_activity_at_ms"] = std::to_string(lastActivityAt);

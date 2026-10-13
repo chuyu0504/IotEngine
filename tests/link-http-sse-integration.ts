@@ -14,6 +14,12 @@ const tag = `link_http_${crypto.randomUUID()}`;
 const acquisition = crypto.randomUUID();
 const packet = crypto.randomUUID();
 let link = '';
+const runtimeLink = crypto.randomUUID();
+const runtimeOwner = crypto.randomUUID();
+const runtimeTag = `link_runtime_${crypto.randomUUID()}`;
+const runtimeTargets = [crypto.randomUUID(), crypto.randomUUID()];
+const runtimeOwnerKey = `iot:v2:owner:link:${runtimeLink}`;
+const runtimeKeys = [0, 1].map(worker => `iot:runtime:link:${runtimeLink}:worker:${runtimeOwner}:${worker}`);
 function token(userId: string) {
     const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
     const now = Math.floor(Date.now()/1000);
@@ -41,9 +47,83 @@ async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>, eventName
     assert.equal(JSON.parse(event.data).code, 0);
     return JSON.parse(event.data).data;
 }
+async function verifyRuntimeAggregation() {
+    await redis.send('SET', [runtimeOwnerKey, runtimeOwner, 'EX', '300']);
+    const endpoint = {mode:'TCP Client',targets:runtimeTargets.map((id,index) => ({id,name:`broker-${index}`,ip:'127.0.0.1',port:1883+index,status:'enabled'}))};
+    await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by) VALUES(${runtimeLink},${runtimeTag},'MQTT',${endpoint}::jsonb,'disabled','collector',${admin})`;
+    type State = {state:string;reason:string;error:string;last_activity_at_ms:string};
+    const connected = (time:string):State => ({state:'connected',reason:'',error:'',last_activity_at_ms:time});
+    const standby:State = {state:'reconnecting',reason:'target_owned',error:'目标已由其他 Collector Worker 持有',last_activity_at_ms:'0'};
+    const failed:State = {state:'reconnecting',reason:'connection_refused',error:'连接被拒绝',last_activity_at_ms:'1000'};
+    const fatal:State = {...failed,state:'error',reason:'invalid_address',error:'目标地址无效'};
+    async function worker(index:number, state:State, targets:State[], connections:number) {
+        const fields:Record<string,string> = {state:state.state,state_reason:state.reason,error:state.error,connection_count:String(connections),remote_endpoints:connections ? `127.0.0.1:${1883+index}` : '',last_activity_at_ms:state.last_activity_at_ms,updated_at_ms:String(Date.now())};
+        for (const [position,target] of targets.entries()) {
+            for (const [name,value] of Object.entries(target)) fields[`target:${runtimeTargets[position]}:${name}`] = value;
+        }
+        await redis.send('HSET',[runtimeKeys[index],...Object.entries(fields).flat()]);
+    }
+    async function detail() { return (await request('GET',`/v1/link?keyword=${runtimeTag}`)).list[0]; }
+    function healthy(item:any) {
+        assert.equal(item.runtime.state,'connected');
+        assert.equal(item.runtime.reason,'');
+        assert.equal(item.runtime.error,'');
+        assert.equal(item.runtime.clientCount,2);
+        for (const target of item.endpoint.targets) {
+            assert.equal(target.runtime.state,'connected');
+            assert.equal(target.runtime.reason,'');
+            assert.equal(target.runtime.error,'');
+        }
+        assert.equal(Date.parse(item.endpoint.targets[0].runtime.lastActivityAt),1000);
+        assert.equal(Date.parse(item.endpoint.targets[1].runtime.lastActivityAt),5000);
+    }
+    await worker(0,connected('1234'),[connected('1234'),standby],1);
+    await worker(1,standby,[standby,connected('5678')],1);
+    healthy(await detail());
+    const stream = await subscribe(`/v1/link/events?keyword=${runtimeTag}`);
+    healthy((await snapshot(stream)).list[0]);
+    // 换到另一 Worker 后仍取同一目标的完整有效状态，不能依赖 Redis 扫描顺序。
+    await worker(0,standby,[standby,connected('5678')],1);
+    await worker(1,connected('1234'),[connected('1234'),standby],1);
+    healthy(await detail());
+    async function changed() {
+        const next = snapshot(stream);
+        await redis.send('XADD',['iot:live:changes','*','schema_version','1','topic','link','entity_id',runtimeLink]);
+        return (await next).list[0];
+    }
+    await worker(0,standby,[standby,standby],0);
+    await worker(1,failed,[failed,fatal],0);
+    const disconnected = await changed();
+    assert.equal(disconnected.runtime.state,'reconnecting');
+    assert.equal(disconnected.runtime.reason,'connection_refused');
+    assert.equal(disconnected.runtime.error,'连接被拒绝');
+    assert.equal(disconnected.runtime.clientCount,0);
+    assert.equal(disconnected.endpoint.targets[0].runtime.reason,'connection_refused');
+    assert.equal(disconnected.endpoint.targets[1].runtime.state,'error');
+    assert.equal(disconnected.endpoint.targets[1].runtime.error,'目标地址无效');
+    await redis.send('DEL',[runtimeKeys[1]]);
+    const waiting = await changed();
+    for (const state of [waiting.runtime,...waiting.endpoint.targets.map((target:any) => target.runtime)]) {
+        assert.equal(state.state,'connecting');
+        assert.equal(state.reason,'');
+        assert.equal(state.error,'');
+    }
+    await redis.send('DEL',[runtimeOwnerKey]);
+    const stopped = await changed();
+    assert.equal(stopped.runtime.state,'stopped');
+    assert.equal(stopped.runtime.clientCount,0);
+    assert(stopped.endpoint.targets.every((target:any) => target.runtime.state === 'stopped'));
+    await redis.send('SET',[runtimeOwnerKey,runtimeOwner,'EX','300']);
+    await worker(0,connected('1234'),[connected('1234'),standby],1);
+    await worker(1,standby,[standby,connected('5678')],1);
+    healthy(await changed());
+    await stream.expectQuiet(1000);
+    await stream.close();
+}
 try {
     await request('GET','/v1/link',undefined,11004);
     actor = admin;
+    await verifyRuntimeAggregation();
     const endpoint = {transport:'tcp',mode:'TCP Server',ip:'0.0.0.0',port:59888,targets:[]};
     const configuration = {execution:'collector',name:tag,protocol:'Modbus',endpoint,status:'disabled'};
     const subscription = await subscribe(`/v1/link/events?keyword=${tag}`);
@@ -108,8 +188,11 @@ try {
     await request('DELETE',`/v1/link/${link}`);
     assert.equal((await request('GET',`/v1/link?keyword=${tag}`)).total,0);
     assert.equal((await fetch(apiBase+'/v1/link')).status,401);
-    console.log('PASS link HTTP/SSE: CRUD, typed update validation, committed outbox, debug push and original owner checks');
+    console.log('PASS link HTTP/SSE: multi-worker target aggregation, failure/recovery, CRUD, typed update validation, committed outbox, debug push and original owner checks');
 } finally {
+    await redis.send('DEL',[runtimeOwnerKey,...runtimeKeys]);
+    await db`DELETE FROM outbox_event WHERE aggregate_id=${runtimeLink}`;
+    await db`DELETE FROM link WHERE id=${runtimeLink}`;
     await redis.send('DEL',[`iot:debug:v4:link:${link}`,`iot:debug:v4:acquisition:${acquisition}`,`iot:debug:v4:acquisition:${acquisition}:packets`,`iot:debug:v4:packet:${packet}`]);
     if (link) { await db`DELETE FROM outbox_event WHERE aggregate_id=${link}`; await db`DELETE FROM link WHERE id=${link}`; }
     await db`DELETE FROM sys_user_role WHERE user_id=${other}`;

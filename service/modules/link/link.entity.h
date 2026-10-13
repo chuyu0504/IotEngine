@@ -1,11 +1,39 @@
 #pragma once
 
 #include <memory_resource>
+#include <map>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
+#include "service/utils/number.h"
 
 namespace service::link {
+// Collector 快照含 target:<UUID>:* 动态字段，固定字段 Redis ORM 无法直接映射。
+struct LinkRuntimeRecord {
+    std::map<std::string, std::string> fields;
+
+    static std::string ownerKey(std::string_view id) {
+        return "iot:v2:owner:link:" + std::string(id);
+    }
+
+    static std::string workerPattern(std::string_view id, std::string_view owner) {
+        return "iot:runtime:link:" + std::string(id) + ":worker:" + std::string(owner) + ":*";
+    }
+
+    [[nodiscard]] std::string text(std::string_view name, std::string_view fallback = {}) const {
+        const auto current = fields.find(std::string(name));
+        return current == fields.end() ? std::string(fallback) : current->second;
+    }
+
+    [[nodiscard]] std::int64_t integer(std::string_view name) const {
+        const auto value = text(name);
+        return service::utils::parseInt64(std::optional<std::string_view>{value}).value_or(0);
+    }
+};
+
 // 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
 struct LinkDebugIndex {
     static std::string key(std::string_view id) { return "iot:debug:v4:link:" + std::string(id); }
