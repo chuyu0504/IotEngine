@@ -53,6 +53,7 @@ import {
     useState,
 } from 'react';
 import { FormModal } from '@/components/form_modal';
+import { JsonEditor } from '@/components/json_editor';
 import { PageContainer } from '@/components/page_container';
 import { usePermissions } from '@/hooks/use_permission';
 import { createUuid } from '@/utils/uuid';
@@ -6323,7 +6324,6 @@ function MqttMessageInput({
     report?: boolean;
 }) {
     const selection = useRef<[number, number] | null>(null);
-    const { message } = App.useApp();
     const options = [
         { label: '设备编码', value: topic ? '{deviceCode}' : '"$deviceCode"' },
         ...(!topic && report ? [{ label: '设备时间', value: '"$time"' }] : []),
@@ -6355,27 +6355,18 @@ function MqttMessageInput({
     };
     return (
         <div>
-            {!topic && (
-                <Button
-                    size="small"
-                    className="mb-2"
-                    aria-label={`${label}格式化`}
-                    onClick={() => {
-                        try {
-                            onChange?.(formatMqttTemplate(value));
-                            selection.current = null;
-                        } catch (error) {
-                            message.error(error instanceof Error ? error.message : 'JSON 格式无效');
-                        }
-                    }}
-                >
-                    格式化 JSON
-                </Button>
-            )}
             {topic ? (
                 <Input {...input} maxLength={1024} />
             ) : (
-                <Input.TextArea {...input} rows={7} className="font-mono" />
+                <JsonEditor
+                    value={value}
+                    onChange={onChange}
+                    label={label}
+                    format={formatMqttTemplate}
+                    onSelectionChange={(from, to) => {
+                        selection.current = [from, to];
+                    }}
+                />
             )}
             <Select<string>
                 className="mt-2 w-full"
@@ -7141,10 +7132,9 @@ export function MqttConfigPage() {
                                                             ? value
                                                             : JSON.stringify(value ?? [], null, 2),
                                                 })}
-                                                getValueFromEvent={(event) => event.target.value}
                                             >
-                                                <Input.TextArea
-                                                    rows={5}
+                                                <JsonEditor
+                                                    label="设备参数 JSON"
                                                     placeholder={
                                                         '[{"deviceCode":"D001","name":"address","value":"A001"}]'
                                                     }
@@ -7157,36 +7147,60 @@ export function MqttConfigPage() {
                                                     size="small"
                                                     className="mb-3"
                                                     title={`控制消息 ${index + 1}`}
+                                                    extra={
+                                                        <Button
+                                                            size="small"
+                                                            type="text"
+                                                            danger
+                                                            onClick={() =>
+                                                                form.setFieldValue(
+                                                                    'commands',
+                                                                    commands.filter(
+                                                                        (item) =>
+                                                                            item.id !== command.id
+                                                                    )
+                                                                )
+                                                            }
+                                                        >
+                                                            删除控制消息
+                                                        </Button>
+                                                    }
                                                 >
-                                                    <Form.Item
-                                                        name={['commands', index, 'name']}
-                                                        label="消息名称"
-                                                        rules={[
-                                                            {
-                                                                required: true,
-                                                                whitespace: true,
-                                                                max: 100,
-                                                                message: '请输入消息名称',
-                                                            },
-                                                        ]}
-                                                    >
+                                                    <div className="mb-4">
+                                                        <div className="mb-2">消息名称</div>
                                                         <Input
                                                             aria-label={`控制消息 ${index + 1} 名称`}
                                                             maxLength={100}
                                                             placeholder="例如：设置目标温度"
+                                                            value={command.name}
+                                                            onChange={(event) =>
+                                                                form.setFieldValue(
+                                                                    ['commands', index, 'name'],
+                                                                    event.target.value
+                                                                )
+                                                            }
                                                         />
-                                                    </Form.Item>
-                                                    <Form.Item
-                                                        name={['commands', index, 'topic']}
-                                                        label="控制 Topic"
-                                                        extra="可插入 {deviceCode} 或 {point:属性名称}，每个占位符独占一层；属性值不能包含 /、+、#。"
-                                                    >
+                                                    </div>
+                                                    <div className="mb-4">
+                                                        <div className="mb-2">控制 Topic</div>
                                                         <MqttMessageInput
                                                             label={`控制消息 ${index + 1} Topic`}
                                                             points={points}
                                                             topic
+                                                            value={command.topic}
+                                                            onChange={(value) =>
+                                                                form.setFieldValue(
+                                                                    ['commands', index, 'topic'],
+                                                                    value
+                                                                )
+                                                            }
                                                         />
-                                                    </Form.Item>
+                                                        <div className="mt-1 text-xs text-slate-500">
+                                                            可插入 {'{deviceCode}'} 或{' '}
+                                                            {'{point:属性名称}'}
+                                                            ，每个占位符独占一层。
+                                                        </div>
+                                                    </div>
                                                 </Card>
                                             ))}
                                             <Button
@@ -7302,17 +7316,12 @@ export function MqttConfigPage() {
                                                                     </Form.Item>
                                                                 </div>
                                                                 <Form.Item label="实际 JSON 消息">
-                                                                    <Input.TextArea
-                                                                        aria-label="实际 JSON 消息"
-                                                                        rows={8}
-                                                                        className="font-mono"
-                                                                        spellCheck={false}
+                                                                    <JsonEditor
+                                                                        label="实际 JSON 消息"
                                                                         value={samplePayload}
-                                                                        onChange={(event) => {
+                                                                        onChange={(value) => {
                                                                             invalidatePreview();
-                                                                            setSamplePayload(
-                                                                                event.target.value
-                                                                            );
+                                                                            setSamplePayload(value);
                                                                         }}
                                                                     />
                                                                 </Form.Item>
@@ -7505,12 +7514,9 @@ export function MqttConfigPage() {
                                                                                         )
                                                                                       : '',
                                                                         })}
-                                                                        getValueFromEvent={(
-                                                                            event
-                                                                        ) => event.target.value}
                                                                     >
-                                                                        <Input.TextArea
-                                                                            rows={6}
+                                                                        <JsonEditor
+                                                                            label={`${command?.name || `控制消息 ${field.name + 1}`}回执规则 JSON`}
                                                                             placeholder={
                                                                                 '{"topic":"devices/{deviceCode}/result","matchFields":["/id"],"codeField":"/code","successCode":0,"timeoutMs":10000}'
                                                                             }

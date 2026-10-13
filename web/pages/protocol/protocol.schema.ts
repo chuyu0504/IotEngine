@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { formatJson, type JsonValue as MqttJson, parseJson } from '@/utils/json';
 import type { Modbus, MqttConfig, MqttPoint, MqttTemplateDraft } from './protocol.types';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT']);
@@ -33,11 +34,10 @@ const mqttPathSchema = z
         'JSON Pointer 转义无效或超过 32 层'
     );
 
-type MqttJson = null | boolean | number | string | MqttJson[] | { [key: string]: MqttJson };
 const mqttPointer = (parts: readonly string[]) =>
     `/${parts.map((part) => part.replace(/~/g, '~0').replace(/\//g, '~1')).join('/')}`;
-const mqttTemplateError = (template: string, path: string, message: string): never => {
-    throw new Error(`${template}${path || '（根对象）'}: ${message}`);
+const mqttTemplateError = (template: string, path: string, message: string, offset = 0): never => {
+    throw Object.assign(new Error(`${template}${path || '（根对象）'}: ${message}`), { offset });
 };
 
 function parseMqttTemplate(text: string, template: string): { [key: string]: MqttJson } {
@@ -45,98 +45,35 @@ function parseMqttTemplate(text: string, template: string): { [key: string]: Mqt
         mqttTemplateError(template, '', '模板不能超过 16384 UTF-8 字节');
     let value: MqttJson;
     try {
-        value = JSON.parse(text) as MqttJson;
-    } catch {
-        return mqttTemplateError(template, '', '模板须为有效 JSON');
+        value = parseJson(text);
+    } catch (error) {
+        const path =
+            error instanceof Error && 'path' in error && typeof error.path === 'string'
+                ? error.path
+                : '';
+        const offset =
+            error instanceof Error && 'offset' in error && typeof error.offset === 'number'
+                ? error.offset
+                : 0;
+        return mqttTemplateError(
+            template,
+            path,
+            error instanceof SyntaxError
+                ? '模板须为有效 JSON'
+                : error instanceof Error
+                  ? error.message
+                  : 'JSON 无效',
+            offset
+        );
     }
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return mqttTemplateError(template, '', '模板根节点须为 JSON 对象');
-
-    // JSON.parse discards duplicate keys. Scan the validated source before any mappings can be lost.
-    let position = 0;
-    const space = () => {
-        while (/\s/.test(text[position] ?? '') && position < text.length) position++;
-    };
-    const string = () => {
-        const start = position++;
-        while (text[position] !== '"') {
-            if (text[position] === '\\') position++;
-            position++;
-        }
-        position++;
-        return JSON.parse(text.slice(start, position)) as string;
-    };
-    const scan = (parts: string[]) => {
-        if (parts.length > 32)
-            mqttTemplateError(template, mqttPointer(parts), '模板不能超过 32 层');
-        space();
-        if (text[position] === '{') {
-            position++;
-            space();
-            const keys = new Set<string>();
-            while (text[position] !== '}') {
-                const key = string();
-                const path = [...parts, key];
-                if (keys.has(key))
-                    mqttTemplateError(template, mqttPointer(path), 'JSON 对象键不能重复');
-                keys.add(key);
-                space();
-                position++;
-                scan(path);
-                space();
-                if (text[position] !== ',') break;
-                position++;
-                space();
-            }
-            position++;
-        } else if (text[position] === '[') {
-            position++;
-            space();
-            let index = 0;
-            while (text[position] !== ']') {
-                scan([...parts, String(index++)]);
-                space();
-                if (text[position] !== ',') break;
-                position++;
-            }
-            position++;
-        } else if (text[position] === '"') {
-            string();
-        } else {
-            while (position < text.length && !/[\s,}\]]/.test(text[position])) position++;
-        }
-    };
-    scan([]);
     return value;
 }
 
 export function formatMqttTemplate(text: string): string {
     parseMqttTemplate(text, '消息模板');
-    // 只整理 token 间的空白，不通过 JSON.stringify 重写数字或字符串。
-    const tokens = text.match(/"(?:\\.|[^"\\])*"|[{}[\],:]|[^\s{}[\],:]+/g) ?? [];
-    let depth = 0;
-    let result = '';
-    const newline = () => {
-        result += `\n${'    '.repeat(depth)}`;
-    };
-    tokens.forEach((token, index) => {
-        if (token === '{' || token === '[') {
-            result += token;
-            depth++;
-            if (tokens[index + 1] !== (token === '{' ? '}' : ']')) newline();
-        } else if (token === '}' || token === ']') {
-            depth--;
-            if (tokens[index - 1] !== (token === '}' ? '{' : '[')) newline();
-            result += token;
-        } else if (token === ',') {
-            result += ',';
-            newline();
-        } else if (token === ':') result += ': ';
-        else result += token;
-    });
-    if (new TextEncoder().encode(result).length > 16384)
-        throw new Error('格式化后模板超过 16384 UTF-8 字节，原文已保留');
-    return result;
+    return formatJson(text);
 }
 
 function visitMqttTemplate(
