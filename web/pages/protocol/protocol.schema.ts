@@ -180,6 +180,11 @@ const mqttJsonInput = (value: unknown) => {
 };
 export const mqttConfigSchema = z
     .object({
+        derivedPoints: z
+            .array(z.lazy(() => derivedPointSchema))
+            .max(32)
+            .optional(),
+        pointVisibility: z.record(z.string(), z.boolean()).optional(),
         storagePolicy: z.enum(['report', 'change']),
         topic: mqttTopicSchema,
         recordsPath: mqttPathSchema.optional(),
@@ -246,11 +251,12 @@ export const mqttConfigSchema = z
                     id: z.uuid(),
                     name: z.string().trim().min(1).max(100),
                     field: mqttPathSchema,
+                    scale: z.never().optional(),
+                    offset: z.never().optional(),
                     dataType: z.enum(['BOOL', 'STRING', 'DOUBLE']),
                     unit: z.string().max(32).optional(),
                     writable: z.boolean().optional(),
-                    scale: z.number().optional(),
-                    offset: z.number().optional(),
+
                     enumValues: z
                         .array(
                             z.object({ input: z.string().max(256), output: z.string().max(256) })
@@ -463,8 +469,6 @@ export const mqttConfigSchema = z
             if (namedTemplate && names.has(point.name))
                 issue(['points', index, 'name'], '使用名称占位符时点位名称必须唯一');
             names.add(point.name);
-            if (point.writable && point.scale === 0)
-                issue(['points', index, 'scale'], '可写点位倍率不能为零');
             if (
                 ids.has(point.id) ||
                 (point.field && (fields.has(point.field) || point.field === config.deviceCodeField))
@@ -547,6 +551,8 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
             }) satisfies MqttPoint
     );
     const result = mqttConfigSchema.safeParse({
+        ...(draft.derivedPoints ? { derivedPoints: draft.derivedPoints } : {}),
+        ...(draft.pointVisibility ? { pointVisibility: draft.pointVisibility } : {}),
         topic: draft.topic,
         storagePolicy: draft.storagePolicy,
         qos: draft.qos,
@@ -625,6 +631,8 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
     }
     const draft: MqttTemplateDraft = {
         topic,
+        ...(config.derivedPoints ? { derivedPoints: config.derivedPoints } : {}),
+        ...(config.pointVisibility ? { pointVisibility: config.pointVisibility } : {}),
         reportTemplate,
         qos: config.qos,
         storagePolicy: config.storagePolicy,
@@ -923,7 +931,8 @@ export function industrialConfigSchema(protocol: 'MC' | 'FINS' | 'DLT645') {
                                 'LITTLE_ENDIAN_BYTE_SWAP',
                             ])
                             .optional(),
-                        scale: z.number().finite().optional(),
+                        scale: z.never().optional(),
+                        offset: z.never().optional(),
                         decimals: integer(8, -1),
                         identifier: z.string().optional(),
                         length: integer(200, 1),

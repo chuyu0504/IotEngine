@@ -11,7 +11,8 @@ const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ iss: 'iot-e
 const token = `${unsigned}.${createHmac('sha256', 'architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
 const point = crypto.randomUUID(),
     enabledPoint = crypto.randomUUID(),
-    target = crypto.randomUUID();
+    target = crypto.randomUUID(),
+    derived = crypto.randomUUID();
 const name = `mqtt-${crypto.randomUUID()}`;
 let link = '',
     model = '',
@@ -124,7 +125,7 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                     } else assert.deepEqual(payload, {
                         cmd: 'set',
                         device: 'D001',
-                        control: { targetTemperature: 150, enabled: false },
+                        control: { targetTemperature: 15, enabled: false },
                     });
                     ++commands;
                     socket.write(Buffer.from([0x40, 2, body[2 + size], body[3 + size]]));
@@ -181,6 +182,7 @@ try {
         commandTopic: 'factory/commands',
         commandTemplate: '{"cmd":"set","device":"$deviceCode","control":{"targetTemperature":"$point:温度","enabled":"$point:开关"}}',
         qos: 1,
+        derivedPoints: [{id:derived,name:'温度换算',kind:'expression',valueType:'number',expression:'x * 0.1 - 1',inputs:[{alias:'x',pointId:point}],unit:'℃',unitMode:'fixed',maxAgeSeconds:300,visible:true}],
         points: [
             {
                 id: point,
@@ -188,7 +190,6 @@ try {
                 field: '/metrics/temperature',
                 dataType: 'DOUBLE',
                 unit: '℃',
-                scale: 0.1,
                 writable: true,
             },
             {
@@ -219,7 +220,7 @@ try {
         }),
     });
     assert.equal(preview.records[0].deviceCode, 'D001');
-    assert.equal(preview.records[0].points[0].value, '25.6');
+    assert.equal(preview.records[0].points[0].value, '256');
     await ok('POST', '/v1/protocol/configs', { protocol: 'MQTT', name, enabled: true, config });
     model = (await db`SELECT id FROM protocol_config WHERE name=${name}`)[0].id;
     await ok('POST', '/v1/link', {
@@ -268,8 +269,9 @@ try {
     );
     for (const [index, id] of devices.entries()) {
         const [row] =
-            await db`SELECT data->'values'->${point}->>'value' AS value, EXTRACT(EPOCH FROM occurred_at)*1000 AS time FROM device_data WHERE device_id=${id} ORDER BY occurred_at DESC LIMIT 1`;
-        assert(Math.abs(Number(row.value) - (index === 0 ? 25.6 : 28.1)) < 0.00001);
+            await db`SELECT data->'values'->${point}->>'value' AS value, data->'values'->${derived}->>'value' AS derived_value, EXTRACT(EPOCH FROM occurred_at)*1000 AS time FROM device_data WHERE device_id=${id} ORDER BY occurred_at DESC LIMIT 1`;
+        assert(Math.abs(Number(row.value) - (index === 0 ? 256 : 281)) < 0.00001);
+        assert(Math.abs(Number(row.derived_value) - (index === 0 ? 24.6 : 27.1)) < 0.00001);
         assert.equal(Number(row.time), time);
     }
     await until(async () => acknowledgements > 0, 'Broker did not receive PUBACK');

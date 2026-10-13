@@ -40,14 +40,13 @@ void requireNoUnsafeParsing(std::string_view source) {
             "protocol service does not allocate queries from Context.pool()");
     require(source.find("canonicalNumericText(value.view())") != std::string_view::npos,
             "protocol integer validation does not preserve PostgreSQL exponent normalization");
-    require(source.find("compareNumeric(*text, \"1000000000\")") != std::string_view::npos,
-            "protocol decimal validation does not compare numeric values exactly");
+    require(source.find("compareNumeric(*text, upper)") != std::string_view::npos,
+            "protocol numeric validation does not compare values exactly");
     require(source.find("std::strtod") == std::string_view::npos,
             "protocol numeric validation rounds JSON numbers through double precision");
     require(source.find("1e3 becomes 1000") != std::string_view::npos,
             "protocol regression coverage does not document exponent normalization");
-    require(source.find("1000000000.000000000001") != std::string_view::npos,
-            "protocol regression coverage does not document exact decimal bounds");
+
 }
 
 void requirePartialModbusUpdateValidation(std::string_view source) {
@@ -82,8 +81,8 @@ void requireModbusRuntimeFieldValidation(std::string_view source) {
             "protocol service does not validate Modbus packet mergeGap");
     require(source.find("Modbus 配置的 packet.maxQuantity 无效") != std::string_view::npos,
             "protocol service does not validate Modbus packet maxQuantity");
-    require(source.find("Modbus 寄存器 scale 无效") != std::string_view::npos,
-            "protocol service does not validate Modbus register scale");
+    require(source.find("原生点位不支持倍率和偏移，请使用派生值表达式") != std::string_view::npos,
+            "protocol service does not reject retired native point conversions");
     require(source.find("Modbus 寄存器 decimals 无效") != std::string_view::npos,
             "protocol service does not validate Modbus register decimals");
     require(source.find("Modbus 寄存器 writable 必须是布尔值") != std::string_view::npos,

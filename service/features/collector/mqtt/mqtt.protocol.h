@@ -195,7 +195,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 if (!templatePoints.emplace(std::string(point.get<"name">().view()), point.get<"writable">().value_or(ruvia::bool_value{ false }).value_).second) {
                     throw std::invalid_argument("MQTT 点位名称重复");
                 }
-                subscription.points.push_back({ std::string(point.get<"id">().view()), std::string(point.get<"name">().view()), std::string(point.get<"field">().view()), std::string(point.get<"dataType">().view()), unit ? std::string(unit->view()) : "", point.get<"scale">().value_or(ruvia::double_value{ 1 }).value_, point.get<"offset">().value_or(ruvia::double_value{ 0 }).value_ });
+                subscription.points.push_back({ std::string(point.get<"id">().view()), std::string(point.get<"name">().view()), std::string(point.get<"field">().view()), std::string(point.get<"dataType">().view()), unit ? std::string(unit->view()) : "" });
                 if (const auto& values = point.get<"enumValues">(); values) {
                     for (const auto& value : *values) {
                         subscription.points.back().enums.emplace_back(value.get<"input">().view(), value.get<"output">().view());
@@ -458,15 +458,6 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 if (!value) {
                     throw std::invalid_argument("指令值无效");
                 }
-                if (auto* number = std::get_if<double>(&*value)) {
-                    if (!mapping->scale) {
-                        throw std::invalid_argument("倍率为零的点位不可写");
-                    }
-                    *number = (*number - mapping->offset) / mapping->scale;
-                    if (!std::isfinite(*number)) {
-                        throw std::invalid_argument("指令数值溢出");
-                    }
-                }
                 if (!mapping->enums.empty()) {
                     bool found = false;
                     for (const auto& [input, output] : mapping->enums) {
@@ -665,7 +656,6 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
 
     struct Mapping {
         std::string id, name, field, type, unit;
-        double scale = 1, offset = 0;
         std::vector<std::pair<std::string, std::string>> enums;
     };
 
@@ -964,7 +954,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 });
                 input = found == point.enums.end() ? std::nullopt : std::optional(service::utils::PayloadScalar{ found->second });
             }
-            const auto value = input ? service::utils::convertPayloadValue(*input, point.type, point.scale, point.offset) : std::nullopt;
+            const auto value = input ? service::utils::convertPayloadValue(*input, point.type) : std::nullopt;
             if (!value) {
                 continue;
             }

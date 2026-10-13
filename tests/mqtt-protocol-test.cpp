@@ -155,21 +155,21 @@ void testTextAndBinaryCommands() {
         Fixture fixture;
         auto& device = fixture.snapshot->devices.front();
         device.calculationConfig = binary
-            ? R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0:4:UTF8","payloadFormat":"binary","recordLength":6,"commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"4:2:UINT:LE","dataType":"DOUBLE","scale":0.1}]})"
-            : R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0","payloadFormat":"text","delimiter":",","recordDelimiter":";","commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"1","dataType":"DOUBLE","scale":0.1}]})";
+            ? R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0:4:UTF8","payloadFormat":"binary","recordLength":6,"commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"4:2:UINT:LE","dataType":"DOUBLE"}]})"
+            : R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0","payloadFormat":"text","delimiter":",","recordDelimiter":";","commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"1","dataType":"DOUBLE"}]})";
         device.elements.front().mqttField = binary ? "4:2:UINT:LE" : "1";
         fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
         fixture.start();
         const auto payload = binary ? std::string("0\0\0\0\0\1", 6) : "0,256;unknown,100";
         const auto actions = fixture.receive(publication("devices/0", payload, 0));
-        require(actions.size() == 2 && actions.front().kind == ProtocolActionKind::PublishParsed && actions.front().parsed.valuesJson.find("25.6") != std::string::npos, "configured text/binary report failed");
+        require(actions.size() == 2 && actions.front().kind == ProtocolActionKind::PublishParsed && actions.front().parsed.valuesJson.find("256") != std::string::npos, "configured text/binary report failed");
         const auto command = dynamic_cast<CommandCapabilitySession*>(fixture.session.get())->execute({ .id = "encoded-command", .deviceId = "0", .elements = { { "temperature", "15" } } });
         require(command.front().kind == ProtocolActionKind::Send, "configured text/binary command rejected");
-        const auto expected = binary ? std::string("0\0\0\0\x96\0", 6) : "0,150";
+        const auto expected = binary ? std::string("0\0\0\0\x0f\0", 6) : "0,15";
         require(command.front().bytes.size() >= expected.size() && std::equal(expected.begin(), expected.end(), command.front().bytes.end() - expected.size(), [](char left, std::uint8_t right) {
                     return static_cast<std::uint8_t>(left) == right;
                 }),
-                "text/binary command bytes or inverse scale incorrect");
+                "text/binary command must preserve raw values");
     }
 }
 
@@ -187,7 +187,7 @@ std::string publishedPayload(const std::vector<ProtocolAction>& actions) {
     return std::string(bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end());
 }
 
-void configureNamed(Fixture& fixture, std::string_view commandTemplate, std::string_view temperatureOptions = R"(,"scale":2,"offset":1)") {
+void configureNamed(Fixture& fixture, std::string_view commandTemplate, std::string_view temperatureOptions = "") {
     auto& device = fixture.snapshot->devices.front();
     device.code = "device\"\\code";
     device.calculationConfig = R"({"topic":"devices/0","commandTopic":"commands/0","qos":2,"identitySource":"payload","deviceCodeField":"/report/code","commandTemplate":)" +
@@ -214,12 +214,12 @@ void testNamedTemplates() {
     configureNamed(fixture, templateJson);
     fixture.start();
     const auto report = fixture.receive(publication("devices/0", R"({"report":{"code":"device\"\\code","temperature":7,"enabled":true,"label":"x","mode":"ON","other":1}})", 0));
-    require(report.front().kind == ProtocolActionKind::PublishParsed && report.front().parsed.valuesJson.find("15") != std::string::npos, "named command changed canonical report mapping");
+    require(report.front().kind == ProtocolActionKind::PublishParsed && report.front().parsed.valuesJson.find("7") != std::string::npos, "named command changed canonical report mapping");
     const std::string label = "quote\" slash\\ line\nnext";
     const auto command = fixture.execute({ .id = "named", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "1" }, { "label", label }, { "mode", "1" } } });
     const auto payload = publishedPayload(command);
-    const auto expected = R"({"device":"device\"\\code","set":{"temperature":7,"enabled":true,"label":)" + service::utils::jsonQuoted(label) + R"(,"mode":"ON"},"again":7,"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
-    require(payload == expected, "named template typed values, inverse transforms, escaping or constants incorrect");
+    const auto expected = R"({"device":"device\"\\code","set":{"temperature":15,"enabled":true,"label":)" + service::utils::jsonQuoted(label) + R"(,"mode":"ON"},"again":15,"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
+    require(payload == expected, "named template typed raw values, escaping or constants incorrect");
     require(payload.find("\"report\"") == std::string::npos && payload.find("\"other\"") == std::string::npos, "report paths leaked into command");
     const auto partial = publishedPayload(fixture.execute({ .id = "partial", .deviceId = "0", .elements = { { "enabled", "0" } } }));
     require(partial == R"({"device":"device\"\\code","set":{"enabled":false},"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})", "partial command filled absent fields or unresolved placeholders");
@@ -232,19 +232,15 @@ void testNamedTemplates() {
     configureNamed(array, R"({"set":["$point:温度","$point:开关"]})");
     array.start();
     requireCommandFailure(array.execute({ .id = "missing-slot", .deviceId = "0", .elements = { { "temperature", "15" } } }));
-    require(publishedPayload(array.execute({ .id = "all-slots", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "0" } } })) == R"({"set":[7,false]})", "fixed array template shifted slots");
+    require(publishedPayload(array.execute({ .id = "all-slots", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "0" } } })) == R"({"set":[15,false]})", "fixed array template shifted slots");
 
-    Fixture zero;
-    configureNamed(zero, R"({"set":"$point:温度"})", R"(,"scale":0)");
-    zero.start();
-    requireCommandFailure(zero.execute({ .id = "zero-scale", .deviceId = "0", .elements = { { "temperature", "15" } } }));
     Fixture legacy;
     configureNamed(legacy, R"({"device":"$deviceCode","body":"$values"})");
     legacy.start();
     const auto legacyPayloadText = publishedPayload(legacy.execute({ .id = "legacy", .deviceId = "0", .elements = { { "temperature", "15" } } }));
     const auto legacyPayload = ruvia::json_value::parse(legacyPayloadText);
     const auto legacyTemperature = legacyPayload ? service::utils::jsonField(*legacyPayload, "/body/report/temperature") : std::nullopt;
-    require(legacyTemperature && legacyTemperature->view() == "7", "legacy $values API behavior regressed");
+    require(legacyTemperature && legacyTemperature->view() == "15", "legacy $values API behavior regressed");
 
     for (const auto invalid : { R"({"x":"$unknown"})", R"({"x":"$time"})", R"({"x":"$point:不存在"})", R"({"x":1,"x":"$point:温度"})", R"(["$point:温度"])" }) {
         bool rejected = false;
@@ -260,7 +256,7 @@ void testNamedTemplates() {
 void testMultipleMessagesAndRequiredPoints() {
     Fixture fixture;
     auto& device = fixture.snapshot->devices.front();
-    device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{deviceCode}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true,"scale":2,"offset":1},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
+    device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{deviceCode}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
     device.elements = {
         {.id="temperature", .name="温度", .dataType="DOUBLE", .mqttField="temperature", .writable=true},
         {.id="enabled", .name="开关", .dataType="BOOL", .writable=true},
@@ -269,11 +265,11 @@ void testMultipleMessagesAndRequiredPoints() {
     fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     fixture.start();
     const auto selected = fixture.execute({.id="set-1", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}, .mqttMessageId="set"});
-    require(publishedPayload(selected) == R"({"action":"set","values":{"temperature":7}})", "optional property was filled or required value not converted");
+    require(publishedPayload(selected) == R"({"action":"set","values":{"temperature":15}})", "optional property was filled or required value not converted");
     const std::string wire(selected.front().bytes.begin(), selected.front().bytes.end());
     require(wire.find("devices/0/settings/zone-a") != std::string::npos, "selected command Topic was not rendered from properties");
     require(publishedPayload(fixture.execute({.id="switch-1", .deviceId="0", .elements={{"enabled","0"}}, .mqttMessageId="switch"})) == R"({"switch":false})", "other message payload was used or false value omitted");
-    require(publishedPayload(fixture.execute({.id="set-2", .deviceId="0", .elements={{"temperature","1"},{"enabled","0"},{"channel","zone-b"}}, .mqttMessageId="set"})) == R"({"action":"set","values":{"temperature":0,"enabled":false}})", "zero or false optional control value was lost");
+    require(publishedPayload(fixture.execute({.id="set-2", .deviceId="0", .elements={{"temperature","0"},{"enabled","0"},{"channel","zone-b"}}, .mqttMessageId="set"})) == R"({"action":"set","values":{"temperature":0,"enabled":false}})", "zero or false optional control value was lost");
     for (const auto& command : std::vector<ProtocolCommand>{
         {.id="missing-choice", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}},
         {.id="unknown-choice", .deviceId="0", .elements={{"enabled","1"}}, .mqttMessageId="unknown"},

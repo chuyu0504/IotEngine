@@ -50,7 +50,6 @@ inline std::uint64_t readBe64(std::span<const std::uint8_t> bytes) {
 }
 
 inline std::string decimalJson(double value, const ElementDefinition& element) {
-    value *= element.scale;
     if (element.decimals >= 0) {
         const auto factor = std::pow(10.0, static_cast<double>(element.decimals));
         value = std::round(value * factor) / factor;
@@ -66,30 +65,30 @@ inline std::string decimalJson(double value, const ElementDefinition& element) {
 inline std::optional<std::string> numericJson(std::span<const std::uint8_t> source,
                                               const ElementDefinition& element) {
     const auto bytes = orderedBytes(source, element.byteOrder);
-    const auto scaled = element.scale != 1.0 || element.decimals >= 0;
+    const auto rounded = element.decimals >= 0;
     if ((element.dataType == "UINT16" || element.dataType == "WORD") && bytes.size() >= 2) {
         const auto value = readBe16(bytes, 0);
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if (element.dataType == "INT16" && bytes.size() >= 2) {
         const auto value = static_cast<std::int16_t>(readBe16(bytes, 0));
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if ((element.dataType == "UINT32" || element.dataType == "DWORD") && bytes.size() >= 4) {
         const auto value = readBe32(bytes);
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if (element.dataType == "INT32" && bytes.size() >= 4) {
         const auto value = static_cast<std::int32_t>(readBe32(bytes));
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if (element.dataType == "UINT64" && bytes.size() >= 8) {
         const auto value = readBe64(bytes);
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if (element.dataType == "INT64" && bytes.size() >= 8) {
         const auto value = static_cast<std::int64_t>(readBe64(bytes));
-        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+        return rounded ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
     }
     if ((element.dataType == "FLOAT" || element.dataType == "FLOAT32") && bytes.size() >= 4)
         return decimalJson(std::bit_cast<float>(readBe32(bytes)), element);

@@ -77,7 +77,6 @@ import {
     buildRegisterGroupSections,
     buildRemoteTsapFromRackSlot,
     defaultConfig,
-    formatScaleValue,
     getConnectionFormValues,
     getDataTypeSize,
     getGroupKey,
@@ -861,7 +860,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                     form.setFieldsValue({
                         ...register,
                         group: normalizeGroupName(register.group) || undefined,
-                        scale: typeof register.scale === 'number' ? register.scale : 1,
                         boolLabel0: register.dictConfig?.items?.find((i) => i.key === '0')?.label,
                         boolLabel1: register.dictConfig?.items?.find((i) => i.key === '1')?.label,
                     });
@@ -870,7 +868,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                         registerType: 'HOLDING_REGISTER',
                         dataType: 'INT16',
                         writable: false,
-                        scale: 1,
                     });
                 }
                 form.setFieldValue(
@@ -941,13 +938,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             const isWritableType =
                 values.registerType === 'COIL' || values.registerType === 'HOLDING_REGISTER';
             const writable = isWritableType ? !!values.writable : false;
-            const inputScale = Number(values.scale);
-            const scale =
-                values.registerType === 'COIL' || values.registerType === 'DISCRETE_INPUT'
-                    ? 1
-                    : Number.isFinite(inputScale) && inputScale > 0
-                      ? inputScale
-                      : 1;
             const group = normalizeGroupName(values.group);
             const registerFields = {
                 name: values.name,
@@ -963,7 +953,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 quantity: actualQuantity,
                 writable,
                 unit: values.unit,
-                scale,
                 decimals: values.decimals,
                 dictConfig,
                 remark: values.remark,
@@ -1045,7 +1034,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                                             dataType: 'BOOL',
                                             decimals: undefined,
                                             writable: false,
-                                            scale: 1,
                                             byteOrder: undefined,
                                         });
                                     } else if (form.getFieldValue('dataType') === 'BOOL') {
@@ -1136,33 +1124,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                     <Flex gap={16}>
                         <Form.Item label="单位" name="unit" className="flex-1">
                             <Input placeholder="如：V、A、℃、%" />
-                        </Form.Item>
-                        <Form.Item
-                            label="缩放系数"
-                            name="scale"
-                            className="flex-1"
-                            extra="入库值 = 原始值 × 缩放系数（默认 1）"
-                            rules={[
-                                {
-                                    validator: async (_, value) => {
-                                        const numericValue = Number(value);
-                                        if (!Number.isFinite(numericValue) || numericValue <= 0) {
-                                            throw new Error('请输入大于 0 的缩放系数');
-                                        }
-                                    },
-                                },
-                            ]}
-                        >
-                            <InputNumber
-                                min={0.000001 as number}
-                                max={1000000 as number}
-                                step={0.1}
-                                precision={6}
-                                formatter={(value) => formatScaleValue(value)}
-                                parser={(value) => Number(value || 1)}
-                                className="!w-full"
-                                disabled={isBitRegister}
-                            />
                         </Form.Item>
                         {(dataType === 'FLOAT32' || dataType === 'DOUBLE') && (
                             <Form.Item label="小数位数" name="decimals" className="flex-1">
@@ -1865,9 +1826,6 @@ const ModbusConfigPage = () => {
                         <Tag>只读</Tag>
                     )}
                     {register.unit ? <Tag>{register.unit}</Tag> : null}
-                    {typeof register.scale === 'number' && register.scale !== 1 ? (
-                        <Tag color="geekblue">x{formatScaleValue(register.scale)}</Tag>
-                    ) : null}
                     {typeof register.decimals === 'number' ? (
                         <Tag>小数 {register.decimals}</Tag>
                     ) : null}
@@ -5654,7 +5612,6 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                           address: 0,
                           bit: 0,
                           byteOrder: protocol === 'MC' ? 'LITTLE_ENDIAN' : 'BIG_ENDIAN',
-                          scale: 1,
                           decimals: -1,
                       }),
             }
@@ -6256,9 +6213,6 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                                 <Form.Item name="byteOrder" label="字节序">
                                     <Select options={ByteOrderOptions} />
                                 </Form.Item>
-                                <Form.Item name="scale" label="采集值缩放系数">
-                                    <InputNumber className="w-full" />
-                                </Form.Item>
                                 <Form.Item name="decimals" label="采集值小数位（-1 保留原精度）">
                                     <InputNumber
                                         className="w-full"
@@ -6385,6 +6339,7 @@ function MqttMessageInput({
 }
 
 export function MqttConfigPage() {
+    const derivedEditor = useRef<DerivedPointsEditorRef>(null);
     const { has } = usePermissions();
     const { message } = App.useApp();
     const canQuery = has('iot:protocol:query');
@@ -6756,9 +6711,14 @@ export function MqttConfigPage() {
                                     )}
                                 </Space>
                                 {active && canEdit && (
-                                    <Button type="primary" onClick={() => edit(active)}>
-                                        编辑属性与消息
-                                    </Button>
+                                    <Space wrap>
+                                        <Button onClick={() => derivedEditor.current?.create()}>
+                                            新增派生值
+                                        </Button>
+                                        <Button type="primary" onClick={() => edit(active)}>
+                                            编辑属性与消息
+                                        </Button>
+                                    </Space>
                                 )}
                             </Flex>
                         }
@@ -6788,7 +6748,7 @@ export function MqttConfigPage() {
                                         </div>
                                     ))}
                                 </div>
-                                <div ref={viewport} className="min-h-0 flex-1">
+                                <div ref={viewport} className="min-h-0 flex-1 overflow-auto">
                                     <Table
                                         key={active.id}
                                         rowKey="id"
@@ -6802,6 +6762,11 @@ export function MqttConfigPage() {
                                             showSizeChanger: false,
                                             showTotal: (total) => `共 ${total} 个点位`,
                                         }}
+                                    />
+                                    <DerivedPointsEditor
+                                        ref={derivedEditor}
+                                        item={active}
+                                        editable={canEdit}
                                     />
                                 </div>
                             </>
@@ -6971,40 +6936,15 @@ export function MqttConfigPage() {
                                                             <div className="mb-3 break-all text-xs text-slate-500">
                                                                 属性 ID：{point.id}
                                                             </div>
-                                                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                                                                <Form.Item
-                                                                    name={[
-                                                                        'points',
-                                                                        index,
-                                                                        'scale',
-                                                                    ]}
-                                                                    label="倍率"
-                                                                    getValueFromEvent={(value) =>
-                                                                        value ?? undefined
-                                                                    }
-                                                                >
-                                                                    <InputNumber
-                                                                        className="w-full"
-                                                                        placeholder="1"
-                                                                    />
-                                                                </Form.Item>
-                                                                <Form.Item
-                                                                    name={[
-                                                                        'points',
-                                                                        index,
-                                                                        'offset',
-                                                                    ]}
-                                                                    label="偏移"
-                                                                    getValueFromEvent={(value) =>
-                                                                        value ?? undefined
-                                                                    }
-                                                                >
-                                                                    <InputNumber
-                                                                        className="w-full"
-                                                                        placeholder="0"
-                                                                    />
-                                                                </Form.Item>
-                                                            </div>
+                                                            <Form.Item
+                                                                name={['pointVisibility', point.id]}
+                                                                label="显示"
+                                                                valuePropName="checked"
+                                                                initialValue={true}
+                                                                extra="关闭后仍继续采集、计算、存储和告警。"
+                                                            >
+                                                                <Switch />
+                                                            </Form.Item>
                                                             <Form.List
                                                                 name={[
                                                                     'points',

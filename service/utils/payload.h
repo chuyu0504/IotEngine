@@ -96,7 +96,7 @@ inline std::optional<double> payloadNumber(const PayloadScalar& value) {
     return parsed.ec == std::errc{} && parsed.ptr == text->data() + text->size() && std::isfinite(result) ? std::optional(result) : std::nullopt;
 }
 
-inline std::optional<PayloadScalar> convertPayloadValue(const PayloadScalar& input, std::string_view type, double scale = 1, double offset = 0) {
+inline std::optional<PayloadScalar> convertPayloadValue(const PayloadScalar& input, std::string_view type) {
     if (type == "STRING") {
         return PayloadScalar{ payloadScalarText(input) };
     }
@@ -111,10 +111,10 @@ inline std::optional<PayloadScalar> convertPayloadValue(const PayloadScalar& inp
         return std::nullopt;
     }
     const auto number = payloadNumber(input);
-    if (!number || !std::isfinite(*number * scale + offset)) {
+    if (!number) {
         return std::nullopt;
     }
-    return PayloadScalar{ *number * scale + offset };
+    return PayloadScalar{ *number };
 }
 
 inline std::optional<std::int64_t> payloadTimestamp(const PayloadScalar& value, std::string_view format, std::string_view timezone) {

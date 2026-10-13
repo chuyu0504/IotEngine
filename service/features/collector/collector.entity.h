@@ -49,7 +49,6 @@ struct ElementDefinition {
     std::string mqttField;
     std::int64_t address = 0;
     std::int64_t quantity = 0;
-    double scale = 1.0;
     std::int64_t decimals = -1;
     std::string area;
     std::int64_t dbNumber = 0;

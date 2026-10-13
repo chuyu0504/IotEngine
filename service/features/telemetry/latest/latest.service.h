@@ -718,8 +718,6 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto observedAt = points.cast(points.binary(points.extract(ruvia::db_date_part::epoch,
         points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"observed_at">(), "point")), Op::multiply, points.value(1000)), Type::big_int);
     const auto decimals = points.coalesce({ elementText("decimals"), elementText("digits") });
-    const auto numericScale = points.coalesce({ points.case_when({ { points.binary(defaultText("scale", ""), Op::regex,
-        points.value(R"(^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$)")), points.cast(elementText("scale"), Type::numeric) } }), points.value(1) });
     const auto numericDecimals = points.coalesce({ points.case_when({ { points.binary(
         points.coalesce({ decimals, points.value("") }), Op::regex, points.value("^-?[0-9]{1,18}$")), points.cast(decimals, Type::big_int) } }), points.value(-1) });
     const auto missing = points.unary(ruvia::db_unary_operator::is_null, points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"observed_at">(), "point"));
@@ -731,7 +729,7 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
         points.cast(points.value("dataType"), ruvia::db_data_type::text), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::db_data_type::text), observedUnit,
         points.cast(points.value("visible"), Type::text), points.cast(defaultText("visible", "true"), Type::boolean),
         points.cast(points.value("quality"), Type::text), points.coalesce({points.binary(storedPoint, Op::json_get_text, points.value("quality")), points.value("missing")}),
-        points.cast(points.value("scale"), ruvia::db_data_type::text), numericScale, points.cast(points.value("decimals"), ruvia::db_data_type::text), numericDecimals,
+        points.cast(points.value("scale"), ruvia::db_data_type::text), points.value(1), points.cast(points.value("decimals"), ruvia::db_data_type::text), numericDecimals,
         points.cast(points.value("group"), ruvia::db_data_type::text), defaultText("group", ""), points.cast(points.value("encode"), ruvia::db_data_type::text), defaultText("encode", ""),
         points.cast(points.value("sort"), ruvia::db_data_type::text), points.column("sort_order", "numbered"), points.cast(points.value("protocol"), ruvia::db_data_type::text), points.column("protocol", "numbered"),
         points.cast(points.value("observedAt"), ruvia::db_data_type::text), points.case_when({ { missing, points.null_value() } }, observedAt),
@@ -742,7 +740,7 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
         .select({ points.cast(points.column("device_id", "numbered"), Type::text), points.column("device_code", "numbered"), points.column("protocol", "numbered"),
             elementText("id"), elementText("name"), observedUnit, displayValue,
             points.coalesce({ points.cast(observedAt, Type::text), points.value("") }),
-            points.coalesce({ points.null_if(elementText("scale"), points.value("")), points.value("1") }),
+            points.value("1"),
             points.coalesce({ points.null_if(decimals, points.value("")), points.value("-1") }),
             defaultText("group", ""), defaultText("encode", ""), points.cast(points.column("sort_order", "numbered"), Type::text), points.cast(json, Type::text) })
         .from("numbered")

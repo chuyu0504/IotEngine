@@ -144,7 +144,7 @@ test('MQTT text and binary selectors validate against record boundaries', () => 
     ).toBe(false);
 });
 
-test('MQTT writable mappings require command topics, invertible scale and unique enums', () => {
+test('MQTT writable mappings require command topics, raw values and unique enums', () => {
     expect(
         mqttConfigSchema.safeParse({ ...config, points: [{ ...point, writable: true }] }).success
     ).toBe(false);
@@ -241,8 +241,6 @@ test('MQTT properties retain their IDs and metadata when message bindings move o
     const metadata = {
         ...point,
         unit: '℃',
-        scale: 0.1,
-        offset: -2,
         enumValues: [{ input: 'on', output: '1' }],
     };
     const moved = compileMqttTemplate(templateDraft({
@@ -389,7 +387,7 @@ test('MQTT template drafts roundtrip metadata and remove stale commands cleanly'
     const compiled = compileMqttTemplate(templateDraft({
         commandTopic: 'commands/{deviceCode}',
         commandTemplate: '{"value":"$point:温度"}',
-        points: [{ ...point, unit: '℃', scale: 2, offset: 1 }],
+        points: [{ ...point, unit: '℃' }],
     }));
     const draft = mqttTemplateDraft(compiled);
     expect(compileMqttTemplate(draft)).toEqual(compiled);
@@ -496,4 +494,20 @@ test('MQTT canonical named commands validate known and unique names without remo
     if (!named.success) expect(named.error.issues.some((issue) =>
         issue.path.join('/') === 'points/1/name'
     )).toBe(true);
+});
+
+
+test('MQTT editing retains shared derived calculations and visibility', () => {
+    const derived = {
+        id: crypto.randomUUID(), name: '换算温度', kind: 'expression' as const,
+        valueType: 'number' as const, expression: 'x * 0.1 - 1',
+        inputs: [{alias:'x',pointId:point.id}], unitMode:'fixed' as const,
+        unit:'℃',maxAgeSeconds:300,visible:true,
+    };
+    const compiled = compileMqttTemplate({...templateDraft(),derivedPoints:[derived],pointVisibility:{[point.id]:false}});
+    expect(compiled.derivedPoints).toEqual([derived]);
+    expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
+    for (const conversion of [{scale:1},{offset:0},{scale:0.1,offset:-1}]) {
+        expect(mqttConfigSchema.safeParse({...config,points:[{...point,...conversion}]}).success).toBe(false);
+    }
 });

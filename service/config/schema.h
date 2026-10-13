@@ -10,6 +10,7 @@
 #include <utility>
 #include "service/config/model-revisions.h"
 #include "service/config/current_device_model.h"
+#include "service/config/native_points.h"
 #include "service/config/industrial_protocols.h"
 #include "service/config/channels.h"
 
@@ -1930,6 +1931,7 @@ END $schema$;
         auto result = schema.compile("0053_open_mqtt");
         return std::move(result.front());
     }(),
+    ruvia::db_migration({.id_="0054_native_point_calculations", .sql_=std::string(kNativePointCalculationsMigration)}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

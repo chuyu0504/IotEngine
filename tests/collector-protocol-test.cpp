@@ -108,24 +108,6 @@ struct FakeDbResult {
     [[nodiscard]] const FakeDbRow& operator[](std::size_t index) const { return values.at(index); }
 };
 
-struct RuntimeRepositoryScaleDb {
-    ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
-        const auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
-        const auto sql = statement.sql();
-        FakeDbResult result;
-        if (sql.find("FROM \"link\" WHERE") !=
-            std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502", "enabled", "f" });
-        } else if (sql.find("ORDER BY \"d\".\"link_id\"") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1", "f", "3E", "2007", "0", "255", "1023", "0", "16", "0", "0", "0", "0", "0", "0", "4", "", "", "{}" });
-        } else if (sql.find("\"p\".\"protocol\" = E'Modbus'") != std::string_view::npos &&
-                   sql.find("'registerType'") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN", "HOLDING_REGISTER", "0", "1", "1x", "-1", "f" });
-        }
-        co_return result;
-    }
-};
-
 struct RecordingRedis {
     explicit RecordingRedis(std::int64_t result)
         : reply(test::redisInteger(result, std::pmr::get_default_resource())) {}
@@ -1763,10 +1745,9 @@ void testModbusAllDataTypesAndByteOrders() {
     collector::ElementDefinition scaled;
     scaled.dataType = "UINT16";
     scaled.byteOrder = "BIG_ENDIAN";
-    scaled.scale = 0.1;
     scaled.decimals = 1;
     const std::array<std::uint8_t, 2> raw{ 0x04, 0xD2 };
-    require(collector::register_value::numericJson(raw, scaled) == "123.4", "Modbus scale and decimals were not applied");
+    require(collector::register_value::numericJson(raw, scaled) == "1234.0", "Modbus native numeric value must remain unscaled");
 }
 
 void testModbusAllFunctionCodes(bool tcp) {
@@ -2309,17 +2290,17 @@ void testRuntimeWritableContract() {
         { { "id", "runtime-config-element" }, { "writable", "1" } }
     );
     require(element.writable, "runtime did not deserialize writable state");
-    bool rejectedInvalidScale = false;
+    bool rejectedInvalidDecimals = false;
     try {
         (void)service::collector::config::detail::element(
-            { { "id", "runtime-config-element" }, { "scale", "1x" } }
+            { { "id", "runtime-config-element" }, { "decimals", "1x" } }
         );
     } catch (const std::runtime_error& error) {
-        rejectedInvalidScale =
-            std::string_view(error.what()).find("invalid runtime decimal: scale") !=
+        rejectedInvalidDecimals =
+            std::string_view(error.what()).find("invalid runtime integer: decimals") !=
             std::string_view::npos;
     }
-    require(rejectedInvalidScale, "runtime accepted an element scale with trailing non-decimal bytes");
+    require(rejectedInvalidDecimals, "runtime accepted an element decimals with trailing bytes");
     bool rejectedOutOfRangeSlave = false;
     try {
         (void)service::collector::config::detail::device(
@@ -2353,18 +2334,6 @@ void testRuntimeWritableContract() {
             std::string_view::npos;
     }
     require(rejectedInvalidHeartbeat, "runtime silently dropped an invalid heartbeat HEX payload");
-}
-
-void testRuntimeRepositoryRejectsInvalidScale() {
-    RuntimeRepositoryScaleDb db;
-    bool rejected = false;
-    try {
-        (void)runTask(service::configuration::loadRuntimeSnapshot(db));
-    } catch (const std::exception& error) {
-        rejected = std::string_view(error.what()).find("invalid runtime repository decimal: scale") != std::string_view::npos;
-        if (!rejected) throw std::runtime_error(std::string("unexpected runtime snapshot failure: ") + error.what());
-    }
-    require(rejected, "runtime repository accepted a Modbus scale with trailing bytes");
 }
 
 void testAtomicStreamFinalizationContract() {
@@ -3346,7 +3315,7 @@ void testEdgeRawAcquisitionContract() {
     device.protocol = "Modbus"; device.modbusMode = "TCP"; device.slaveId = 1;
     device.elements.push_back({.id="point", .name="Value", .dataType="UINT16",
         .byteOrder="BIG_ENDIAN", .registerType="HOLDING_REGISTER", .address=100, .quantity=1,
-        .scale=1, .decimals=-1, .area="D", .size=2});
+        .decimals=-1, .area="D", .size=2});
     pb::TelemetryRecord record;
     record.set_record_id(std::string(16, 1)); record.set_device_id(std::string(16, 2));
     record.set_observed_at_ms(1789582200000); record.set_protocol(pb::PROTOCOL_MODBUS);
@@ -3376,24 +3345,24 @@ void testEdgeRawAcquisitionContract() {
     device.elements[0].area="DB"; device.elements[0].dbNumber=1; device.elements[0].start=0;
     request=s7ReadRequest(12); request[24]=2; response=s7ReadResponse(12);
     append(request,response); check("4660");
-    device.elements[0].scale=0.1; device.elements[0].decimals=1; check("466.0");
-    device.elements[0].scale=1.0; device.elements[0].decimals=-1;
+    device.elements[0].decimals=1; check("4660");
+    device.elements[0].decimals=-1;
     (*record.mutable_raw_payloads(0))[12]=13; reject();
     const auto checkS7Number = [&](std::string_view type, std::vector<std::uint8_t> bytes,
-                                   double scale, std::int64_t decimals, std::string_view expected) {
+                                   std::int64_t decimals, std::string_view expected) {
         record.clear_raw_requests(); record.clear_raw_payloads();
         device.elements[0].dataType=type; device.elements[0].size=bytes.size();
-        device.elements[0].scale=scale; device.elements[0].decimals=decimals;
+        device.elements[0].decimals=decimals;
         request=s7ReadRequest(12); request[24]=static_cast<std::uint8_t>(bytes.size());
         response=s7ReadResponse(12); response.resize(25); response.insert(response.end(),bytes.begin(),bytes.end());
         response[3]=static_cast<std::uint8_t>(response.size());
         response[16]=static_cast<std::uint8_t>(4+bytes.size()); response[24]=static_cast<std::uint8_t>(bytes.size()*8);
         append(request,response); check(expected);
     };
-    checkS7Number("REAL",{0x40,0x20,0,0},2.0,1,"5.0");
-    checkS7Number("LREAL",{0x40,4,0,0,0,0,0,0},2.0,1,"5.0");
-    checkS7Number("UINT64",{0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff},0.1,1,"18446744073709551615");
-    device.elements[0].scale=1.0; device.elements[0].decimals=-1;
+    checkS7Number("REAL",{0x40,0x20,0,0},1,"2.5");
+    checkS7Number("LREAL",{0x40,4,0,0,0,0,0,0},1,"2.5");
+    checkS7Number("UINT64",{0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff},1,"18446744073709551615");
+    device.elements[0].decimals=-1;
     record.clear_raw_requests(); record.clear_raw_payloads();
     device.elements[0].dataType="BOOL"; device.elements[0].startBit=5; device.elements[0].size=1;
     request=s7ReadRequest(14); request[22]=1; request[30]=5;
@@ -3707,7 +3676,6 @@ int main() {
         run("s7 data types", testS7AllDataTypes);
         run("deadline scheduler", testDeadlineScheduler);
         run("runtime writable contract", testRuntimeWritableContract);
-        run("runtime repository invalid scale", testRuntimeRepositoryRejectsInvalidScale);
         run("atomic stream finalization contract", testAtomicStreamFinalizationContract);
         run("runtime projection Redis errors", testRuntimeProjectionRejectsRedisErrors);
         run("runtime projection previous grace", testRuntimeProjectionRefreshesPreviousGrace);

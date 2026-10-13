@@ -12,11 +12,9 @@ export interface MqttPoint {
     dataType: 'BOOL' | 'STRING' | 'DOUBLE';
     unit?: string;
     writable?: boolean;
-    scale?: number;
-    offset?: number;
     enumValues?: { input: string; output: string }[];
 }
-export interface MqttConfig {
+export interface MqttConfig extends DeviceTypeTimingConfig {
     storagePolicy: 'report' | 'change';
     topic: string;
     recordsPath?: string;
@@ -57,7 +55,8 @@ export interface MqttCommandResponse {
     successCode: number;
     timeoutMs?: number;
 }
-export interface MqttTemplateDraft {
+export interface MqttTemplateDraft
+    extends Pick<DeviceTypeTimingConfig, 'derivedPoints' | 'pointVisibility'> {
     topic: string;
     reportTemplate: string;
     commandTopic?: string;
@@ -94,7 +93,6 @@ export interface IndustrialPoint {
     address?: number;
     bit?: number;
     byteOrder?: ModbusByteOrder;
-    scale?: number;
     decimals?: number;
     identifier?: string;
     length?: number;
@@ -287,8 +285,6 @@ export interface ModbusRegister {
     quantity: number;
     /** 单位 */
     unit?: string;
-    /** 缩放系数（入库值 = 原始值 * scale，默认 1） */
-    scale?: number;
     /** 小数位数（仅 FLOAT32/DOUBLE 生效，-1 或 undefined 表示不限制） */
     decimals?: number;
     /** 是否可写（仅可写寄存器支持下发写操作） */

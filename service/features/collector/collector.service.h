@@ -152,7 +152,6 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             text(element.mqttField);
             integer(element.address);
             integer(element.quantity);
-            number(std::bit_cast<std::uint64_t>(element.scale));
             integer(element.decimals);
             number(element.writable ? 1 : 0);
             text(element.area);
@@ -404,17 +403,6 @@ inline std::vector<std::uint8_t> hexBytes(const std::vector<message::StreamField
     return result;
 }
 
-inline double decimal(const std::vector<message::StreamField>& fields, std::string_view name, double fallback = 0) {
-    const auto value = field(fields, name);
-    if (value.empty()) {
-        return fallback;
-    }
-    const auto result = service::utils::decimal(value);
-    if (!result) {
-        throw std::runtime_error("invalid runtime decimal: " + std::string(name));
-    }
-    return *result;
-}
 
 inline DeviceDefinition device(const std::vector<message::StreamField>& fields) {
     DeviceDefinition result;
@@ -475,7 +463,6 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
     result.mqttField = field(fields, "mqtt_field");
     result.address = integer(fields, "address");
     result.quantity = integer(fields, "quantity");
-    result.scale = decimal(fields, "scale", 1);
     result.decimals = integer(fields, "decimals", -1);
     result.writable = boolean(fields, "writable");
     result.area = field(fields, "area");
@@ -653,7 +640,7 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         for (const auto& element : device.elements) {
             const auto& configKey = element.configKey.empty() ? element.id : element.configKey;
             detail::appendId(commands, version, elementsKey, configKey);
-            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "mqtt_field", element.mqttField }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "scale", std::to_string(element.scale) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
+            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "mqtt_field", element.mqttField }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
             if (commands.size() >= pipelineSize) {
                 co_await detail::flush(redis, commands);
             }

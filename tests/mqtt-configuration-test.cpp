@@ -24,12 +24,12 @@ std::string configuration(std::string_view options, std::string_view pointOption
 }
 
 void testFormatsAndTime() {
-    const auto json = configuration(R"("recordsPath":"/devices","identitySource":"payload","deviceCodeField":"/code","timeField":"/time","timeFormat":"iso8601",)", R"(,"scale":0.1,"offset":-1)");
+    const auto json = configuration(R"("recordsPath":"/devices","identitySource":"payload","deviceCodeField":"/code","timeField":"/time","timeFormat":"iso8601",)", "");
     const auto result = preview(json, "devices", R"({"devices":[{"code":"D001","temperature":256,"time":"2026-01-01T08:00:00.123"},{"code":"D002","temperature":"bad"}]})");
     require(result.get<"records">().size() == 2, "nested records lost");
     const auto& record = result.get<"records">()[0];
     require(record.get<"deviceCode">().view() == "D001" && record.get<"time">().view() == "2026-01-01T00:00:00Z", "identity or timezone incorrect");
-    require(std::abs(std::stod(std::string(record.get<"points">()[0].get<"value">().view())) - 24.6) < 0.00001, "scale and offset incorrect");
+    require(std::abs(std::stod(std::string(record.get<"points">()[0].get<"value">().view())) - 256.0) < 0.00001, "native MQTT value must remain unscaled");
     require(result.get<"records">()[1].get<"errors">().size() == 1, "missing point diagnostic");
     const auto text = configuration(R"("payloadFormat":"text","identitySource":"payload","deviceCodeField":"0","delimiter":",","recordDelimiter":";",)", "", "1");
     const auto rows = preview(text, "devices", "D001,12.5;D002,18");

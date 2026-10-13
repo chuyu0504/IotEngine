@@ -398,68 +398,6 @@ class ProtocolConfigurationRules final {
         return numberFieldValid(object.get<ruvia::json_value>(field), allowString, lower, upper);
     }
 
-    static bool decimalTokenValid(std::string_view value) {
-        std::size_t index = 0;
-        if (index < value.size() && (value[index] == '+' || value[index] == '-')) {
-            ++index;
-        }
-        const auto integerStart = index;
-        while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-            ++index;
-        }
-        const auto integerDigits = index - integerStart;
-        std::size_t fractionDigits = 0;
-        bool hasDot = false;
-        if (index < value.size() && value[index] == '.') {
-            hasDot = true;
-            ++index;
-            const auto fractionStart = index;
-            while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-                ++index;
-            }
-            fractionDigits = index - fractionStart;
-        }
-        if ((integerDigits == 0 && fractionDigits == 0) || integerDigits > 18 ||
-            fractionDigits > 12) {
-            return false;
-        }
-        if (integerDigits == 0 && !hasDot) {
-            return false;
-        }
-        if (index < value.size() && (value[index] == 'e' || value[index] == 'E')) {
-            ++index;
-            if (index < value.size() && (value[index] == '+' || value[index] == '-')) {
-                ++index;
-            }
-            const auto exponentStart = index;
-            while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-                ++index;
-            }
-            if (index == exponentStart || index - exponentStart > 3) {
-                return false;
-            }
-        }
-        return index == value.size();
-    }
-
-    static bool decimalFieldValid(const std::optional<ruvia::json_value>& raw) {
-        if (!raw) {
-            return true;
-        }
-        const auto text = scalarText(*raw, true);
-        if (!text || !decimalTokenValid(*text)) {
-            return false;
-        }
-        // Compare the exact decimal token so 1000000000.000000000001 does
-        // not round down to the inclusive 1e9 limit.
-        return compareNumeric(*text, "-1000000000") >= 0 &&
-            compareNumeric(*text, "1000000000") <= 0;
-    }
-
-    static bool decimalFieldValid(const ruvia::json_value& object, std::string_view field) {
-        return decimalFieldValid(object.get<ruvia::json_value>(field));
-    }
-
     template <typename T>
     static bool modelArray(const std::optional<ruvia::json_value>& raw, std::optional<ruvia::array<T>>& parsed) {
         if (!raw) {
@@ -487,6 +425,16 @@ class ProtocolConfigurationRules final {
         }
         if (!config->is_object()) {
             service::common::fail(16004, "config 必须是对象", 400);
+        }
+        for (const auto field : {"registers", "areas", "points"}) {
+            if (const auto points = config->get<ruvia::json_value>(field); points && points->is_array()) {
+                (void)points->for_each_element([&](const ruvia::json_value& point) {
+                    if (hasField(point, "scale") || hasField(point, "offset")) {
+                        service::common::fail(16004, "原生点位不支持倍率和偏移，请使用派生值表达式", 400);
+                    }
+                    return true;
+                });
+            }
         }
         if (hasField(*config, "storageInterval")) {
             service::common::fail(16004, "配置不允许 storageInterval，请使用 storagePolicy", 400);
@@ -580,8 +528,6 @@ class ProtocolConfigurationRules final {
                     service::common::fail(16004, "MQTT 点位名称重复", 400);
                 try { if (!field.empty()) validateSelector(field); }
                 catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
-                const auto scale = point.get<"scale">().value_or(ruvia::double_value{1}).value_, offset = point.get<"offset">().value_or(ruvia::double_value{0}).value_;
-                if (!std::isfinite(scale) || !std::isfinite(offset) || (!scale && point.get<"writable">().value_or(ruvia::bool_value{false}).value_)) service::common::fail(16004, "倍率、偏移无效；可写点位倍率不能为零", 400);
                 if (const auto& enums = point.get<"enumValues">(); enums) {
                     if (enums->size() > 64) service::common::fail(16004, "最多 64 条枚举映射", 400);
                     std::set<std::string> inputs, outputs;
@@ -879,7 +825,7 @@ class ProtocolConfigurationRules final {
                 const auto bits = *type == "BOOL";
                 if (!area || !oneOf(*type, { "BOOL", "INT16", "UINT16", "INT32", "UINT32", "FLOAT32", "INT64", "UINT64", "DOUBLE" }) ||
                     !enumValueValid(point.get<"byteOrder">(), { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" }) ||
-                    !decimalFieldValid(point.get<"scale">()) || !signedIntegerFieldValid(point.get<"decimals">(), false, 2, -1, 8)) {
+                    !signedIntegerFieldValid(point.get<"decimals">(), false, 2, -1, 8)) {
                     service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
                 }
                 const auto address = integerFieldValue(point.get<"address">(), false, 8, 0, protocol == "MC" ? 16777215 : 65535);
@@ -1000,9 +946,6 @@ class ProtocolConfigurationRules final {
             if (!enumValueValid(entry.get<"byteOrder">(), { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" })) {
                 service::common::fail(16004, "Modbus 寄存器 byteOrder 无效", 400);
             }
-            if (!decimalFieldValid(entry.get<"scale">())) {
-                service::common::fail(16004, "Modbus 寄存器 scale 无效", 400);
-            }
             if (!signedIntegerFieldValid(entry.get<"decimals">(), true, 2, -1, 8)) {
                 service::common::fail(16004, "Modbus 寄存器 decimals 无效", 400);
             }
@@ -1065,10 +1008,13 @@ class ProtocolService {
 
     static MqttPreviewResult previewMqtt(const MqttPreviewBody& body) {
         try {
-            const auto& config = body.get<"config">();
-            const auto rawConfig = ruvia::to_json(config);
-            const auto parsedConfig = ruvia::json_value::parse(std::string_view(rawConfig));
+            const auto& rawConfig = body.get<"config">();
+            const auto parsedConfig = ruvia::json_value::parse(rawConfig.view());
             ProtocolConfigurationRules::validateConfig(parsedConfig, "MQTT", true);
+            validateDerivedConfig(rawConfig);
+            const auto decodedConfig = ruvia::from_json<MqttConfig>(rawConfig.view());
+            if (!decodedConfig) throw std::invalid_argument("MQTT 配置字段类型无效");
+            const auto& config = *decodedConfig;
             const auto topic = body.get<"topic">().view();
             if (topic.empty() || topic.find_first_of("+#") != std::string_view::npos || topic.find('\0') != std::string_view::npos)
                 throw std::invalid_argument("示例 Topic 须为不含通配符的具体 Topic");
@@ -1131,7 +1077,7 @@ class ProtocolService {
                         for (const auto& value : *enums) if (value.get<"input">().view() == key) { inputValue = utils::PayloadScalar{std::string(value.get<"output">().view())}; found = true; break; }
                         if (!found) inputValue.reset();
                     }
-                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view(), point.get<"scale">().value_or(ruvia::double_value{1}).value_, point.get<"offset">().value_or(ruvia::double_value{0}).value_) : std::nullopt;
+                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view()) : std::nullopt;
                     if (!value) { errors.push_back(ruvia::string(std::string(point.get<"name">().view()) + "：字段缺失或类型转换失败")); continue; }
                     MqttPreviewPoint preview;
                     preview.set<"id">(point.get<"id">().view()).set<"name">(point.get<"name">().view()).set<"value">(utils::payloadScalarText(*value)).set<"unit">(option(point.get<"unit">(), ""));

@@ -341,15 +341,6 @@ export const getModbusDeviceTypeFormValues = (data?: Protocol.Item) => {
         remark: data?.remark ?? '',
     };
 };
-export const formatScaleValue = (value: number | string | undefined | null) => {
-    if (value === null || value === undefined || value === '') return '';
-    const numericValue = Number(value);
-    if (!Number.isFinite(numericValue)) return String(value);
-    return numericValue
-        .toFixed(6)
-        .replace(/(\.\d*?)0+$/, '$1')
-        .replace(/\.$/, '');
-};
 export const normalizePacketConfig = (
     packet?: Modbus.PacketConfig
 ): Required<Modbus.PacketConfig> => {

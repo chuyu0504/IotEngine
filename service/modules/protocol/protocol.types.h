@@ -56,7 +56,6 @@ RUVIA_MODEL(ModbusRegister,
     RUVIA_OPTIONAL_FIELD(address, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(quantity, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(decimals, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value));
 RUVIA_MODEL(S7Connection,
@@ -102,7 +101,6 @@ RUVIA_MODEL(IndustrialPoint,
     RUVIA_OPTIONAL_FIELD(digits, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(area, ruvia::string),
     RUVIA_OPTIONAL_FIELD(byteOrder, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(decimals, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(address, ruvia::json_value),
     RUVIA_OPTIONAL_FIELD(bit, ruvia::json_value));
@@ -116,8 +114,6 @@ RUVIA_MODEL(MqttPoint,
     RUVIA_REQUIRED_FIELD(dataType, ruvia::string),
     RUVIA_OPTIONAL_FIELD(unit, ruvia::string),
     RUVIA_OPTIONAL_FIELD(writable, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::double_value),
-    RUVIA_OPTIONAL_FIELD(offset, ruvia::double_value),
     RUVIA_OPTIONAL_FIELD(enumValues, ruvia::array<MqttValueMapping>));
 RUVIA_MODEL(MqttDeviceParameter, RUVIA_REQUIRED_FIELD(deviceCode, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string), RUVIA_REQUIRED_FIELD(value, ruvia::json_value));
 RUVIA_MODEL(MqttCommandResponse,
@@ -149,7 +145,7 @@ RUVIA_MODEL(MqttConfig,
     RUVIA_OPTIONAL_FIELD(points, ruvia::array<MqttPoint>));
 
 RUVIA_MODEL(MqttPreviewBody,
-    RUVIA_REQUIRED_FIELD(config, MqttConfig),
+    RUVIA_REQUIRED_FIELD(config, ruvia::json_value),
     RUVIA_REQUIRED_FIELD(topic, ruvia::string, RUVIA_MIN(1, "Topic 不能为空"), RUVIA_MAX(1024, "Topic 过长")),
     RUVIA_REQUIRED_FIELD(payload, ruvia::string, RUVIA_MAX(2097152, "示例负载过长")),
     RUVIA_OPTIONAL_FIELD(deviceCode, ruvia::string, RUVIA_MAX(128, "设备编码过长")),

@@ -816,7 +816,7 @@ inline ruvia::db_query appendModbusQuery(std::string_view nodeId) {
                            query.value(std::string_view{"BIG_ENDIAN"})}),
             textDefault(query, jsonText(query, item, "address"), "0"),
             textDefault(query, jsonText(query, item, "quantity"), "1"),
-            textDefault(query, jsonText(query, item, "scale"), "1"),
+            query.value("1"),
             textDefault(query, jsonText(query, item, "decimals"), "-1"),
             booleanText(query, jsonText(query, item, "writable")),
         })
@@ -944,7 +944,7 @@ inline ruvia::db_query appendIndustrialQuery(std::string_view nodeId) {
             textDefault(query, jsonText(query, item, "byteOrder"), "BIG_ENDIAN"),
             textDefault(query, jsonText(query, item, "address"), "0"),
             textDefault(query, jsonText(query, item, "bit"), "0"),
-            textDefault(query, jsonText(query, item, "scale"), "1"),
+            query.value("1"),
             textDefault(query, jsonText(query, item, "decimals"), "-1"),
             textDefault(query, jsonText(query, item, "identifier"), ""),
             textDefault(query, jsonText(query, item, "length"), "4"),
@@ -1718,7 +1718,7 @@ class ConfigService final {
             value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}))));
             value->set_quantity(
                 static_cast<std::uint32_t>(integer(row[8].value().value_or(std::string_view{}), 1)));
-            value->set_scale(config::detail::number(row[9].value().value_or(std::string_view{}), 1.0));
+            value->set_scale(1.0);
             value->set_decimals(
                 static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1)));
             value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
@@ -1773,7 +1773,7 @@ class ConfigService final {
             value->set_byte_order(row[6].value().value_or(""));
             value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or("0"))));
             value->set_bit(static_cast<std::uint32_t>(integer(row[8].value().value_or("0"))));
-            value->set_scale(config::detail::number(row[9].value().value_or("1"), 1));
+            value->set_scale(1.0);
             value->set_decimals(static_cast<std::int32_t>(integer(row[10].value().value_or("-1"), -1)));
             value->set_identifier(row[11].value().value_or(""));
             value->set_length(static_cast<std::uint32_t>(integer(row[12].value().value_or("4"), 4)));

@@ -30,7 +30,7 @@ const latest=async()=>{
     return rows[0]?.data?.values??{};
 };
 try {
-    const registers=[{id:pressure,name:'pressure',unit:'kPa',address:0},{id:mode,name:'unit mode',unit:'',address:1}].map(p=>({...p,registerType:'HOLDING_REGISTER',dataType:'UINT16',quantity:1,scale:1}));
+    const registers=[{id:pressure,name:'pressure',unit:'kPa',address:0},{id:mode,name:'unit mode',unit:'',address:1}].map(p=>({...p,registerType:'HOLDING_REGISTER',dataType:'UINT16',quantity:1}));
     const definition={id:derived,name:'normalized pressure',kind:'expression',valueType:'number',expression:'if(mode == 1, p / 1000, p)',inputs:[{alias:'p',pointId:pressure},{alias:'mode',pointId:mode}],unit:'kPa',unitMode:'conditional',unitRules:[{condition:'mode == 1',unit:'MPa'}],maxAgeSeconds:3,visible:true};
     const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers,derivedPoints:[definition,{...definition,id:average,name:'average',kind:'average',sourceAlias:'p',windowSeconds:2,unitMode:'fixed',unitRules:[],unit:'kPa',inputs:[{alias:'p',pointId:pressure}],maxAgeSeconds:10}],pointVisibility:{[pressure]:false}};
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;

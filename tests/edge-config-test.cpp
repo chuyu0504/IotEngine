@@ -131,9 +131,9 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(items.find("commandFastReadInterval") !=
                 std::string_view::npos,
             "edge config buildItems ignores the configured fast-read interval");
-    require(modbus.find("scale") !=
+    require(modbus.find("scale") ==
                 std::string_view::npos,
-            "edge config Modbus query does not leave scale for strict C++ parsing");
+            "edge config Modbus query still reads retired native scale");
     require(s7.find("start") != std::string_view::npos,
             "edge config S7 query does not leave start for strict C++ parsing");
     require(sl651.find("length") != std::string_view::npos,

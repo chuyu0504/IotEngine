@@ -55,7 +55,7 @@ const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
 const link=uuid(),target=uuid(),model=uuid(),device1=uuid(),device2=uuid(),point=uuid(),secondPoint=uuid();
 const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v4:${scope}:${id}`]).then(Number);
 try {
-    const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1,scale:1},{id:secondPoint,name:'second',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:200,quantity:1,scale:1}]};
+    const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1},{id:secondPoint,name:'second',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:200,quantity:1}]};
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
     const endpoint={transport:'tcp',mode:'TCP Client',ip:'',port:0,targets:[{id:target,name:'local',ip:'127.0.0.1',port:server.port,status:'enabled'}]};
     await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by) VALUES(${link},${link},'Modbus',${endpoint}::jsonb,'enabled','collector',${admin})`;

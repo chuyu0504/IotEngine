@@ -134,19 +134,12 @@ template <typename Row> bool cellBool(const Row& row, std::size_t column) {
     const auto value = row[column].value().value_or(std::string_view{});
     return value == "t" || value == "true" || value == "1";
 }
-inline double decimal(std::string_view value, std::string_view name) {
-    const auto parsed = service::utils::decimal(value);
-    if (!parsed)
-        throw std::runtime_error("invalid runtime repository decimal: " + std::string(name));
-    return *parsed;
-}
 } // namespace detail
 
 template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Database& db) {
     using detail::cell;
     using detail::cellBool;
     using detail::cellInt;
-    using detail::decimal;
     RuntimeSnapshot snapshot;
 
     using Op = ruvia::db_binary_operator;
@@ -454,7 +447,7 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         elementText(modbusQuery, "dataType"), modbusQuery.coalesce({ elementText(modbusQuery, "byteOrder"),
             modbusQuery.binary(modbusQuery.column("config", "p"), Op::json_get_text, modbusQuery.value("byteOrder")), modbusQuery.value("BIG_ENDIAN") }),
         elementText(modbusQuery, "registerType"), elementText(modbusQuery, "address"), elementText(modbusQuery, "quantity"),
-        elementDefault(modbusQuery, "scale", "1"), elementDefault(modbusQuery, "decimals", "-1"), writableElement(modbusQuery) });
+        modbusQuery.value("1"), elementDefault(modbusQuery, "decimals", "-1"), writableElement(modbusQuery) });
     orderElementAddress(modbusQuery, "address");
     const auto modbusElements = co_await db.query(modbusQuery);
     for (const auto& row : modbusElements) {
@@ -471,7 +464,6 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         element.registerType = cell(row, 6);
         element.address = cellInt(row, 7);
         element.quantity = cellInt(row, 8);
-        element.scale = decimal(row[9].value().value_or(std::string_view{}), "scale");
         element.decimals = cellInt(row, 10);
         element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
@@ -483,7 +475,7 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             elementText(query, "id"), elementText(query, "name"), elementDefault(query, "unit", ""),
             elementText(query, "dataType"), elementDefault(query, "byteOrder", std::string_view(protocol) == "MC" ? "LITTLE_ENDIAN" : "BIG_ENDIAN"),
             elementDefault(query, "area", ""), elementDefault(query, "address", "0"),
-            elementDefault(query, "bit", "0"), elementDefault(query, "scale", "1"),
+            elementDefault(query, "bit", "0"), query.value("1"),
             elementDefault(query, "decimals", "-1"), writableElement(query),
             elementDefault(query, "identifier", ""), elementDefault(query, "length", "0"),
             elementDefault(query, "digits", "0")});
@@ -497,7 +489,6 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             element.id = cell(row, 1); element.name = cell(row, 2); element.unit = cell(row, 3);
             element.dataType = cell(row, 4); element.byteOrder = cell(row, 5); element.area = cell(row, 6);
             element.address = cellInt(row, 7); element.startBit = cellInt(row, 8);
-            element.scale = decimal(row[9].value().value_or(std::string_view{}), "scale");
             element.decimals = cellInt(row, 10); element.writable = cellBool(row, 11);
             element.guideHex = cell(row, 12); element.length = cellInt(row, 13); element.digits = cellInt(row, 14);
             if (element.dataType == "HEX") element.encoding = "HEX";

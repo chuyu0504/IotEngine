@@ -57,7 +57,6 @@ class RawAcquisition final {
                 element.registerType = config.register_type();
                 element.address = config.address();
                 element.quantity = config.quantity();
-                element.scale = config.scale();
                 element.decimals = config.decimals();
             } else if (item.has_s7_area()) {
                 const auto& config = item.s7_area();
@@ -70,7 +69,6 @@ class RawAcquisition final {
                 element.start = config.start();
                 element.startBit = config.start_bit();
                 element.size = config.size();
-                element.scale = config.scale();
                 element.decimals = config.decimals();
             } else if (item.has_industrial_point()) {
                 const auto& config = item.industrial_point();
@@ -82,7 +80,6 @@ class RawAcquisition final {
                 element.area = config.area();
                 element.address = config.address();
                 element.startBit = config.bit();
-                element.scale = config.scale();
                 element.decimals = config.decimals();
                 element.guideHex = config.identifier();
                 element.length = config.length();

@@ -1646,7 +1646,6 @@ class Session final : public ProtocolSession,
                     interpretation.byteOrder = "BIG_ENDIAN";
                     // 固件的 64 位整数保持原始精度，其余数值应用测点倍率与小数位。
                     if (interpretation.dataType == "INT64" || interpretation.dataType == "UINT64") {
-                        interpretation.scale = 1.0;
                         interpretation.decimals = -1;
                     }
                     value = register_value::numericJson(bytes, interpretation);
