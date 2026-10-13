@@ -447,6 +447,8 @@ class ProtocolConfigurationRules final {
             service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         }
 
+        // MQTT 属性与消息的跨字段约束在加锁后的合并配置上统一校验。
+        if (protocol == "MQTT" && !required) return;
         if (protocol == "MQTT" && config->get<ruvia::json_value>("reports")) {
             try {
                 for (const auto& wire : service::common::mqttReportConfigurations(*config)) {
