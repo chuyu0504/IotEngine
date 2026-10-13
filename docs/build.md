@@ -9,7 +9,7 @@ Ruvia 使用带 SHA-256 校验的归档，其依赖由本项目清单统一提�
 ## 工具链
 
 - CMake 3.28 或更新版本、Git、Bun 1.3.14，以及已 bootstrap 的 vcpkg，`VCPKG_ROOT` 指向其根目录。
-- Linux：Clang 19、GCC 14 标准库、Ninja、NASM、pkg-config、Bison、Flex、Make、curl、zip、unzip、tar。
+- Linux：Ubuntu 24.04、GCC 13（`gcc-13` / `g++-13`）、Ninja、NASM、pkg-config、Bison、Flex、Make、curl、zip、unzip、tar；与固定版本 Ruvia 的 Linux CI 工具链一致。
 - Windows：MSVC C++ 工具链和 Windows SDK；vcpkg 自行获取 NASM、MSYS2 等端口构建工具。
 
 具体工具安装步骤与 CI 保持一致，见 `.github/workflows/build.yml`。
@@ -28,7 +28,7 @@ bun install --frozen-lockfile
 Linux：
 
 ```sh
-CC=clang-19 CXX=clang++-19 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+CC=gcc-13 CXX=g++-13 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
@@ -49,7 +49,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-当前固定 Ruvia `eb7a41006f4b260adea8168012a8d0298c499eff`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
+当前固定 Ruvia `eb7a41006f4b260adea8168012a8d0298c499eff`，使用经 SHA-256 校验的上游归档；`ports/cmake/patch-ruvia.cmake` 仅消除字符分类、lambda 捕获和生成比较运算符的编译告警，不改变公开 API 或协议。补丁按精确原文匹配，并验证重复执行与源码漂移。
 该版本在响应编码协商失败时保留已有的 4xx/5xx 状态，统一 HTTP 客户端连接池的取消处理，
 并清理未使用的内部实现；项目继续使用上游公开 API。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；

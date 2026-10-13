@@ -132,8 +132,8 @@ jobs:
     name: Ubuntu build
     runs-on: ubuntu-24.04
     env:
-      CC: clang-19
-      CXX: clang++-19
+      CC: gcc-13
+      CXX: g++-13
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg
     steps:
@@ -145,12 +145,11 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make redis-server
-          clang-19 --version
-          clang++-19 --version
-          clang-scan-deps-19 --version
+          sudo apt-get install -y gcc-13 g++-13 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make redis-server
+          "$CC" --version
+          "$CXX" --version
           printf '#include <expected>\nint main() { std::expected<int, int> value{42}; return *value == 42 ? 0 : 1; }\n' > /tmp/iot-cxx23.cpp
-          clang++-19 -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
+          "$CXX" -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
           /tmp/iot-cxx23
 
       - name: Set up Bun
@@ -174,9 +173,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-clang19-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcc13-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-${{ runner.arch }}-clang19-
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-gcc13-
 
       - name: Configure
         id: configure
