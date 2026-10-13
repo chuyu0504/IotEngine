@@ -185,12 +185,10 @@ try {
         'message_id',
         id(),
     ];
-    // Recovery must also read a new result when its wake notification was missed.
-    await Bun.sleep(300);
-    await redis.send('XADD', ['iot:v3:command-result', '*', ...result]);
+    await publishFixtureEvent(redis, 'iot:v3:command-result', result, 'command-result');
     await until(
         async () => (await commandStatus()) === 'SUCCEEDED',
-        'late confirmed result without a wake notification must resolve UNKNOWN'
+        'late confirmed result must resolve UNKNOWN'
     );
     await publishFixtureEvent(redis, 'iot:v3:command-result', result, 'command-result');
     await Bun.sleep(1200);

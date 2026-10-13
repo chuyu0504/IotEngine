@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { apiBase, databaseUrl } from './architecture-fixture';
+import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
 const admin = '00000000-0000-7000-8000-000000000002';
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
 const now = Math.floor(Date.now() / 1000);
@@ -325,8 +326,15 @@ try {
     await until(async () => (await status(expired.command_ids[0])).status === 'UNKNOWN', 'missing result did not become unconfirmed');
     await Bun.sleep(1100);
     assert.equal(commands, beforeTimeout, 'control was automatically replayed');
+    // Model a delayed collector result whose separate wake notification was lost.
+    await redis.send('XADD', ['iot:v3:command-result', '*',
+        'command_id', expired.command_ids[0], 'device_id', devices[0], 'device_code', 'D001',
+        'success', '1', 'result_state', 'SUCCEEDED', 'message_id', crypto.randomUUID(),
+        'reason', 'fixture_delayed_result']);
+    await until(async () => (await status(expired.command_ids[0])).status === 'SUCCEEDED',
+        'result with a missing wake notification was not consumed');
     console.log(
-        `PASS MQTT integration: two devices, telemetry, legacy PUBACK, generic parameters, matched device success/failure, timeout without replay`
+        `PASS MQTT integration: two devices, telemetry, legacy PUBACK, generic parameters, matched device success/failure, timeout without replay, missed result wake recovery`
     );
 } finally {
     for (const device of devices) await http('DELETE', `/v1/device/${device}`);
@@ -334,5 +342,6 @@ try {
     if (model) await http('DELETE', `/v1/protocol/configs/${model}`);
     for (const socket of clients) socket.end();
     broker.stop(true);
+    redis.close();
     await db.close();
 }
