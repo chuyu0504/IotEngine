@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { isDeviceOnline } from '../web/pages/device/device.service';
+import { getDeviceCardElements, isDeviceOnline } from '../web/pages/device/device.service';
 import { type Device } from '../web/pages/device/device.types';
 
 const device = (values: Partial<Device.Overview>): Device.Overview =>
@@ -46,4 +46,22 @@ describe('device online state', () => {
             )
         ).toBeFalse();
     });
+});
+
+test('MQTT cards exclude control-only values even when they have cached telemetry', () => {
+    const value = device({
+        cardPointIds: ['report-a', 'report-b', 'derived'],
+        elements: [
+            { id: 'report-a', name: '测量', value: 12 },
+            { id: 'control', name: '控制参数', value: 99 },
+            { id: 'report-b', name: '状态', value: 1 },
+            { id: 'derived', name: '派生值', value: 24 },
+            { id: 'hidden', name: '隐藏原始值', value: 120, visible: false },
+        ],
+    });
+    expect(getDeviceCardElements(value).map((item) => item.id)).toEqual([
+        'report-a', 'report-b', 'derived',
+    ]);
+    expect(getDeviceCardElements({ ...value, cardPointIds: [] })).toEqual([]);
+    expect(getDeviceCardElements({ ...value, cardPointIds: undefined })).toHaveLength(4);
 });

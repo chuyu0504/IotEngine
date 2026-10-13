@@ -1478,6 +1478,33 @@ return result
         query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.null_if(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.case_when({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.case_when({ { edgeExecution, query.null_if(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l"), query.coalesce({ DeviceAccessService::jsonValue(query, protocolParams, "parameters"), query.cast(query.value("{}"), ruvia::db_data_type::jsonb) }), query.column("config", "p") });
     }
 
+    static std::vector<std::string> mqttCardPointIds(std::string_view wire) {
+        const auto config = ruvia::from_json<DeviceMqttCardConfiguration>(wire);
+        if (!config) throw std::runtime_error("MQTT 设备卡片配置无效");
+        std::set<std::string, std::less<>> reported;
+        const auto& reports = config->get<"reports">();
+        if (reports) for (const auto& report : *reports)
+            for (const auto& field : report.get<"pointFields">())
+                reported.emplace(field.get<"pointId">().view());
+        const auto visible = [&](const DeviceCardPoint& point) {
+            if (const auto& visibility = config->get<"pointVisibility">(); visibility) {
+                if (const auto overrideValue = visibility->get<ruvia::bool_value>(point.get<"id">().view()))
+                    return static_cast<bool>(*overrideValue);
+            }
+            return static_cast<bool>(point.get<"visible">().value_or(ruvia::bool_value{true}));
+        };
+        std::vector<std::string> result;
+        for (const auto& point : config->get<"points">()) {
+            const bool mapped = reports ? reported.contains(point.get<"id">().view())
+                : point.get<"field">() && !point.get<"field">()->view().empty();
+            if (mapped && visible(point)) result.emplace_back(point.get<"id">().view());
+        }
+        if (const auto& derived = config->get<"derivedPoints">(); derived)
+            for (const auto& point : *derived)
+                if (visible(point)) result.emplace_back(point.get<"id">().view());
+        return result;
+    }
+
     template <typename Context, typename Row>
     static void fillItem(Context& c, DeviceItemDto& item, Row&& row, const DeviceActor& actor) {
         auto parameters = ruvia::json_object::parse(row[44].value().value_or("{}"));
@@ -1556,6 +1583,13 @@ return result
             row[9].value().value_or(std::string_view{}) == "t"
         );
         item.template set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})));
+        if (row[25].value().value_or("") == "MQTT") {
+            const auto points = mqttCardPointIds(row[45].value().value_or("{}"));
+            ruvia::array<ruvia::string> ids(ruvia::model_options{.resource_ = c.arena()});
+            for (const auto& id : points) ids.emplace_back(id);
+            item.template set<"cardPointIds">(std::move(ids));
+            item.template set<"elementCount">(static_cast<std::int64_t>(points.size()));
+        }
         item.template set<"connected">(false);
         item.template set<"connectionState">("disconnected");
         item.template set<"elements">(ruvia::boxed_array<DeviceElementDto>(

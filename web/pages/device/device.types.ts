@@ -167,6 +167,8 @@ export interface UpdateDeviceDto {
 }
 /** 设备静态数据（不包含实时数据） */
 export interface DeviceStaticData extends EdgeConnection {
+    /** MQTT 卡片展示的上报点位及可见派生值 UUID。 */
+    cardPointIds?: string[];
     parameterDefinitions?: DeviceParameterDefinition[];
     debug_enabled?: boolean;
     link_debug_enabled?: boolean;

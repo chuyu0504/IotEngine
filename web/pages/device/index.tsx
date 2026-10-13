@@ -71,6 +71,7 @@ import {
     saveDeviceSchema,
 } from './device.schema';
 import {
+    getDeviceCardElements,
     getDeviceDetail,
     isDeviceOnline,
     summarizeDeviceCommandResult,
@@ -1489,20 +1490,18 @@ const formatElementValue = (element: Device.Element) => {
 };
 const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     if (device.elements?.length) {
-        return device.elements
-            .filter((element) => element.visible !== false)
-            .map((element, index) => ({
-                key: index,
-                label: element.name,
-                children: formatElementValue(element),
-                group: element.group,
-            }));
+        return getDeviceCardElements(device).map((element, index) => ({
+            key: index,
+            label: element.name,
+            children: formatElementValue(element),
+            group: element.group,
+        }));
     }
     const count = device.element_count ?? 0;
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
 };
 const getDeviceDisplayElementCount = (device: Device.Overview) =>
-    device.element_count ?? device.elements?.length ?? 0;
+    device.cardPointIds?.length ?? device.element_count ?? device.elements?.length ?? 0;
 const edgeNodeLabel = (device: Device.Overview) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
 const edgeEndpointLabel = (device: Device.Overview) => {

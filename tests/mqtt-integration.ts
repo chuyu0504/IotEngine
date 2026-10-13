@@ -266,6 +266,9 @@ try {
         devices.push((await db`SELECT id FROM device WHERE name=${`${name}-${code}`}`)[0].id);
     }
     published = true;
+    const card = () => ok('GET', `/v1/device/${devices[0]}`);
+    assert.deepEqual((await card()).cardPointIds, [point, enabledPoint, derived], 'card must include the union of reports and visible derived values');
+    assert.equal((await card()).element_count, 3);
     for (const socket of clients) telemetry(socket);
     await until(
         async () =>
@@ -290,6 +293,10 @@ try {
     const previousAcknowledgements = acknowledgements;
     await ok('PUT',`/v1/protocol/configs/${model}`,{config:{reports:[config.reports[0]]}});
     assert.equal((await ok('GET',`/v1/protocol/configs/${model}`)).config.reports.length,1,'deleted report survived save');
+    await until(async () => {
+        const current = await card();
+        return JSON.stringify(current.cardPointIds) === JSON.stringify([point, derived]) && current.element_count === 2;
+    }, 'removing a report did not remove its control-only point from the card');
     await until(async () => {
         const connection = await redis.send('HGET', [connectionKey, 'connection_id']);
         return !!connection && connection !== previousConnection && acknowledgements > previousAcknowledgements;
@@ -363,6 +370,12 @@ try {
         'reason', 'fixture_delayed_result']);
     await until(async () => (await status(expired.command_ids[0])).status === 'SUCCEEDED',
         'result with a missing wake notification was not consumed');
+    await ok('PUT', `/v1/protocol/configs/${model}`, {config:{pointVisibility:{[point]:false}}});
+    await until(async () => JSON.stringify((await card()).cardPointIds) === JSON.stringify([enabledPoint, derived]),
+        'explicitly hidden report point remained on the card');
+    await ok('PUT', `/v1/protocol/configs/${model}`, {config:{reports:null,pointVisibility:{}}});
+    await until(async () => JSON.stringify((await card()).cardPointIds) === JSON.stringify([point, enabledPoint, derived]),
+        'legacy single-message field mappings were not included on the card');
     console.log(
         `PASS MQTT integration: two devices, telemetry, legacy PUBACK, generic parameters, matched device success/failure, timeout without replay, missed result wake recovery`
     );

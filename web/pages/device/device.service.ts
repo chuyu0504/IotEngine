@@ -7,6 +7,12 @@ import { retainNewerRecords } from '@/utils/versioned_records';
 import * as api from './device.api';
 import { getDebugPackets, setDebug as saveDebugSwitch } from './device.api';
 import type { Device, DeviceGroup } from './device.types';
+export const getDeviceCardElements = (device: Device.Overview) => {
+    const ids = device.cardPointIds && new Set(device.cardPointIds);
+    return (device.elements ?? []).filter(
+        (element) => element.visible !== false && (!ids || (element.id && ids.has(element.id)))
+    );
+};
 export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
     if (!device.reportTime) return false;
     const reportTime = parseDateTime(device.reportTime);
