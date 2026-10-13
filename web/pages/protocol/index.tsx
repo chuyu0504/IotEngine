@@ -60,8 +60,8 @@ import {
     checkAddressConflict,
     compileMqttTemplate,
     derivedPointSchema,
-    formatTsapValue,
     formatMqttTemplate,
+    formatTsapValue,
     industrialConfigSchema,
     mqttCommandPoints,
     mqttTemplateDraft,
@@ -103,8 +103,8 @@ import {
     supportsBitAddress,
     supportsS7Decimals,
     testProtocolExpression,
-    useProtocolConfigDelete,
     useDlt645PointCreate,
+    useProtocolConfigDelete,
     useProtocolConfigImport,
     useProtocolConfigList,
     useProtocolConfigSave,
@@ -122,8 +122,8 @@ import type {
     Modbus,
     DeviceTypeModalRef as ModbusDeviceTypeModalRef,
     ModbusDictConfig,
-    MqttConfig,
     MqttCommandMessage,
+    MqttConfig,
     MqttPoint,
     MqttPreviewResult,
     MqttTemplateDraft,
@@ -6327,6 +6327,7 @@ function MqttMessageInput({
     const options = [
         { label: '设备编码', value: topic ? '{deviceCode}' : '"$deviceCode"' },
         ...(!topic && report ? [{ label: '设备时间', value: '"$time"' }] : []),
+        ...(!topic && !report ? [{ label: '自动指令编号', value: '"$commandId"' }] : []),
         ...(topic && report
             ? []
             : points
@@ -7128,6 +7129,27 @@ export function MqttConfigPage() {
                                                     report
                                                 />
                                             </Form.Item>
+                                            <Form.Item
+                                                name="deviceParameters"
+                                                label="设备参数（JSON）"
+                                                extra={
+                                                    '按 deviceCode 绑定参数，控制模板用 "$param:参数名" 引用，保留参数的 JSON 类型。'
+                                                }
+                                                getValueProps={(value: unknown) => ({
+                                                    value:
+                                                        typeof value === 'string'
+                                                            ? value
+                                                            : JSON.stringify(value ?? [], null, 2),
+                                                })}
+                                                getValueFromEvent={(event) => event.target.value}
+                                            >
+                                                <Input.TextArea
+                                                    rows={5}
+                                                    placeholder={
+                                                        '[{"deviceCode":"D001","name":"address","value":"A001"}]'
+                                                    }
+                                                />
+                                            </Form.Item>
                                             <Divider titlePlacement="start">控制消息 Topic</Divider>
                                             {commands.map((command, index) => (
                                                 <Card
@@ -7452,11 +7474,46 @@ export function MqttConfigPage() {
                                                                             'template',
                                                                         ]}
                                                                         label="控制消息模板"
-                                                                        extra="属性值按已定义的类型生成 JSON，不用在下发时填写完整报文。"
+                                                                        extra={
+                                                                            '属性值按类型生成 JSON；"$commandId" 自动生成整数编号，"$param:参数名" 引用当前设备参数。'
+                                                                        }
                                                                     >
                                                                         <MqttMessageInput
                                                                             label={`控制消息 ${field.name + 1} 模板`}
                                                                             points={points}
+                                                                        />
+                                                                    </Form.Item>
+                                                                    <Form.Item
+                                                                        name={[
+                                                                            field.name,
+                                                                            'response',
+                                                                        ]}
+                                                                        label="设备回执规则（JSON，可选）"
+                                                                        extra="配置后等待设备回执；matchFields 与原指令同路径字段比较，必须包含指令编号。超时不会自动重发。留空时仅确认 Broker 接收。"
+                                                                        getValueProps={(
+                                                                            value: unknown
+                                                                        ) => ({
+                                                                            value:
+                                                                                typeof value ===
+                                                                                'string'
+                                                                                    ? value
+                                                                                    : value
+                                                                                      ? JSON.stringify(
+                                                                                            value,
+                                                                                            null,
+                                                                                            2
+                                                                                        )
+                                                                                      : '',
+                                                                        })}
+                                                                        getValueFromEvent={(
+                                                                            event
+                                                                        ) => event.target.value}
+                                                                    >
+                                                                        <Input.TextArea
+                                                                            rows={6}
+                                                                            placeholder={
+                                                                                '{"topic":"devices/{deviceCode}/result","matchFields":["/id"],"codeField":"/code","successCode":0,"timeoutMs":10000}'
+                                                                            }
                                                                         />
                                                                     </Form.Item>
                                                                     <Form.Item

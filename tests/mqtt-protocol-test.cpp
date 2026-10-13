@@ -299,8 +299,60 @@ void testMultipleMessagesAndRequiredPoints() {
 }
 } // namespace
 
+void testConfiguredCommandResponses() {
+    Fixture fixture(true);
+    const std::string config = R"({"topic":"devices/{deviceCode}/up","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","deviceParameters":[{"deviceCode":"0","name":"route","value":"A0"},{"deviceCode":"1","name":"route","value":"A1"}],"points":[{"id":"temperature","name":"温度","field":"value","dataType":"DOUBLE","writable":true}],"commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/down","template":"{\"id\":\"$commandId\",\"route\":\"$param:route\",\"operation\":\"set\",\"value\":\"$point:温度\"}","requiredPointIds":["temperature"],"response":{"topic":"devices/{deviceCode}/result","matchFields":["/id","/route","/operation"],"codeField":"/result/code","successCode":0,"timeoutMs":10000}}]})";
+    for (auto& device : fixture.snapshot->devices) device.calculationConfig = config;
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    (void)fixture.session->connected();
+    const auto subscriptions = fixture.receive({0x20, 2, 0, 0});
+    const std::string subscriptionBytes(subscriptions.front().bytes.begin(), subscriptions.front().bytes.end());
+    require(subscriptionBytes.find("devices/0/result") != std::string::npos && subscriptionBytes.find("devices/1/result") != std::string::npos, "device result topics were not subscribed");
+    (void)fixture.receive({0x90, 6, 0, 1, 1, 1, 1, 1});
+    auto issue = [&](std::string id, std::string device = "0") {
+        return fixture.execute({.id = std::move(id), .deviceId = std::move(device), .elements = {{"temperature", "12.5"}}, .mqttMessageId = "set"});
+    };
+    auto requestId = [](const std::vector<ProtocolAction>& actions) {
+        const std::string frame(actions.front().bytes.begin(), actions.front().bytes.end());
+        require((actions.front().bytes.front() & 1) == 0, "control message must never be retained");
+        const auto payload = frame.substr(frame.find('{'));
+        const service::utils::PayloadRecord sent(payload, "json", ",");
+        const auto id = sent.field("id");
+        require(id && std::holds_alternative<double>(*id) && std::get<double>(*id) > 0 && std::get<double>(*id) <= 9007199254740991., "command ID is not a safe positive JSON integer");
+        require(sent.field("route") == service::utils::PayloadScalar{"A0"}, "device parameter was not substituted");
+        return service::utils::payloadScalarJson(*id);
+    };
+    const auto first = issue("business-1");
+    const auto firstId = requestId(first);
+    const auto ack = fixture.receive({0x40, 2, 0, 2});
+    require(std::none_of(ack.begin(), ack.end(), [](const auto& action) { return action.kind == ProtocolActionKind::CompleteCommand; }), "broker PUBACK reported device success");
+    auto result = [&](const std::string& id, std::string route = "A0", std::string operation = "set", int code = 0) {
+        return "{\"id\":" + id + ",\"route\":\"" + route + "\",\"operation\":\"" + operation + "\",\"result\":{\"code\":" + std::to_string(code) + ",\"response_hex\":null}}";
+    };
+    auto completed = [](const auto& actions) { return std::count_if(actions.begin(), actions.end(), [](const auto& action) { return action.kind == ProtocolActionKind::CompleteCommand || action.kind == ProtocolActionKind::FailCommand; }); };
+    for (const auto& payload : {result("1"), result(firstId, "A1"), result(firstId, "A0", "other")})
+        require(completed(fixture.receive(publication("devices/0/result", payload, 1))) == 0, "unmatched result completed command");
+    require(completed(fixture.receive(publication("devices/1/result", result(firstId), 1))) == 0, "other device completed command");
+    auto retained = publication("devices/0/result", result(firstId), 1); retained.front() |= 1;
+    require(completed(fixture.receive(retained)) == 0, "retained result completed command");
+    const auto success = fixture.receive(publication("devices/0/result", result(firstId), 1));
+    require(completed(success) == 1 && success.front().commandId == "business-1" && success.front().kind == ProtocolActionKind::CompleteCommand, "matched device success missing");
+    require(completed(fixture.receive(publication("devices/0/result", result(firstId), 1))) == 0, "duplicate result completed command twice");
+    const auto second = issue("business-2");
+    const auto secondId = requestId(second);
+    require(secondId != firstId, "new command reused numeric ID");
+    const auto failure = fixture.receive(publication("devices/0/result", result(secondId, "A0", "set", 1), 1));
+    require(completed(failure) == 1 && failure.front().kind == ProtocolActionKind::FailCommand && failure.front().reason.find("response_hex") != std::string::npos, "device failure or raw result lost");
+    require(completed(fixture.receive({0x40, 2, 0, 3})) == 0, "late PUBACK completed failed command");
+    const auto third = issue("business-3");
+    (void)fixture.receive({0x40, 2, 0, 4});
+    const auto timeout = dynamic_cast<DeadlineCapabilitySession*>(fixture.session.get())->deadline(third.back().deadlineToken);
+    require(timeout.size() == 1 && timeout.front().kind == ProtocolActionKind::FailCommand && timeout.front().reason == "mqtt_device_response_timeout", "response timeout retried or closed unrelated devices");
+}
+
 int main() {
     try {
+        testConfiguredCommandResponses();
         testFramingAndRouting();
         testQos2AndCommand();
         testFailuresAndKeepAlive();

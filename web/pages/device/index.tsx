@@ -2318,10 +2318,10 @@ const DeviceGridItem = memo(
                             >
                                 <Tooltip
                                     title={
-                                        !device.can_command
-                                            ? '当前账号没有设备下发权限'
-                                            : !canRemoteControl
-                                              ? '该设备已禁止远控'
+                                        !canRemoteControl
+                                            ? '该设备未开启远程控制'
+                                            : !device.can_command
+                                              ? '当前账号没有设备下发权限'
                                               : online
                                                 ? '下发指令'
                                                 : '设备离线（点击后将提示）'

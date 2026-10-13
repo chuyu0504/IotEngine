@@ -26,6 +26,34 @@ flowchart LR
 3. 创建设备，选择该链路、Broker 目标和解析模板，填写设备编码。编码须与 Topic 或消息中提取的值一致。相同 Broker 目标内设备编码唯一。
 4. 启用链路和设备。配置变更后连接重新建立并订阅；Broker 断线沿用 TCP Client 的有界重连机制。
 
+### 通用控制参数与设备回执
+
+控制模板支持 `"$commandId"`：发送时生成 JSON 安全整数编号，同一会话中递增；平台内部指令 ID 仍为 UUID。`"$param:名称"` 引用当前设备的参数，可用于地址、通道或其他固定字段。参数按设备编码绑定，保留 JSON 类型；缺失参数时拒绝发送。配置和协议实现不预设厂商、命令名称或报文结构。
+
+例如配置 `deviceParameters` 为 `[{"deviceCode":"D001","name":"address","value":"A001"}]`，控制模板为：
+
+```json
+{"id":"$commandId","address":"$param:address","operation":"set","value":"$point:设定值"}
+```
+
+每条 `commands` 可配置独立 `response`：
+
+```json
+{
+  "topic": "devices/{deviceCode}/result",
+  "matchFields": ["/id", "/address", "/operation"],
+  "codeField": "/result/code",
+  "successCode": 0,
+  "timeoutMs": 10000
+}
+```
+
+`matchFields` 是回执和实际下发 JSON 中需要逐项相等的标量路径，必须包含 `$commandId` 所在路径。路径支持顶层键和 JSON Pointer。回执 Topic 必须为具体设备 Topic，不能含通配符或控制点值。平台使用 QoS 1 订阅回执，并将设备 Topic、关联字段、整数结果码一起用于判定。结果码等于 `successCode` 才确认执行成功，其余整数结果码记为失败；原始回执保留在指令结果说明中（最多 4096 字节）。
+
+配置回执后，Broker PUBACK 仅表示投递确认，不代表设备执行成功。无关、重复和 retained 回执不完成新指令；超时或断线记为结果未确认（`UNKNOWN`），不自动重发控制消息，因为设备可能已经执行。`timeoutMs` 默认 10000，范围 1000–120000 毫秒。未配置 `response` 的既有协议保留 Broker 确认语义。控制消息始终不使用 retain。
+
+页面的 Topic 页可编辑设备参数 JSON，控制消息页可编辑每条消息的回执规则 JSON。采集属性仍按实际控制引用标记可写；不需要把只读测量点改成可写才能增加独立控制属性。
+
 ### 页面消息模板
 
 页面只使用 JSON 占位符配置，不再逐项填写字段路径、设备识别模式、文本列号或二进制位置。保存后左侧显示设备类型、点位数及启用状态，右侧显示点位名称、标识、消息路径、类型、单位及读写状态。点击点位“编辑”进入属性页并展开该点位。

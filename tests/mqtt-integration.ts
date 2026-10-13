@@ -17,6 +17,9 @@ let link = '',
     published = false,
     acknowledgements = 0,
     commands = 0;
+const commandMessageId = crypto.randomUUID();
+let resultSubscriptions = 0;
+let pendingResult: {socket: Bun.Socket<{buffer: Buffer; subscribed: boolean}>; payload: Record<string, unknown>} | undefined;
 const devices: string[] = [];
 const clients = new Set<Bun.Socket<{ buffer: Buffer; subscribed: boolean }>>();
 const time = Date.now();
@@ -91,9 +94,17 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                     assert.equal(body[6], 4);
                     socket.write(Buffer.from([0x20, 2, 0, 0]));
                 } else if (header === 0x82) {
-                    assert.equal(body.subarray(4, -1).toString(), 'factory/telemetry');
+                    const granted: number[] = [];
+                    for (let offset = 2; offset < body.length;) {
+                        const size = body.readUInt16BE(offset);
+                        const filter = body.subarray(offset + 2, offset + 2 + size).toString();
+                        assert(['factory/telemetry', 'factory/D001/result', 'factory/D002/result'].includes(filter));
+                        if (filter.endsWith('/result')) ++resultSubscriptions;
+                        granted.push(1);
+                        offset += 3 + size;
+                    }
                     socket.data.subscribed = true;
-                    socket.write(Buffer.from([0x90, 3, body[0], body[1], 1]));
+                    socket.write(packet(0x90, Buffer.from([body[0], body[1], ...granted])));
                     telemetry(socket);
                 } else if (header === 0x40) {
                     assert.equal(body.readUInt16BE(), 7);
@@ -104,7 +115,12 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                         topic = body.subarray(2, 2 + size).toString();
                     assert.equal(topic, 'factory/commands');
                     const payload = JSON.parse(body.subarray(4 + size).toString());
-                    assert.deepEqual(payload, {
+                    if (payload.requestId !== undefined) {
+                        assert.equal(header & 1, 0, 'control must not be retained');
+                        assert(Number.isSafeInteger(payload.requestId) && payload.requestId > 0);
+                        assert.equal(payload.address, 'A001');
+                        pendingResult = {socket, payload};
+                    } else assert.deepEqual(payload, {
                         cmd: 'set',
                         device: 'D001',
                         control: { targetTemperature: 150, enabled: false },
@@ -268,8 +284,49 @@ try {
                 ?.status === 'SUCCEEDED',
         'MQTT command did not complete after PUBACK'
     );
+    const responseConfig = {
+        ...config, commandTopic: '', commandTemplate: '',
+        deviceParameters: [{deviceCode: 'D001', name: 'address', value: 'A001'}],
+        commands: [{id: commandMessageId, name: '设置并确认', topic: 'factory/commands',
+            template: '{"requestId":"$commandId","address":"$param:address","cmd":"set","value":"$point:温度"}',
+            requiredPointIds: [point], response: {topic: 'factory/{deviceCode}/result', matchFields: ['/requestId','/address','/cmd'], codeField: '/body/code', successCode: 0, timeoutMs: 1000}}],
+        points: [{...config.points[0], writable: true}, {...config.points[1], writable: false}],
+    };
+    await ok('PUT', `/v1/protocol/configs/${model}`, {config: responseConfig});
+    await until(async () => resultSubscriptions >= 2, 'result subscriptions not projected');
+    const submit = () => ok('POST', `/v1/device/${devices[0]}/commands`, {idempotency_key: crypto.randomUUID(), mqttMessageId: commandMessageId, elements: [{elementId: point, value: '15'}]});
+    const status = async (id: string) => (await db`SELECT status,reason FROM command_operation WHERE id=${id}`)[0];
+    const reply = (body: unknown, topic = 'factory/D001/result') => {
+        assert(pendingResult);
+        pendingResult.socket.write(packet(0x32, Buffer.concat([text(topic), Buffer.from([0, 7]), Buffer.from(JSON.stringify(body))])));
+    };
+    pendingResult = undefined;
+    const confirmed = await submit();
+    await until(async () => !!pendingResult, 'generic control not published');
+    assert.notEqual((await status(confirmed.command_ids[0])).status, 'SUCCEEDED', 'PUBACK reported execution success');
+    const sent = pendingResult!.payload;
+    reply({...sent, requestId: 1, body: {code: 0}});
+    reply({...sent, body: {code: 0}}, 'factory/D002/result');
+    await Bun.sleep(100);
+    assert.notEqual((await status(confirmed.command_ids[0])).status, 'SUCCEEDED', 'unmatched reply completed command');
+    reply({...sent, body: {code: 0, response_hex: '0103020000B844'}});
+    await until(async () => (await status(confirmed.command_ids[0])).status === 'SUCCEEDED', 'device success was not persisted');
+    assert((await status(confirmed.command_ids[0])).reason.includes('0103020000B844'), 'result detail lost');
+    pendingResult = undefined;
+    const rejected = await submit();
+    await until(async () => !!pendingResult, 'second control not published');
+    assert.notEqual(pendingResult!.payload.requestId, sent.requestId, 'command ID reused');
+    reply({...pendingResult!.payload, body: {code: 1, msg: 'timeout', response_hex: null}});
+    await until(async () => (await status(rejected.command_ids[0])).status === 'FAILED', 'device failure was not persisted');
+    pendingResult = undefined;
+    const expired = await submit();
+    await until(async () => !!pendingResult, 'timeout control not published');
+    const beforeTimeout = commands;
+    await until(async () => (await status(expired.command_ids[0])).status === 'UNKNOWN', 'missing result did not become unconfirmed');
+    await Bun.sleep(1100);
+    assert.equal(commands, beforeTimeout, 'control was automatically replayed');
     console.log(
-        `PASS MQTT full integration: two devices, nested batch, device time, preview auth, command template, Broker acknowledgement`
+        `PASS MQTT integration: two devices, telemetry, legacy PUBACK, generic parameters, matched device success/failure, timeout without replay`
     );
 } finally {
     for (const device of devices) await http('DELETE', `/v1/device/${device}`);

@@ -13,6 +13,9 @@ const other = crypto.randomUUID(), role = crypto.randomUUID();
 const identity = `99${String(Date.now()).slice(-12).padStart(12, '0')}0`;
 const tag = `edge_link_${crypto.randomUUID()}`;
 const hiddenName = `${tag}_stored`;
+const collectorLinks = [crypto.randomUUID(), crypto.randomUUID()].map(
+    (id) => `ffffffff-ffff-4fff-8fff-${id.slice(-12)}`,
+).sort().reverse();
 let actor = admin;
 let model = '';
 const streams: Awaited<ReturnType<typeof openSnapshotSubscription>>[] = [];
@@ -115,6 +118,29 @@ try {
     assert.equal(list.list[0].name, `${tag} · Modbus`);
     assert.equal(list.list[0].id, link);
     assert.equal((await request('GET', `/v1/link?keyword=${hiddenName}`)).total, 0);
+
+    // 手动链路的 ID 故意大于边缘链路，验证先分组排序再分页。
+    assert(collectorLinks.every((id) => id > link));
+    for (const id of collectorLinks) {
+        await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by)
+            VALUES(${id},${tag + '_manual_' + id},'Modbus','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":59889,"targets":[]}'::jsonb,'disabled','collector',${admin})`;
+    }
+    const expectedOrder = [link, ...collectorLinks];
+    const ordered = await request('GET', `/v1/link?keyword=${tag}`);
+    assert.deepEqual(ordered.list.map((entry: { id: string }) => entry.id), expectedOrder);
+    for (let page = 1; page <= expectedOrder.length; page++) {
+        const path = `/v1/link?keyword=${tag}&page=${page}&pageSize=1`;
+        const result = await request('GET', path);
+        assert.equal(result.total, expectedOrder.length);
+        assert.deepEqual(result.list.map((entry: { id: string }) => entry.id), [expectedOrder[page - 1]]);
+        const stream = await openSnapshotSubscription(path.replace('/v1/link?', '/v1/link/events?'), token(admin));
+        streams.push(stream);
+        assert.deepEqual((await snapshot(stream, 'links')).list.map((entry: { id: string }) => entry.id), [expectedOrder[page - 1]]);
+        await stream.close();
+    }
+    await db`DELETE FROM link WHERE id IN (${collectorLinks[0]},${collectorLinks[1]})`;
+    console.log('PASS edge links precede manual links in HTTP and SSE across pagination');
+
     await request('PUT', `/v1/link/${link}`, { name: 'forbidden', protocol: 'Modbus', endpoint: { mode: 'TCP Client', targets: [] } }, 15001);
     await request('DELETE', `/v1/link/${link}`, undefined, 15002);
 
@@ -191,7 +217,7 @@ try {
     await db`DELETE FROM device WHERE id=${device}`;
     await db`DELETE FROM outbox_event WHERE aggregate_id IN (${link},${device},${model})`;
     await db`DELETE FROM edge_config_revision WHERE node_id=${node}`;
-    await db`DELETE FROM link WHERE id IN (${link},${deniedLink})`;
+    await db`DELETE FROM link WHERE id IN (${link},${deniedLink},${collectorLinks[0]},${collectorLinks[1]})`;
     if (model) await db`DELETE FROM protocol_config WHERE id=${model}`;
     await db`DELETE FROM edge_node WHERE id=${node}`;
     await db`DELETE FROM sys_user_role WHERE user_id=${other}`;

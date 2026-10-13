@@ -61,7 +61,8 @@ class LinkService {
 
         auto query = linkSelect(c.pool());
         applyFilters(query, keyword, mode, protocol, status);
-        query.order_by(query.column("id"), ruvia::db_order_direction::desc)
+        query.order_by((LinkEntity::column<"execution">() == "edge").expression(query), ruvia::db_order_direction::desc)
+            .add_order_by(query.column("id"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>((page - 1) * pageSize));
         const auto rows = co_await c.db().query(query);

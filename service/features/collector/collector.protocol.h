@@ -398,7 +398,9 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
             });
             if (mqttMessageId.empty() || selected == commands->end())
                 throw std::invalid_argument("command_invalid: 请选择有效的 MQTT 控制消息");
-            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
+            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode", "$commandId"};
+            if (const auto& parameters = config->get<"deviceParameters">(); parameters)
+                for (const auto& parameter : *parameters) allowed.emplace("$param:" + std::string(parameter.get<"name">().view()));
             for (const auto& point : config->get<"points">()) allowed.emplace("$point:" + std::string(point.get<"name">().view()));
             const service::utils::JsonValueTemplate message(selected->get<"templateText">().view(), allowed);
             std::set<std::string, std::less<>> topicNames;

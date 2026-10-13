@@ -1020,6 +1020,7 @@ void testStationScopeAndInstanceIdentity() {
     require(rejected, "normalized station address alias was silently accepted");
     require(service::message::commandStream(0, true, "instance-a") != service::message::commandStream(0, true, "instance-b"), "worker 0 aliases across instances");
     require(service::command::collectorResultState(false, "response_timeout") == "UNKNOWN", "transport timeout was misrepresented as confirmed failure");
+    require(service::command::collectorResultState(false, "device_negative_ack: {\"code\":1}") == "FAILED", "explicit device rejection was not recorded as failure");
     require(service::command::terminalState("UNKNOWN") && !service::command::terminalState("AWAITING_RESULT"), "command wait completion semantics are incorrect");
 }
 

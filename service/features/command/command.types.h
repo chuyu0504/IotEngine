@@ -39,6 +39,7 @@ inline bool retryableFailure(std::string_view reason) {
 
 // A timeout or failed readback is not evidence that a physical write did not happen.
 inline std::string_view collectorResultState(bool success, std::string_view reason) {
+    if (!success && reason.starts_with("device_negative_ack:")) return "FAILED";
     if (reason.find("write_ack_missing") != std::string_view::npos)
         return "UNKNOWN";
     if (reason.find("readback_mismatch") != std::string_view::npos)

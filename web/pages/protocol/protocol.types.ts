@@ -32,6 +32,7 @@ export interface MqttConfig {
     commandTopic?: string;
     commandTemplate?: string;
     commands?: MqttCommandMessage[];
+    deviceParameters?: MqttDeviceParameter[];
     reportTemplate?: string;
     qos: 0 | 1 | 2;
     points: MqttPoint[];
@@ -42,6 +43,19 @@ export interface MqttCommandMessage {
     topic: string;
     template: string;
     requiredPointIds: string[];
+    response?: MqttCommandResponse;
+}
+export interface MqttDeviceParameter {
+    deviceCode: string;
+    name: string;
+    value: unknown;
+}
+export interface MqttCommandResponse {
+    topic: string;
+    matchFields: string[];
+    codeField: string;
+    successCode: number;
+    timeoutMs?: number;
 }
 export interface MqttTemplateDraft {
     topic: string;
@@ -49,6 +63,7 @@ export interface MqttTemplateDraft {
     commandTopic?: string;
     commandTemplate?: string;
     commands?: MqttCommandMessage[];
+    deviceParameters?: MqttDeviceParameter[];
     qos: 0 | 1 | 2;
     storagePolicy: 'report' | 'change';
     timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';

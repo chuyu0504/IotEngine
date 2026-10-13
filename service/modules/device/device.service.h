@@ -2009,7 +2009,9 @@ return result
             const auto config = ruvia::from_json<service::protocol::MqttConfig>(row[1].value().value_or(std::string_view{}));
             if (!config || !config->template get<"commands">() || !config->template get<"points">()) continue;
             ruvia::boxed_array<DeviceCommandOperationDto> operations(ruvia::model_options{.resource_ = c.arena()});
-            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
+            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode", "$commandId"};
+            if (const auto& parameters = config->template get<"deviceParameters">(); parameters)
+                for (const auto& parameter : *parameters) allowed.emplace("$param:" + std::string(parameter.template get<"name">().view()));
             for (const auto& point : *config->template get<"points">()) allowed.emplace("$point:" + std::string(point.template get<"name">().view()));
             for (const auto& command : *config->template get<"commands">()) {
                 const service::utils::JsonValueTemplate message(command.template get<"templateText">().view(), allowed);

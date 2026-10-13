@@ -195,6 +195,8 @@ function mqttCommandReferences(text: string, names: ReadonlySet<string>, legacyV
         } else if (
             marker.startsWith('$') &&
             marker !== '$deviceCode' &&
+            marker !== '$commandId' &&
+            !marker.startsWith('$param:') &&
             !(legacyValues && marker === '$values')
         ) {
             mqttTemplateError('commandTemplate', path, `未知占位符：${marker}`);
@@ -230,6 +232,15 @@ export function mqttCommandPoints(
     );
     return points.filter((point) => names.has(point.name));
 }
+const mqttJsonInput = (value: unknown) => {
+    if (typeof value !== 'string') return value;
+    if (!value.trim()) return undefined;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+};
 export const mqttConfigSchema = z
     .object({
         storagePolicy: z.enum(['report', 'change']),
@@ -246,6 +257,19 @@ export const mqttConfigSchema = z
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
+        deviceParameters: z.preprocess(
+            mqttJsonInput,
+            z
+                .array(
+                    z.object({
+                        deviceCode: z.string().min(1).max(100),
+                        name: z.string().trim().min(1).max(100),
+                        value: z.unknown(),
+                    })
+                )
+                .max(10000)
+                .optional()
+        ),
         commands: z
             .array(
                 z.object({
@@ -254,6 +278,25 @@ export const mqttConfigSchema = z
                     topic: mqttCommandTopicSchema,
                     template: z.string().min(1).max(16384),
                     requiredPointIds: z.array(z.uuid()).max(256),
+                    response: z.preprocess(
+                        mqttJsonInput,
+                        z
+                            .object({
+                                topic: mqttTopicSchema.refine(
+                                    (topic) => !/[+#]/.test(topic) && !topic.includes('{point:'),
+                                    '回执须为具体设备 Topic'
+                                ),
+                                matchFields: z.array(mqttPathSchema).min(1).max(16),
+                                codeField: mqttPathSchema.min(1),
+                                successCode: z
+                                    .number()
+                                    .int()
+                                    .min(-9007199254740991)
+                                    .max(9007199254740991),
+                                timeoutMs: z.number().int().min(1000).max(120000).optional(),
+                            })
+                            .optional()
+                    ),
                 })
             )
             .max(32)
@@ -286,6 +329,19 @@ export const mqttConfigSchema = z
         const identity = config.identitySource ?? (config.deviceCodeField ? 'payload' : 'bound');
         const issue = (path: (string | number)[], message: string) =>
             context.addIssue({ code: 'custom', path, message });
+        const parameterKeys = new Set<string>();
+        const parameterNames = new Set<string>();
+        config.deviceParameters?.forEach((parameter, index) => {
+            const key = JSON.stringify([parameter.deviceCode, parameter.name]);
+            if (
+                parameterKeys.has(key) ||
+                parameter.value === undefined ||
+                JSON.stringify(parameter.value).length > 16384
+            )
+                issue(['deviceParameters', index], '设备参数重复或值无效');
+            parameterKeys.add(key);
+            parameterNames.add(parameter.name);
+        });
         const selector = (value: string, path: (string | number)[]) => {
             if (format === 'text' && (!/^(0|[1-9]\d*)$/.test(value) || Number(value) > 4096))
                 issue(path, '文本字段填写从 0 开始的列号，最多 4096');
@@ -358,6 +414,45 @@ export const mqttConfigSchema = z
             commandIds.add(command.id);
             commandNames.add(command.name);
             try {
+                const template = parseMqttTemplate(command.template, 'commandTemplate');
+                let hasCommandId = false;
+                visitMqttTemplate(template, (marker) => {
+                    if (marker === '$commandId') hasCommandId = true;
+                    if (marker.startsWith('$param:') && !parameterNames.has(marker.slice(7)))
+                        throw new Error(`设备参数未定义：${marker.slice(7)}`);
+                });
+                if (command.response) {
+                    const valueAt = (path: string): unknown => {
+                        const parts = path.startsWith('/')
+                            ? path
+                                  .slice(1)
+                                  .split('/')
+                                  .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))
+                            : [path];
+                        return parts.reduce<unknown>(
+                            (value, part) =>
+                                value && typeof value === 'object'
+                                    ? (value as Record<string, unknown>)[part]
+                                    : undefined,
+                            template
+                        );
+                    };
+                    if (
+                        !hasCommandId ||
+                        !command.response.matchFields.some(
+                            (field) => valueAt(field) === '$commandId'
+                        )
+                    )
+                        throw new Error('回执关联字段须包含 $commandId 所在路径');
+                    if (
+                        new Set(command.response.matchFields).size !==
+                            command.response.matchFields.length ||
+                        command.response.matchFields.some(
+                            (field) => !field || valueAt(field) === undefined
+                        )
+                    )
+                        throw new Error('回执关联字段无效、重复或不在指令中');
+                }
                 const referenced = mqttCommandPoints(
                     command.template,
                     config.points,
@@ -528,6 +623,9 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
         commandTopic: commandTopic ?? '',
         commandTemplate: commandTemplate ?? '',
         ...(draft.commands !== undefined ? { commands: draft.commands } : {}),
+        ...(draft.deviceParameters !== undefined
+            ? { deviceParameters: draft.deviceParameters }
+            : {}),
         reportTemplate: draft.reportTemplate,
         points,
     });
@@ -596,6 +694,9 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         ...(config.timeFormat ? { timeFormat: config.timeFormat } : {}),
         ...(config.commandTopic ? { commandTopic: config.commandTopic } : {}),
         ...(config.commandTemplate ? { commandTemplate: config.commandTemplate } : {}),
+        ...(config.deviceParameters
+            ? { deviceParameters: config.deviceParameters.map((parameter) => ({ ...parameter })) }
+            : {}),
         ...(config.commands !== undefined
             ? {
                   commands: config.commands.map((command) => ({

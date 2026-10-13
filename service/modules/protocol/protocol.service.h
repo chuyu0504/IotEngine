@@ -515,6 +515,17 @@ class ProtocolConfigurationRules final {
                 service::common::fail(16004, "MQTT Topic 过滤器无效", 400);
             const auto& commandTopic = typed->get<"commandTopic">();
             const auto& commands = typed->get<"commands">();
+            service::utils::JsonValueTemplate::Tokens parameterTokens;
+            if (const auto& parameters = typed->get<"deviceParameters">(); parameters) {
+                std::set<std::pair<std::string, std::string>> keys;
+                if (parameters->size() > 10000) service::common::fail(16004, "最多配置 10000 个设备参数", 400);
+                for (const auto& parameter : *parameters) {
+                    const auto code = parameter.get<"deviceCode">().view(), name = parameter.get<"name">().view();
+                    if (code.empty() || code.size() > 100 || name.empty() || name.size() > 100 || name.front() == ' ' || name.back() == ' ' || parameter.get<"value">().view().size() > 16384 || !keys.emplace(code, name).second)
+                        service::common::fail(16004, "设备参数名、值无效或重复", 400);
+                    parameterTokens.emplace("$param:" + std::string(name));
+                }
+            }
             if (commands && (commands->size() > 32 || (commandTopic && !commandTopic->view().empty()) ||
                 (typed->get<"commandTemplate">() && !typed->get<"commandTemplate">()->view().empty())))
                 service::common::fail(16004, "控制消息最多 32 条，且不能与旧版单条控制配置同时使用", 400);
@@ -588,6 +599,7 @@ class ProtocolConfigurationRules final {
             try {
                 const auto validateTemplate = [&](std::string_view input, bool report = false, bool legacyValues = true) {
                     service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
+                    if (!report) { allowed.insert("$commandId"); allowed.insert(parameterTokens.begin(), parameterTokens.end()); }
                     if (!report && !legacyValues) allowed.erase("$values");
                     for (const auto& [name, writable] : templatePoints) {
                         const auto token = "$point:" + name;
@@ -627,7 +639,33 @@ class ProtocolConfigurationRules final {
                                 referenced.emplace(point.get<"id">().view());
                         }
                         if (referenced.empty()) throw std::invalid_argument("控制消息至少需要引用一个属性");
-                        utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}};
+                        if (const auto& response = message.get<"response">(); response) {
+                            if (!topicValid(response->get<"topic">().view()) || response->get<"topic">().view().find("{point:") != std::string_view::npos || !parsed.references("$commandId"))
+                                throw std::invalid_argument("设备回执需要固定设备 Topic 及 $commandId");
+                            const auto timeout = response->get<"timeoutMs">().value_or(ruvia::int64{10000}).value_;
+                            const auto successCode = response->get<"successCode">().value_;
+                            if (successCode < -9007199254740991LL || successCode > 9007199254740991LL) throw std::invalid_argument("回执成功码须为 JSON 安全整数");
+                            if (timeout < 1000 || timeout > 120000) throw std::invalid_argument("回执超时须为 1000–120000 毫秒");
+                            const auto& matchFields = response->get<"matchFields">();
+                            if (matchFields.empty() || matchFields.size() > 16) throw std::invalid_argument("回执须有 1–16 个关联字段");
+                            bool matchesId = false;
+                            std::set<std::string> selectors;
+                            const utils::PayloadRecord source(message.get<"templateText">().view(), "json", ",");
+                            for (const auto& field : matchFields) {
+                                (void)utils::jsonFieldSegments(field.view());
+                                if (field.view().empty() || field.view().size() > 256 || !selectors.emplace(field.view()).second)
+                                    throw std::invalid_argument("回执关联字段无效或重复");
+                                const auto value = source.field(field.view());
+                                if (!value) throw std::invalid_argument("回执关联字段须出现在指令模板中");
+                                if (const auto* text = std::get_if<std::string>(&*value); text && *text == "$commandId") matchesId = true;
+                            }
+                            if (!matchesId) throw std::invalid_argument("回执关联字段须包含 $commandId 所在路径");
+                            if (response->get<"codeField">().view().empty() || response->get<"codeField">().view().size() > 256)
+                                throw std::invalid_argument("回执状态路径无效");
+                            (void)utils::jsonFieldSegments(response->get<"codeField">().view());
+                        }
+                        utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}, {"$commandId", "1"}};
+                        for (const auto& token : parameterTokens) requiredValues.emplace(token, "null");
                         for (const auto& id : message.get<"requiredPointIds">()) {
                             if (!referenced.contains(id.view()) || !requiredIds.emplace(id.view()).second)
                                 throw std::invalid_argument("必填控制点必须属于当前消息且不能重复");

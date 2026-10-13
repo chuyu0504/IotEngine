@@ -453,6 +453,26 @@ test('MQTT legacy or stale configurations fail explicitly instead of discarding 
     }
 });
 
+test('MQTT generic command IDs, device parameters and result rules survive editing', () => {
+    const draft = {
+        topic: 'devices/{deviceCode}/up', reportTemplate: '{"value":"$point:温度"}',
+        storagePolicy: 'report' as const, qos: 1 as const, points: [point],
+        deviceParameters: [{deviceCode: 'D001', name: 'address', value: 'A001'}],
+        commands: [{id: crypto.randomUUID(), name: 'Set', topic: 'devices/{deviceCode}/down',
+            template: '{"id":"$commandId","address":"$param:address","value":"$point:温度"}', requiredPointIds: [point.id],
+            response: {topic: 'devices/{deviceCode}/result', matchFields: ['/id','/address'], codeField: '/result/code', successCode: 0, timeoutMs: 10000}}],
+    };
+    const compiled = compileMqttTemplate(draft);
+    expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
+    for (const changes of [
+        {deviceParameters: []},
+        {deviceParameters: [...draft.deviceParameters, ...draft.deviceParameters]},
+        {commands: [{...draft.commands[0], response: {...draft.commands[0].response, matchFields: ['/address']}}]},
+        {commands: [{...draft.commands[0], response: {...draft.commands[0].response, topic: 'devices/+/result'}}]},
+        {commands: [{...draft.commands[0], response: {...draft.commands[0].response, timeoutMs: 0}}]},
+    ]) expect(() => compileMqttTemplate({...draft, ...changes})).toThrow();
+});
+
 test('MQTT canonical named commands validate known and unique names without removing legacy APIs', () => {
     expect(mqttConfigSchema.safeParse({
         ...config,
