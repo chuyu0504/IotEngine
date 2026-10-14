@@ -995,7 +995,6 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 forceRender
             >
                 <Form form={form} layout="vertical">
-                    <PointDisplayField />
                     <Form.Item
                         label="名称"
                         name="name"
@@ -1137,16 +1136,11 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                         )}
                     </Flex>
 
-                    {(registerType === 'COIL' || registerType === 'HOLDING_REGISTER') && (
-                        <Form.Item
-                            label="可写"
-                            name="writable"
-                            valuePropName="checked"
-                            extra="开启后该寄存器可用于写操作下发"
-                        >
-                            <Switch />
-                        </Form.Item>
-                    )}
+                    <PointAccessFields
+                        showWritable={
+                            registerType === 'COIL' || registerType === 'HOLDING_REGISTER'
+                        }
+                    />
 
                     <Form.Item label="备注" name="remark">
                         <Input placeholder="备注信息" />
@@ -2286,7 +2280,6 @@ export function AreaModal({
             destroyOnHidden
         >
             <Form form={form} layout="vertical" initialValues={initialFormValues}>
-                <PointDisplayField />
                 <Form.Item
                     name="name"
                     label="寄存器名称"
@@ -2497,11 +2490,7 @@ export function AreaModal({
                         </Col>
                     )}
                 </Row>
-                {isWritableArea && (
-                    <Form.Item name="writable" label="可写" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
-                )}
+                <PointAccessFields showWritable={isWritableArea} />
                 <Form.Item name="remark" label="备注">
                     <Input.TextArea rows={3} placeholder="备注说明" />
                 </Form.Item>
@@ -4129,7 +4118,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                 width={520}
             >
                 <Form form={form} layout="vertical">
-                    <PointDisplayField />
+                    <PointAccessFields />
                     <Form.Item
                         label="要素名称"
                         name="name"
@@ -6080,7 +6069,6 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                 }}
             >
                 <Form name={`industrial-point-${protocol}`} form={pointForm} layout="vertical">
-                    <PointDisplayField />
                     <Divider titlePlacement="start" plain className="!my-4">
                         基础信息
                     </Divider>
@@ -6089,6 +6077,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                             <Form.Item
                                 name="id"
                                 label="点位标识"
+                                className="sm:col-span-2"
                                 rules={[{ required: true, max: 64 }]}
                             >
                                 <Input disabled={Boolean(editingPoint)} />
@@ -6099,6 +6088,9 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                             label="名称"
                             rules={[{ required: true, max: protocol === 'DLT645' ? 100 : 128 }]}
                         >
+                            <Input />
+                        </Form.Item>
+                        <Form.Item name="unit" label="单位">
                             <Input />
                         </Form.Item>
                     </div>
@@ -6227,14 +6219,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                     <Divider titlePlacement="start" plain className="!my-4">
                         显示与控制
                     </Divider>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item name="unit" label="单位">
-                            <Input />
-                        </Form.Item>
-                        <Form.Item name="writable" label="允许写入" valuePropName="checked">
-                            <Switch />
-                        </Form.Item>
-                    </div>
+                    <PointAccessFields showWritable />
                 </Form>
             </FormModal>
         </PageContainer>
@@ -6954,15 +6939,13 @@ export function MqttConfigPage() {
                                                             <div className="mb-3 break-all text-xs text-slate-500">
                                                                 属性 ID：{point.id}
                                                             </div>
-                                                            <Form.Item
-                                                                name={['pointVisibility', point.id]}
-                                                                label="显示"
-                                                                valuePropName="checked"
-                                                                initialValue={true}
-                                                                extra="关闭后仍继续采集、计算、存储和告警。"
-                                                            >
-                                                                <Switch />
-                                                            </Form.Item>
+                                                            <PointAccessFields
+                                                                visibleName={[
+                                                                    'pointVisibility',
+                                                                    point.id,
+                                                                ]}
+                                                                initialVisible
+                                                            />
                                                             <Form.List
                                                                 name={[
                                                                     'points',
@@ -7645,16 +7628,38 @@ export function MqttConfigPage() {
     );
 }
 
-function PointDisplayField() {
+function PointAccessFields({
+    showWritable = false,
+    visibleName = 'visible',
+    initialVisible,
+}: {
+    showWritable?: boolean;
+    visibleName?: string | (string | number)[];
+    initialVisible?: boolean;
+}) {
     return (
-        <Form.Item
-            name="visible"
-            label="显示"
-            valuePropName="checked"
-            extra="关闭后仅隐藏展示，仍继续采集、计算、存储和告警。"
-        >
-            <Switch />
-        </Form.Item>
+        <div className="grid grid-cols-2 gap-x-4">
+            {showWritable && (
+                <Form.Item
+                    name="writable"
+                    label="可写"
+                    valuePropName="checked"
+                    tooltip="开启后该点位可用于写操作下发。"
+                >
+                    <Switch />
+                </Form.Item>
+            )}
+            <Form.Item
+                name={visibleName}
+                label="显示"
+                className="col-start-2"
+                valuePropName="checked"
+                initialValue={initialVisible}
+                tooltip="关闭后仅隐藏展示，仍继续采集、计算、存储和告警。"
+            >
+                <Switch />
+            </Form.Item>
+        </div>
     );
 }
 
@@ -8140,9 +8145,7 @@ const DerivedPointsEditor = forwardRef<
                             )}
                         </Card>
                     )}
-                    <Form.Item name="visible" label="显示" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
+                    <PointAccessFields />
                 </Form>
             </FormModal>
         </>
