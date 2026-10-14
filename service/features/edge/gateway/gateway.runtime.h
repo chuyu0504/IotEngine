@@ -714,7 +714,8 @@ class GatewayController final {
             case pb::Envelope::kHeartbeat: {
                 constexpr std::uint64_t retryIntervalMs = 30000;
                 const auto now = service::message::utcNowMilliseconds();
-                if (session.configSentAtMs == 0 || now - session.configSentAtMs >= retryIntervalMs) {
+                if (session.capabilitySeen &&
+                    (session.configSentAtMs == 0 || now - session.configSentAtMs >= retryIntervalMs)) {
                     (void)co_await configService().requeueIfStale(
                         c,
                         session.nodeId,

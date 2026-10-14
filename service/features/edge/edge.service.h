@@ -547,6 +547,22 @@ inline ruvia::db_query::expr_type configState(ruvia::db_query& query,
                     ruvia::db_data_type::text)});
 }
 
+inline constexpr std::string_view kMissingProtocolMessage = "边缘固件尚未声明支持协议 ";
+
+inline bool needsConfigurationReplay(std::uint64_t desiredRevision,
+                                     std::uint64_t activeRevision,
+                                     std::string_view state,
+                                     std::string_view message) {
+    if (desiredRevision == 0 || desiredRevision <= activeRevision)
+        return false;
+    if (state != "rejected")
+        return true;
+    if (!message.starts_with(kMissingProtocolMessage))
+        return false;
+    const auto protocol = message.substr(kMissingProtocolMessage.size());
+    return protocol == "MC" || protocol == "FINS" || protocol == "DLT645";
+}
+
 inline ruvia::db_query::expr_type capabilityEnabled(ruvia::db_query& query,
                                               std::string_view table) {
     return booleanText(query, jsonText(query, query.column("capability", table),
@@ -615,7 +631,11 @@ inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
 inline ruvia::db_query requeueDesiredQuery(std::string_view nodeId) {
     ruvia::db_query query;
     query.select({configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "desiredVersion"),
-                  configState(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()))})
+                  configState(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">())),
+                  configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "activeVersion"),
+                  query.coalesce({jsonText(query, jsonGet(query,
+                      query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "config"), "message"),
+                      query.value(std::string_view{})})})
         .from(service::edge::persistence::EdgeNodeEntity::table_name())
         .where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
@@ -627,7 +647,9 @@ inline ruvia::db_query requeueDesiredQuery(std::string_view nodeId) {
 }
 
 inline ruvia::db_query requeuePendingQuery(std::string_view nodeId,
-                                          std::uint64_t revision) {
+                                          std::uint64_t revision,
+                                          std::string_view expectedState,
+                                          std::string_view expectedMessage) {
     ruvia::db_query query;
     const auto status = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
     const auto statusWithState = query.call(
@@ -650,8 +672,11 @@ inline ruvia::db_query requeuePendingQuery(std::string_view nodeId,
                               query.cast(query.value(static_cast<std::int64_t>(revision)),
                                          ruvia::db_data_type::big_int)))
         .and_where(query.binary(configState(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">())),
-                              ruvia::db_binary_operator::not_equal,
-                              query.value(std::string_view{"rejected"})));
+                              ruvia::db_binary_operator::equal,
+                              query.value(expectedState)))
+        .and_where(query.binary(query.coalesce({jsonText(query, jsonGet(query, status, "config"), "message"),
+                                   query.value(std::string_view{})}),
+                               ruvia::db_binary_operator::equal, query.value(expectedMessage)));
     return query;
 }
 
@@ -1259,18 +1284,25 @@ class ConfigService final {
 
     template <typename Context>
     ruvia::task<bool> requeueIfStale(Context& c, std::string_view nodeId,
-                                     std::uint64_t activeRevision) {
+                                  std::optional<std::uint64_t> reportedRevision = std::nullopt) {
         const auto desired =
             co_await c.db().query(config::detail::requeueDesiredQuery(nodeId));
         if (desired.empty())
             co_return false;
         const auto revision = unsignedInteger(desired.front()[0].value().value_or(std::string_view{}));
-        if (revision == 0 || revision <= activeRevision ||
-            desired.front()[1].value().value_or(std::string_view{}) == "rejected")
+        const auto state = std::string(desired.front()[1].value().value_or(std::string_view{}));
+        const auto activeRevision = reportedRevision.value_or(
+            unsignedInteger(desired.front()[2].value().value_or("0")));
+        const auto message = std::string(desired.front()[3].value().value_or(std::string_view{}));
+        if (!config::detail::needsConfigurationReplay(revision, activeRevision, state, message))
             co_return false;
 
         auto snapshot = co_await buildSnapshot(c, nodeId, revision);
         if (!snapshot)
+            co_return false;
+        const auto updated = co_await c.db().execute(config::detail::requeuePendingQuery(
+            nodeId, revision, state, message));
+        if (updated.affected_rows() == 0)
             co_return false;
         ruvia::db_query insert;
         insert
@@ -1295,8 +1327,6 @@ class ConfigService final {
         };
         insert.on_conflict(conflict);
         (void)co_await c.db().execute(insert);
-        (void)co_await c.db().execute(
-            config::detail::requeuePendingQuery(nodeId, revision));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
         co_await metadata::publishNode(c, nodeId);
         co_return true;
@@ -1445,7 +1475,8 @@ class ConfigService final {
                     ruvia::db_binary_operator::equal, capability.cast(capability.value(nodeId), ruvia::db_data_type::uuid)));
             const auto rows = co_await c.db().query(capability);
             if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
-                co_await rejectBuild(c, nodeId, revision, "边缘固件尚未声明支持协议 " + name);
+                co_await rejectBuild(c, nodeId, revision,
+                    std::string(config::detail::kMissingProtocolMessage) + name);
                 co_return std::nullopt;
             }
         }
@@ -2237,7 +2268,7 @@ class EdgeProjectionService {
              jsonKey("connected"), boolean(hello.mobile_connected()),
              jsonKey("ipv4"), text(hello.mobile_ipv4())});
         const auto config = query.call(
-            "jsonb_build_object", {jsonKey("activeVersion"), integer(0),
+            "jsonb_build_object", {jsonKey("activeVersion"), integer(hello.last_applied_config_version()),
                                     jsonKey("desiredVersion"), integer(0),
                                     jsonKey("state"), text("idle"),
                                     jsonKey("message"), text(std::string_view{})});
@@ -2289,28 +2320,37 @@ class EdgeProjectionService {
                            config::detail::toJsonb(query,
                                query.cast(operatorName, ruvia::db_data_type::text)),
                            query.cast(query.value(true), ruvia::db_data_type::boolean)});
-        const auto capabilityUpdate = query.binary(
+        const auto reportedCapabilities = query.binary(
             query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()), ruvia::db_binary_operator::json_concat,
             query.call("jsonb_build_object",
                        {jsonKey("terminal"),
                         config::detail::booleanText(
                             query, config::detail::jsonText(query, existingCapability, "terminal")),
+                        jsonKey("serialDebug"),
+                        config::detail::booleanText(
+                            query, config::detail::jsonText(query, existingCapability, "serialDebug")),
                         jsonKey("vpn"),
                         query.coalesce({config::detail::jsonGet(query, existingCapability, "vpn"),
                                         config::detail::jsonGet(query, query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()),
                                                                  "vpn")})}));
+        const auto capabilityUpdate = query.binary(existingCapability,
+            ruvia::db_binary_operator::json_concat, reportedCapabilities);
         const auto statusWithLog = query.call(
             "jsonb_set", {existingStatus, config::detail::jsonPath(query, "{log}"),
                            query.coalesce({config::detail::jsonGet(query, existingStatus, "log"),
                                            query.cast(query.value(std::string_view{"{}"}),
                                                       ruvia::db_data_type::jsonb)}),
                            query.cast(query.value(true), ruvia::db_data_type::boolean)});
-        const auto statusUpdate = query.call(
+        const auto statusWithLevel = query.call(
             "jsonb_set", {statusWithLog, config::detail::jsonPath(query, "{log,level}"),
                            config::detail::toJsonb(
                                query, config::detail::textDefault(
                                          query, text(hello.log_level()), "info")),
                            query.cast(query.value(true), ruvia::db_data_type::boolean)});
+        const auto statusUpdate = query.call("jsonb_set", {
+            statusWithLevel, config::detail::jsonPath(query, "{config,activeVersion}"),
+            config::detail::toJsonb(query, integer(hello.last_applied_config_version())),
+            boolean(true)});
         ruvia::db_conflict_options conflict;
         conflict.columns_ = {"platform_id", "imei"};
         conflict.update_ = {
@@ -2335,10 +2375,8 @@ class EdgeProjectionService {
         const auto value = nodeId + "|" + enrollmentStatus;
         co_await context.redis().set(key, value);
         if (enrollmentStatus == "approved") {
-            // The Hello projects deviceConfig before reconciliation. A missing
-            // Redis queue must not defer a stale revision until the 900s heartbeat.
-            (void)co_await configService().requeueIfStale(
-                context, nodeId, hello.last_applied_config_version());
+            // Configuration restoration follows the capability report so a
+            // changed firmware is validated against its current protocol set.
             ruvia::db_query target;
             target
                 .select({target.alias(target.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">(), "task"), "task_id"),
@@ -2436,8 +2474,7 @@ class EdgeProjectionService {
         const auto config = query.call(
             "jsonb_build_object",
             {config::detail::jsonKey(query, "activeVersion"),
-             query.greatest({config::detail::configVersion(query, status, "activeVersion"),
-                             receivedVersion}),
+             receivedVersion,
              config::detail::jsonKey(query, "desiredVersion"), desiredVersion,
              config::detail::jsonKey(query, "state"),
              query.case_when({{applied, text("applied")}},
@@ -2862,6 +2899,7 @@ class EdgeProjectionService {
                 config::detail::toJsonb(derivedCapability, derivedCapability.cast(derivedCapability.value(report.supports_derived_points()), ruvia::db_data_type::boolean)), derivedCapability.value(true)}))
             .where(derivedCapability.binary(derivedCapability.column(persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, derivedCapability.cast(derivedCapability.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(derivedCapability);
+        (void)co_await configService().requeueIfStale(context, nodeId);
         if (report.has_vpn()) {
             const auto vpnPublicKey = validVpnPublicKey(report.vpn().public_key())
                                           ? std::string(report.vpn().public_key())

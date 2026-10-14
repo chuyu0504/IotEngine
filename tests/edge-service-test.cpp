@@ -198,8 +198,8 @@ int main() {
         requireContains(projectorRuntimeSource, "projector_stream::stream(index, service::runtime::instanceId())", "edge projector does not preserve the accepting Worker");
         requireContains(projectorServiceSource, "jsonKey(\"firmwareUpdate\"), boolean(hello.supports_firmware_update())", "edge projector does not retain legacy firmware capability");
         requireContains(projectorServiceSource, "jsonKey(\"firmwareStream\"), boolean(hello.supports_firmware_stream())", "edge projector does not record WS firmware capability separately");
-        requireContains(projectorServiceSource, "context, nodeId, hello.last_applied_config_version()", "edge reconnect waits for a heartbeat before reconciling the applied configuration");
-        requireContains(projectorServiceSource, "revision <= activeRevision", "edge reconnect can replay an older configuration over a newer node revision");
+        requireBefore(projectorServiceSource, "context.db().execute(derivedCapability)", "configService().requeueIfStale(context, nodeId)", "edge configuration recovery does not follow fresh capability persistence");
+        requireContains(projectorServiceSource, "desiredRevision <= activeRevision", "edge reconnect can replay an older configuration over a newer node revision");
         requireContains(projectorServiceSource, "protocol::persistableCommandResult(result.state(), result.write_ack_missing())", "edge command result drops missing-write-ACK outcomes before persistence");
         requireContains(projectorServiceSource, "protocol::commandResultDomainState(", "edge command results ignore write acknowledgement ambiguity");
         requireContains(projectorServiceSource, "result.write_ack_missing()", "edge command projection does not persist the missing-write-ACK result");

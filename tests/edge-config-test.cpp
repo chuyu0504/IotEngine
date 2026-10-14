@@ -84,7 +84,8 @@ void testRevisionSqlGuardsCorruptNodeJson() {
     const auto queue = compileSql(queueSnapshotQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
     const auto requeue = compileSql(requeueDesiredQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
     const auto pending = compileSql(
-        requeuePendingQuery("019fd9f6-4be5-7272-a194-9e571bce848d", 12));
+        requeuePendingQuery("019fd9f6-4be5-7272-a194-9e571bce848d", 12,
+                            "rejected", "边缘固件尚未声明支持协议 DLT645"));
     const auto reject = compileSql(
         rejectBuildQuery("rejected", "019fd9f6-4be5-7272-a194-9e571bce848d", 12));
     require(queue.find("CASE WHEN") != std::string_view::npos &&
@@ -100,6 +101,29 @@ void testRevisionSqlGuardsCorruptNodeJson() {
     require(queue.find("deviceConfig") !=
                 std::string_view::npos,
             "edge config queueSnapshot does not guard deviceConfig capability");
+}
+
+void testConfigurationReplayAfterCapabilityRefresh() {
+    using service::edge::config::detail::needsConfigurationReplay;
+    require(needsConfigurationReplay(12, 0, "applied", ""),
+            "a restarted node without its saved configuration was not restored");
+    for (const auto protocol : {"MC", "FINS", "DLT645"}) {
+        const auto reason = std::string("边缘固件尚未声明支持协议 ") + protocol;
+        require(needsConfigurationReplay(12, 0, "rejected", reason),
+                "a capability rejection remained permanent after fresh capabilities");
+    }
+    require(!needsConfigurationReplay(12, 0, "rejected", "invalid serial endpoint"),
+            "a device configuration rejection was retried automatically");
+    require(!needsConfigurationReplay(12, 0, "rejected", "边缘固件尚未声明支持协议 UNKNOWN"),
+            "an unknown rejection was treated as a recoverable protocol capability");
+    require(!needsConfigurationReplay(12, 12, "applied", ""),
+            "an unchanged configuration was replayed");
+    require(!needsConfigurationReplay(12, 13, "applied", ""),
+            "an older server configuration replaced a newer node configuration");
+    require(!needsConfigurationReplay(0, 0, "idle", ""),
+            "an empty desired configuration triggered restoration");
+    require(needsConfigurationReplay(12, 11, "pending", ""),
+            "a pending newer configuration was not restored");
 }
 
 void testBuildItemSqlAvoidsJsonCasts() {
@@ -206,6 +230,7 @@ int main() {
         testReplaceQueueToleratesCorruptRevisionKey();
         testNumberRejectsTrailingGarbage();
         testRevisionSqlGuardsCorruptNodeJson();
+        testConfigurationReplayAfterCapabilityRefresh();
         testBuildItemSqlAvoidsJsonCasts();
         testReadIntervalMigrationRemovesLegacyField();
         testStoragePolicyMigrationRemovesLegacyField();
