@@ -235,28 +235,6 @@ export default function AdminLayout() {
                         className="min-h-0 flex-1 overflow-y-auto border-none py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                         style={{ background: '#001529' }}
                     />
-                    {!collapsed && (
-                        <div
-                            className="m-4 rounded-md px-3 py-3"
-                            style={{
-                                background: 'rgba(255, 255, 255, 0.06)',
-                                border: '1px solid rgba(255, 255, 255, 0.1)',
-                            }}
-                        >
-                            <div
-                                className="text-xs font-medium"
-                                style={{ color: 'rgba(255, 255, 255, 0.78)' }}
-                            >
-                                工业物联管理中台
-                            </div>
-                            <div
-                                className="mt-1 text-[11px] leading-4"
-                                style={{ color: 'rgba(255, 255, 255, 0.45)' }}
-                            >
-                                设备、协议与组织权限统一管理
-                            </div>
-                        </div>
-                    )}
                 </div>
             </Sider>
             <Layout className="min-w-0" style={{ background: '#f5f5f5' }}>
