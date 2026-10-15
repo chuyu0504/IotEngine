@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include <ruvia/web/db/db_query.h>
+
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -171,7 +173,7 @@ class UserService {
             co_await validateDepartment(c, body.get<"departmentId">());
         }
 
-        ruvia::db_expressions query(c.pool());
+        ruvia::db_query query(c.pool());
         std::vector<ruvia::db_assignment> changes;
         bool changed = false;
         auto append = [&](std::string_view column, std::string_view value) {
@@ -222,7 +224,7 @@ class UserService {
         if (user->template get<"username">() == "admin") {
             service::common::fail(12004, "内置管理员不能删除", 400);
         }
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
             { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
         };
@@ -235,7 +237,7 @@ class UserService {
     template <typename Context>
     static ruvia::db_query_builder<UserEntity, ruvia::db_handle> userSelect(Context& c) {
         using namespace ruvia;
-        db_expressions expressions(c.pool());
+        db_query expressions(c.pool());
         auto query = c.db().template get_repository<UserEntity>().create_query_builder("u");
         query.select({ { "id", expressions.column("id", "u") }, { "username", expressions.column("username", "u") }, { "nickname", expressions.coalesce({ expressions.cast(expressions.column("nickname", "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(expressions.column("phone", "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(expressions.column("email", "u"), db_data_type::text), expressions.value("") }) }, { "status", expressions.column("status", "u") }, { "department_id", expressions.coalesce({ expressions.cast(expressions.column("department_id", "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(expressions.column("name", "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "u") }) } });
         query.template join<service::dept::DeptEntity>(db_join_type::left, "d", expressions.binary(expressions.column("id", "d"), db_binary_operator::equal, expressions.column("department_id", "u")));
@@ -258,7 +260,7 @@ class UserService {
     template <typename Context>
     ruvia::task<ruvia::boxed_array<service::role::RoleOptionDto>>
     loadRoles(Context& c, std::string_view userId) {
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         auto query = c.db().template get_repository<service::role::RoleEntity>().create_query_builder("r");
         query.select({ { "id" }, { "name" }, { "code" } })
             .template join<UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(expressions.column("role_id", "ur"), ruvia::db_binary_operator::equal, expressions.column("id", "r")))

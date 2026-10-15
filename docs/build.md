@@ -53,8 +53,14 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-当前固定 Ruvia `8c738b6317bc4efebbe3c80eb89a569492eab26c`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
-该版本包含上游对模型比较、字符扫描和响应写出告警的修复，以及数组元素延迟析构的前置声明支持；项目继续使用上游公开 API。
+当前固定 Ruvia `3a10c4b993ae5307d65387fe5ae5cfe3bb8e0c5d`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
+该版本包含 HTTP/1 消息边界、请求与响应生命周期、取消注册、Redis 重连及 SQL 表限定符作用域的修复。
+查询参数按需建立多值索引，PostgreSQL 参数复用已拥有的文本存储，Redis 类型化结果接管返回值存储；这些内部调整无需改动现有业务调用。
+上游已移除 `db_expressions`；系统管理、协议与链路模块统一使用公开 `db_query` 持有表达式，
+保持参数绑定、事务及表达式存储生命周期，不增加兼容包装。
+SQL 与 Redis 字段名通过实体公开的 `column_index<...>()`、`columns_type` 和列描述的 `name.view()` 读取，
+替代已移除的 `column_name()`，仍由实体检查字段归属，数据库列名及 Redis Lua 参数键不变。
+直接读取列描述可避免在协程表达式中使用字段引用类型触发 MSVC 内部编译错误。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；
 `firmware-download` 回归测试覆盖路径生命周期、中文文件名、完整下载、HEAD 和 Range。
 
@@ -69,7 +75,8 @@ Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` tripl
 无法从上下文推断类型的 PostgreSQL 无符号参数使用 `numeric`，保留完整 `uint64_t` 范围；
 升级验收包含实际数据库表达式、分页与时间字段读写，以及语句失败后连接的继续使用。
 
-服务通过 HTTP/1.1 提供接口，项目继续通过 Nginx 终止 TLS 并反代后端；不再安装已无调用的 `ngtcp2`。
+服务通过 HTTP/1.1 提供接口，项目继续通过 Nginx 终止 TLS 并反代后端；不安装已无调用的 `ngtcp2`。
+数据库连接池默认每个 Worker、每个数据库别名一条连接，迁移使用独立连接。
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，
 客户端在所属 `event_loop` 等待 `shutdown()` 后再关闭线程。
 

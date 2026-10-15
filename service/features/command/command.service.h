@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <memory>
 #include "service/features/edge/edge.config.h"
 
@@ -155,13 +157,13 @@ ruvia::task<void> event(Database& db, std::string_view commandId,
                          std::string_view type, std::string_view eventId) {
     ruvia::db_query operation;
     operation.select({ operation.cast(operation.value(eventId), ruvia::db_data_type::uuid), operation.value(type), operation.value("command"),
-            operation.cast(operation.column(service::command::persistence::CommandOperationEntity::column_name<"device_id">()), ruvia::db_data_type::text), operation.value("updated"), operation.value(2),
-            operation.call("jsonb_build_object", { operation.cast(operation.value("device_code"), ruvia::db_data_type::text), operation.column(service::command::persistence::CommandOperationEntity::column_name<"device_code">()), operation.cast(operation.value("data"), ruvia::db_data_type::text),
-                operation.call("jsonb_build_object", { operation.cast(operation.value("commandId"), ruvia::db_data_type::text), operation.cast(operation.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), ruvia::db_data_type::text),
-                    operation.cast(operation.value("status"), ruvia::db_data_type::text), operation.column(service::command::persistence::CommandOperationEntity::column_name<"status">()), operation.cast(operation.value("reason"), ruvia::db_data_type::text), operation.column(service::command::persistence::CommandOperationEntity::column_name<"reason">()),
-                    operation.cast(operation.value("elements"), ruvia::db_data_type::text), operation.column(service::command::persistence::CommandOperationEntity::column_name<"elements">()), operation.cast(operation.value("actualValues"), ruvia::db_data_type::text), operation.column(service::command::persistence::CommandOperationEntity::column_name<"actual_values">()) }) }) })
+            operation.cast(operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"device_id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text), operation.value("updated"), operation.value(2),
+            operation.call("jsonb_build_object", { operation.cast(operation.value("device_code"), ruvia::db_data_type::text), operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"device_code">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), operation.cast(operation.value("data"), ruvia::db_data_type::text),
+                operation.call("jsonb_build_object", { operation.cast(operation.value("commandId"), ruvia::db_data_type::text), operation.cast(operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text),
+                    operation.cast(operation.value("status"), ruvia::db_data_type::text), operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), operation.cast(operation.value("reason"), ruvia::db_data_type::text), operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"reason">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()),
+                    operation.cast(operation.value("elements"), ruvia::db_data_type::text), operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"elements">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), operation.cast(operation.value("actualValues"), ruvia::db_data_type::text), operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"actual_values">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()) }) }) })
         .from(service::command::persistence::CommandOperationEntity::table_name())
-        .and_where(operation.binary(operation.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), ruvia::db_binary_operator::equal, operation.cast(operation.value(commandId), ruvia::db_data_type::uuid)));
+        .and_where(operation.binary(operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, operation.cast(operation.value(commandId), ruvia::db_data_type::uuid)));
     ruvia::db_query outbox;
     outbox.insert_into(service::command::persistence::OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version", "payload" }).insert_from(operation);
     (void)co_await db.execute(outbox);
@@ -176,28 +178,28 @@ ruvia::task<void> dispatch(Context& context) {
     using Op = ruvia::db_binary_operator;
     using Type = ruvia::db_data_type;
     ruvia::db_query pending;
-    pending.select({ pending.cast(pending.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a"), Type::text), pending.column(service::command::persistence::CommandAttemptEntity::column_name<"queue_key">(), "a"),
-        pending.column(service::command::persistence::CommandAttemptEntity::column_name<"queue_kind">(), "a"), pending.column(service::command::persistence::CommandAttemptEntity::column_name<"node_id">(), "a"),
-        pending.cast(pending.column(service::command::persistence::CommandAttemptEntity::column_name<"max_length">(), "a"), Type::text), pending.cast(pending.column(service::command::persistence::CommandOperationEntity::column_name<"device_id">(), "o"), Type::text),
-        pending.column(service::command::persistence::CommandOperationEntity::column_name<"device_code">(), "o"), pending.column(service::command::persistence::CommandOperationEntity::column_name<"protocol">(), "o"),
-        pending.cast(pending.cast(pending.binary(pending.extract(ruvia::db_date_part::epoch, pending.column(service::command::persistence::CommandOperationEntity::column_name<"created_at">(), "o")),
+    pending.select({ pending.cast(pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), Type::text), pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"queue_key">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"),
+        pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"queue_kind">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"node_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"),
+        pending.cast(pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"max_length">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), Type::text), pending.cast(pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"device_id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Type::text),
+        pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"device_code">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"protocol">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"),
+        pending.cast(pending.cast(pending.binary(pending.extract(ruvia::db_date_part::epoch, pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"created_at">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o")),
             Op::multiply, pending.value(1000)), Type::big_int), Type::text) })
         .from(service::command::persistence::CommandAttemptEntity::table_name(), "a")
-        .join(ruvia::db_join_type::inner, service::command::persistence::CommandOperationEntity::table_name(), pending.binary(pending.column(service::command::persistence::CommandOperationEntity::column_name<"id">(), "o"), Op::equal, pending.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a")), "o")
-        .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(service::command::persistence::CommandAttemptEntity::column_name<"claimed_at">(), "a")))
-        .and_where(pending.binary(pending.column(service::command::persistence::CommandAttemptEntity::column_name<"deadline">(), "a"), Op::greater, pending.call("now")))
-        .and_where(pending.binary(pending.column(service::command::persistence::CommandOperationEntity::column_name<"status">(), "o"), Op::equal, pending.value("ACCEPTED")))
-        .add_order_by(pending.column(service::command::persistence::CommandOperationEntity::column_name<"created_at">(), "o")).lock({ .mode_ = ruvia::db_row_lock::update, .skip_locked_ = true, .tables_ = { "a", "o" } }).limit(16);
+        .join(ruvia::db_join_type::inner, service::command::persistence::CommandOperationEntity::table_name(), pending.binary(pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::equal, pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a")), "o")
+        .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"claimed_at">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a")))
+        .and_where(pending.binary(pending.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"deadline">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), Op::greater, pending.call("now")))
+        .and_where(pending.binary(pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::equal, pending.value("ACCEPTED")))
+        .add_order_by(pending.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"created_at">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o")).lock({ .mode_ = ruvia::db_row_lock::update, .skip_locked_ = true, .tables_ = { "a", "o" } }).limit(16);
     const auto rows = co_await tx.query(pending);
     for (const auto& row : rows) {
         const auto id = row[0].value().value_or(std::string_view{});
         ruvia::db_query claim;
-        claim.update(service::command::persistence::CommandAttemptEntity::table_name()).set(service::command::persistence::CommandAttemptEntity::column_name<"claimed_at">(), claim.call("now"))
-            .and_where(claim.binary(claim.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">()), Op::equal, claim.cast(claim.value(id), Type::uuid)));
+        claim.update(service::command::persistence::CommandAttemptEntity::table_name()).set(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"claimed_at">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), claim.call("now"))
+            .and_where(claim.binary(claim.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view()), Op::equal, claim.cast(claim.value(id), Type::uuid)));
         (void)co_await tx.execute(claim);
         ruvia::db_query operation;
-        operation.update(service::command::persistence::CommandOperationEntity::table_name()).set(service::command::persistence::CommandOperationEntity::column_name<"status">(), operation.value("DISPATCHING"))
-            .and_where(operation.binary(operation.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), Op::equal, operation.cast(operation.value(id), Type::uuid)));
+        operation.update(service::command::persistence::CommandOperationEntity::table_name()).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), operation.value("DISPATCHING"))
+            .and_where(operation.binary(operation.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), Op::equal, operation.cast(operation.value(id), Type::uuid)));
         (void)co_await tx.execute(operation);
     }
     co_await tx.commit();
@@ -208,9 +210,9 @@ ruvia::task<void> dispatch(Context& context) {
         try {
             ruvia::db_query payload;
             payload.select(payload.column("value")).from(service::command::persistence::CommandAttemptEntity::table_name())
-                .join_function(ruvia::db_join_type::cross, payload.call("jsonb_array_elements_text", { payload.column(service::command::persistence::CommandAttemptEntity::column_name<"payload">()) }),
+                .join_function(ruvia::db_join_type::cross, payload.call("jsonb_array_elements_text", { payload.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"payload">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view()) }),
                     {}, "p", { .with_ordinality_ = true, .columns_ = { { .name_ = "value" }, { .name_ = "idx" } } })
-                .and_where(payload.binary(payload.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">()), Op::equal, payload.cast(payload.value(cell(0)), Type::uuid)))
+                .and_where(payload.binary(payload.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view()), Op::equal, payload.cast(payload.value(cell(0)), Type::uuid)))
                 .add_order_by(payload.column("idx"));
             const auto values = co_await context.db().query(payload);
             PendingDispatch item;
@@ -239,15 +241,15 @@ ruvia::task<void> dispatch(Context& context) {
             failure == "queue_capacity_exceeded" ? "REJECTED" : "UNKNOWN";
         auto update = co_await context.db().begin_transaction();
         ruvia::db_query outcome;
-        outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(service::command::persistence::CommandOperationEntity::column_name<"status">(), outcome.value(next)).set(service::command::persistence::CommandOperationEntity::column_name<"reason">(), outcome.value(failure))
-            .set(service::command::persistence::CommandOperationEntity::column_name<"completed_at">(), outcome.case_when({ { outcome.binary(outcome.value(next), Op::equal, outcome.value("AWAITING_RESULT")), outcome.null_value() } }, outcome.call("now")))
-            .and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), Op::equal, outcome.cast(outcome.value(cell(0)), Type::uuid)))
-            .and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column_name<"status">()), Op::equal, outcome.value("DISPATCHING")));
+        outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.value(next)).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"reason">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.value(failure))
+            .set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"completed_at">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.case_when({ { outcome.binary(outcome.value(next), Op::equal, outcome.value("AWAITING_RESULT")), outcome.null_value() } }, outcome.call("now")))
+            .and_where(outcome.binary(outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), Op::equal, outcome.cast(outcome.value(cell(0)), Type::uuid)))
+            .and_where(outcome.binary(outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), Op::equal, outcome.value("DISPATCHING")));
         (void)co_await update.execute(outcome);
         if (published) {
             ruvia::db_query dispatched;
-            dispatched.update(service::command::persistence::CommandAttemptEntity::table_name()).set(service::command::persistence::CommandAttemptEntity::column_name<"dispatched_at">(), dispatched.call("now"))
-                .and_where(dispatched.binary(dispatched.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">()), Op::equal, dispatched.cast(dispatched.value(cell(0)), Type::uuid)));
+            dispatched.update(service::command::persistence::CommandAttemptEntity::table_name()).set(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"dispatched_at">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), dispatched.call("now"))
+                .and_where(dispatched.binary(dispatched.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view()), Op::equal, dispatched.cast(dispatched.value(cell(0)), Type::uuid)));
             (void)co_await update.execute(dispatched);
         }
         else co_await event(update,cell(0),"device.command.updated", context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -257,15 +259,15 @@ ruvia::task<void> dispatch(Context& context) {
     }
     auto expiry = co_await context.db().begin_transaction();
     ruvia::db_query overdue;
-    const auto unclaimed = overdue.unary(ruvia::db_unary_operator::is_null, overdue.column(service::command::persistence::CommandAttemptEntity::column_name<"claimed_at">(), "a"));
+    const auto unclaimed = overdue.unary(ruvia::db_unary_operator::is_null, overdue.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"claimed_at">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"));
     overdue.update(service::command::persistence::CommandOperationEntity::table_name(), "o")
-        .set(service::command::persistence::CommandOperationEntity::column_name<"status">(), overdue.case_when({ { unclaimed, overdue.value(expiredDispatchState(false)) } }, overdue.value(expiredDispatchState(true))))
-        .set(service::command::persistence::CommandOperationEntity::column_name<"reason">(), overdue.case_when({ { unclaimed, overdue.value("dispatch_deadline_expired") } }, overdue.value("result_not_confirmed")))
-        .set(service::command::persistence::CommandOperationEntity::column_name<"completed_at">(), overdue.call("now")).update_from(service::command::persistence::CommandAttemptEntity::table_name(), "a")
-        .and_where(overdue.binary(overdue.column(service::command::persistence::CommandOperationEntity::column_name<"id">(), "o"), Op::equal, overdue.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a")))
-        .and_where(overdue.binary(overdue.column(service::command::persistence::CommandAttemptEntity::column_name<"deadline">(), "a"), Op::less_equal, overdue.call("now")))
-        .and_where(overdue.binary(overdue.column(service::command::persistence::CommandOperationEntity::column_name<"status">(), "o"), Op::in, overdue.list({ overdue.value("ACCEPTED"), overdue.value("DISPATCHING"), overdue.value("AWAITING_RESULT") })))
-        .returning({ overdue.cast(overdue.column(service::command::persistence::CommandOperationEntity::column_name<"id">(), "o"), Type::text) });
+        .set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), overdue.case_when({ { unclaimed, overdue.value(expiredDispatchState(false)) } }, overdue.value(expiredDispatchState(true))))
+        .set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"reason">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), overdue.case_when({ { unclaimed, overdue.value("dispatch_deadline_expired") } }, overdue.value("result_not_confirmed")))
+        .set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"completed_at">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), overdue.call("now")).update_from(service::command::persistence::CommandAttemptEntity::table_name(), "a")
+        .and_where(overdue.binary(overdue.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::equal, overdue.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a")))
+        .and_where(overdue.binary(overdue.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"deadline">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), Op::less_equal, overdue.call("now")))
+        .and_where(overdue.binary(overdue.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::in, overdue.list({ overdue.value("ACCEPTED"), overdue.value("DISPATCHING"), overdue.value("AWAITING_RESULT") })))
+        .returning({ overdue.cast(overdue.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Type::text) });
     const auto expired = co_await expiry.query(overdue);
     for (const auto& row : expired)
         co_await event(expiry,row[0].value().value_or(std::string_view{}),"device.command.updated", context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -278,21 +280,21 @@ nextDispatchDelay(Context& context) {
     using Op = ruvia::db_binary_operator;
     ruvia::db_query delayQuery;
     const auto claimable = delayQuery.binary(delayQuery.binary(
-        delayQuery.binary(delayQuery.column(service::command::persistence::CommandOperationEntity::column_name<"status">(), "o"), Op::equal, delayQuery.value("ACCEPTED")), Op::and_value,
-        delayQuery.unary(ruvia::db_unary_operator::is_null, delayQuery.column(service::command::persistence::CommandAttemptEntity::column_name<"claimed_at">(), "a"))), Op::and_value,
-        delayQuery.binary(delayQuery.column(service::command::persistence::CommandAttemptEntity::column_name<"deadline">(), "a"), Op::greater, delayQuery.call("now")));
+        delayQuery.binary(delayQuery.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::equal, delayQuery.value("ACCEPTED")), Op::and_value,
+        delayQuery.unary(ruvia::db_unary_operator::is_null, delayQuery.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"claimed_at">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"))), Op::and_value,
+        delayQuery.binary(delayQuery.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"deadline">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a"), Op::greater, delayQuery.call("now")));
     const auto deadlineMs = delayQuery.cast(delayQuery.call("ceil", { delayQuery.binary(delayQuery.extract(ruvia::db_date_part::epoch,
-        delayQuery.binary(delayQuery.aggregate("min", { delayQuery.column(service::command::persistence::CommandAttemptEntity::column_name<"deadline">(), "a") }), Op::subtract, delayQuery.call("now"))),
+        delayQuery.binary(delayQuery.aggregate("min", { delayQuery.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"deadline">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a") }), Op::subtract, delayQuery.call("now"))),
         Op::multiply, delayQuery.value(1000)) }), ruvia::db_data_type::big_int);
     delayQuery.select(delayQuery.cast(delayQuery.case_when({
             { delayQuery.binary(delayQuery.aggregate("count", { delayQuery.star() }), Op::equal, delayQuery.value(0)), delayQuery.null_value() },
             { delayQuery.aggregate("bool_or", { claimable }), delayQuery.value(25) } },
             delayQuery.greatest({ delayQuery.value(25), deadlineMs })), ruvia::db_data_type::text))
         .from(service::command::persistence::CommandAttemptEntity::table_name(), "a")
-        .join(ruvia::db_join_type::inner, service::command::persistence::CommandOperationEntity::table_name(), delayQuery.binary(delayQuery.column(service::command::persistence::CommandOperationEntity::column_name<"id">(), "o"), Op::equal, delayQuery.column(service::command::persistence::CommandAttemptEntity::column_name<"operation_id">(), "a")), "o")
-        .and_where(delayQuery.binary(delayQuery.column(service::command::persistence::CommandOperationEntity::column_name<"status">(), "o"), Op::in,
+        .join(ruvia::db_join_type::inner, service::command::persistence::CommandOperationEntity::table_name(), delayQuery.binary(delayQuery.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::equal, delayQuery.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"operation_id">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a")), "o")
+        .and_where(delayQuery.binary(delayQuery.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), "o"), Op::in,
             delayQuery.list({ delayQuery.value("ACCEPTED"), delayQuery.value("DISPATCHING"), delayQuery.value("AWAITING_RESULT") })))
-        .and_where(delayQuery.unary(ruvia::db_unary_operator::is_not_null, delayQuery.column(service::command::persistence::CommandAttemptEntity::column_name<"deadline">(), "a")));
+        .and_where(delayQuery.unary(ruvia::db_unary_operator::is_not_null, delayQuery.column(std::tuple_element_t<service::command::persistence::CommandAttemptEntity::column_index<"deadline">(), service::command::persistence::CommandAttemptEntity::columns_type>::name.view(), "a")));
     const auto rows = co_await context.db().query(delayQuery);
     if (rows.empty())
         co_return std::nullopt;
@@ -333,22 +335,22 @@ class CommandResultService final {
             const bool mayResolveUnknown = state == "SUCCEEDED" && message.get("success") == "1";
             using Op = ruvia::db_binary_operator;
             ruvia::db_query outcome;
-            outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(service::command::persistence::CommandOperationEntity::column_name<"status">(), outcome.value(state)).set(service::command::persistence::CommandOperationEntity::column_name<"reason">(), outcome.value(message.get("reason")))
-                .set(service::command::persistence::CommandOperationEntity::column_name<"actual_values">(), outcome.cast(outcome.value(actual), ruvia::db_data_type::jsonb)).set(service::command::persistence::CommandOperationEntity::column_name<"completed_at">(), outcome.call("now"))
-                .and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), Op::equal, outcome.cast(outcome.value(id), ruvia::db_data_type::uuid)))
-                .and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column_name<"device_id">()), Op::equal, outcome.cast(outcome.value(deviceId), ruvia::db_data_type::uuid)))
+            outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.value(state)).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"reason">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.value(message.get("reason")))
+                .set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"actual_values">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.cast(outcome.value(actual), ruvia::db_data_type::jsonb)).set(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"completed_at">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view(), outcome.call("now"))
+                .and_where(outcome.binary(outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), Op::equal, outcome.cast(outcome.value(id), ruvia::db_data_type::uuid)))
+                .and_where(outcome.binary(outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"device_id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), Op::equal, outcome.cast(outcome.value(deviceId), ruvia::db_data_type::uuid)))
                 .and_where(outcome.binary(
                     outcome.binary(
-                        outcome.column(service::command::persistence::CommandOperationEntity::column_name<"status">()),
+                        outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()),
                         Op::in, outcome.list({
                             outcome.value(kCommandResultAcceptingStatuses[0]),
                             outcome.value(kCommandResultAcceptingStatuses[1])})),
                     Op::or_value, outcome.binary(
                         outcome.binary(
-                            outcome.column(service::command::persistence::CommandOperationEntity::column_name<"status">()),
+                            outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"status">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()),
                             Op::equal, outcome.value("UNKNOWN")),
                         Op::and_value, outcome.value(mayResolveUnknown))))
-                .returning({ outcome.cast(outcome.column(service::command::persistence::CommandOperationEntity::column_name<"id">()), ruvia::db_data_type::text) });
+                .returning({ outcome.cast(outcome.column(std::tuple_element_t<service::command::persistence::CommandOperationEntity::column_index<"id">(), service::command::persistence::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text) });
             const auto updated = co_await transaction.query(outcome);
             if (!updated.empty())
                 co_await repository::event(transaction, id, "device.command.updated", context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -490,7 +492,7 @@ private:
         using Op = ruvia::db_binary_operator;
         using Type = ruvia::db_data_type;
         ruvia::db_query routeQuery;
-        const auto parameters = routeQuery.column(service::command::persistence::DeviceEntity::column_name<"protocol_params">(), "d");
+        const auto parameters = routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"protocol_params">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d");
         const auto text = [&](ruvia::db_expression object, std::string_view key) {
             return routeQuery.binary(object, Op::json_get_text, routeQuery.value(key));
         };
@@ -498,33 +500,33 @@ private:
             return routeQuery.binary(routeQuery.call("lower", { routeQuery.coalesce({ value, routeQuery.value("") }) }), Op::in,
                 routeQuery.list({ routeQuery.value("true"), routeQuery.value("t"), routeQuery.value("1"), routeQuery.value("yes"), routeQuery.value("y"), routeQuery.value("on") }));
         };
-        const auto nodeConfig = routeQuery.binary(routeQuery.column(service::command::persistence::EdgeNodeEntity::column_name<"status">(), "n"), Op::json_get, routeQuery.value("config"));
+        const auto nodeConfig = routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::EdgeNodeEntity::column_index<"status">(), service::command::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"), Op::json_get, routeQuery.value("config"));
         const auto version = [&](std::string_view key) {
             const auto value = text(nodeConfig, key);
             return routeQuery.coalesce({ routeQuery.case_when({ { routeQuery.binary(routeQuery.coalesce({ value, routeQuery.value("") }), Op::regex,
                 routeQuery.value("^-?[0-9]{1,18}$")), routeQuery.cast(value, Type::big_int) } }), routeQuery.value(0) });
         };
-        auto applied = routeQuery.binary(routeQuery.column(service::command::persistence::LinkEntity::column_name<"status">(), "l"), Op::equal, routeQuery.value("enabled"));
-        applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(routeQuery.column(service::command::persistence::EdgeNodeEntity::column_name<"enrollment_status">(), "n"), Op::equal, routeQuery.value("approved")));
-        applied = routeQuery.binary(applied, Op::and_value, boolean(text(routeQuery.column(service::command::persistence::EdgeNodeEntity::column_name<"capability">(), "n"), "deviceConfig")));
+        auto applied = routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"status">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, routeQuery.value("enabled"));
+        applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::command::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"), Op::equal, routeQuery.value("approved")));
+        applied = routeQuery.binary(applied, Op::and_value, boolean(text(routeQuery.column(std::tuple_element_t<service::command::persistence::EdgeNodeEntity::column_index<"capability">(), service::command::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"), "deviceConfig")));
         applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(routeQuery.coalesce({ text(nodeConfig, "state"), routeQuery.value("idle") }), Op::equal, routeQuery.value("applied")));
         applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(version("activeVersion"), Op::equal, version("desiredVersion")));
-        routeQuery.select({ routeQuery.coalesce({ routeQuery.cast(routeQuery.column(service::command::persistence::LinkEntity::column_name<"edge_node_id">(), "l"), Type::text), routeQuery.value("") }),
-                text(parameters, "device_code"), routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+        routeQuery.select({ routeQuery.coalesce({ routeQuery.cast(routeQuery.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"edge_node_id">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l"), Type::text), routeQuery.value("") }),
+                text(parameters, "device_code"), routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"protocol">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                 routeQuery.case_when({ { routeQuery.binary(parameters, Op::json_has_key, routeQuery.value("remote_control")), boolean(text(parameters, "remote_control")) } }, routeQuery.value(true)),
                 routeQuery.coalesce({ applied, routeQuery.value(false) }),
-                routeQuery.coalesce({ routeQuery.null_if(text(routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"config">(), "p"), "commandFastReadDuration"), routeQuery.value("")), routeQuery.value("60") }),
-                routeQuery.coalesce({ routeQuery.null_if(text(routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"config">(), "p"), "commandFastReadInterval"), routeQuery.value("")), routeQuery.value("1") }) })
+                routeQuery.coalesce({ routeQuery.null_if(text(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"config">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), "commandFastReadDuration"), routeQuery.value("")), routeQuery.value("60") }),
+                routeQuery.coalesce({ routeQuery.null_if(text(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"config">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), "commandFastReadInterval"), routeQuery.value("")), routeQuery.value("1") }) })
             .from(service::command::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::command::persistence::LinkEntity::table_name(), routeQuery.binary(routeQuery.column(service::command::persistence::LinkEntity::column_name<"id">(), "l"), Op::equal, routeQuery.column(service::command::persistence::DeviceEntity::column_name<"link_id">(), "d")), "l")
-            .join(ruvia::db_join_type::inner, service::command::persistence::DeviceModelEntity::table_name(), routeQuery.binary(routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, routeQuery.column(service::command::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
-            .join(ruvia::db_join_type::left, service::command::persistence::EdgeNodeEntity::table_name(), routeQuery.binary(routeQuery.column(service::command::persistence::EdgeNodeEntity::column_name<"id">(), "n"), Op::equal, routeQuery.column(service::command::persistence::LinkEntity::column_name<"edge_node_id">(), "l")), "n")
-            .and_where(routeQuery.binary(routeQuery.column(service::command::persistence::DeviceEntity::column_name<"id">(), "d"), Op::equal, routeQuery.cast(routeQuery.value(deviceId), Type::uuid)))
-            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(service::command::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-            .and_where(routeQuery.binary(routeQuery.column(service::command::persistence::DeviceEntity::column_name<"status">(), "d"), Op::equal, routeQuery.value("enabled")))
-            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(service::command::persistence::LinkEntity::column_name<"deleted_at">(), "l")))
-            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p")))
-            .and_where(routeQuery.column(service::command::persistence::DeviceModelEntity::column_name<"enabled">(), "p")).limit(1);
+            .join(ruvia::db_join_type::inner, service::command::persistence::LinkEntity::table_name(), routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"id">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"link_id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d")), "l")
+            .join(ruvia::db_join_type::inner, service::command::persistence::DeviceModelEntity::table_name(), routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"device_id">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+            .join(ruvia::db_join_type::left, service::command::persistence::EdgeNodeEntity::table_name(), routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::EdgeNodeEntity::column_index<"id">(), service::command::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"), Op::equal, routeQuery.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"edge_node_id">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l")), "n")
+            .and_where(routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::equal, routeQuery.cast(routeQuery.value(deviceId), Type::uuid)))
+            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"deleted_at">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+            .and_where(routeQuery.binary(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"status">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::equal, routeQuery.value("enabled")))
+            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"deleted_at">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l")))
+            .and_where(routeQuery.unary(ruvia::db_unary_operator::is_null, routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p")))
+            .and_where(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"enabled">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p")).limit(1);
         const auto edge = co_await transaction.query(routeQuery);
         if (!edge.empty() && !edge.front()[0].value().value_or(std::string_view{}).empty()) {
             if (!mqttMessageId.empty()) service::common::fail(18010, "MQTT 消息选择不适用于边缘协议", 400);
@@ -710,15 +712,15 @@ private:
                 isSl651 ? elements.column("response_element") : elements.cast(elements.value(false), Type::boolean),
                 isSl651 ? functionText("funcCode") : elements.value(""), isSl651 ? field("encode") : isDlt645 ? field("dataType") : elements.value("") })
             .from(service::command::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::command::persistence::LinkEntity::table_name(), elements.binary(elements.column(service::command::persistence::LinkEntity::column_name<"id">(), "l"), Op::equal, elements.column(service::command::persistence::DeviceEntity::column_name<"link_id">(), "d")), "l")
-            .join(ruvia::db_join_type::inner, service::command::persistence::DeviceModelEntity::table_name(), elements.binary(elements.column(service::command::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, elements.column(service::command::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
+            .join(ruvia::db_join_type::inner, service::command::persistence::LinkEntity::table_name(), elements.binary(elements.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"id">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, elements.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"link_id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d")), "l")
+            .join(ruvia::db_join_type::inner, service::command::persistence::DeviceModelEntity::table_name(), elements.binary(elements.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"device_id">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, elements.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
             .join_function(ruvia::db_join_type::cross, elements.call("jsonb_array_elements", { elements.coalesce({
-                elements.binary(elements.column(service::command::persistence::DeviceModelEntity::column_name<"config">(), "p"), Op::json_get, elements.value(isSl651 ? "funcs" : isS7 ? "areas" : isIndustrial ? "points" : "registers")),
+                elements.binary(elements.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"config">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, elements.value(isSl651 ? "funcs" : isS7 ? "areas" : isIndustrial ? "points" : "registers")),
                 elements.cast(elements.value("[]"), Type::jsonb) }) }), {}, isSl651 ? "func" : "item", { .lateral_ = true })
-            .and_where(elements.binary(elements.column(service::command::persistence::DeviceEntity::column_name<"id">(), "d"), Op::equal, elements.cast(elements.value(device.id), Type::uuid)))
-            .and_where(elements.binary(elements.column(service::command::persistence::DeviceModelEntity::column_name<"protocol">(), "p"), Op::equal, elements.value(device.protocol)))
-            .and_where(elements.binary(elements.column(service::command::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, elements.value("edge")))
-            .and_where(elements.unary(ruvia::db_unary_operator::is_null, elements.column(service::command::persistence::LinkEntity::column_name<"deleted_at">(), "l")));
+            .and_where(elements.binary(elements.column(std::tuple_element_t<service::command::persistence::DeviceEntity::column_index<"id">(), service::command::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::equal, elements.cast(elements.value(device.id), Type::uuid)))
+            .and_where(elements.binary(elements.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<"protocol">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, elements.value(device.protocol)))
+            .and_where(elements.binary(elements.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"execution">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, elements.value("edge")))
+            .and_where(elements.unary(ruvia::db_unary_operator::is_null, elements.column(std::tuple_element_t<service::command::persistence::LinkEntity::column_index<"deleted_at">(), service::command::persistence::LinkEntity::columns_type>::name.view(), "l")));
         if (isSl651) {
             const auto functionFields = [](std::string_view key, bool response) {
                 ruvia::db_query query;

@@ -10,6 +10,7 @@
 
 #include <ruvia/web/app.h>
 #include <ruvia/web/auth/jwt.h>
+#include <ruvia/web/db/db_query.h>
 
 #include "service/common/database.h"
 #include "service/common/http.h"
@@ -186,7 +187,7 @@ class AuthService {
 
     template <typename Context>
     static ruvia::task<void> requirePermission(Context& c, std::string_view userId, std::string_view permission) {
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         auto query = enabledRoles(c, userId);
         query.template join<service::user::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(expressions.column("id", "u"), ruvia::db_binary_operator::equal, expressions.column("user_id", "ur")))
             .and_where(expressions.binary(
@@ -293,7 +294,7 @@ class AuthService {
     template <typename Context>
     static ruvia::db_query_builder<service::role::RoleEntity, ruvia::db_handle>
     enabledRoles(Context& c, std::string_view userId) {
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         auto query = c.db().template get_repository<service::role::RoleEntity>().create_query_builder("r");
         query.template join<service::user::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(expressions.column("role_id", "ur"), ruvia::db_binary_operator::equal, expressions.column("id", "r")))
             .where(expressions.binary(expressions.column("user_id", "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
@@ -319,7 +320,7 @@ class AuthService {
                 .template set<"code">(row.template get<"code">());
         }
 
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         auto permissionQuery = enabledRoles(c, userId);
         permissionQuery.select({ { "permission", expressions.column("permission", "p") } })
             .distinct()

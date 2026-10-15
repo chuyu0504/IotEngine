@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <memory>
 #include <map>
 #include <algorithm>
@@ -1277,7 +1279,7 @@ class ProtocolService {
         const auto& remark = body.get<"remark">();
         const auto& config = body.get<"config">();
         const auto& enabled = body.get<"enabled">();
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         std::vector<ruvia::db_assignment> changes{ { "updated_at", expressions.call("now") } };
         if (name) {
             changes.push_back({ "name", expressions.value(name->view()) });
@@ -1375,7 +1377,7 @@ class ProtocolService {
         const auto parsed = ruvia::json_value::parse(merged);
         ProtocolConfigurationRules::validateConfig(parsed, "DLT645", true);
         validateDerivedConfig(*parsed);
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment configurationChanges[]{
             { "config", expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
             { "updated_at", expressions.call("now") }
@@ -1415,7 +1417,7 @@ class ProtocolService {
             service::common::fail(16008, "协议配置已被设备使用，请先删除关联设备", 409);
         }
         auto transaction = co_await c.db().begin_transaction();
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
             { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
         };
@@ -1446,9 +1448,9 @@ class ProtocolService {
             query.cast(query.column("edge_node_id", "l"), ruvia::db_data_type::text);
         query.select(edgeNodeId)
             .from(service::protocol::entities::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::link::LinkEntity::table_name(), query.binary(query.column("id", "l"), ruvia::db_binary_operator::equal, query.column(service::protocol::entities::DeviceEntity::column_name<"link_id">(), "d")), "l")
-            .where(query.binary(query.column(service::protocol::entities::DeviceEntity::column_name<"protocol_config_id">(), "d"), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::protocol::entities::DeviceEntity::column_name<"deleted_at">(), "d")))
+            .join(ruvia::db_join_type::inner, service::link::LinkEntity::table_name(), query.binary(query.column("id", "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::protocol::entities::DeviceEntity::column_index<"link_id">(), service::protocol::entities::DeviceEntity::columns_type>::name.view(), "d")), "l")
+            .where(query.binary(query.column(std::tuple_element_t<service::protocol::entities::DeviceEntity::column_index<"protocol_config_id">(), service::protocol::entities::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::protocol::entities::DeviceEntity::column_index<"deleted_at">(), service::protocol::entities::DeviceEntity::columns_type>::name.view(), "d")))
             .and_where(query.binary(query.column("execution", "l"), ruvia::db_binary_operator::equal, query.value("edge")))
             .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column("deleted_at", "l")))
             .and_where(query.unary(ruvia::db_unary_operator::is_not_null, query.column("edge_node_id", "l")))

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include "service/common/uuid.h"
 
 #include <memory>
@@ -146,17 +148,17 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     using Type = ruvia::db_data_type;
     ruvia::db_query linkQuery;
     const auto endpointText = [&](std::string_view key) {
-        return linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">()), Op::json_get_text, linkQuery.value(key));
+        return linkQuery.binary(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Op::json_get_text, linkQuery.value(key));
     };
-    linkQuery.select({ linkQuery.cast(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()), Type::text), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"name">()),
-            endpointText("mode"), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"protocol">()),
+    linkQuery.select({ linkQuery.cast(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Type::text), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"name">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()),
+            endpointText("mode"), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"protocol">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()),
             linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }),
             linkQuery.coalesce({ linkQuery.null_if(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }),
-            linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"status">()), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"debug_enabled">()) })
+            linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"status">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"debug_enabled">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()) })
         .from(service::configuration::persistence::LinkEntity::table_name())
-        .and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">())))
-        .and_where(linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">()), Op::equal, linkQuery.value("collector")))
-        .add_order_by(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()));
+        .and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view())))
+        .and_where(linkQuery.binary(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Op::equal, linkQuery.value("collector")))
+        .add_order_by(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()));
     const auto links = co_await db.query(linkQuery);
     for (const auto& row : links) {
         LinkDefinition link;
@@ -179,20 +181,20 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     const auto targetText = [&](std::string_view key) {
         return targetQuery.binary(targetQuery.column("target"), Op::json_get_text, targetQuery.value(key));
     };
-    targetQuery.select({ targetQuery.cast(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Type::text),
+    targetQuery.select({ targetQuery.cast(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Type::text),
             targetText("id"), targetText("name"), targetText("ip"),
             targetQuery.coalesce({ targetQuery.null_if(targetText("port"), targetQuery.value("")), targetQuery.value("0") }),
             targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }),
             targetQuery.coalesce({targetText("mqtt"), targetQuery.value("{}")}) })
         .from(service::configuration::persistence::LinkEntity::table_name(), "l")
         .join_function(ruvia::db_join_type::cross, targetQuery.call("jsonb_array_elements", {
-            targetQuery.coalesce({ targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get, targetQuery.value("targets")),
+            targetQuery.coalesce({ targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::json_get, targetQuery.value("targets")),
                 targetQuery.cast(targetQuery.value("[]"), Type::jsonb) }) }), {}, "target", { .lateral_ = true })
-        .and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">(), "l")))
-        .and_where(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, targetQuery.value("collector")))
-        .and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get_text, targetQuery.value("mode")),
+        .and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l")))
+        .and_where(targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, targetQuery.value("collector")))
+        .and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::json_get_text, targetQuery.value("mode")),
             Op::equal, targetQuery.value("TCP Client")))
-        .add_order_by(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"));
+        .add_order_by(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"));
     const auto targets = co_await db.query(targetQuery);
     for (const auto& row : targets) {
         const auto linkId = cell(row, 0);
@@ -210,8 +212,8 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     }
 
     ruvia::db_query deviceQuery;
-    const auto parameters = deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "d");
-    const auto config = deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto parameters = deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d");
+    const auto config = deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto jsonText = [&](ruvia::db_expression object, std::string_view key) {
         return deviceQuery.binary(object, Op::json_get_text, deviceQuery.value(key));
     };
@@ -222,11 +224,11 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     const auto registration = deviceQuery.binary(parameters, Op::json_get, deviceQuery.value("registration"));
     const auto connection = deviceQuery.binary(config, Op::json_get, deviceQuery.value("connection"));
     const auto packet = deviceQuery.binary(config, Op::json_get, deviceQuery.value("packet"));
-    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), Type::text),
-            jsonText(parameters, "device_code"), deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"name">(), "d"),
-            deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "d"), Type::text),
-            jsonText(deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), "mode"),
-            defaultText(parameters, "target_id", ""), deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
+            jsonText(parameters, "device_code"), deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
+            deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
+            jsonText(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), "mode"),
+            defaultText(parameters, "target_id", ""), deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
             defaultText(parameters, "timezone", "+08:00"),
             deviceQuery.coalesce({ deviceQuery.null_if(jsonText(parameters, "online_timeout"), deviceQuery.value("")), deviceQuery.value("300") }),
             defaultText(heartbeat, "mode", "OFF"), defaultText(heartbeat, "content", ""),
@@ -242,8 +244,8 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             deviceQuery.coalesce({ deviceQuery.null_if(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("300") }),
             defaultText(config, "storagePolicy", "report"), defaultText(config, "commandFastReadDuration", "60"),
             defaultText(config, "commandFastReadInterval", "1"), defaultText(packet, "mergeGap", "100"),
-            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"id">(), "p"), Type::text),
-            defaultText(config, "responseMode", "M1"), deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"debug_enabled">(), "d"),
+            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Type::text),
+            defaultText(config, "responseMode", "M1"), deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"debug_enabled">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
             defaultText(connection, "frame", "3E"),
             defaultText(connection, "version", "2007"),
             defaultText(connection, "network", "0"),
@@ -263,17 +265,17 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             defaultText(parameters, "parameters", "{}") })
         .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
         .join(ruvia::db_join_type::inner, service::configuration::persistence::LinkEntity::table_name(),
-            deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Op::equal, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "d")), "l")
+            deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "l")
         .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(),
-            deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">(), "l")))
-        .and_where(deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"status">(), "l"), Op::equal, deviceQuery.value("enabled")))
-        .and_where(deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, deviceQuery.value("collector")))
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p")))
-        .and_where(deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::column_name<"enabled">(), "p"), Op::equal, deviceQuery.value(true)))
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .and_where(deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"status">(), "d"), Op::equal, deviceQuery.value("enabled")))
-        .add_order_by(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "d")).add_order_by(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"));
+            deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l")))
+        .and_where(deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"status">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, deviceQuery.value("enabled")))
+        .and_where(deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, deviceQuery.value("collector")))
+        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p")))
+        .and_where(deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"enabled">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, deviceQuery.value(true)))
+        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .and_where(deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"status">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::equal, deviceQuery.value("enabled")))
+        .add_order_by(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")).add_order_by(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     const auto devices = co_await db.query(deviceQuery);
     for (const auto& row : devices) {
         DeviceDefinition device;
@@ -353,11 +355,11 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         ruvia::db_query query;
         query.from(service::configuration::persistence::DeviceEntity::table_name(), "d")
             .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(),
-                query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
-            .and_where(query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"protocol">(), "p"), Op::equal, query.value(protocol)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d")));
+                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+            .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")));
         const auto entries = query.call("jsonb_array_elements", { query.coalesce({
-            query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"config">(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
+            query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
         if (protocol == "SL651" && arrayKey == "funcs") {
             query.join_function(ruvia::db_join_type::cross, entries, {}, "functions",
                 { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } })
@@ -365,11 +367,11 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
                     query.binary(query.column("function"), Op::json_get, query.value("elements")), query.cast(query.value("[]"), Type::jsonb) }) }),
                     {}, "elements", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } })
                 .and_where(query.binary(query.binary(query.column("function"), Op::json_get_text, query.value("dir")), Op::equal, query.value("UP")))
-                .select({ query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("function_position"), query.column("element_position") });
+                .select({ query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("function_position"), query.column("element_position") });
         } else {
             query.join_function(ruvia::db_join_type::cross, entries, {}, "entry",
                 { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "position" } } })
-                .select({ query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("position"), query.cast(query.value(0), Type::big_int) });
+                .select({ query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("position"), query.cast(query.value(0), Type::big_int) });
         }
         query.and_where(query.binary(query.coalesce({ query.binary(query.column("element"), Op::json_get_text, query.value("encode")), query.value("") }),
             Op::not_equal, query.value("JPEG")));
@@ -388,14 +390,14 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         return realtime.binary(realtime.column("element", "configured"), Op::json_get_text, realtime.value(key));
     };
     realtime.with("configured", configured, { .columns_ = { "device_id", "element", "protocol_order", "function_order", "element_order" } })
-        .select({ realtime.cast(realtime.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), Type::text),
-            realtime.coalesce({ realtime.binary(realtime.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, realtime.value("device_code")), realtime.value("") }),
-            realtime.column(service::configuration::persistence::DeviceEntity::column_name<"name">(), "d"), realtimeText("id"), realtime.coalesce({ realtimeText("name"), realtimeText("id") }),
+        .select({ realtime.cast(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
+            realtime.coalesce({ realtime.binary(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, realtime.value("device_code")), realtime.value("") }),
+            realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), realtimeText("id"), realtime.coalesce({ realtimeText("name"), realtimeText("id") }),
             realtime.coalesce({ realtimeText("unit"), realtime.value("") }) })
         .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(ruvia::db_join_type::left, "configured", realtime.binary(realtime.column("device_id", "configured"), Op::equal, realtime.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d")))
-        .and_where(realtime.unary(ruvia::db_unary_operator::is_null, realtime.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .add_order_by(realtime.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d")).add_order_by(realtime.column("protocol_order", "configured"))
+        .join(ruvia::db_join_type::left, "configured", realtime.binary(realtime.column("device_id", "configured"), Op::equal, realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .and_where(realtime.unary(ruvia::db_unary_operator::is_null, realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .add_order_by(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")).add_order_by(realtime.column("protocol_order", "configured"))
         .add_order_by(realtime.column("function_order", "configured")).add_order_by(realtime.column("element_order", "configured"));
     const auto realtimeRows = co_await db.query(realtime);
     RealtimeDeviceDefinition* realtimeDevice = nullptr;
@@ -417,15 +419,15 @@ template <typename Database> ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     const auto protocolElements = [](std::string_view protocol, std::string_view arrayKey, std::string_view alias) {
         ruvia::db_query query;
         query.from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
+            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
             .join_function(ruvia::db_join_type::cross, query.call("jsonb_array_elements", { query.coalesce({
-                query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"config">(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) }),
+                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) }),
                 {}, alias, { .lateral_ = true })
-            .and_where(query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"protocol">(), "p"), Op::equal, query.value(protocol)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-            .and_where(query.binary(query.column(service::configuration::persistence::DeviceEntity::column_name<"status">(), "d"), Op::equal, query.value("enabled")))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::configuration::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p")))
-            .and_where(query.binary(query.column(service::configuration::persistence::DeviceModelEntity::column_name<"enabled">(), "p"), Op::equal, query.value(true)));
+            .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+            .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"status">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::equal, query.value("enabled")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p")))
+            .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"enabled">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(true)));
         return query;
     };
     const auto elementText = [](ruvia::db_query& query, std::string_view key) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -73,15 +75,15 @@ class EdgeService {
     template <typename Context>
     ruvia::task<std::string> dtuChannels(Context& c, std::string_view nodeId) {
         ruvia::db_query node(c.pool());
-        node.select(booleanText(node, jsonText(node, node.column(EdgeNodeEntity::column_name<"capability">()), "dtu")))
-            .from(EdgeNodeEntity::table_name()).where(node.binary(node.column(EdgeNodeEntity::column_name<"id">()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
+        node.select(booleanText(node, jsonText(node, node.column(std::tuple_element_t<EdgeNodeEntity::column_index<"capability">(), EdgeNodeEntity::columns_type>::name.view()), "dtu")))
+            .from(EdgeNodeEntity::table_name()).where(node.binary(node.column(std::tuple_element_t<EdgeNodeEntity::column_index<"id">(), EdgeNodeEntity::columns_type>::name.view()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
         const auto nodes = co_await c.db().query(node);
         if (nodes.empty()) service::common::fail(17001, "边缘节点不存在", 404);
         std::string result = nodes.front()[0].template as<bool>().value_or(false) ? "{\"supported\":true,\"channels\":[" : "{\"supported\":false,\"channels\":[";
         ruvia::db_query query(c.pool());
-        query.select({query.column(EdgeDtuEntity::column_name<"config">()), query.column(EdgeDtuEntity::column_name<"status">())})
-            .from(EdgeDtuEntity::table_name()).where(query.binary(query.column(EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .order_by(query.column(EdgeDtuEntity::column_name<"channel_id">()));
+        query.select({query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"config">(), EdgeDtuEntity::columns_type>::name.view()), query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"status">(), EdgeDtuEntity::columns_type>::name.view())})
+            .from(EdgeDtuEntity::table_name()).where(query.binary(query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"node_id">(), EdgeDtuEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
+            .order_by(query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"channel_id">(), EdgeDtuEntity::columns_type>::name.view()));
         const auto rows = co_await c.db().query(query);
         bool first = true;
         for (const auto& row : rows) {
@@ -164,12 +166,12 @@ class EdgeService {
         for (unsigned char byte : wire) { encoded += digits[byte >> 4]; encoded += digits[byte & 15]; }
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query lock(c.pool());
-        lock.select(lock.column(EdgeNodeEntity::column_name<"id">())).from(EdgeNodeEntity::table_name())
-            .where(lock.binary(lock.column(EdgeNodeEntity::column_name<"id">()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).lock({.mode_=ruvia::db_row_lock::update});
+        lock.select(lock.column(std::tuple_element_t<EdgeNodeEntity::column_index<"id">(), EdgeNodeEntity::columns_type>::name.view())).from(EdgeNodeEntity::table_name())
+            .where(lock.binary(lock.column(std::tuple_element_t<EdgeNodeEntity::column_index<"id">(), EdgeNodeEntity::columns_type>::name.view()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).lock({.mode_=ruvia::db_row_lock::update});
         (void)co_await transaction.query(lock);
         ruvia::db_query existing(c.pool());
-        existing.select({existing.column(EdgeDtuEntity::column_name<"channel_id">()), existing.column(EdgeDtuEntity::column_name<"wire_hex">())}).from(EdgeDtuEntity::table_name())
-            .where(existing.binary(existing.column(EdgeDtuEntity::column_name<"node_id">()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
+        existing.select({existing.column(std::tuple_element_t<EdgeDtuEntity::column_index<"channel_id">(), EdgeDtuEntity::columns_type>::name.view()), existing.column(std::tuple_element_t<EdgeDtuEntity::column_index<"wire_hex">(), EdgeDtuEntity::columns_type>::name.view())}).from(EdgeDtuEntity::table_name())
+            .where(existing.binary(existing.column(std::tuple_element_t<EdgeDtuEntity::column_index<"node_id">(), EdgeDtuEntity::columns_type>::name.view()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
         const auto rows = co_await transaction.query(existing);
         bool found = false;
         for (const auto& row : rows) {
@@ -188,13 +190,13 @@ class EdgeService {
         }
         if (!found && rows.size() >= 8) service::common::fail(17003, "每个节点最多 8 个透传通道", 409);
         ruvia::db_query save(c.pool());
-        save.insert_into(EdgeDtuEntity::table_name(), {EdgeDtuEntity::column_name<"node_id">(), EdgeDtuEntity::column_name<"channel_id">(), EdgeDtuEntity::column_name<"config">(), EdgeDtuEntity::column_name<"wire_hex">()})
+        save.insert_into(EdgeDtuEntity::table_name(), {std::tuple_element_t<EdgeDtuEntity::column_index<"node_id">(), EdgeDtuEntity::columns_type>::name.view(), std::tuple_element_t<EdgeDtuEntity::column_index<"channel_id">(), EdgeDtuEntity::columns_type>::name.view(), std::tuple_element_t<EdgeDtuEntity::column_index<"config">(), EdgeDtuEntity::columns_type>::name.view(), std::tuple_element_t<EdgeDtuEntity::column_index<"wire_hex">(), EdgeDtuEntity::columns_type>::name.view()})
             .values({save.cast(save.value(nodeId), Type::uuid), save.cast(save.value(channelId), Type::uuid), save.cast(save.value(json), Type::jsonb), save.value(encoded)});
         ruvia::db_conflict_options conflict;
-        conflict.columns_ = {std::string(EdgeDtuEntity::column_name<"node_id">()), std::string(EdgeDtuEntity::column_name<"channel_id">())};
-        conflict.update_ = {{std::string(EdgeDtuEntity::column_name<"config">()), save.excluded(EdgeDtuEntity::column_name<"config">())},
-                           {std::string(EdgeDtuEntity::column_name<"wire_hex">()), save.excluded(EdgeDtuEntity::column_name<"wire_hex">())},
-                           {std::string(EdgeDtuEntity::column_name<"status">()), save.cast(save.value("{}"), Type::jsonb)}};
+        conflict.columns_ = {std::string(std::tuple_element_t<EdgeDtuEntity::column_index<"node_id">(), EdgeDtuEntity::columns_type>::name.view()), std::string(std::tuple_element_t<EdgeDtuEntity::column_index<"channel_id">(), EdgeDtuEntity::columns_type>::name.view())};
+        conflict.update_ = {{std::string(std::tuple_element_t<EdgeDtuEntity::column_index<"config">(), EdgeDtuEntity::columns_type>::name.view()), save.excluded(std::tuple_element_t<EdgeDtuEntity::column_index<"config">(), EdgeDtuEntity::columns_type>::name.view())},
+                           {std::string(std::tuple_element_t<EdgeDtuEntity::column_index<"wire_hex">(), EdgeDtuEntity::columns_type>::name.view()), save.excluded(std::tuple_element_t<EdgeDtuEntity::column_index<"wire_hex">(), EdgeDtuEntity::columns_type>::name.view())},
+                           {std::string(std::tuple_element_t<EdgeDtuEntity::column_index<"status">(), EdgeDtuEntity::columns_type>::name.view()), save.cast(save.value("{}"), Type::jsonb)}};
         save.on_conflict(conflict);
         (void)co_await transaction.execute(save);
         co_await transaction.commit();
@@ -205,8 +207,8 @@ class EdgeService {
     template <typename Context>
     ruvia::task<void> deleteDtuChannel(Context& c, std::string_view nodeId, std::string_view channelId) {
         ruvia::db_query query(c.pool());
-        query.delete_from(EdgeDtuEntity::table_name()).where(query.binary(query.column(EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .and_where(query.binary(query.column(EdgeDtuEntity::column_name<"channel_id">()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
+        query.delete_from(EdgeDtuEntity::table_name()).where(query.binary(query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"node_id">(), EdgeDtuEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
+            .and_where(query.binary(query.column(std::tuple_element_t<EdgeDtuEntity::column_index<"channel_id">(), EdgeDtuEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
         (void)co_await c.db().execute(query);
         try { (void)co_await queueSnapshot(c, nodeId, c.userId); }
         catch (...) { service::common::fail(17005, "配置已删除，下发未成功，请点击同步配置重试", 502); }
@@ -593,7 +595,7 @@ class EdgeService {
         const std::string name(nameValue.view());
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query current(c.pool());
-        current.select(current.column(EdgeNodeEntity::column_name<"name">()))
+        current.select(current.column(std::tuple_element_t<EdgeNodeEntity::column_index<"name">(), EdgeNodeEntity::columns_type>::name.view()))
             .from(EdgeNodeEntity::table_name())
             .where((EdgeNodeEntity::column<"id">() == id).expression(current))
             .lock(ruvia::db_lock_options{});
@@ -1432,14 +1434,14 @@ class EdgeService {
 
         ruvia::db_query vpn(resource);
         const auto vpnNodeId = vpn.import_expression(nodeId, "node", "node");
-        const std::array<ruvia::db_order_term, 1> vpnOrder{ { { vpn.column(service::edge_node::entities::VpnRouteEntity::column_name<"virtual_cidr">(), "route"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
-        vpn.select(vpn.aggregate("string_agg", { vpn.column(service::edge_node::entities::VpnRouteEntity::column_name<"virtual_cidr">(), "route"), vpn.cast(vpn.value(","), Type::text) }, false, vpnOrder))
+        const std::array<ruvia::db_order_term, 1> vpnOrder{ { { vpn.column(std::tuple_element_t<service::edge_node::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::edge_node::entities::VpnRouteEntity::columns_type>::name.view(), "route"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
+        vpn.select(vpn.aggregate("string_agg", { vpn.column(std::tuple_element_t<service::edge_node::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::edge_node::entities::VpnRouteEntity::columns_type>::name.view(), "route"), vpn.cast(vpn.value(","), Type::text) }, false, vpnOrder))
             .from(service::edge_node::entities::VpnRouteEntity::table_name(), "route")
-            .join(ruvia::db_join_type::inner, service::edge_node::entities::VpnPeerEntity::table_name(), vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::column_name<"id">(), "peer"), Op::equal, vpn.column(service::edge_node::entities::VpnRouteEntity::column_name<"edge_peer_id">(), "route")), "peer")
-            .where(vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::column_name<"edge_node_id">(), "peer"), Op::equal, vpnNodeId))
-            .and_where(vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::column_name<"status">(), "peer"), Op::equal, vpn.value("active")))
-            .and_where(vpn.unary(Unary::is_true, vpn.column(service::edge_node::entities::VpnRouteEntity::column_name<"enabled">(), "route")))
-            .and_where(vpn.binary(vpn.column(service::edge_node::entities::VpnRouteEntity::column_name<"status">(), "route"), Op::equal, vpn.value("active")));
+            .join(ruvia::db_join_type::inner, service::edge_node::entities::VpnPeerEntity::table_name(), vpn.binary(vpn.column(std::tuple_element_t<service::edge_node::entities::VpnPeerEntity::column_index<"id">(), service::edge_node::entities::VpnPeerEntity::columns_type>::name.view(), "peer"), Op::equal, vpn.column(std::tuple_element_t<service::edge_node::entities::VpnRouteEntity::column_index<"edge_peer_id">(), service::edge_node::entities::VpnRouteEntity::columns_type>::name.view(), "route")), "peer")
+            .where(vpn.binary(vpn.column(std::tuple_element_t<service::edge_node::entities::VpnPeerEntity::column_index<"edge_node_id">(), service::edge_node::entities::VpnPeerEntity::columns_type>::name.view(), "peer"), Op::equal, vpnNodeId))
+            .and_where(vpn.binary(vpn.column(std::tuple_element_t<service::edge_node::entities::VpnPeerEntity::column_index<"status">(), service::edge_node::entities::VpnPeerEntity::columns_type>::name.view(), "peer"), Op::equal, vpn.value("active")))
+            .and_where(vpn.unary(Unary::is_true, vpn.column(std::tuple_element_t<service::edge_node::entities::VpnRouteEntity::column_index<"enabled">(), service::edge_node::entities::VpnRouteEntity::columns_type>::name.view(), "route")))
+            .and_where(vpn.binary(vpn.column(std::tuple_element_t<service::edge_node::entities::VpnRouteEntity::column_index<"status">(), service::edge_node::entities::VpnRouteEntity::columns_type>::name.view(), "route"), Op::equal, vpn.value("active")));
 
         query.select({ query.cast(nodeId, Type::text), query.column("imei", "node"), textDefault(query, query.column("name", "node")), query.column("model", "node"), query.column("software_version", "node"), query.column("hostname", "node"), query.column("architecture", "node"), query.column("openwrt_release", "node"), query.column("enrollment_status", "node"), query.cast(query.value(false), Type::boolean), textDefault(query, query.call("iot_utc_timestamp", { query.column("last_seen_at", "node") })), query.call("iot_utc_timestamp", { query.column("created_at", "node") }), safeBigInt(query, jsonText(query, config, "activeVersion"), 0), safeBigInt(query, jsonText(query, config, "desiredVersion"), 0), textDefault(query, jsonText(query, config, "state"), "idle"), textDefault(query, jsonText(query, config, "message")), safeBigInt(query, jsonText(query, outbox, "records"), 0), safeBigInt(query, jsonText(query, outbox, "bytes"), 0), textDefault(query, jsonText(query, jsonValue(query, status, "log"), "level"), "info"), booleanText(query, jsonText(query, capability, "networkConfig")), safeBigInt(query, jsonText(query, capability, "networkConfigVersion"), 0), booleanText(query, jsonText(query, capability, "firmwareUpdate")), booleanText(query, jsonText(query, capability, "deviceConfig")), booleanText(query, jsonText(query, capability, "modemControl")), booleanText(query, jsonText(query, capability, "terminal")), booleanText(query, jsonText(query, capability, "logs")), booleanText(query, jsonText(query, mobile, "available")), textDefault(query, jsonText(query, mobile, "simState"), "unknown"), textDefault(query, jsonText(query, mobile, "iccid")), safeBigInt(query, jsonText(query, signal, "csq"), 99), safeBigInt(query, jsonText(query, signal, "rssiDbm"), -1), safeBigInt(query, jsonText(query, signal, "percent"), 0), booleanText(query, jsonText(query, mobile, "registered")), safeBigInt(query, jsonText(query, mobile, "registrationStatus"), -1), textDefault(query, jsonText(query, mobile, "apn")), textDefault(query, jsonText(query, mobile, "operator")), booleanText(query, jsonText(query, mobile, "connected")), textDefault(query, jsonText(query, mobile, "ipv4")), textDefault(query, query.column("status", "firmware")), safeBigInt(query, query.column("progress_percent", "firmware"), 0), safeBigInt(query, query.column("downloaded_bytes", "firmware"), 0), safeBigInt(query, query.column("total_bytes", "firmware"), 0), textDefault(query, query.column("message", "firmware")), booleanText(query, jsonText(query, vpnCapability, "supportsVpn")), textDefault(query, jsonText(query, vpnCapability, "wireguardVersion")), textDefault(query, jsonText(query, vpnCapability, "agentVersion")), textDefault(query, jsonText(query, vpnCapability, "publicKey")), textDefault(query, query.cast(query.column("group_id", "node"), Type::text)), textDefault(query, query.column("name", "group_item")), textDefault(query, query.subquery(vpn)), booleanText(query, jsonText(query, capability, "serialDebug")), jsonText(query, jsonValue(query, status, "tcpTraffic"), "uploadBytes"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "downloadBytes"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "intervalMs"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "sampleId"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "month"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "monthlyUploadBytes"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "monthlyDownloadBytes"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "day"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "dailyUploadBytes"), jsonText(query, jsonValue(query, status, "tcpTraffic"), "dailyDownloadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "uploadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "downloadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "intervalMs"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "sampleId"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "month"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "monthlyUploadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "monthlyDownloadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "day"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "dailyUploadBytes"), jsonText(query, jsonValue(query, status, "vpnTraffic"), "dailyDownloadBytes") })
             .from(EdgeNodeEntity::table_name(), "node")

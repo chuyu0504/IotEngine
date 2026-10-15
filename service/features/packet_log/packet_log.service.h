@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include "service/common/uuid.h"
 #include "service/common/message.h"
 #include "service/features/packet_log/packet_log.entity.h"
@@ -239,13 +241,13 @@ return changed and 1 or 0
                 status == "transport_only" ? "not_applicable" : direction == "RX" ? "pending" : "not_applicable";
             const auto acquisitionState = status == "acquisition_success" ? "success" :
                 status == "acquisition_partial" ? "partial" : status == "acquisition_failed" ? "failed" : "running";
-            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::column_name<"acquisition_id">(), acquisitionId, DebugPacketHash::column_name<"link_id">(), linkId, DebugPacketHash::column_name<"device_id">(), deviceId,
-                DebugPacketHash::column_name<"direction">(), direction, DebugPacketHash::column_name<"source">(), source, DebugPacketHash::column_name<"address">(), address,
-                DebugPacketHash::column_name<"edge_node_id">(), edgeNodeId, DebugPacketHash::column_name<"edge_node_name">(), edgeNodeName,
-                DebugPacketHash::column_name<"payload_hex">(), hex, DebugPacketHash::column_name<"time_ms">(), timestamp, DebugPacketHash::column_name<"offset">(), offsetText,
-                DebugPacketHash::column_name<"event_id">(), stableId, DebugPacketHash::column_name<"transport_status">(), transportStatus, DebugPacketHash::column_name<"response_status">(), responseStatus,
-                DebugPacketHash::column_name<"parse_status">(), parseStatus, DebugPacketHash::column_name<"reason">(), reason, DebugPacketHash::column_name<"reply_to_packet_id">(), replyToPacketId,
-                DebugPacketHash::column_name<"parsed_json">(), parsedJson,
+            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, std::tuple_element_t<DebugAcquisitionHash::column_index<"acquisition_id">(), DebugAcquisitionHash::columns_type>::name.view(), acquisitionId, std::tuple_element_t<DebugPacketHash::column_index<"link_id">(), DebugPacketHash::columns_type>::name.view(), linkId, std::tuple_element_t<DebugPacketHash::column_index<"device_id">(), DebugPacketHash::columns_type>::name.view(), deviceId,
+                std::tuple_element_t<DebugPacketHash::column_index<"direction">(), DebugPacketHash::columns_type>::name.view(), direction, std::tuple_element_t<DebugPacketHash::column_index<"source">(), DebugPacketHash::columns_type>::name.view(), source, std::tuple_element_t<DebugPacketHash::column_index<"address">(), DebugPacketHash::columns_type>::name.view(), address,
+                std::tuple_element_t<DebugPacketHash::column_index<"edge_node_id">(), DebugPacketHash::columns_type>::name.view(), edgeNodeId, std::tuple_element_t<DebugPacketHash::column_index<"edge_node_name">(), DebugPacketHash::columns_type>::name.view(), edgeNodeName,
+                std::tuple_element_t<DebugPacketHash::column_index<"payload_hex">(), DebugPacketHash::columns_type>::name.view(), hex, std::tuple_element_t<DebugPacketHash::column_index<"time_ms">(), DebugPacketHash::columns_type>::name.view(), timestamp, std::tuple_element_t<DebugPacketHash::column_index<"offset">(), DebugPacketHash::columns_type>::name.view(), offsetText,
+                std::tuple_element_t<DebugPacketHash::column_index<"event_id">(), DebugPacketHash::columns_type>::name.view(), stableId, std::tuple_element_t<DebugPacketHash::column_index<"transport_status">(), DebugPacketHash::columns_type>::name.view(), transportStatus, std::tuple_element_t<DebugPacketHash::column_index<"response_status">(), DebugPacketHash::columns_type>::name.view(), responseStatus,
+                std::tuple_element_t<DebugPacketHash::column_index<"parse_status">(), DebugPacketHash::columns_type>::name.view(), parseStatus, std::tuple_element_t<DebugPacketHash::column_index<"reason">(), DebugPacketHash::columns_type>::name.view(), reason, std::tuple_element_t<DebugPacketHash::column_index<"reply_to_packet_id">(), DebugPacketHash::columns_type>::name.view(), replyToPacketId,
+                std::tuple_element_t<DebugPacketHash::column_index<"parsed_json">(), DebugPacketHash::columns_type>::name.view(), parsedJson,
                 "acquisition_state", acquisitionState, "update_only", updateOnly ? "1" : "0"};
             for (const auto& field : parsedFields) args.push_back(field);
             const auto result = co_await redis.eval(script, keys, args);

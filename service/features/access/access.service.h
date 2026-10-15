@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <memory>
 #include <type_traits>
 #include "service/utils/mqtt.h"
@@ -60,7 +62,7 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
             snapshot.cast(
                 snapshot.binary(
                     snapshot.extract(ruvia::db_date_part::epoch,
-                                     snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"expires_at">(), "key")),
+                                     snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"expires_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
                     ruvia::db_binary_operator::multiply,
                     snapshot.value(std::int64_t{1000})),
                 ruvia::db_data_type::big_int),
@@ -68,36 +70,36 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
         }),
         ruvia::db_data_type::text);
     const std::array bindingOrder{
-        ruvia::db_order_term{snapshot.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding")}
+        ruvia::db_order_term{snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding")}
     };
     const auto bindingIds = snapshot.aggregate(
-        "jsonb_agg", {snapshot.cast(snapshot.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"),
+        "jsonb_agg", {snapshot.cast(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"),
                                     ruvia::db_data_type::text)},
         false, bindingOrder);
     const auto bindingIdsOrEmpty = snapshot.coalesce({
         snapshot.filter(bindingIds, snapshot.unary(
             ruvia::db_unary_operator::is_not_null,
-            snapshot.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"))),
+            snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"))),
         snapshot.cast(snapshot.value("[]"), ruvia::db_data_type::jsonb)
     });
     snapshot
-        .select({snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"access_key_hash">(), "key"),
-                 snapshot.cast(snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key"), ruvia::db_data_type::text),
-                 snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"name">(), "key"),
-                 snapshot.cast(snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"status">(), "key"), ruvia::db_data_type::text),
+        .select({snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"access_key_hash">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
+                 snapshot.cast(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"), ruvia::db_data_type::text),
+                 snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"name">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
+                 snapshot.cast(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"status">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"), ruvia::db_data_type::text),
                  expiresAtMs,
-                 snapshot.cast(snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"scopes">(), "key"), ruvia::db_data_type::text),
+                 snapshot.cast(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"scopes">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"), ruvia::db_data_type::text),
                  snapshot.cast(bindingIdsOrEmpty, ruvia::db_data_type::text)})
         .from(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
         .join(ruvia::db_join_type::left, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(),
-              snapshot.binary(snapshot.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"),
+              snapshot.binary(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"),
                               ruvia::db_binary_operator::equal,
-                              snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key")),
+                              snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
               "binding")
         .where(snapshot.unary(ruvia::db_unary_operator::is_null,
-                              snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"deleted_at">(), "key")))
-        .group_by({snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key")})
-        .order_by(snapshot.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key"));
+                              snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"deleted_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")))
+        .group_by({snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")})
+        .order_by(snapshot.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"));
     const auto rows = co_await transaction.query(snapshot);
 
     const auto version = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
@@ -173,23 +175,23 @@ ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& resul
             else return catalog.value("");
         };
         const auto url = [&] {
-            if constexpr (mqtt) return catalog.column(Entity::template column_name<"broker_url">(), "webhook");
-            else return catalog.column(Entity::template column_name<"url">(), "webhook");
+            if constexpr (mqtt) return catalog.column(std::tuple_element_t<Entity::template column_index<"broker_url">(), typename Entity::columns_type>::name.view(), "webhook");
+            else return catalog.column(std::tuple_element_t<Entity::template column_index<"url">(), typename Entity::columns_type>::name.view(), "webhook");
         }();
         const auto skipTls = [&] {
             if constexpr (mqtt) return catalog.value("0");
-            else return catalog.case_when({{catalog.column(Entity::template column_name<"skip_tls_verify">(), "webhook"), catalog.value("1")}}, catalog.value("0"));
+            else return catalog.case_when({{catalog.column(std::tuple_element_t<Entity::template column_index<"skip_tls_verify">(), typename Entity::columns_type>::name.view(), "webhook"), catalog.value("1")}}, catalog.value("0"));
         }();
         const auto headers = [&] {
             if constexpr (mqtt) return catalog.value("{}");
-            else return catalog.cast(catalog.column(Entity::template column_name<"headers">(), "webhook"), ruvia::db_data_type::text);
+            else return catalog.cast(catalog.column(std::tuple_element_t<Entity::template column_index<"headers">(), typename Entity::columns_type>::name.view(), "webhook"), ruvia::db_data_type::text);
         }();
         const auto expiresAtMs = catalog.cast(
             catalog.coalesce({
                 catalog.cast(
                     catalog.binary(
                         catalog.extract(ruvia::db_date_part::epoch,
-                                        catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"expires_at">(), "key")),
+                                        catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"expires_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
                         ruvia::db_binary_operator::multiply,
                         catalog.value(std::int64_t{1000})),
                     ruvia::db_data_type::big_int),
@@ -201,28 +203,28 @@ ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& resul
             {catalog.case_when(
                 {{catalog.binary(
                       catalog.call("jsonb_typeof",
-                                   {catalog.column(Entity::template column_name<"event_types">(), "webhook")}),
+                                   {catalog.column(std::tuple_element_t<Entity::template column_index<"event_types">(), typename Entity::columns_type>::name.view(), "webhook")}),
                       ruvia::db_binary_operator::equal,
                       catalog.value("array")),
-                  catalog.column(Entity::template column_name<"event_types">(), "webhook")}},
+                  catalog.column(std::tuple_element_t<Entity::template column_index<"event_types">(), typename Entity::columns_type>::name.view(), "webhook")}},
                 catalog.cast(catalog.value("[]"), ruvia::db_data_type::jsonb))});
         catalog
-            .select({catalog.cast(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"),
+            .select({catalog.cast(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"),
                                   ruvia::db_data_type::text),
-                     catalog.column(service::access::persistence::DeviceEntity::column_name<"name">(), "device"),
+                     catalog.column(std::tuple_element_t<service::access::persistence::DeviceEntity::column_index<"name">(), service::access::persistence::DeviceEntity::columns_type>::name.view(), "device"),
                      catalog.coalesce({
-                         catalog.binary(catalog.column(service::access::persistence::DeviceEntity::column_name<"protocol_params">(), "device"),
+                         catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::DeviceEntity::column_index<"protocol_params">(), service::access::persistence::DeviceEntity::columns_type>::name.view(), "device"),
                                         ruvia::db_binary_operator::json_get_text,
                                         catalog.value("device_code")),
                          catalog.value("")}),
-                     catalog.cast(catalog.column(Entity::template column_name<"id">(), "webhook"),
+                     catalog.cast(catalog.column(std::tuple_element_t<Entity::template column_index<"id">(), typename Entity::columns_type>::name.view(), "webhook"),
                                   ruvia::db_data_type::text),
-                     catalog.cast(catalog.column(Entity::template column_name<"access_key_id">(), "webhook"),
+                     catalog.cast(catalog.column(std::tuple_element_t<Entity::template column_index<"access_key_id">(), typename Entity::columns_type>::name.view(), "webhook"),
                                   ruvia::db_data_type::text),
                      url,
                      option.template operator()<!mqtt>("secret"),
                      headers,
-                     catalog.cast(catalog.column(Entity::template column_name<"timeout_seconds">(), "webhook"), ruvia::db_data_type::text),
+                     catalog.cast(catalog.column(std::tuple_element_t<Entity::template column_index<"timeout_seconds">(), typename Entity::columns_type>::name.view(), "webhook"), ruvia::db_data_type::text),
                      skipTls,
                      expiresAtMs,
                      catalog.column("value", "event_type"),
@@ -230,50 +232,50 @@ ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& resul
                      option.template operator()<mqtt>("password")})
             .from(Entity::table_name(), "webhook")
             .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyEntity::table_name(),
-                  catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key"),
+                  catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
                                  ruvia::db_binary_operator::equal,
-                                 catalog.column(Entity::template column_name<"access_key_id">(), "webhook")),
+                                 catalog.column(std::tuple_element_t<Entity::template column_index<"access_key_id">(), typename Entity::columns_type>::name.view(), "webhook")),
                   "key")
             .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(),
-                  catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"),
+                  catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"),
                                  ruvia::db_binary_operator::equal,
-                                 catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key")),
+                                 catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
                   "binding")
             .join(ruvia::db_join_type::inner, service::access::persistence::DeviceEntity::table_name(),
-                  catalog.binary(catalog.column(service::access::persistence::DeviceEntity::column_name<"id">(), "device"),
+                  catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::DeviceEntity::column_index<"id">(), service::access::persistence::DeviceEntity::columns_type>::name.view(), "device"),
                                  ruvia::db_binary_operator::equal,
-                                 catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding")),
+                                 catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding")),
                   "device")
             .join_function(ruvia::db_join_type::cross, eventTypes, {}, "event_type",
                           {.lateral_ = true, .columns_ = {{.name_ = "value"}}})
             .where(catalog.unary(ruvia::db_unary_operator::is_null,
-                                 catalog.column(Entity::template column_name<"deleted_at">(), "webhook")))
-            .and_where(catalog.binary(catalog.column(Entity::template column_name<"status">(), "webhook"),
+                                 catalog.column(std::tuple_element_t<Entity::template column_index<"deleted_at">(), typename Entity::columns_type>::name.view(), "webhook")))
+            .and_where(catalog.binary(catalog.column(std::tuple_element_t<Entity::template column_index<"status">(), typename Entity::columns_type>::name.view(), "webhook"),
                                     ruvia::db_binary_operator::equal,
                                     catalog.value("enabled")))
             .and_where(catalog.unary(ruvia::db_unary_operator::is_null,
-                                    catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"deleted_at">(), "key")))
-            .and_where(catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"status">(), "key"),
+                                    catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"deleted_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")))
+            .and_where(catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"status">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
                                     ruvia::db_binary_operator::equal,
                                     catalog.value("enabled")))
             .and_where(catalog.binary(
                 catalog.unary(ruvia::db_unary_operator::is_null,
-                              catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"expires_at">(), "key")),
+                              catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"expires_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
                 ruvia::db_binary_operator::or_value,
-                catalog.binary(catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"expires_at">(), "key"),
+                catalog.binary(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"expires_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
                                ruvia::db_binary_operator::greater,
                                catalog.call("now"))))
             .and_where(catalog.unary(ruvia::db_unary_operator::is_null,
-                                    catalog.column(service::access::persistence::DeviceEntity::column_name<"deleted_at">(), "device")))
-            .order_by(catalog.column(service::access::persistence::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"))
+                                    catalog.column(std::tuple_element_t<service::access::persistence::DeviceEntity::column_index<"deleted_at">(), service::access::persistence::DeviceEntity::columns_type>::name.view(), "device")))
+            .order_by(catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::access::persistence::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"))
             .add_order_by(catalog.column("value", "event_type"))
-            .add_order_by(catalog.column(Entity::template column_name<"id">(), "webhook"));
+            .add_order_by(catalog.column(std::tuple_element_t<Entity::template column_index<"id">(), typename Entity::columns_type>::name.view(), "webhook"));
         if constexpr (mqtt) {
             const auto scope = catalog.case_when({
                 {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.alert.triggered"), catalog.value("device.alert.resolved")})), catalog.value("alert:read")},
                 {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.command.accepted"), catalog.value("device.command.updated")})), catalog.value("device:command")}
             }, catalog.value("device:realtime"));
-            catalog.and_where(catalog.call("jsonb_exists", {catalog.column(service::access::persistence::OpenAccessKeyEntity::column_name<"scopes">(), "key"), scope}));
+            catalog.and_where(catalog.call("jsonb_exists", {catalog.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"scopes">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"), scope}));
         }
         const auto rows = co_await context.db().query(catalog);
         for (const auto& row : rows) {
@@ -401,67 +403,67 @@ ruvia::task<void> persistTargetResults(
             updated.column("last_failure_ms", "summary"));
         const auto latestIsNewer = updated.binary(
             updated.unary(ruvia::db_unary_operator::is_null,
-                          updated.column(Entity::template column_name<"last_triggered_at">(), "webhook")),
+                          updated.column(std::tuple_element_t<Entity::template column_index<"last_triggered_at">(), typename Entity::columns_type>::name.view(), "webhook")),
             ruvia::db_binary_operator::or_value,
-            updated.binary(updated.column(Entity::template column_name<"last_triggered_at">(), "webhook"),
+            updated.binary(updated.column(std::tuple_element_t<Entity::template column_index<"last_triggered_at">(), typename Entity::columns_type>::name.view(), "webhook"),
                            ruvia::db_binary_operator::less_equal,
                            latestTimestamp));
         updated
             .update(Entity::table_name(), "webhook")
-            .set(Entity::template column_name<"last_triggered_at">(),
+            .set(std::tuple_element_t<Entity::template column_index<"last_triggered_at">(), typename Entity::columns_type>::name.view(),
                  updated.greatest({
-                     updated.coalesce({updated.column(Entity::template column_name<"last_triggered_at">(), "webhook"),
+                     updated.coalesce({updated.column(std::tuple_element_t<Entity::template column_index<"last_triggered_at">(), typename Entity::columns_type>::name.view(), "webhook"),
                                        epoch}),
                      latestTimestamp
                  }))
-            .set(Entity::template column_name<"last_success_at">(),
+            .set(std::tuple_element_t<Entity::template column_index<"last_success_at">(), typename Entity::columns_type>::name.view(),
                  updated.case_when(
                      {{updated.unary(
                            ruvia::db_unary_operator::is_null,
                            updated.column("last_success_ms", "summary")),
-                       updated.column(Entity::template column_name<"last_success_at">(), "webhook")}},
+                       updated.column(std::tuple_element_t<Entity::template column_index<"last_success_at">(), typename Entity::columns_type>::name.view(), "webhook")}},
                      updated.greatest({
-                         updated.coalesce({updated.column(Entity::template column_name<"last_success_at">(), "webhook"),
+                         updated.coalesce({updated.column(std::tuple_element_t<Entity::template column_index<"last_success_at">(), typename Entity::columns_type>::name.view(), "webhook"),
                                            epoch}),
                          successTimestamp
                      })))
-            .set(Entity::template column_name<"last_failure_at">(),
+            .set(std::tuple_element_t<Entity::template column_index<"last_failure_at">(), typename Entity::columns_type>::name.view(),
                  updated.case_when(
                      {{updated.unary(
                            ruvia::db_unary_operator::is_null,
                            updated.column("last_failure_ms", "summary")),
-                       updated.column(Entity::template column_name<"last_failure_at">(), "webhook")}},
+                       updated.column(std::tuple_element_t<Entity::template column_index<"last_failure_at">(), typename Entity::columns_type>::name.view(), "webhook")}},
                      updated.greatest({
-                         updated.coalesce({updated.column(Entity::template column_name<"last_failure_at">(), "webhook"),
+                         updated.coalesce({updated.column(std::tuple_element_t<Entity::template column_index<"last_failure_at">(), typename Entity::columns_type>::name.view(), "webhook"),
                                            epoch}),
                          failureTimestamp
                      })))
-            .set(Entity::template column_name<"last_error">(),
+            .set(std::tuple_element_t<Entity::template column_index<"last_error">(), typename Entity::columns_type>::name.view(),
                  updated.case_when(
                      {{latestIsNewer,
                        updated.null_if(updated.column("message", "latest"),
                                       updated.value(""))}},
-                     updated.column(Entity::template column_name<"last_error">(), "webhook")))
-            .set(Entity::template column_name<"updated_at">(), updated.call("now"))
+                     updated.column(std::tuple_element_t<Entity::template column_index<"last_error">(), typename Entity::columns_type>::name.view(), "webhook")))
+            .set(std::tuple_element_t<Entity::template column_index<"updated_at">(), typename Entity::columns_type>::name.view(), updated.call("now"))
             .update_from("summary", "summary")
             .join(ruvia::db_join_type::inner, "latest",
                   updated.binary(updated.column("target_id", "latest"),
                                  ruvia::db_binary_operator::equal,
                                  updated.column("target_id", "summary")),
                   "latest")
-            .where(updated.binary(updated.column(Entity::template column_name<"id">(), "webhook"),
+            .where(updated.binary(updated.column(std::tuple_element_t<Entity::template column_index<"id">(), typename Entity::columns_type>::name.view(), "webhook"),
                                   ruvia::db_binary_operator::equal,
                                   updated.column("target_id", "summary")))
             .and_where(updated.unary(ruvia::db_unary_operator::is_null,
-                                    updated.column(Entity::template column_name<"deleted_at">(), "webhook")))
-            .returning({updated.column(Entity::template column_name<"id">(), "webhook")});
+                                    updated.column(std::tuple_element_t<Entity::template column_index<"deleted_at">(), typename Entity::columns_type>::name.view(), "webhook")))
+            .returning({updated.column(std::tuple_element_t<Entity::template column_index<"id">(), typename Entity::columns_type>::name.view(), "webhook")});
         if constexpr (!mqtt) {
-            updated            .set(Entity::template column_name<"last_http_status">(),
+            updated            .set(std::tuple_element_t<Entity::template column_index<"last_http_status">(), typename Entity::columns_type>::name.view(),
                  updated.case_when(
                      {{latestIsNewer,
                        updated.null_if(updated.column("http_status", "latest"),
                                       updated.value(std::int64_t{0}))}},
-                     updated.column(Entity::template column_name<"last_http_status">(), "webhook")));
+                     updated.column(std::tuple_element_t<Entity::template column_index<"last_http_status">(), typename Entity::columns_type>::name.view(), "webhook")));
         }
 
         ruvia::db_query logRows(context.pool());
@@ -580,22 +582,22 @@ inline ruvia::task<void> persistAudits(
                 usageUpdated.value(1000.0))});
         usageUpdated
             .update(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
-            .set(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_at">(), latestTimestamp)
-            .set(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_ip">(),
+            .set(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"last_used_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), latestTimestamp)
+            .set(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"last_used_ip">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(),
                  usageUpdated.null_if(usageUpdated.column("request_ip", "latest"),
                                      usageUpdated.value("")))
             .update_from("latest_usage", "latest")
-            .where(usageUpdated.binary(usageUpdated.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key"),
+            .where(usageUpdated.binary(usageUpdated.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
                                        ruvia::db_binary_operator::equal,
                                        usageUpdated.column("access_key_id", "latest")))
             .and_where(usageUpdated.binary(
                 usageUpdated.unary(ruvia::db_unary_operator::is_null,
-                                   usageUpdated.column(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_at">(), "key")),
+                                   usageUpdated.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"last_used_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")),
                 ruvia::db_binary_operator::or_value,
-                usageUpdated.binary(usageUpdated.column(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_at">(), "key"),
+                usageUpdated.binary(usageUpdated.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"last_used_at">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key"),
                                    ruvia::db_binary_operator::less_equal,
                                    latestTimestamp)))
-            .returning({usageUpdated.column(service::access::persistence::OpenAccessKeyEntity::column_name<"id">(), "key")});
+            .returning({usageUpdated.column(std::tuple_element_t<service::access::persistence::OpenAccessKeyEntity::column_index<"id">(), service::access::persistence::OpenAccessKeyEntity::columns_type>::name.view(), "key")});
 
         ruvia::db_query updateBarrier(context.pool());
         updateBarrier

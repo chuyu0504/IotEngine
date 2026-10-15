@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -80,7 +82,7 @@ class CommandService final {
   private:
     static ruvia::db_query deviceRemoteControlQuery(std::pmr::memory_resource* resource, std::string_view deviceId) {
         ruvia::db_query query(resource);
-        const auto protocolParams = query.column(service::command::entities::DeviceEntity::column_name<"protocol_params">());
+        const auto protocolParams = query.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"protocol_params">(), service::command::entities::DeviceEntity::columns_type>::name.view());
         const auto remoteControlKey = query.cast(
             query.value("remote_control"),
             ruvia::db_data_type::text
@@ -117,8 +119,8 @@ class CommandService final {
         query
             .select(query.case_when({ { hasRemoteControl, enabled } }, query.cast(query.value(true), ruvia::db_data_type::boolean)))
             .from(service::command::entities::DeviceEntity::table_name())
-            .where(query.binary(query.column(service::command::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(deviceId), ruvia::db_data_type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::command::entities::DeviceEntity::column_name<"deleted_at">())))
+            .where(query.binary(query.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, query.cast(query.value(deviceId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"deleted_at">(), service::command::entities::DeviceEntity::columns_type>::name.view())))
             .limit(1);
         return query;
     }
@@ -159,22 +161,22 @@ class CommandService final {
 
         ruvia::db_query priorQuery(context.pool());
         const auto priorDevice = priorQuery.binary(
-            priorQuery.column(service::command::entities::CommandRequestEntity::column_name<"device_id">()),
+            priorQuery.column(std::tuple_element_t<service::command::entities::CommandRequestEntity::column_index<"device_id">(), service::command::entities::CommandRequestEntity::columns_type>::name.view()),
             ruvia::db_binary_operator::equal,
             priorQuery.cast(priorQuery.value(deviceId), ruvia::db_data_type::uuid)
         );
         const auto priorPayload = priorQuery.binary(
-            priorQuery.column(service::command::entities::CommandRequestEntity::column_name<"payload">()),
+            priorQuery.column(std::tuple_element_t<service::command::entities::CommandRequestEntity::column_index<"payload">(), service::command::entities::CommandRequestEntity::columns_type>::name.view()),
             ruvia::db_binary_operator::equal,
             priorQuery.cast(priorQuery.value(requestPayload), ruvia::db_data_type::jsonb)
         );
         priorQuery
-            .select({ priorQuery.cast(priorQuery.column(service::command::entities::CommandRequestEntity::column_name<"id">()), ruvia::db_data_type::text), priorQuery.binary(priorDevice, ruvia::db_binary_operator::and_value, priorPayload) })
+            .select({ priorQuery.cast(priorQuery.column(std::tuple_element_t<service::command::entities::CommandRequestEntity::column_index<"id">(), service::command::entities::CommandRequestEntity::columns_type>::name.view()), ruvia::db_data_type::text), priorQuery.binary(priorDevice, ruvia::db_binary_operator::and_value, priorPayload) })
             .from(service::command::entities::CommandRequestEntity::table_name())
             .where(priorQuery.binary(
-                priorQuery.binary(priorQuery.column(service::command::entities::CommandRequestEntity::column_name<"actor">()), ruvia::db_binary_operator::equal, priorQuery.value(submittedBy)),
+                priorQuery.binary(priorQuery.column(std::tuple_element_t<service::command::entities::CommandRequestEntity::column_index<"actor">(), service::command::entities::CommandRequestEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, priorQuery.value(submittedBy)),
                 ruvia::db_binary_operator::and_value,
-                priorQuery.binary(priorQuery.column(service::command::entities::CommandRequestEntity::column_name<"idempotency_key">()), ruvia::db_binary_operator::equal, priorQuery.cast(priorQuery.value(key), ruvia::db_data_type::uuid))
+                priorQuery.binary(priorQuery.column(std::tuple_element_t<service::command::entities::CommandRequestEntity::column_index<"idempotency_key">(), service::command::entities::CommandRequestEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, priorQuery.cast(priorQuery.value(key), ruvia::db_data_type::uuid))
             ));
         const auto prior = co_await transaction.query(priorQuery);
         if (!prior.empty()) {
@@ -183,17 +185,17 @@ class CommandService final {
             }
             ruvia::db_query commandQuery(context.pool());
             commandQuery
-                .select(commandQuery.cast(commandQuery.column(service::command::entities::CommandOperationEntity::column_name<"id">()), ruvia::db_data_type::text))
+                .select(commandQuery.cast(commandQuery.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"id">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text))
                 .from(service::command::entities::CommandOperationEntity::table_name())
                 .where(commandQuery.binary(
-                    commandQuery.column(service::command::entities::CommandOperationEntity::column_name<"request_id">()),
+                    commandQuery.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"request_id">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()),
                     ruvia::db_binary_operator::equal,
                     commandQuery.cast(
                         commandQuery.value(prior.front()[0].value().value_or(std::string_view{})),
                         ruvia::db_data_type::uuid
                     )
                 ))
-                .order_by(commandQuery.column(service::command::entities::CommandOperationEntity::column_name<"ordinal">()));
+                .order_by(commandQuery.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"ordinal">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()));
             const auto commands = co_await transaction.query(commandQuery);
             ruvia::boxed_array<ruvia::string> ids(ruvia::model_options{ .resource_ = context.arena() });
             for (const auto& row : commands) {
@@ -213,9 +215,9 @@ class CommandService final {
 
         ruvia::db_query deviceLock(context.pool());
         deviceLock
-            .select(deviceLock.column(service::command::entities::DeviceEntity::column_name<"id">()))
+            .select(deviceLock.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()))
             .from(service::command::entities::DeviceEntity::table_name())
-            .where(deviceLock.binary(deviceLock.column(service::command::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, deviceLock.cast(deviceLock.value(deviceId), ruvia::db_data_type::uuid)))
+            .where(deviceLock.binary(deviceLock.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, deviceLock.cast(deviceLock.value(deviceId), ruvia::db_data_type::uuid)))
             .lock({ .mode_ = ruvia::db_row_lock::share });
         (void)co_await transaction.query(deviceLock);
         const auto prepared = co_await service::rpc::call(context, "command", "prepare", "{\"deviceId\":" + service::utils::jsonQuoted(deviceId) + mqttSelection + ",\"elements\":" + payload + "}");
@@ -277,10 +279,10 @@ class CommandService final {
             const auto operationOrdinal = ordinal++;
             ruvia::db_query operationSource(context.pool());
             operationSource
-                .select({ operationSource.cast(operationSource.value(id), ruvia::db_data_type::uuid), operationSource.cast(operationSource.value(requestId), ruvia::db_data_type::uuid), operationSource.value(static_cast<std::int32_t>(operationOrdinal)), operationSource.cast(operationSource.value(deviceId), ruvia::db_data_type::uuid), operationSource.value(command.template get<"deviceCode">()->view()), operationSource.value(command.template get<"protocol">()->view()), operationSource.value("ACCEPTED"), operationSource.cast(operationSource.value(elements), ruvia::db_data_type::jsonb), operationSource.column(service::command::entities::DeviceEntity::column_name<"protocol_config_id">()) })
+                .select({ operationSource.cast(operationSource.value(id), ruvia::db_data_type::uuid), operationSource.cast(operationSource.value(requestId), ruvia::db_data_type::uuid), operationSource.value(static_cast<std::int32_t>(operationOrdinal)), operationSource.cast(operationSource.value(deviceId), ruvia::db_data_type::uuid), operationSource.value(command.template get<"deviceCode">()->view()), operationSource.value(command.template get<"protocol">()->view()), operationSource.value("ACCEPTED"), operationSource.cast(operationSource.value(elements), ruvia::db_data_type::jsonb), operationSource.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"protocol_config_id">(), service::command::entities::DeviceEntity::columns_type>::name.view()) })
                 .from(service::command::entities::DeviceEntity::table_name())
                 .where(operationSource.binary(
-                    operationSource.column(service::command::entities::DeviceEntity::column_name<"id">()),
+                    operationSource.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()),
                     ruvia::db_binary_operator::equal,
                     operationSource.cast(operationSource.value(deviceId), ruvia::db_data_type::uuid)
                 ));
@@ -301,10 +303,10 @@ class CommandService final {
                 return eventSource.cast(eventSource.value(key), ruvia::db_data_type::text);
             };
             eventSource
-                .select({ eventSource.cast(eventSource.value(eventId), ruvia::db_data_type::uuid), eventSource.value("device.command.accepted"), eventSource.value("command"), eventSource.cast(eventSource.column(service::command::entities::CommandOperationEntity::column_name<"device_id">()), ruvia::db_data_type::text), eventSource.value("updated"), eventSource.value(std::int32_t{ 2 }), eventSource.call("jsonb_build_object", { jsonKey("device_code"), eventSource.column(service::command::entities::CommandOperationEntity::column_name<"device_code">()), jsonKey("data"), eventSource.call("jsonb_build_object", { jsonKey("commandId"), eventSource.cast(eventSource.column(service::command::entities::CommandOperationEntity::column_name<"id">()), ruvia::db_data_type::text), jsonKey("status"), eventSource.column(service::command::entities::CommandOperationEntity::column_name<"status">()), jsonKey("reason"), eventSource.column(service::command::entities::CommandOperationEntity::column_name<"reason">()), jsonKey("elements"), eventSource.column(service::command::entities::CommandOperationEntity::column_name<"elements">()), jsonKey("actualValues"), eventSource.column(service::command::entities::CommandOperationEntity::column_name<"actual_values">()) }) }) })
+                .select({ eventSource.cast(eventSource.value(eventId), ruvia::db_data_type::uuid), eventSource.value("device.command.accepted"), eventSource.value("command"), eventSource.cast(eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"device_id">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text), eventSource.value("updated"), eventSource.value(std::int32_t{ 2 }), eventSource.call("jsonb_build_object", { jsonKey("device_code"), eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"device_code">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), jsonKey("data"), eventSource.call("jsonb_build_object", { jsonKey("commandId"), eventSource.cast(eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"id">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), ruvia::db_data_type::text), jsonKey("status"), eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"status">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), jsonKey("reason"), eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"reason">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), jsonKey("elements"), eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"elements">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()), jsonKey("actualValues"), eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"actual_values">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()) }) }) })
                 .from(service::command::entities::CommandOperationEntity::table_name())
                 .where(eventSource.binary(
-                    eventSource.column(service::command::entities::CommandOperationEntity::column_name<"id">()),
+                    eventSource.column(std::tuple_element_t<service::command::entities::CommandOperationEntity::column_index<"id">(), service::command::entities::CommandOperationEntity::columns_type>::name.view()),
                     ruvia::db_binary_operator::equal,
                     eventSource.cast(eventSource.value(id), ruvia::db_data_type::uuid)
                 ));

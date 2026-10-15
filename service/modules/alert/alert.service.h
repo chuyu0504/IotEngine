@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <memory>
 #include <algorithm>
 #include <cstdint>
@@ -41,14 +43,14 @@ class AlertService final {
     template <typename Context>
     ruvia::task<std::string> listRules(Context& c, const AlertListQuery& parameters) {
         Query filtered(c.pool());
-        filtered.select({ filtered.star("rule"), filtered.alias(filtered.column(service::alert::entities::DeviceEntity::column_name<"name">(), "device"), "device_name") })
+        filtered.select({ filtered.star("rule"), filtered.alias(filtered.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"name">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), "device_name") })
             .from(service::alert::entities::AlertRuleEntity::table_name(), "rule")
-            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), filtered.binary(filtered.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"), Op::equal, filtered.column(service::alert::entities::AlertRuleEntity::column_name<"device_id">(), "rule")))
-            .and_where(filtered.unary(ruvia::db_unary_operator::is_null, filtered.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">(), "rule")));
-        appendTextFilter(parameters.get<"keyword">(), "keyword", filtered, filtered.column(service::alert::entities::AlertRuleEntity::column_name<"name">(), "rule"), true);
-        appendUuidFilter(parameters.get<"deviceId">(), "deviceId", filtered, filtered.column(service::alert::entities::AlertRuleEntity::column_name<"device_id">(), "rule"));
-        appendTextFilter(parameters.get<"severity">(), "severity", filtered, filtered.column(service::alert::entities::AlertRuleEntity::column_name<"severity">(), "rule"));
-        appendTextFilter(parameters.get<"status">(), "status", filtered, filtered.cast(filtered.column(service::alert::entities::AlertRuleEntity::column_name<"status">(), "rule"), Type::text));
+            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), filtered.binary(filtered.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"device_id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule")))
+            .and_where(filtered.unary(ruvia::db_unary_operator::is_null, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule")));
+        appendTextFilter(parameters.get<"keyword">(), "keyword", filtered, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"name">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"), true);
+        appendUuidFilter(parameters.get<"deviceId">(), "deviceId", filtered, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"device_id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"));
+        appendTextFilter(parameters.get<"severity">(), "severity", filtered, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"severity">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"));
+        appendTextFilter(parameters.get<"status">(), "status", filtered, filtered.cast(filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"status">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"), Type::text));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
         const std::vector<std::string_view> fields{ "id", "name", "device_id", "device_name", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" };
@@ -77,19 +79,19 @@ class AlertService final {
         co_await ensureRuleName(c, service::utils::trim(input.get<"name">().view()), input.get<"deviceId">().view(), std::string(id));
         Query query(c.pool());
         query.update(service::alert::entities::AlertRuleEntity::table_name())
-            .set(service::alert::entities::AlertRuleEntity::column_name<"name">(), query.value(service::utils::trim(input.get<"name">().view())))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"device_id">(), query.cast(query.value(input.get<"deviceId">().view()), Type::uuid))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"severity">(), query.value(input.get<"severity">()->view()))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"conditions">(), query.cast(query.value(input.get<"conditions">().view()), Type::jsonb))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"logic">(), query.value(input.get<"logic">()->view()))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"silence_duration">(), query.cast(query.value(input.get<"silenceDuration">()->value_), Type::integer))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"recovery_condition">(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"recovery_wait_seconds">(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value_), Type::integer))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"status">(), query.cast(query.value(input.get<"status">()->view()), { .custom_name_ = "status_enum" }))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"remark">(), query.null_if(query.value(service::utils::trim(input.get<"remark">()->view())), query.value("")))
-            .set(service::alert::entities::AlertRuleEntity::column_name<"updated_at">(), query.call("now"))
-            .and_where(query.binary(query.column(service::alert::entities::AlertRuleEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">())));
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"name">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.value(service::utils::trim(input.get<"name">().view())))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"device_id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.cast(query.value(input.get<"deviceId">().view()), Type::uuid))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"severity">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.value(input.get<"severity">()->view()))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"conditions">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.cast(query.value(input.get<"conditions">().view()), Type::jsonb))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"logic">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.value(input.get<"logic">()->view()))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"silence_duration">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.cast(query.value(input.get<"silenceDuration">()->value_), Type::integer))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"recovery_condition">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"recovery_wait_seconds">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value_), Type::integer))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"status">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.cast(query.value(input.get<"status">()->view()), { .custom_name_ = "status_enum" }))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"remark">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.null_if(query.value(service::utils::trim(input.get<"remark">()->view())), query.value("")))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"updated_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), query.call("now"))
+            .and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view())));
         (void)co_await c.db().execute(query);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
@@ -100,10 +102,10 @@ class AlertService final {
         co_await requireRule(c, id);
         auto transaction = co_await c.db().begin_transaction();
         Query records(c.pool());
-        records.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(service::alert::entities::OpenAlertRecordEntity::column_name<"status">(), records.value("resolved")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"resolved_at">(), records.call("now")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"updated_at">(), records.call("now")).and_where(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::column_name<"rule_id">()), Op::equal, records.cast(records.value(id), Type::uuid))).and_where(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::in, records.list({ records.value("active"), records.value("acknowledged") })));
+        records.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.value("resolved")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"resolved_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.call("now")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"updated_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.call("now")).and_where(records.binary(records.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, records.cast(records.value(id), Type::uuid))).and_where(records.binary(records.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::in, records.list({ records.value("active"), records.value("acknowledged") })));
         (void)co_await transaction.execute(records);
         Query rules(c.pool());
-        rules.update(service::alert::entities::AlertRuleEntity::table_name()).set(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">(), rules.call("now")).set(service::alert::entities::AlertRuleEntity::column_name<"updated_at">(), rules.call("now")).and_where(rules.binary(rules.column(service::alert::entities::AlertRuleEntity::column_name<"id">()), Op::equal, rules.cast(rules.value(id), Type::uuid))).and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">())));
+        rules.update(service::alert::entities::AlertRuleEntity::table_name()).set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), rules.call("now")).set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"updated_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), rules.call("now")).and_where(rules.binary(rules.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::equal, rules.cast(rules.value(id), Type::uuid))).and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view())));
         (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
@@ -113,10 +115,10 @@ class AlertService final {
     ruvia::task<void> batchRemoveRules(Context& c, const std::vector<std::string>& ids) {
         auto transaction = co_await c.db().begin_transaction();
         Query records(c.pool());
-        records.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(service::alert::entities::OpenAlertRecordEntity::column_name<"status">(), records.value("resolved")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"resolved_at">(), records.call("now")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"updated_at">(), records.call("now")).and_where(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::column_name<"rule_id">()), Op::in, uuidList(records, ids))).and_where(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::in, records.list({ records.value("active"), records.value("acknowledged") })));
+        records.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.value("resolved")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"resolved_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.call("now")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"updated_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), records.call("now")).and_where(records.binary(records.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::in, uuidList(records, ids))).and_where(records.binary(records.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::in, records.list({ records.value("active"), records.value("acknowledged") })));
         (void)co_await transaction.execute(records);
         Query rules(c.pool());
-        rules.update(service::alert::entities::AlertRuleEntity::table_name()).set(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">(), rules.call("now")).set(service::alert::entities::AlertRuleEntity::column_name<"updated_at">(), rules.call("now")).and_where(rules.binary(rules.column(service::alert::entities::AlertRuleEntity::column_name<"id">()), Op::in, uuidList(rules, ids))).and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">())));
+        rules.update(service::alert::entities::AlertRuleEntity::table_name()).set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), rules.call("now")).set(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"updated_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), rules.call("now")).and_where(rules.binary(rules.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::in, uuidList(rules, ids))).and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view())));
         (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
@@ -125,11 +127,11 @@ class AlertService final {
     template <typename Context>
     ruvia::task<std::string> listTemplates(Context& c, const AlertListQuery& parameters) {
         Query filtered(c.pool());
-        filtered.select({ filtered.star("template"), filtered.alias(filtered.column(service::alert::entities::ProtocolConfigEntity::column_name<"name">(), "config"), "config_name"), filtered.alias(filtered.column(service::alert::entities::ProtocolConfigEntity::column_name<"protocol">(), "config"), "protocol_type") })
+        filtered.select({ filtered.star("template"), filtered.alias(filtered.column(std::tuple_element_t<service::alert::entities::ProtocolConfigEntity::column_index<"name">(), service::alert::entities::ProtocolConfigEntity::columns_type>::name.view(), "config"), "config_name"), filtered.alias(filtered.column(std::tuple_element_t<service::alert::entities::ProtocolConfigEntity::column_index<"protocol">(), service::alert::entities::ProtocolConfigEntity::columns_type>::name.view(), "config"), "protocol_type") })
             .from(service::alert::entities::AlertRuleTemplateEntity::table_name(), "template")
-            .join(ruvia::db_join_type::left, service::alert::entities::ProtocolConfigEntity::table_name(), filtered.binary(filtered.column(service::alert::entities::ProtocolConfigEntity::column_name<"id">(), "config"), Op::equal, filtered.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"protocol_config_id">(), "template")), "config")
-            .and_where(filtered.unary(ruvia::db_unary_operator::is_null, filtered.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">(), "template")));
-        appendTextFilter(parameters.get<"category">(), "category", filtered, filtered.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"category">(), "template"));
+            .join(ruvia::db_join_type::left, service::alert::entities::ProtocolConfigEntity::table_name(), filtered.binary(filtered.column(std::tuple_element_t<service::alert::entities::ProtocolConfigEntity::column_index<"id">(), service::alert::entities::ProtocolConfigEntity::columns_type>::name.view(), "config"), Op::equal, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"protocol_config_id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), "template")), "config")
+            .and_where(filtered.unary(ruvia::db_unary_operator::is_null, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), "template")));
+        appendTextFilter(parameters.get<"category">(), "category", filtered, filtered.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"category">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), "template"));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
         const std::vector<std::string_view> fields{ "id", "name", "category", "description", "severity", "logic", "silence_duration", "protocol_config_id", "config_name", "protocol_type", "created_at" };
@@ -142,8 +144,8 @@ class AlertService final {
         Query query(c.pool());
         query.select(query.cast(fieldJson(query, { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by", "created_at", "updated_at" }), Type::text))
             .from(service::alert::entities::AlertRuleTemplateEntity::table_name())
-            .and_where(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+            .and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         co_return firstObject(co_await c.db().query(query), "告警模板不存在");
     }
 
@@ -174,20 +176,20 @@ class AlertService final {
         }
         Query query(c.pool());
         query.update(service::alert::entities::AlertRuleTemplateEntity::table_name())
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"name">(), query.value(service::utils::trim(input.get<"name">().view())))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"category">(), query.null_if(query.value(service::utils::trim(input.get<"category">()->view())), query.value("")))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"description">(), query.null_if(query.value(service::utils::trim(input.get<"description">()->view())), query.value("")))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"severity">(), query.value(input.get<"severity">()->view()))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"conditions">(), query.cast(query.value(input.get<"conditions">().view()), Type::jsonb))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"logic">(), query.value(input.get<"logic">()->view()))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"silence_duration">(), query.cast(query.value(input.get<"silenceDuration">()->value_), Type::integer))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"recovery_condition">(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"recovery_wait_seconds">(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value_), Type::integer))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"applicable_protocols">(), query.cast(query.value(input.get<"applicableProtocols">() ? input.get<"applicableProtocols">()->view() : "[]"), Type::jsonb))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"protocol_config_id">(), query.cast(query.null_if(query.value(input.get<"protocolConfigId">()->view()), query.value("")), Type::uuid))
-            .set(service::alert::entities::AlertRuleTemplateEntity::column_name<"updated_at">(), query.call("now"))
-            .and_where(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"name">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.value(service::utils::trim(input.get<"name">().view())))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"category">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.null_if(query.value(service::utils::trim(input.get<"category">()->view())), query.value("")))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"description">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.null_if(query.value(service::utils::trim(input.get<"description">()->view())), query.value("")))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"severity">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.value(input.get<"severity">()->view()))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"conditions">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.cast(query.value(input.get<"conditions">().view()), Type::jsonb))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"logic">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.value(input.get<"logic">()->view()))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"silence_duration">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.cast(query.value(input.get<"silenceDuration">()->value_), Type::integer))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"recovery_condition">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"recovery_wait_seconds">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value_), Type::integer))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"applicable_protocols">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.cast(query.value(input.get<"applicableProtocols">() ? input.get<"applicableProtocols">()->view() : "[]"), Type::jsonb))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"protocol_config_id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.cast(query.null_if(query.value(input.get<"protocolConfigId">()->view()), query.value("")), Type::uuid))
+            .set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"updated_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), query.call("now"))
+            .and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         (void)co_await c.db().execute(query);
     }
 
@@ -196,7 +198,7 @@ class AlertService final {
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
         co_await requireTemplate(c, id);
         Query removal(c.pool());
-        removal.update(service::alert::entities::AlertRuleTemplateEntity::table_name()).set(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">(), removal.call("now")).set(service::alert::entities::AlertRuleTemplateEntity::column_name<"updated_at">(), removal.call("now")).and_where(removal.binary(removal.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::equal, removal.cast(removal.value(id), Type::uuid))).and_where(removal.unary(ruvia::db_unary_operator::is_null, removal.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+        removal.update(service::alert::entities::AlertRuleTemplateEntity::table_name()).set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), removal.call("now")).set(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"updated_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view(), removal.call("now")).and_where(removal.binary(removal.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, removal.cast(removal.value(id), Type::uuid))).and_where(removal.unary(ruvia::db_unary_operator::is_null, removal.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         (void)co_await c.db().execute(removal);
     }
 
@@ -206,26 +208,26 @@ class AlertService final {
         const auto deviceIds = uniqueAlertIds(input.get<"deviceIds">());
         co_await requireTemplate(c, templateId);
         Query selected(c.pool());
-        selected.select(selected.star()).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(selected.binary(selected.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::equal, selected.cast(selected.value(templateId), Type::uuid))).and_where(selected.unary(ruvia::db_unary_operator::is_null, selected.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+        selected.select(selected.star()).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(selected.binary(selected.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, selected.cast(selected.value(templateId), Type::uuid))).and_where(selected.unary(ruvia::db_unary_operator::is_null, selected.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         Query requested(c.pool());
         for (const auto& id : deviceIds) {
             requested.values({ requested.cast(requested.value(id), Type::uuid) });
         }
         Query existing(c.pool());
-        const auto existingName = existing.binary(existing.binary(existing.column("name", "selected"), Op::concat, existing.value(" - ")), Op::concat, existing.column(service::alert::entities::DeviceEntity::column_name<"name">(), "device"));
-        existing.select(existing.cast(existing.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name(), "existing").and_where(existing.binary(existing.column(service::alert::entities::AlertRuleEntity::column_name<"device_id">(), "existing"), Op::equal, existing.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"))).and_where(existing.binary(existing.column(service::alert::entities::AlertRuleEntity::column_name<"name">(), "existing"), Op::equal, existingName)).and_where(existing.unary(ruvia::db_unary_operator::is_null, existing.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">(), "existing")));
+        const auto existingName = existing.binary(existing.binary(existing.column("name", "selected"), Op::concat, existing.value(" - ")), Op::concat, existing.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"name">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"));
+        existing.select(existing.cast(existing.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name(), "existing").and_where(existing.binary(existing.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"device_id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "existing"), Op::equal, existing.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"))).and_where(existing.binary(existing.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"name">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "existing"), Op::equal, existingName)).and_where(existing.unary(ruvia::db_unary_operator::is_null, existing.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "existing")));
         Query source(c.pool());
-        const auto name = source.binary(source.binary(source.column("name", "selected"), Op::concat, source.value(" - ")), Op::concat, source.column(service::alert::entities::DeviceEntity::column_name<"name">(), "device"));
-        source.select({ source.call("gen_random_uuid"), name, source.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"), source.column("severity", "selected"), source.column("conditions", "selected"), source.column("logic", "selected"), source.column("silence_duration", "selected"), source.column("recovery_condition", "selected"), source.column("recovery_wait_seconds", "selected"), source.cast(source.value("enabled"), { .custom_name_ = "status_enum" }), source.column("description", "selected"), source.cast(source.value(c.userId), Type::uuid) })
+        const auto name = source.binary(source.binary(source.column("name", "selected"), Op::concat, source.value(" - ")), Op::concat, source.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"name">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"));
+        source.select({ source.call("gen_random_uuid"), name, source.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), source.column("severity", "selected"), source.column("conditions", "selected"), source.column("logic", "selected"), source.column("silence_duration", "selected"), source.column("recovery_condition", "selected"), source.column("recovery_wait_seconds", "selected"), source.cast(source.value("enabled"), { .custom_name_ = "status_enum" }), source.column("description", "selected"), source.cast(source.value(c.userId), Type::uuid) })
             .from("selected")
             .join(ruvia::db_join_type::cross, "requested")
-            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), source.binary(source.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"), Op::equal, source.column("device_id", "requested")))
-            .and_where(source.unary(ruvia::db_unary_operator::is_null, source.column(service::alert::entities::DeviceEntity::column_name<"deleted_at">(), "device")))
+            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), source.binary(source.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, source.column("device_id", "requested")))
+            .and_where(source.unary(ruvia::db_unary_operator::is_null, source.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"deleted_at">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device")))
             .and_where(source.unary(ruvia::db_unary_operator::not_value, source.exists(existing)));
         Query created(c.pool());
         created.insert_into(service::alert::entities::AlertRuleEntity::table_name(), { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
             .insert_from(source)
-            .returning({ created.column(service::alert::entities::AlertRuleEntity::column_name<"id">()) });
+            .returning({ created.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()) });
         Query count(c.pool());
         count.select(count.aggregate("count", { count.star() })).from("created");
         Query ids(c.pool());
@@ -241,15 +243,15 @@ class AlertService final {
     ruvia::task<std::string> listRecords(Context& c, const AlertListQuery& parameters) {
         Query filtered(c.pool());
         filtered.select(filtered.star("record")).from(service::alert::entities::OpenAlertRecordEntity::table_name(), "record");
-        appendUuidFilter(parameters.get<"deviceId">(), "deviceId", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::column_name<"device_id">(), "record"));
-        appendUuidFilter(parameters.get<"ruleId">(), "ruleId", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::column_name<"rule_id">(), "record"));
-        appendTextFilter(parameters.get<"status">(), "status", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">(), "record"));
-        appendTextFilter(parameters.get<"severity">(), "severity", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::column_name<"severity">(), "record"));
+        appendUuidFilter(parameters.get<"deviceId">(), "deviceId", filtered, filtered.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"device_id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"));
+        appendUuidFilter(parameters.get<"ruleId">(), "ruleId", filtered, filtered.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"));
+        appendTextFilter(parameters.get<"status">(), "status", filtered, filtered.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"));
+        appendTextFilter(parameters.get<"severity">(), "severity", filtered, filtered.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"severity">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"));
         Query listed(c.pool());
-        listed.select({ listed.star("page_rows"), listed.alias(listed.column(service::alert::entities::AlertRuleEntity::column_name<"name">(), "rule"), "rule_name"), listed.alias(listed.column(service::alert::entities::DeviceEntity::column_name<"name">(), "device"), "device_name") })
+        listed.select({ listed.star("page_rows"), listed.alias(listed.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"name">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"), "rule_name"), listed.alias(listed.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"name">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), "device_name") })
             .from("page_rows")
-            .join(ruvia::db_join_type::left, service::alert::entities::AlertRuleEntity::table_name(), listed.binary(listed.column(service::alert::entities::AlertRuleEntity::column_name<"id">(), "rule"), Op::equal, listed.column("rule_id", "page_rows")), "rule")
-            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), listed.binary(listed.column(service::alert::entities::DeviceEntity::column_name<"id">(), "device"), Op::equal, listed.column("device_id", "page_rows")));
+            .join(ruvia::db_join_type::left, service::alert::entities::AlertRuleEntity::table_name(), listed.binary(listed.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view(), "rule"), Op::equal, listed.column("rule_id", "page_rows")), "rule")
+            .join(ruvia::db_join_type::inner, service::alert::entities::DeviceEntity::table_name(), listed.binary(listed.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, listed.column("device_id", "page_rows")));
         const std::vector<std::string_view> fields{ "id", "rule_id", "rule_name", "device_id", "device_name", "severity", "status", "message", "detail", "triggered_at", "acknowledged_at", "acknowledged_by", "resolved_at" };
         co_return co_await pageResult(c, parameters, filtered, listed, fields, "triggered_at");
     }
@@ -258,7 +260,7 @@ class AlertService final {
     ruvia::task<void> acknowledge(Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警记录 ID 无效");
         Query acknowledgement(c.pool());
-        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(service::alert::entities::OpenAlertRecordEntity::column_name<"status">(), acknowledgement.value("acknowledged")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"acknowledged_at">(), acknowledgement.call("now")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"acknowledged_by">(), acknowledgement.cast(acknowledgement.value(c.userId), Type::uuid)).set(service::alert::entities::OpenAlertRecordEntity::column_name<"updated_at">(), acknowledgement.call("now")).and_where(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::column_name<"id">()), Op::equal, acknowledgement.cast(acknowledgement.value(id), Type::uuid))).and_where(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::equal, acknowledgement.value("active")));
+        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.value("acknowledged")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"acknowledged_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.call("now")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"acknowledged_by">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.cast(acknowledgement.value(c.userId), Type::uuid)).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"updated_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.call("now")).and_where(acknowledgement.binary(acknowledgement.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, acknowledgement.cast(acknowledgement.value(id), Type::uuid))).and_where(acknowledgement.binary(acknowledgement.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, acknowledgement.value("active")));
         const auto result = co_await c.db().execute(acknowledgement);
         if (result.affected_rows() == 0) {
             service::common::fail(17003, "告警记录不存在或已处理", 404);
@@ -268,7 +270,7 @@ class AlertService final {
     template <typename Context>
     ruvia::task<void> batchAcknowledge(Context& c, const std::vector<std::string>& ids) {
         Query acknowledgement(c.pool());
-        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(service::alert::entities::OpenAlertRecordEntity::column_name<"status">(), acknowledgement.value("acknowledged")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"acknowledged_at">(), acknowledgement.call("now")).set(service::alert::entities::OpenAlertRecordEntity::column_name<"acknowledged_by">(), acknowledgement.cast(acknowledgement.value(c.userId), Type::uuid)).set(service::alert::entities::OpenAlertRecordEntity::column_name<"updated_at">(), acknowledgement.call("now")).and_where(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::column_name<"id">()), Op::in, uuidList(acknowledgement, ids))).and_where(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::equal, acknowledgement.value("active")));
+        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::table_name()).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.value("acknowledged")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"acknowledged_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.call("now")).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"acknowledged_by">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.cast(acknowledgement.value(c.userId), Type::uuid)).set(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"updated_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view(), acknowledgement.call("now")).and_where(acknowledgement.binary(acknowledgement.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::in, uuidList(acknowledgement, ids))).and_where(acknowledgement.binary(acknowledgement.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, acknowledgement.value("active")));
         (void)co_await c.db().execute(acknowledgement);
     }
 
@@ -278,17 +280,17 @@ class AlertService final {
         const auto count = unresolved.aggregate("count", { unresolved.star() });
         unresolved.select(unresolved.alias(count, "total"));
         for (const auto severity : { "critical", "warning", "info" }) {
-            unresolved.add_select(unresolved.alias(unresolved.filter(count, unresolved.binary(unresolved.column(service::alert::entities::OpenAlertRecordEntity::column_name<"severity">()), Op::equal, unresolved.value(severity))), severity));
+            unresolved.add_select(unresolved.alias(unresolved.filter(count, unresolved.binary(unresolved.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"severity">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, unresolved.value(severity))), severity));
         }
-        unresolved.add_select(unresolved.alias(unresolved.aggregate("count", { unresolved.column(service::alert::entities::OpenAlertRecordEntity::column_name<"device_id">()) }, true), "affected_devices"))
+        unresolved.add_select(unresolved.alias(unresolved.aggregate("count", { unresolved.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"device_id">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()) }, true), "affected_devices"))
             .from(service::alert::entities::OpenAlertRecordEntity::table_name())
-            .and_where(unresolved.binary(unresolved.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::in, unresolved.list({ unresolved.value("active"), unresolved.value("acknowledged") })));
+            .and_where(unresolved.binary(unresolved.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::in, unresolved.list({ unresolved.value("active"), unresolved.value("acknowledged") })));
         Query todayNew(c.pool());
-        todayNew.select(todayNew.alias(todayNew.aggregate("count", { todayNew.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(todayNew.binary(todayNew.column(service::alert::entities::OpenAlertRecordEntity::column_name<"triggered_at">()), Op::greater_equal, todayNew.cast(todayNew.call("now"), Type::date)));
+        todayNew.select(todayNew.alias(todayNew.aggregate("count", { todayNew.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(todayNew.binary(todayNew.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"triggered_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::greater_equal, todayNew.cast(todayNew.call("now"), Type::date)));
         Query acknowledged(c.pool());
-        acknowledged.select(acknowledged.alias(acknowledged.aggregate("count", { acknowledged.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(acknowledged.binary(acknowledged.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::equal, acknowledged.value("acknowledged")));
+        acknowledged.select(acknowledged.alias(acknowledged.aggregate("count", { acknowledged.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(acknowledged.binary(acknowledged.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, acknowledged.value("acknowledged")));
         Query todayResolved(c.pool());
-        todayResolved.select(todayResolved.alias(todayResolved.aggregate("count", { todayResolved.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(todayResolved.binary(todayResolved.column(service::alert::entities::OpenAlertRecordEntity::column_name<"status">()), Op::equal, todayResolved.value("resolved"))).and_where(todayResolved.binary(todayResolved.column(service::alert::entities::OpenAlertRecordEntity::column_name<"resolved_at">()), Op::greater_equal, todayResolved.cast(todayResolved.call("now"), Type::date)));
+        todayResolved.select(todayResolved.alias(todayResolved.aggregate("count", { todayResolved.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::table_name()).and_where(todayResolved.binary(todayResolved.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"status">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::equal, todayResolved.value("resolved"))).and_where(todayResolved.binary(todayResolved.column(std::tuple_element_t<service::alert::entities::OpenAlertRecordEntity::column_index<"resolved_at">(), service::alert::entities::OpenAlertRecordEntity::columns_type>::name.view()), Op::greater_equal, todayResolved.cast(todayResolved.call("now"), Type::date)));
         Query result(c.pool());
         std::vector<ruvia::db_expression> values;
         for (const auto field : { "total", "critical", "warning", "info", "affected_devices" }) {
@@ -387,7 +389,7 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> ensureDevice(Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::DeviceEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::DeviceEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::DeviceEntity::column_name<"deleted_at">())));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::DeviceEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"id">(), service::alert::entities::DeviceEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::DeviceEntity::column_index<"deleted_at">(), service::alert::entities::DeviceEntity::columns_type>::name.view())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(17003, "关联设备不存在", 404);
@@ -397,7 +399,7 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> ensureProtocolConfig(Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::ProtocolConfigEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::ProtocolConfigEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::ProtocolConfigEntity::column_name<"deleted_at">())));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::ProtocolConfigEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::ProtocolConfigEntity::column_index<"id">(), service::alert::entities::ProtocolConfigEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::ProtocolConfigEntity::column_index<"deleted_at">(), service::alert::entities::ProtocolConfigEntity::columns_type>::name.view())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(17003, "协议配置不存在", 404);
@@ -407,7 +409,7 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> requireRule(Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::AlertRuleEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">())));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(17003, "告警规则不存在", 404);
@@ -417,7 +419,7 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> requireTemplate(Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), Type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
             service::common::fail(17003, "告警模板不存在", 404);
@@ -427,10 +429,10 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> ensureRuleName(Context& c, std::string_view name, std::string_view deviceId, const std::optional<std::string>& excluded) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::AlertRuleEntity::column_name<"name">()), Op::equal, query.value(name))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleEntity::column_name<"deleted_at">())));
-        query.and_where(query.binary(query.column(service::alert::entities::AlertRuleEntity::column_name<"device_id">()), Op::equal, query.cast(query.value(deviceId), Type::uuid)));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"name">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::equal, query.value(name))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view())));
+        query.and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"device_id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(deviceId), Type::uuid)));
         if (excluded && !excluded->empty()) {
-            query.and_where(query.binary(query.column(service::alert::entities::AlertRuleEntity::column_name<"id">()), Op::not_equal, query.cast(query.value(*excluded), Type::uuid)));
+            query.and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleEntity::column_index<"id">(), service::alert::entities::AlertRuleEntity::columns_type>::name.view()), Op::not_equal, query.cast(query.value(*excluded), Type::uuid)));
         }
         const auto rows = co_await c.db().query(query);
         if (!rows.empty()) {
@@ -441,9 +443,9 @@ class AlertService final {
     template <typename Context>
     static ruvia::task<void> ensureTemplateName(Context& c, std::string_view name, const std::optional<std::string>& excluded) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"name">()), Op::equal, query.value(name))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"deleted_at">())));
+        query.select(query.cast(query.value(1), Type::integer)).from(service::alert::entities::AlertRuleTemplateEntity::table_name()).and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"name">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::equal, query.value(name))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"deleted_at">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view())));
         if (excluded && !excluded->empty()) {
-            query.and_where(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::column_name<"id">()), Op::not_equal, query.cast(query.value(*excluded), Type::uuid)));
+            query.and_where(query.binary(query.column(std::tuple_element_t<service::alert::entities::AlertRuleTemplateEntity::column_index<"id">(), service::alert::entities::AlertRuleTemplateEntity::columns_type>::name.view()), Op::not_equal, query.cast(query.value(*excluded), Type::uuid)));
         }
         const auto rows = co_await c.db().query(query);
         if (!rows.empty()) {

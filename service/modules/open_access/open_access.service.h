@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <memory>
 #include <algorithm>
 #include <array>
@@ -54,17 +56,17 @@ class AccessService final {
     template <typename Context>
     ruvia::task<std::string> listKeys(Context& c) {
         ruvia::db_query listed(c.pool());
-        const auto keyId = listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">(), "key");
-        const auto bindingId = listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding");
+        const auto keyId = listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key");
+        const auto bindingId = listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding");
         const auto item = listed.call(
             "jsonb_build_object",
-            { textKey(listed, "id"), text(listed, keyId), textKey(listed, "name"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">(), "key"), textKey(listed, "accessKeyPrefix"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"access_key_prefix">(), "key"), textKey(listed, "status"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"status">(), "key"), textKey(listed, "scopes"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"scopes">(), "key"), textKey(listed, "expiresAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"expires_at">(), "key") }), textKey(listed, "lastUsedAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"last_used_at">(), "key") }), textKey(listed, "lastUsedIp"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"last_used_ip">(), "key"), textKey(listed, "remark"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"remark">(), "key"), textKey(listed, "createdAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"created_at">(), "key") }), textKey(listed, "updatedAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"updated_at">(), "key") }), textKey(listed, "webhookCount"), listed.aggregate("count", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">(), "webhook") }, true), textKey(listed, "deviceIds"), listed.coalesce({ listed.filter(listed.aggregate("jsonb_agg", { bindingId }, true), listed.unary(ruvia::db_unary_operator::is_not_null, bindingId)), emptyJson(listed) }) }
+            { textKey(listed, "id"), text(listed, keyId), textKey(listed, "name"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "accessKeyPrefix"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"access_key_prefix">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "status"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"status">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "scopes"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"scopes">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "expiresAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"expires_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") }), textKey(listed, "lastUsedAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"last_used_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") }), textKey(listed, "lastUsedIp"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"last_used_ip">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "remark"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"remark">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "createdAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"created_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") }), textKey(listed, "updatedAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"updated_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") }), textKey(listed, "webhookCount"), listed.aggregate("count", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }, true), textKey(listed, "deviceIds"), listed.coalesce({ listed.filter(listed.aggregate("jsonb_agg", { bindingId }, true), listed.unary(ruvia::db_unary_operator::is_not_null, bindingId)), emptyJson(listed) }) }
         );
-        listed.select({ listed.alias(item, "item"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"created_at">(), "key") })
+        listed.select({ listed.alias(item, "item"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"created_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") })
             .from(service::open_access::entities::OpenAccessKeyEntity::table_name(), "key")
-            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), listed.binary(listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"), ruvia::db_binary_operator::equal, keyId), "binding")
-            .join(ruvia::db_join_type::left, service::open_access::entities::OpenWebhookEntity::table_name(), andAll(listed, listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">(), "webhook"), ruvia::db_binary_operator::equal, keyId), listed.unary(ruvia::db_unary_operator::is_null, listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">(), "webhook"))), "webhook")
-            .where(listed.unary(ruvia::db_unary_operator::is_null, listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">(), "key")))
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), listed.binary(listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, keyId), "binding")
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenWebhookEntity::table_name(), andAll(listed, listed.binary(listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), ruvia::db_binary_operator::equal, keyId), listed.unary(ruvia::db_unary_operator::is_null, listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"))), "webhook")
+            .where(listed.unary(ruvia::db_unary_operator::is_null, listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key")))
             .group_by({ keyId });
         ruvia::db_query query(c.pool());
         const std::array<ruvia::db_order_term, 1> keyOrder{ { ruvia::db_order_term{ query.column("created_at", "listed"),
@@ -179,13 +181,13 @@ class AccessService final {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query update(c.pool());
         update.update(service::open_access::entities::OpenAccessKeyEntity::table_name())
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">(), update.value(name))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"status">(), update.value(status))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"scopes">(), update.cast(update.value(scopeJson), ruvia::db_data_type::jsonb))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"expires_at">(), update.cast(update.null_if(update.value(expiresAtValue), update.value("")), ruvia::db_data_type::timestamp_tz))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"remark">(), update.null_if(update.value(remarkValue), update.value("")))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"updated_at">(), update.call("now"))
-            .where(andAll(update, update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.value(name))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"status">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.value(status))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"scopes">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.cast(update.value(scopeJson), ruvia::db_data_type::jsonb))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"expires_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.cast(update.null_if(update.value(expiresAtValue), update.value("")), ruvia::db_data_type::timestamp_tz))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"remark">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.null_if(update.value(remarkValue), update.value("")))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"updated_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.call("now"))
+            .where(andAll(update, update.binary(update.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(update);
         if (payload.get<"deviceIds">()) {
             co_await replaceDevices(transaction, id, devices);
@@ -205,10 +207,10 @@ class AccessService final {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query update(c.pool());
         update.update(service::open_access::entities::OpenAccessKeyEntity::table_name())
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"access_key_hash">(), update.value(keyHash))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"access_key_prefix">(), update.value(prefix))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"updated_at">(), update.call("now"))
-            .where(andAll(update, update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"access_key_hash">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.value(keyHash))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"access_key_prefix">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.value(prefix))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"updated_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), update.call("now"))
+            .where(andAll(update, update.binary(update.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "rotated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -225,21 +227,21 @@ class AccessService final {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query webhookUpdate(c.pool());
         webhookUpdate.update(service::open_access::entities::OpenWebhookEntity::table_name())
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">(), webhookUpdate.call("now"))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"updated_at">(), webhookUpdate.call("now"))
-            .where(andAll(webhookUpdate, webhookUpdate.binary(webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">()), ruvia::db_binary_operator::equal, uuid(webhookUpdate, id)), webhookUpdate.unary(ruvia::db_unary_operator::is_null, webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), webhookUpdate.call("now"))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"updated_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), webhookUpdate.call("now"))
+            .where(andAll(webhookUpdate, webhookUpdate.binary(webhookUpdate.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(webhookUpdate, id)), webhookUpdate.unary(ruvia::db_unary_operator::is_null, webhookUpdate.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(webhookUpdate);
         ruvia::db_query mqttUpdate(c.pool());
         using M = service::open_access::entities::OpenMqttEntity;
-        mqttUpdate.update(M::table_name()).set(M::column_name<"deleted_at">(),mqttUpdate.call("now"))
-            .set(M::column_name<"updated_at">(),mqttUpdate.call("now"))
-            .where(andAll(mqttUpdate,mqttUpdate.binary(mqttUpdate.column(M::column_name<"access_key_id">()),ruvia::db_binary_operator::equal,uuid(mqttUpdate,id)),mqttUpdate.unary(ruvia::db_unary_operator::is_null,mqttUpdate.column(M::column_name<"deleted_at">()))));
+        mqttUpdate.update(M::table_name()).set(std::tuple_element_t<M::column_index<"deleted_at">(), M::columns_type>::name.view(),mqttUpdate.call("now"))
+            .set(std::tuple_element_t<M::column_index<"updated_at">(), M::columns_type>::name.view(),mqttUpdate.call("now"))
+            .where(andAll(mqttUpdate,mqttUpdate.binary(mqttUpdate.column(std::tuple_element_t<M::column_index<"access_key_id">(), M::columns_type>::name.view()),ruvia::db_binary_operator::equal,uuid(mqttUpdate,id)),mqttUpdate.unary(ruvia::db_unary_operator::is_null,mqttUpdate.column(std::tuple_element_t<M::column_index<"deleted_at">(), M::columns_type>::name.view()))));
         (void)co_await transaction.execute(mqttUpdate);
         ruvia::db_query keyUpdate(c.pool());
         keyUpdate.update(service::open_access::entities::OpenAccessKeyEntity::table_name())
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">(), keyUpdate.call("now"))
-            .set(service::open_access::entities::OpenAccessKeyEntity::column_name<"updated_at">(), keyUpdate.call("now"))
-            .where(andAll(keyUpdate, keyUpdate.binary(keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(keyUpdate, id)), keyUpdate.unary(ruvia::db_unary_operator::is_null, keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), keyUpdate.call("now"))
+            .set(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"updated_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), keyUpdate.call("now"))
+            .where(andAll(keyUpdate, keyUpdate.binary(keyUpdate.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(keyUpdate, id)), keyUpdate.unary(ruvia::db_unary_operator::is_null, keyUpdate.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(keyUpdate);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -249,21 +251,21 @@ class AccessService final {
     template <typename Context>
     ruvia::task<std::string> listWebhooks(Context& c, const WebhookQueryParams& filters) {
         ruvia::db_query listed(c.pool());
-        const auto webhookId = listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">(), "webhook");
-        const auto bindingDevice = listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding");
+        const auto webhookId = listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook");
+        const auto bindingDevice = listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding");
         const auto item = listed.call(
             "jsonb_build_object",
-            { textKey(listed, "id"), text(listed, webhookId), textKey(listed, "accessKeyId"), text(listed, listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">(), "webhook")), textKey(listed, "accessKeyName"), listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">(), "key"), textKey(listed, "name"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"name">(), "webhook"), textKey(listed, "url"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"url">(), "webhook"), textKey(listed, "status"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"status">(), "webhook"), textKey(listed, "timeoutSeconds"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"timeout_seconds">(), "webhook"), textKey(listed, "skipTlsVerify"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"skip_tls_verify">(), "webhook"), textKey(listed, "headers"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"headers">(), "webhook"), textKey(listed, "eventTypes"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"event_types">(), "webhook"), textKey(listed, "deviceIds"), listed.coalesce({ listed.filter(listed.aggregate("jsonb_agg", { bindingDevice }), listed.unary(ruvia::db_unary_operator::is_not_null, bindingDevice)), emptyJson(listed) }), textKey(listed, "hasSecret"), listed.unary(ruvia::db_unary_operator::is_not_null, listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"secret">(), "webhook")), textKey(listed, "lastTriggeredAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"last_triggered_at">(), "webhook") }), textKey(listed, "lastSuccessAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"last_success_at">(), "webhook") }), textKey(listed, "lastFailureAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"last_failure_at">(), "webhook") }), textKey(listed, "lastHttpStatus"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"last_http_status">(), "webhook"), textKey(listed, "lastError"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"last_error">(), "webhook"), textKey(listed, "createdAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"created_at">(), "webhook") }), textKey(listed, "updatedAt"), listed.call("iot_utc_timestamp", { listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"updated_at">(), "webhook") }) }
+            { textKey(listed, "id"), text(listed, webhookId), textKey(listed, "accessKeyId"), text(listed, listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook")), textKey(listed, "accessKeyName"), listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), textKey(listed, "name"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"name">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "url"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"url">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "status"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"status">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "timeoutSeconds"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"timeout_seconds">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "skipTlsVerify"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"skip_tls_verify">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "headers"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"headers">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "eventTypes"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"event_types">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "deviceIds"), listed.coalesce({ listed.filter(listed.aggregate("jsonb_agg", { bindingDevice }), listed.unary(ruvia::db_unary_operator::is_not_null, bindingDevice)), emptyJson(listed) }), textKey(listed, "hasSecret"), listed.unary(ruvia::db_unary_operator::is_not_null, listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"secret">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook")), textKey(listed, "lastTriggeredAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"last_triggered_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }), textKey(listed, "lastSuccessAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"last_success_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }), textKey(listed, "lastFailureAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"last_failure_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }), textKey(listed, "lastHttpStatus"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"last_http_status">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "lastError"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"last_error">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), textKey(listed, "createdAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"created_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }), textKey(listed, "updatedAt"), listed.call("iot_utc_timestamp", { listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"updated_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") }) }
         );
-        listed.select({ listed.alias(item, "item"), listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"created_at">(), "webhook") })
+        listed.select({ listed.alias(item, "item"), listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"created_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook") })
             .from(service::open_access::entities::OpenWebhookEntity::table_name(), "webhook")
-            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyEntity::table_name(), andAll(listed, listed.binary(listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">(), "key"), ruvia::db_binary_operator::equal, listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">(), "webhook")), listed.unary(ruvia::db_unary_operator::is_null, listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">(), "key"))), "key")
-            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), listed.binary(listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"), ruvia::db_binary_operator::equal, listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">(), "key")), "binding")
-            .where(listed.unary(ruvia::db_unary_operator::is_null, listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">(), "webhook")))
-            .group_by({ webhookId, listed.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">(), "key") });
+            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyEntity::table_name(), andAll(listed, listed.binary(listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), ruvia::db_binary_operator::equal, listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook")), listed.unary(ruvia::db_unary_operator::is_null, listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"))), "key")
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), listed.binary(listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key")), "binding")
+            .where(listed.unary(ruvia::db_unary_operator::is_null, listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook")))
+            .group_by({ webhookId, listed.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key") });
         if (const auto& key = filters.get<"accessKeyId">(); key && !key->view().empty()) {
             service::common::requireUuid(19002, key->view(), "调用配置 ID 无效");
-            listed.and_where(listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">(), "webhook"), ruvia::db_binary_operator::equal, uuid(listed, key->view())));
+            listed.and_where(listed.binary(listed.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), ruvia::db_binary_operator::equal, uuid(listed, key->view())));
         }
         ruvia::db_query query(c.pool());
         const std::array<ruvia::db_order_term, 1> webhookOrder{ { ruvia::db_order_term{ query.column("created_at", "listed"),
@@ -327,17 +329,17 @@ class AccessService final {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query update(c.pool());
         update.update(service::open_access::entities::OpenWebhookEntity::table_name())
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">(), uuid(update, accessKeyId))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"name">(), update.value(name))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"url">(), update.value(url))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"status">(), update.value(status))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"timeout_seconds">(), update.value(timeout))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"skip_tls_verify">(), update.value(skipTlsVerify))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"headers">(), update.cast(update.value(headers), ruvia::db_data_type::jsonb))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"event_types">(), update.cast(update.value(eventJson), ruvia::db_data_type::jsonb))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"secret">(), update.null_if(update.value(secretValue), update.value("")))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"updated_at">(), update.call("now"))
-            .where(andAll(update, update.binary(update.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), uuid(update, accessKeyId))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"name">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.value(name))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"url">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.value(url))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"status">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.value(status))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"timeout_seconds">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.value(timeout))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"skip_tls_verify">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.value(skipTlsVerify))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"headers">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.cast(update.value(headers), ruvia::db_data_type::jsonb))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"event_types">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.cast(update.value(eventJson), ruvia::db_data_type::jsonb))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"secret">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.null_if(update.value(secretValue), update.value("")))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"updated_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.call("now"))
+            .where(andAll(update, update.binary(update.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -350,9 +352,9 @@ class AccessService final {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query update(c.pool());
         update.update(service::open_access::entities::OpenWebhookEntity::table_name())
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">(), update.call("now"))
-            .set(service::open_access::entities::OpenWebhookEntity::column_name<"updated_at">(), update.call("now"))
-            .where(andAll(update, update.binary(update.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">()))));
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.call("now"))
+            .set(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"updated_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), update.call("now"))
+            .where(andAll(update, update.binary(update.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
@@ -363,25 +365,25 @@ class AccessService final {
         using E = service::open_access::entities::OpenMqttEntity;
         using K = service::open_access::entities::OpenAccessKeyEntity;
         ruvia::db_query q(c.pool());
-        q.select({text(q,q.column(E::column_name<"id">(),"m")), text(q,q.column(E::column_name<"access_key_id">(),"m")),
-            q.column(K::column_name<"name">(),"k"), q.column(E::column_name<"name">(),"m"),
-            q.column(E::column_name<"broker_url">(),"m"),
-            q.column(E::column_name<"status">(),"m"), q.column(E::column_name<"timeout_seconds">(),"m"),
-            text(q,q.column(E::column_name<"event_types">(),"m")), q.column(E::column_name<"username">(),"m"),
-            q.case_when({{q.unary(ruvia::db_unary_operator::is_not_null,q.column(E::column_name<"password">(),"m")),q.value("1")}},q.value("0")),
-            q.call("iot_utc_timestamp",{q.column(E::column_name<"last_triggered_at">(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column_name<"last_success_at">(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column_name<"last_failure_at">(),"m")}),
-            q.column(E::column_name<"last_error">(),"m"),
-            q.call("iot_utc_timestamp",{q.column(E::column_name<"created_at">(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column_name<"updated_at">(),"m")})})
+        q.select({text(q,q.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view(),"m")), text(q,q.column(std::tuple_element_t<E::column_index<"access_key_id">(), E::columns_type>::name.view(),"m")),
+            q.column(std::tuple_element_t<K::column_index<"name">(), K::columns_type>::name.view(),"k"), q.column(std::tuple_element_t<E::column_index<"name">(), E::columns_type>::name.view(),"m"),
+            q.column(std::tuple_element_t<E::column_index<"broker_url">(), E::columns_type>::name.view(),"m"),
+            q.column(std::tuple_element_t<E::column_index<"status">(), E::columns_type>::name.view(),"m"), q.column(std::tuple_element_t<E::column_index<"timeout_seconds">(), E::columns_type>::name.view(),"m"),
+            text(q,q.column(std::tuple_element_t<E::column_index<"event_types">(), E::columns_type>::name.view(),"m")), q.column(std::tuple_element_t<E::column_index<"username">(), E::columns_type>::name.view(),"m"),
+            q.case_when({{q.unary(ruvia::db_unary_operator::is_not_null,q.column(std::tuple_element_t<E::column_index<"password">(), E::columns_type>::name.view(),"m")),q.value("1")}},q.value("0")),
+            q.call("iot_utc_timestamp",{q.column(std::tuple_element_t<E::column_index<"last_triggered_at">(), E::columns_type>::name.view(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(std::tuple_element_t<E::column_index<"last_success_at">(), E::columns_type>::name.view(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(std::tuple_element_t<E::column_index<"last_failure_at">(), E::columns_type>::name.view(),"m")}),
+            q.column(std::tuple_element_t<E::column_index<"last_error">(), E::columns_type>::name.view(),"m"),
+            q.call("iot_utc_timestamp",{q.column(std::tuple_element_t<E::column_index<"created_at">(), E::columns_type>::name.view(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(std::tuple_element_t<E::column_index<"updated_at">(), E::columns_type>::name.view(),"m")})})
             .from(E::table_name(),"m")
-            .join(ruvia::db_join_type::inner,K::table_name(),q.binary(q.column(K::column_name<"id">(),"k"),ruvia::db_binary_operator::equal,q.column(E::column_name<"access_key_id">(),"m")),"k")
-            .where(q.unary(ruvia::db_unary_operator::is_null,q.column(E::column_name<"deleted_at">(),"m")))
-            .and_where(q.unary(ruvia::db_unary_operator::is_null,q.column(K::column_name<"deleted_at">(),"k")))
-            .order_by(q.column(E::column_name<"created_at">(),"m"),ruvia::db_order_direction::desc);
+            .join(ruvia::db_join_type::inner,K::table_name(),q.binary(q.column(std::tuple_element_t<K::column_index<"id">(), K::columns_type>::name.view(),"k"),ruvia::db_binary_operator::equal,q.column(std::tuple_element_t<E::column_index<"access_key_id">(), E::columns_type>::name.view(),"m")),"k")
+            .where(q.unary(ruvia::db_unary_operator::is_null,q.column(std::tuple_element_t<E::column_index<"deleted_at">(), E::columns_type>::name.view(),"m")))
+            .and_where(q.unary(ruvia::db_unary_operator::is_null,q.column(std::tuple_element_t<K::column_index<"deleted_at">(), K::columns_type>::name.view(),"k")))
+            .order_by(q.column(std::tuple_element_t<E::column_index<"created_at">(), E::columns_type>::name.view(),"m"),ruvia::db_order_direction::desc);
         if (const auto& key = filters.get<"accessKeyId">(); key)
-            q.and_where(q.binary(q.column(E::column_name<"access_key_id">(),"m"),ruvia::db_binary_operator::equal,uuid(q,key->view())));
+            q.and_where(q.binary(q.column(std::tuple_element_t<E::column_index<"access_key_id">(), E::columns_type>::name.view(),"m"),ruvia::db_binary_operator::equal,uuid(q,key->view())));
         const auto rows = co_await c.db().query(q);
         ruvia::boxed_array<MqttItem> result(ruvia::model_options{.resource_=c.arena()});
         for (const auto& row : rows) {
@@ -422,8 +424,8 @@ class AccessService final {
         std::string password;
         if (id) {
             ruvia::db_query current(c.pool());
-            current.select(current.column(E::column_name<"password">())).from(E::table_name())
-                .where(andAll(current,current.binary(current.column(E::column_name<"id">()),ruvia::db_binary_operator::equal,uuid(current,*id)),current.unary(ruvia::db_unary_operator::is_null,current.column(E::column_name<"deleted_at">()))));
+            current.select(current.column(std::tuple_element_t<E::column_index<"password">(), E::columns_type>::name.view())).from(E::table_name())
+                .where(andAll(current,current.binary(current.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view()),ruvia::db_binary_operator::equal,uuid(current,*id)),current.unary(ruvia::db_unary_operator::is_null,current.column(std::tuple_element_t<E::column_index<"deleted_at">(), E::columns_type>::name.view()))));
             const auto rows = co_await c.db().query(current);
             if (rows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
             password = rows.front()[0].value().value_or(std::string_view{});
@@ -436,10 +438,10 @@ class AccessService final {
         const auto name = service::utils::trim(payload.get<"name">().view());
         ruvia::db_query duplicate(c.pool());
         duplicate.select(duplicate.value(1)).from(E::table_name())
-            .where(andAll(duplicate,duplicate.binary(duplicate.column(E::column_name<"access_key_id">()),ruvia::db_binary_operator::equal,uuid(duplicate,keyId)),
-                duplicate.binary(duplicate.column(E::column_name<"name">()),ruvia::db_binary_operator::equal,duplicate.value(name)),
-                duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(E::column_name<"deleted_at">()))));
-        if (id) duplicate.and_where(duplicate.binary(duplicate.column(E::column_name<"id">()),ruvia::db_binary_operator::not_equal,uuid(duplicate,*id)));
+            .where(andAll(duplicate,duplicate.binary(duplicate.column(std::tuple_element_t<E::column_index<"access_key_id">(), E::columns_type>::name.view()),ruvia::db_binary_operator::equal,uuid(duplicate,keyId)),
+                duplicate.binary(duplicate.column(std::tuple_element_t<E::column_index<"name">(), E::columns_type>::name.view()),ruvia::db_binary_operator::equal,duplicate.value(name)),
+                duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(std::tuple_element_t<E::column_index<"deleted_at">(), E::columns_type>::name.view()))));
+        if (id) duplicate.and_where(duplicate.binary(duplicate.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view()),ruvia::db_binary_operator::not_equal,uuid(duplicate,*id)));
         const auto duplicateRows = co_await c.db().query(duplicate);
         if (!duplicateRows.empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
         const auto targetId = id.value_or(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -451,13 +453,13 @@ class AccessService final {
         const auto eventValue = q.cast(q.value(eventJson),ruvia::db_data_type::jsonb);
         if (id) {
             q.update(E::table_name())
-                .set(E::column_name<"access_key_id">(),uuid(q,keyId)).set(E::column_name<"name">(),q.value(name))
-                .set(E::column_name<"broker_url">(),q.value(payload.get<"brokerUrl">().view()))
-                .set(E::column_name<"username">(),userValue).set(E::column_name<"password">(),passwordValue)
-                .set(E::column_name<"status">(),q.value(payload.get<"status">()->view()))
-                .set(E::column_name<"timeout_seconds">(),q.value(payload.get<"timeoutSeconds">()->value_))
-                .set(E::column_name<"event_types">(),eventValue).set(E::column_name<"updated_at">(),q.call("now"))
-                .where(q.binary(q.column(E::column_name<"id">()),ruvia::db_binary_operator::equal,uuid(q,targetId)));
+                .set(std::tuple_element_t<E::column_index<"access_key_id">(), E::columns_type>::name.view(),uuid(q,keyId)).set(std::tuple_element_t<E::column_index<"name">(), E::columns_type>::name.view(),q.value(name))
+                .set(std::tuple_element_t<E::column_index<"broker_url">(), E::columns_type>::name.view(),q.value(payload.get<"brokerUrl">().view()))
+                .set(std::tuple_element_t<E::column_index<"username">(), E::columns_type>::name.view(),userValue).set(std::tuple_element_t<E::column_index<"password">(), E::columns_type>::name.view(),passwordValue)
+                .set(std::tuple_element_t<E::column_index<"status">(), E::columns_type>::name.view(),q.value(payload.get<"status">()->view()))
+                .set(std::tuple_element_t<E::column_index<"timeout_seconds">(), E::columns_type>::name.view(),q.value(payload.get<"timeoutSeconds">()->value_))
+                .set(std::tuple_element_t<E::column_index<"event_types">(), E::columns_type>::name.view(),eventValue).set(std::tuple_element_t<E::column_index<"updated_at">(), E::columns_type>::name.view(),q.call("now"))
+                .where(q.binary(q.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view()),ruvia::db_binary_operator::equal,uuid(q,targetId)));
         } else {
             q.insert_into(E::table_name(),{"id","access_key_id","name","broker_url","username","password","status","timeout_seconds","event_types"})
                 .values({uuid(q,targetId),uuid(q,keyId),q.value(name),q.value(payload.get<"brokerUrl">().view()),userValue,passwordValue,
@@ -473,9 +475,9 @@ class AccessService final {
         using E = service::open_access::entities::OpenMqttEntity;
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query q(c.pool());
-        q.update(E::table_name()).set(E::column_name<"deleted_at">(),q.call("now")).set(E::column_name<"updated_at">(),q.call("now"))
-            .where(andAll(q,q.binary(q.column(E::column_name<"id">()),ruvia::db_binary_operator::equal,uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(E::column_name<"deleted_at">()))))
-            .returning({q.column(E::column_name<"id">())});
+        q.update(E::table_name()).set(std::tuple_element_t<E::column_index<"deleted_at">(), E::columns_type>::name.view(),q.call("now")).set(std::tuple_element_t<E::column_index<"updated_at">(), E::columns_type>::name.view(),q.call("now"))
+            .where(andAll(q,q.binary(q.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view()),ruvia::db_binary_operator::equal,uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(std::tuple_element_t<E::column_index<"deleted_at">(), E::columns_type>::name.view()))))
+            .returning({q.column(std::tuple_element_t<E::column_index<"id">(), E::columns_type>::name.view())});
         const auto existingRows = co_await transaction.query(q);
         if (existingRows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -534,16 +536,16 @@ class AccessService final {
         ruvia::db_query pageRows(c.pool());
         pageRows.select(pageRows.star("log")).from(service::open_access::entities::OpenAccessLogEntity::table_name(), "log");
         applyFilters(pageRows, "log");
-        pageRows.order_by(pageRows.column(service::open_access::entities::OpenAccessLogEntity::column_name<"created_at">(), "log"), ruvia::db_order_direction::desc)
-            .add_order_by(pageRows.column(service::open_access::entities::OpenAccessLogEntity::column_name<"id">(), "log"), ruvia::db_order_direction::desc)
+        pageRows.order_by(pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAccessLogEntity::column_index<"created_at">(), service::open_access::entities::OpenAccessLogEntity::columns_type>::name.view(), "log"), ruvia::db_order_direction::desc)
+            .add_order_by(pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAccessLogEntity::column_index<"id">(), service::open_access::entities::OpenAccessLogEntity::columns_type>::name.view(), "log"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pagination.pageSize))
             .offset(static_cast<std::uint64_t>(pagination.offset));
         ruvia::db_query page(c.pool());
-        page.select({ page.star("page_rows"), page.alias(page.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">(), "key"), "access_key_name"), page.alias(page.column(service::open_access::entities::OpenWebhookEntity::column_name<"name">(), "webhook"), "webhook_name"), page.alias(page.column(service::open_access::entities::OpenMqttEntity::column_name<"name">(), "mqtt"), "mqtt_name") })
+        page.select({ page.star("page_rows"), page.alias(page.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), "access_key_name"), page.alias(page.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"name">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), "webhook_name"), page.alias(page.column(std::tuple_element_t<service::open_access::entities::OpenMqttEntity::column_index<"name">(), service::open_access::entities::OpenMqttEntity::columns_type>::name.view(), "mqtt"), "mqtt_name") })
             .from(pageRows, "page_rows")
-            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyEntity::table_name(), page.binary(page.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">(), "key"), ruvia::db_binary_operator::equal, page.column("access_key_id", "page_rows")), "key")
-            .join(ruvia::db_join_type::left, service::open_access::entities::OpenWebhookEntity::table_name(), page.binary(page.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">(), "webhook"), ruvia::db_binary_operator::equal, page.column("webhook_id", "page_rows")), "webhook")
-            .join(ruvia::db_join_type::left,service::open_access::entities::OpenMqttEntity::table_name(),page.binary(page.column(service::open_access::entities::OpenMqttEntity::column_name<"id">(),"mqtt"),ruvia::db_binary_operator::equal,page.column("mqtt_id","page_rows")),"mqtt");
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyEntity::table_name(), page.binary(page.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view(), "key"), ruvia::db_binary_operator::equal, page.column("access_key_id", "page_rows")), "key")
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenWebhookEntity::table_name(), page.binary(page.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view(), "webhook"), ruvia::db_binary_operator::equal, page.column("webhook_id", "page_rows")), "webhook")
+            .join(ruvia::db_join_type::left,service::open_access::entities::OpenMqttEntity::table_name(),page.binary(page.column(std::tuple_element_t<service::open_access::entities::OpenMqttEntity::column_index<"id">(), service::open_access::entities::OpenMqttEntity::columns_type>::name.view(),"mqtt"),ruvia::db_binary_operator::equal,page.column("mqtt_id","page_rows")),"mqtt");
         ruvia::db_query query(c.pool());
         query.with("counted", counted).with("page_rows", pageRows).with("page", page);
         const auto total = query.subquery(counted);
@@ -623,10 +625,10 @@ class AccessService final {
         const auto pagination = service::common::page(c.req());
         const auto keyword = service::utils::trim(c.req().query("keyword").value_or(""));
         ruvia::db_query visible(c.pool());
-        const auto deviceId = visible.column(service::open_access::entities::DeviceEntity::column_name<"id">(), "device");
+        const auto deviceId = visible.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"id">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device");
         const auto code = service::device::DeviceAccessService::jsonText(
             visible,
-            visible.column(service::open_access::entities::DeviceEntity::column_name<"protocol_params">(), "device"),
+            visible.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"protocol_params">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"),
             "device_code"
         );
         const auto pattern = visible.binary(
@@ -641,16 +643,16 @@ class AccessService final {
                 visible.binary(
                     visible.binary(service::device::DeviceAccessService::text(visible, deviceId), ruvia::db_binary_operator::i_like, pattern),
                     ruvia::db_binary_operator::or_value,
-                    visible.binary(visible.column(service::open_access::entities::DeviceEntity::column_name<"name">(), "device"), ruvia::db_binary_operator::i_like, pattern)
+                    visible.binary(visible.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"name">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), ruvia::db_binary_operator::i_like, pattern)
                 ),
                 ruvia::db_binary_operator::or_value,
                 visible.binary(visible.coalesce({ code, visible.value("") }), ruvia::db_binary_operator::i_like, pattern)
             )
         );
-        visible.select({ deviceId, visible.column(service::open_access::entities::DeviceEntity::column_name<"name">(), "device"), visible.alias(code, "code") })
+        visible.select({ deviceId, visible.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"name">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), visible.alias(code, "code") })
             .from(service::open_access::entities::DeviceEntity::table_name(), "device")
-            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), visible.binary(visible.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"), ruvia::db_binary_operator::equal, deviceId), "binding")
-            .where(andAll(visible, visible.binary(visible.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"access_key_id">(), "binding"), ruvia::db_binary_operator::equal, uuid(visible, session.id)), visible.unary(ruvia::db_unary_operator::is_null, visible.column(service::open_access::entities::DeviceEntity::column_name<"deleted_at">(), "device")), keywordFilter));
+            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), visible.binary(visible.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, deviceId), "binding")
+            .where(andAll(visible, visible.binary(visible.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, uuid(visible, session.id)), visible.unary(ruvia::db_unary_operator::is_null, visible.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"deleted_at">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device")), keywordFilter));
         ruvia::db_query counted(c.pool());
         counted.select(counted.aggregate("count", { counted.star() })).from(visible, "visible");
         ruvia::db_query page(c.pool());
@@ -751,21 +753,21 @@ class AccessService final {
         ruvia::db_query counted(c.pool());
         counted.select(counted.aggregate("count", { counted.star() }))
             .from(service::open_access::entities::OpenAlertRecordEntity::table_name(), "record")
-            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), counted.binary(counted.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"), ruvia::db_binary_operator::equal, counted.column(service::open_access::entities::OpenAlertRecordEntity::column_name<"device_id">(), "record")), "binding");
+            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), counted.binary(counted.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, counted.column(std::tuple_element_t<service::open_access::entities::OpenAlertRecordEntity::column_index<"device_id">(), service::open_access::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record")), "binding");
         applyFilters(counted, "record", "binding");
         ruvia::db_query pageRows(c.pool());
         pageRows.select(pageRows.star("record"))
             .from(service::open_access::entities::OpenAlertRecordEntity::table_name(), "record")
-            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), pageRows.binary(pageRows.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">(), "binding"), ruvia::db_binary_operator::equal, pageRows.column(service::open_access::entities::OpenAlertRecordEntity::column_name<"device_id">(), "record")), "binding");
+            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyDeviceEntity::table_name(), pageRows.binary(pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view(), "binding"), ruvia::db_binary_operator::equal, pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAlertRecordEntity::column_index<"device_id">(), service::open_access::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record")), "binding");
         applyFilters(pageRows, "record", "binding");
-        pageRows.order_by(pageRows.column(service::open_access::entities::OpenAlertRecordEntity::column_name<"triggered_at">(), "record"), ruvia::db_order_direction::desc)
-            .add_order_by(pageRows.column(service::open_access::entities::OpenAlertRecordEntity::column_name<"id">(), "record"), ruvia::db_order_direction::desc)
+        pageRows.order_by(pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAlertRecordEntity::column_index<"triggered_at">(), service::open_access::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"), ruvia::db_order_direction::desc)
+            .add_order_by(pageRows.column(std::tuple_element_t<service::open_access::entities::OpenAlertRecordEntity::column_index<"id">(), service::open_access::entities::OpenAlertRecordEntity::columns_type>::name.view(), "record"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pagination.pageSize))
             .offset(static_cast<std::uint64_t>(pagination.offset));
         ruvia::db_query page(c.pool());
-        page.select({ page.star("page_rows"), page.alias(page.column(service::open_access::entities::DeviceEntity::column_name<"name">(), "device"), "device_name"), page.alias(service::device::DeviceAccessService::jsonText(page, page.column(service::open_access::entities::DeviceEntity::column_name<"protocol_params">(), "device"), "device_code"), "device_code") })
+        page.select({ page.star("page_rows"), page.alias(page.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"name">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), "device_name"), page.alias(service::device::DeviceAccessService::jsonText(page, page.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"protocol_params">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), "device_code"), "device_code") })
             .from(pageRows, "page_rows")
-            .join(ruvia::db_join_type::inner, service::open_access::entities::DeviceEntity::table_name(), page.binary(page.column(service::open_access::entities::DeviceEntity::column_name<"id">(), "device"), ruvia::db_binary_operator::equal, page.column("device_id", "page_rows")), "device");
+            .join(ruvia::db_join_type::inner, service::open_access::entities::DeviceEntity::table_name(), page.binary(page.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"id">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), ruvia::db_binary_operator::equal, page.column("device_id", "page_rows")), "device");
         ruvia::db_query query(c.pool());
         query.with("counted", counted).with("page_rows", pageRows).with("page", page);
         const auto item = query.call(
@@ -1088,7 +1090,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
     static ruvia::task<void> replaceDevices(ruvia::db_transaction& transaction, std::string_view keyId, const std::vector<std::string>& devices) {
         ruvia::db_query remove;
         remove.delete_from(service::open_access::entities::OpenAccessKeyDeviceEntity::table_name())
-            .where(remove.binary(remove.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"access_key_id">()), ruvia::db_binary_operator::equal, uuid(remove, keyId)));
+            .where(remove.binary(remove.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(remove, keyId)));
         (void)co_await transaction.execute(remove);
         for (const auto& device : devices) {
             ruvia::db_query insert;
@@ -1103,14 +1105,14 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         ruvia::db_query query(c.pool());
         auto predicate = andAll(
             query,
-            query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">()), ruvia::db_binary_operator::equal, query.value(name)),
-            query.unary(ruvia::db_unary_operator::is_null, query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">()))
+            query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, query.value(name)),
+            query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()))
         );
         if (except) {
             predicate = query.binary(
                 predicate,
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">()), ruvia::db_binary_operator::not_equal, uuid(query, *except))
+                query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_equal, uuid(query, *except))
             );
         }
         query.select(service::device::DeviceAccessService::integer(query, 1))
@@ -1128,15 +1130,15 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         ruvia::db_query query(c.pool());
         auto predicate = andAll(
             query,
-            query.binary(query.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">()), ruvia::db_binary_operator::equal, uuid(query, accessKeyId)),
-            query.binary(query.column(service::open_access::entities::OpenWebhookEntity::column_name<"name">()), ruvia::db_binary_operator::equal, query.value(name)),
-            query.unary(ruvia::db_unary_operator::is_null, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">()))
+            query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(query, accessKeyId)),
+            query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"name">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, query.value(name)),
+            query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()))
         );
         if (except) {
             predicate = query.binary(
                 predicate,
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">()), ruvia::db_binary_operator::not_equal, uuid(query, *except))
+                query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_equal, uuid(query, *except))
             );
         }
         query.select(service::device::DeviceAccessService::integer(query, 1))
@@ -1152,9 +1154,9 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
     template <typename Context>
     ruvia::task<KeyState> requireKey(Context& c, std::string_view id) {
         ruvia::db_query query(c.pool());
-        query.select({ query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"name">()), text(query, query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"status">())), text(query, query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"scopes">())), query.call("iot_utc_timestamp", { query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"expires_at">()) }), query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"remark">()) })
+        query.select({ query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"name">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"status">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view())), text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"scopes">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view())), query.call("iot_utc_timestamp", { query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"expires_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()) }), query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"remark">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()) })
             .from(service::open_access::entities::OpenAccessKeyEntity::table_name())
-            .where(andAll(query, query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(query, id)), query.unary(ruvia::db_unary_operator::is_null, query.column(service::open_access::entities::OpenAccessKeyEntity::column_name<"deleted_at">()))))
+            .where(andAll(query, query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"id">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(query, id)), query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyEntity::column_index<"deleted_at">(), service::open_access::entities::OpenAccessKeyEntity::columns_type>::name.view()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -1173,10 +1175,10 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         }
         ruvia::db_query devicesQuery(c.pool());
         devicesQuery
-            .select(text(devicesQuery, devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">())))
+            .select(text(devicesQuery, devicesQuery.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view())))
             .from(service::open_access::entities::OpenAccessKeyDeviceEntity::table_name())
-            .where(devicesQuery.binary(devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"access_key_id">()), ruvia::db_binary_operator::equal, uuid(devicesQuery, id)))
-            .order_by(devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::column_name<"device_id">()));
+            .where(devicesQuery.binary(devicesQuery.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"access_key_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(devicesQuery, id)))
+            .order_by(devicesQuery.column(std::tuple_element_t<service::open_access::entities::OpenAccessKeyDeviceEntity::column_index<"device_id">(), service::open_access::entities::OpenAccessKeyDeviceEntity::columns_type>::name.view()));
         const auto devices = co_await c.db().query(devicesQuery);
         for (const auto& device : devices) {
             state.deviceIds.emplace_back(device[0].value().value_or(std::string_view{}));
@@ -1187,9 +1189,9 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
     template <typename Context>
     ruvia::task<WebhookState> requireWebhook(Context& c, std::string_view id) {
         ruvia::db_query query(c.pool());
-        query.select({ text(query, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"access_key_id">())), query.column(service::open_access::entities::OpenWebhookEntity::column_name<"name">()), query.column(service::open_access::entities::OpenWebhookEntity::column_name<"url">()), text(query, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"status">())), query.column(service::open_access::entities::OpenWebhookEntity::column_name<"timeout_seconds">()), query.case_when({ { query.binary(query.column(service::open_access::entities::OpenWebhookEntity::column_name<"skip_tls_verify">()), ruvia::db_binary_operator::equal, service::device::DeviceAccessService::boolean(query, true)), text(query, "1") } }, text(query, "0")), text(query, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"headers">())), text(query, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"event_types">())), query.column(service::open_access::entities::OpenWebhookEntity::column_name<"secret">()) })
+        query.select({ text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"access_key_id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view())), query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"name">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"url">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"status">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view())), query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"timeout_seconds">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), query.case_when({ { query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"skip_tls_verify">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, service::device::DeviceAccessService::boolean(query, true)), text(query, "1") } }, text(query, "0")), text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"headers">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view())), text(query, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"event_types">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view())), query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"secret">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()) })
             .from(service::open_access::entities::OpenWebhookEntity::table_name())
-            .where(andAll(query, query.binary(query.column(service::open_access::entities::OpenWebhookEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(query, id)), query.unary(ruvia::db_unary_operator::is_null, query.column(service::open_access::entities::OpenWebhookEntity::column_name<"deleted_at">()))))
+            .where(andAll(query, query.binary(query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"id">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(query, id)), query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::open_access::entities::OpenWebhookEntity::column_index<"deleted_at">(), service::open_access::entities::OpenWebhookEntity::columns_type>::name.view()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -1221,7 +1223,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         ruvia::db_query query(c.pool());
         query.select(service::device::DeviceAccessService::integer(query, 1))
             .from(service::open_access::entities::DeviceEntity::table_name())
-            .where(andAll(query, query.binary(query.column(service::open_access::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, uuid(query, deviceId)), query.unary(ruvia::db_unary_operator::is_null, query.column(service::open_access::entities::DeviceEntity::column_name<"deleted_at">()))))
+            .where(andAll(query, query.binary(query.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"id">(), service::open_access::entities::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, uuid(query, deviceId)), query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"deleted_at">(), service::open_access::entities::DeviceEntity::columns_type>::name.view()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -1241,27 +1243,27 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         };
 
         ruvia::db_query deviceRef(resource);
-        const auto deviceParams = deviceRef.column(service::open_access::entities::DeviceEntity::column_name<"protocol_params">(), "device");
+        const auto deviceParams = deviceRef.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"protocol_params">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device");
         deviceRef
-            .select({ deviceRef.column(service::open_access::entities::DeviceEntity::column_name<"id">(), "device"), deviceRef.alias(service::device::DeviceAccessService::jsonText(deviceRef, deviceParams, "device_code"), "code"), deviceRef.column(service::open_access::entities::DeviceEntity::column_name<"name">(), "device") })
+            .select({ deviceRef.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"id">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), deviceRef.alias(service::device::DeviceAccessService::jsonText(deviceRef, deviceParams, "device_code"), "code"), deviceRef.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"name">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device") })
             .from(service::open_access::entities::DeviceEntity::table_name(), "device")
-            .where(andAll(deviceRef, deviceRef.binary(deviceRef.column(service::open_access::entities::DeviceEntity::column_name<"id">(), "device"), ruvia::db_binary_operator::equal, uuid(deviceRef, deviceId)), deviceRef.unary(ruvia::db_unary_operator::is_null, deviceRef.column(service::open_access::entities::DeviceEntity::column_name<"deleted_at">(), "device"))));
+            .where(andAll(deviceRef, deviceRef.binary(deviceRef.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"id">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"), ruvia::db_binary_operator::equal, uuid(deviceRef, deviceId)), deviceRef.unary(ruvia::db_unary_operator::is_null, deviceRef.column(std::tuple_element_t<service::open_access::entities::DeviceEntity::column_index<"deleted_at">(), service::open_access::entities::DeviceEntity::columns_type>::name.view(), "device"))));
 
         ruvia::db_query counted(resource);
-        const auto countedData = counted.column(service::open_access::entities::DeviceDataEntity::column_name<"data">(), "record");
+        const auto countedData = counted.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"data">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record");
         counted
             .select(counted.aggregate("count", { counted.star() }))
             .from(service::open_access::entities::DeviceDataEntity::table_name(), "record")
-            .where(andAll(counted, counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::column_name<"device_id">(), "record"), ruvia::db_binary_operator::equal, uuid(counted, deviceId)), counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(counted, start)), counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::less_equal, timestamp(counted, end)), counted.binary(counted.call("jsonb_typeof", { service::device::DeviceAccessService::jsonValue(counted, countedData, "values") }), ruvia::db_binary_operator::equal, text(counted, "object"))));
+            .where(andAll(counted, counted.binary(counted.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"device_id">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::equal, uuid(counted, deviceId)), counted.binary(counted.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(counted, start)), counted.binary(counted.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::less_equal, timestamp(counted, end)), counted.binary(counted.call("jsonb_typeof", { service::device::DeviceAccessService::jsonValue(counted, countedData, "values") }), ruvia::db_binary_operator::equal, text(counted, "object"))));
 
         ruvia::db_query filtered(resource);
-        const auto filteredData = filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"data">(), "record");
+        const auto filteredData = filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"data">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record");
         filtered
-            .select({ filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"id">(), "record"), filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), filteredData })
+            .select({ filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"id">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), filteredData })
             .from(service::open_access::entities::DeviceDataEntity::table_name(), "record")
-            .where(andAll(filtered, filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"device_id">(), "record"), ruvia::db_binary_operator::equal, uuid(filtered, deviceId)), filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(filtered, start)), filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_binary_operator::less_equal, timestamp(filtered, end)), filtered.binary(filtered.call("jsonb_typeof", { service::device::DeviceAccessService::jsonValue(filtered, filteredData, "values") }), ruvia::db_binary_operator::equal, text(filtered, "object"))))
-            .order_by(filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"report_time">(), "record"), ruvia::db_order_direction::desc)
-            .add_order_by(filtered.column(service::open_access::entities::DeviceDataEntity::column_name<"id">(), "record"), ruvia::db_order_direction::desc)
+            .where(andAll(filtered, filtered.binary(filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"device_id">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::equal, uuid(filtered, deviceId)), filtered.binary(filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::greater_equal, timestamp(filtered, start)), filtered.binary(filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_binary_operator::less_equal, timestamp(filtered, end)), filtered.binary(filtered.call("jsonb_typeof", { service::device::DeviceAccessService::jsonValue(filtered, filteredData, "values") }), ruvia::db_binary_operator::equal, text(filtered, "object"))))
+            .order_by(filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"report_time">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_order_direction::desc)
+            .add_order_by(filtered.column(std::tuple_element_t<service::open_access::entities::DeviceDataEntity::column_index<"id">(), service::open_access::entities::DeviceDataEntity::columns_type>::name.view(), "record"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>(offset));
 

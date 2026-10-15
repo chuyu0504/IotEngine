@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include "service/utils/number.h"
 #include "service/features/telemetry/latest/latest.entity.h"
 
@@ -506,16 +508,16 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto nowMs = service::message::utcNowMilliseconds();
     const auto now = std::to_string(nowMs);
     ruvia::db_query deviceQuery;
-    const auto timeout = deviceQuery.binary(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, deviceQuery.value("online_timeout"));
+    const auto timeout = deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("online_timeout"));
     const auto parsedTimeout = deviceQuery.case_when({ { deviceQuery.binary(
         deviceQuery.coalesce({ timeout, deviceQuery.value("") }), Op::regex, deviceQuery.value("^-?[0-9]{1,18}$")),
         deviceQuery.cast(timeout, Type::big_int) } });
-    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">(), "d"), Type::text),
-        deviceQuery.binary(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, deviceQuery.value("device_code")),
+    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
+        deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("device_code")),
         deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::multiply, deviceQuery.value(1000)) })
         .from(service::telemetry::latest::persistence::DeviceEntity::table_name(), "d")
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .and_where(selected(deviceQuery)).add_order_by(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">(), "d"));
+        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .and_where(selected(deviceQuery)).add_order_by(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     const auto devices = co_await context.db().query(deviceQuery);
     if (devices.empty()) {
         co_return;
@@ -636,15 +638,15 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto configuredProtocol = [&](std::string_view protocol, std::string_view arrayKey, int order) {
         ruvia::db_query query;
         query.from(service::telemetry::latest::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::telemetry::latest::persistence::DeviceModelEntity::table_name(), query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"device_id">(), "p"), Op::equal, query.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">(), "d")), "p")
-            .and_where(query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"protocol">(), "p"), Op::equal, query.value(protocol)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
+            .join(ruvia::db_join_type::inner, service::telemetry::latest::persistence::DeviceModelEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"device_id">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+            .and_where(query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"protocol">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")))
             .and_where(selected(query));
         const auto entries = query.call("jsonb_array_elements", { query.coalesce({
-            query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"config">(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
-        std::vector<ruvia::db_expression> columns{ query.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">(), "d"),
-            query.binary(query.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, query.value("device_code")),
-            query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"protocol">(), "p"), query.column("element"), query.cast(query.value(order), Type::integer) };
+            query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"config">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
+        std::vector<ruvia::db_expression> columns{ query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"),
+            query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, query.value("device_code")),
+            query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"protocol">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), query.column("element"), query.cast(query.value(order), Type::integer) };
         if (protocol == "SL651" && arrayKey == "funcs") {
             query.join_function(ruvia::db_join_type::cross, entries, {}, "functions",
                 { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } });
@@ -663,7 +665,7 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
             columns.push_back(query.cast(query.value(0), Type::big_int));
         }
         const auto element = query.column("element");
-        const auto configuration = query.column(service::telemetry::latest::persistence::DeviceModelEntity::column_name<"config">(), "p");
+        const auto configuration = query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"config">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
         const auto visibility = query.binary(query.binary(configuration, Op::json_get, query.value("pointVisibility")), Op::json_get,
             query.binary(element, Op::json_get_text, query.value("id")));
         auto writable = query.value(false);
@@ -710,18 +712,18 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto defaultText = [&](std::string_view key, std::string_view fallback) {
         return points.coalesce({ elementText(key), points.value(fallback) });
     };
-    const auto pointValue = points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"value">(), "point"), Op::json_get_text, points.value("value"));
+    const auto pointValue = points.binary(points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point"), Op::json_get_text, points.value("value"));
     const auto displayValue = points.case_when({ { points.binary(points.call("jsonb_typeof", {
-        points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"value">(), "point"), Op::json_get, points.value("value")) }), Op::equal, points.value("boolean")),
+        points.binary(points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point"), Op::json_get, points.value("value")) }), Op::equal, points.value("boolean")),
         points.case_when({ { points.cast(pointValue, Type::boolean), points.value("1") } }, points.value("0")) } },
         points.coalesce({ pointValue, points.value("-") }));
     const auto observedAt = points.cast(points.binary(points.extract(ruvia::db_date_part::epoch,
-        points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"observed_at">(), "point")), Op::multiply, points.value(1000)), Type::big_int);
+        points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point")), Op::multiply, points.value(1000)), Type::big_int);
     const auto decimals = points.coalesce({ elementText("decimals"), elementText("digits") });
     const auto numericDecimals = points.coalesce({ points.case_when({ { points.binary(
         points.coalesce({ decimals, points.value("") }), Op::regex, points.value("^-?[0-9]{1,18}$")), points.cast(decimals, Type::big_int) } }), points.value(-1) });
-    const auto missing = points.unary(ruvia::db_unary_operator::is_null, points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"observed_at">(), "point"));
-    const auto storedPoint = points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"value">(), "point");
+    const auto missing = points.unary(ruvia::db_unary_operator::is_null, points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point"));
+    const auto storedPoint = points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point");
     const auto observedUnit = points.coalesce({points.binary(storedPoint, Op::json_get_text, points.value("unit")), defaultText("unit", "")});
     const auto json = points.call("jsonb_build_object", {
         points.cast(points.value("id"), ruvia::db_data_type::text), elementText("id"), points.cast(points.value("name"), ruvia::db_data_type::text), elementText("name"), points.cast(points.value("value"), ruvia::db_data_type::text), displayValue,
@@ -745,8 +747,8 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
             defaultText("group", ""), defaultText("encode", ""), points.cast(points.column("sort_order", "numbered"), Type::text), points.cast(json, Type::text) })
         .from("numbered")
         .join(ruvia::db_join_type::left, service::telemetry::latest::persistence::DeviceLatestValueEntity::table_name(), points.binary(
-            points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"device_id">(), "point"), Op::equal, points.column("device_id", "numbered")), Op::and_value,
-            points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"element_id">(), "point"), Op::equal, elementText("id"))), "point")
+            points.binary(points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point"), Op::equal, points.column("device_id", "numbered")), Op::and_value,
+            points.binary(points.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"element_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "point"), Op::equal, elementText("id"))), "point")
         .add_order_by(points.column("device_id", "numbered")).add_order_by(points.column("protocol_order", "numbered"))
         .add_order_by(points.column("function_order", "numbered")).add_order_by(points.column("element_order", "numbered"));
     const auto elements = co_await context.db().query(points);
@@ -873,11 +875,11 @@ inline ruvia::task<void> hydrate(ruvia::web_worker_context& context, std::size_t
     std::string cursor = "00000000-0000-0000-0000-000000000000";
     for (;;) {
         ruvia::db_query page;
-        page.select(page.cast(page.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">()), ruvia::db_data_type::text)).from(service::telemetry::latest::persistence::DeviceEntity::table_name())
-            .and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"deleted_at">())))
-            .and_where(page.binary(page.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::greater,
+        page.select(page.cast(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_data_type::text)).from(service::telemetry::latest::persistence::DeviceEntity::table_name())
+            .and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view())))
+            .and_where(page.binary(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::greater,
                 page.cast(page.value(cursor), ruvia::db_data_type::uuid)))
-            .add_order_by(page.column(service::telemetry::latest::persistence::DeviceEntity::column_name<"id">())).limit(kHydrationBatchSize);
+            .add_order_by(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view())).limit(kHydrationBatchSize);
         const auto devices = co_await context.db().query(page);
         if (devices.empty()) {
             break;

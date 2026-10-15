@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include <ruvia/web/db/db_query.h>
+
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -142,7 +144,7 @@ class DeptService {
             co_await ensureCodeAvailable(c, std::string(body.get<"code">()->view()), std::string(id));
         }
 
-        ruvia::db_expressions query(c.pool());
+        ruvia::db_query query(c.pool());
         std::vector<ruvia::db_assignment> changes;
         bool changed = false;
         auto append = [&](std::string_view column, ruvia::db_expression value) {
@@ -187,7 +189,7 @@ class DeptService {
         if (co_await c.db().template get_repository<DeptEntity>().exists(children)) {
             service::common::fail(14005, "部门存在子部门，不能删除", 409);
         }
-        ruvia::db_expressions expressions(c.pool());
+        ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
             { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
         };
@@ -201,7 +203,7 @@ class DeptService {
     static ruvia::db_query_builder<DeptEntity, ruvia::db_handle>
     departmentDescendant(Context& c, std::string_view currentId, std::string_view parentId) {
         using namespace ruvia;
-        db_expressions expressions(c.pool());
+        db_query expressions(c.pool());
         auto departments = c.db().template get_repository<DeptEntity>();
         auto seed = departments.create_query_builder("seed");
         seed.select({ { "id" } })
@@ -221,7 +223,7 @@ class DeptService {
     template <typename Context>
     static ruvia::db_query_builder<DeptEntity, ruvia::db_handle> departmentSelect(Context& c) {
         using namespace ruvia;
-        db_expressions expressions(c.pool());
+        db_query expressions(c.pool());
         auto query = c.db().template get_repository<DeptEntity>().create_query_builder("d");
         query.select({ { "id", expressions.cast(expressions.column("id", "d"), db_data_type::text) }, { "name", expressions.column("name", "d") }, { "code", expressions.coalesce({ expressions.cast(expressions.column("code", "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(expressions.column("parent_id", "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(expressions.column("name", "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(expressions.column("leader_id", "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ expressions.column("nickname", "u"), expressions.column("username", "u"), expressions.value("") }) }, { "sort_order", expressions.column("sort_order", "d") }, { "status", expressions.column("status", "d") }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "d") }) } });
         query.template join<DeptEntity>(db_join_type::left, "parent", expressions.binary(expressions.column("id", "parent"), db_binary_operator::equal, expressions.column("parent_id", "d")))

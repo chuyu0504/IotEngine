@@ -26,7 +26,7 @@ void requireNoUnsafeStoll(std::string_view source) {
 
 void requireUnambiguousTlsVerificationFlag(std::string_view source) {
     require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(Entity::template column_name<\"skip_tls_verify\">(), \"webhook\")") !=
+                source.find("catalog.column(std::tuple_element_t<Entity::template column_index<\"skip_tls_verify\">(), typename Entity::columns_type>::name.view(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos &&

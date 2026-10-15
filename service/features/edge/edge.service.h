@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include <filesystem>
 #include <ruvia/web/db/db_predicate.h>
 #include <google/protobuf/util/json_util.h>
@@ -155,10 +157,10 @@ ruvia::task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_vie
     };
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             jsonText("protocol_params", "d", "device_code"),
-            query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
             query.coalesce({
                 query.null_if(jsonText("config", "p", "storagePolicy"),
                              query.value(std::string_view{})),
@@ -172,35 +174,35 @@ ruvia::task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_vie
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.unary(ruvia::db_unary_operator::is_null,
-                            query.column(service::edge::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p"))),
+                            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"))),
             "p")
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"));
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     const auto rows = co_await context.db().query(query);
     NodeSnapshot snapshot;
     snapshot.reserve(rows.size());
@@ -226,11 +228,11 @@ ruvia::task<Catalog> loadCatalogFromDatabase(Context& context) {
     };
     query
         .select({
-            query.cast(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "n"), ruvia::db_data_type::text),
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             jsonText("protocol_params", "d", "device_code"),
-            query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
             query.coalesce({
                 query.null_if(jsonText("config", "p", "storagePolicy"),
                              query.value(std::string_view{})),
@@ -244,40 +246,40 @@ ruvia::task<Catalog> loadCatalogFromDatabase(Context& context) {
         .join(
             ruvia::db_join_type::left, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "n")),
+                             query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "n")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::left, service::edge::persistence::DeviceEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l")),
+                             query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")),
                 ruvia::db_binary_operator::and_value,
                 query.unary(ruvia::db_unary_operator::is_null,
-                            query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d"))),
+                            query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))),
             "d")
         .join(
             ruvia::db_join_type::left, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.unary(ruvia::db_unary_operator::is_null,
-                            query.column(service::edge::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p"))),
+                            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"))),
             "p")
-        .order_by(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "n"))
-        .add_order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"));
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "n"))
+        .add_order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     const auto rows = co_await context.db().query(query);
     Catalog catalog;
     for (const auto& row : rows) {
@@ -571,9 +573,9 @@ inline ruvia::db_query::expr_type capabilityEnabled(ruvia::db_query& query,
 
 inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
     ruvia::db_query next;
-    const auto desired = configVersion(next, next.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+    const auto desired = configVersion(next, next.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                        "desiredVersion");
-    const auto active = configVersion(next, next.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+    const auto active = configVersion(next, next.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                       "activeVersion");
     const auto nowMilliseconds = next.cast(
         next.binary(next.extract(ruvia::db_date_part::epoch,
@@ -582,7 +584,7 @@ inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
                     next.value(std::int64_t{1000})),
         ruvia::db_data_type::big_int);
     next.select({
-            next.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()),
+            next.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
             next.alias(next.greatest({
                            nowMilliseconds,
                            next.binary(desired, ruvia::db_binary_operator::add,
@@ -592,15 +594,15 @@ inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
                        "revision"),
         })
         .from(service::edge::persistence::EdgeNodeEntity::table_name())
-        .where(next.binary(next.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+        .where(next.binary(next.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                            next.cast(next.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(next.binary(next.column(service::edge::persistence::EdgeNodeEntity::column_name<"enrollment_status">()),
+        .and_where(next.binary(next.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                               ruvia::db_binary_operator::equal,
                               next.value(std::string_view{"approved"})))
         .and_where(capabilityEnabled(next, {}));
 
     ruvia::db_query update;
-    const auto status = update.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), "node");
+    const auto status = update.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "node");
     const auto statusWithVersion = update.call(
         "jsonb_set",
         {status, jsonPath(update, "{config,desiredVersion}"),
@@ -618,10 +620,10 @@ inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
          update.cast(update.value(true), ruvia::db_data_type::boolean)});
     update.with("next", next)
         .update(service::edge::persistence::EdgeNodeEntity::table_name(), "node")
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), statusWithMessage)
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), update.call("now"))
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), statusWithMessage)
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), update.call("now"))
         .update_from("next")
-        .where(update.binary(update.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "node"),
+        .where(update.binary(update.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "node"),
                             ruvia::db_binary_operator::equal,
                             update.column("id", "next")))
         .returning({update.column("revision", "next")});
@@ -630,16 +632,16 @@ inline ruvia::db_query queueSnapshotQuery(std::string_view nodeId) {
 
 inline ruvia::db_query requeueDesiredQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    query.select({configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "desiredVersion"),
-                  configState(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">())),
-                  configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "activeVersion"),
+    query.select({configVersion(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), "desiredVersion"),
+                  configState(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())),
+                  configVersion(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), "activeVersion"),
                   query.coalesce({jsonText(query, jsonGet(query,
-                      query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()), "config"), "message"),
+                      query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), "config"), "message"),
                       query.value(std::string_view{})})})
         .from(service::edge::persistence::EdgeNodeEntity::table_name())
-        .where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"enrollment_status">()),
+        .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                               ruvia::db_binary_operator::equal,
                               query.value(std::string_view{"approved"})))
         .and_where(capabilityEnabled(query, {}));
@@ -651,27 +653,27 @@ inline ruvia::db_query requeuePendingQuery(std::string_view nodeId,
                                           std::string_view expectedState,
                                           std::string_view expectedMessage) {
     ruvia::db_query query;
-    const auto status = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
+    const auto status = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
     const auto statusWithState = query.call(
         "jsonb_set",
         {status, jsonPath(query, "{config,state}"),
          toJsonbText(query, "pending"),
          query.cast(query.value(true), ruvia::db_data_type::boolean)});
     query.update(service::edge::persistence::EdgeNodeEntity::table_name())
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), query.call(
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call(
                            "jsonb_set",
                            {statusWithState, jsonPath(query, "{config,message}"),
                             toJsonbText(query, ""),
                             query.cast(query.value(true), ruvia::db_data_type::boolean)}))
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), query.call("now"))
-        .where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call("now"))
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.binary(configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+        .and_where(query.binary(configVersion(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                              "desiredVersion"),
                               ruvia::db_binary_operator::equal,
                               query.cast(query.value(static_cast<std::int64_t>(revision)),
                                          ruvia::db_data_type::big_int)))
-        .and_where(query.binary(configState(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">())),
+        .and_where(query.binary(configState(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())),
                               ruvia::db_binary_operator::equal,
                               query.value(expectedState)))
         .and_where(query.binary(query.coalesce({jsonText(query, jsonGet(query, status, "config"), "message"),
@@ -684,23 +686,23 @@ inline ruvia::db_query rejectBuildQuery(std::string_view message,
                                        std::string_view nodeId,
                                        std::uint64_t revision) {
     ruvia::db_query query;
-    const auto status = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
+    const auto status = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
     const auto statusWithState = query.call(
         "jsonb_set",
         {status, jsonPath(query, "{config,state}"),
          toJsonbText(query, "rejected"),
          query.cast(query.value(true), ruvia::db_data_type::boolean)});
     query.update(service::edge::persistence::EdgeNodeEntity::table_name())
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), query.call(
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call(
                            "jsonb_set",
                            {statusWithState, jsonPath(query, "{config,message}"),
                             toJsonb(query, query.cast(query.value(message),
                                                       ruvia::db_data_type::text)),
                             query.cast(query.value(true), ruvia::db_data_type::boolean)}))
-        .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), query.call("now"))
-        .where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+        .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call("now"))
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.binary(configVersion(query, query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+        .and_where(query.binary(configVersion(query, query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                              "desiredVersion"),
                               ruvia::db_binary_operator::equal,
                               query.cast(query.value(static_cast<std::int64_t>(revision)),
@@ -710,25 +712,25 @@ inline ruvia::db_query rejectBuildQuery(std::string_view message,
 
 inline ruvia::db_query buildItemsQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto protocolParams = query.column(service::edge::persistence::DeviceEntity::column_name<"protocol_params">(), "d");
-    const auto modelConfig = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
-    const auto endpoint = query.column(service::edge::persistence::LinkEntity::column_name<"endpoint">(), "l");
+    const auto protocolParams = query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"protocol_params">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d");
+    const auto modelConfig = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
+    const auto endpoint = query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"endpoint">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l");
     const auto packetConfig = jsonGet(query, modelConfig, "packet");
     const auto connectionConfig = jsonGet(query, modelConfig, "connection");
     const auto heartbeatConfig = jsonGet(query, protocolParams, "heartbeat");
     const auto deviceEnabled = query.binary(
-        query.column(service::edge::persistence::DeviceEntity::column_name<"status">(), "d"), ruvia::db_binary_operator::equal,
+        query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"status">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_binary_operator::equal,
         query.value(std::string_view{"enabled"}));
     const auto linkEnabled = query.binary(
-        query.column(service::edge::persistence::LinkEntity::column_name<"status">(), "l"), ruvia::db_binary_operator::equal,
+        query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"status">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal,
         query.value(std::string_view{"enabled"}));
 
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
-            query.column(service::edge::persistence::DeviceEntity::column_name<"name">(), "d"),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
+            query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"name">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"),
             jsonText(query, protocolParams, "device_code"),
-            query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
             textDefault(query, jsonText(query, protocolParams, "timezone"), "+08:00"),
             textDefault(query, jsonText(query, modelConfig, "readInterval"), "300"),
             textDefault(query, jsonText(query, protocolParams, "online_timeout"), "300"),
@@ -755,16 +757,16 @@ inline ruvia::db_query buildItemsQuery(std::string_view nodeId) {
             nullableDefault(query, jsonText(query, heartbeatConfig, "mode"), "OFF"),
             nullableDefault(query, jsonText(query, heartbeatConfig, "content"), ""),
             query.binary(query.binary(deviceEnabled, ruvia::db_binary_operator::and_value,
-                                      query.column(service::edge::persistence::DeviceModelEntity::column_name<"enabled">(), "p")),
+                                      query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"enabled">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p")),
                          ruvia::db_binary_operator::and_value, linkEnabled),
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             textDefault(query, jsonText(query, modelConfig, "commandFastReadDuration"), "60"),
             textDefault(query, jsonText(query, modelConfig, "commandFastReadInterval"), "1"),
-            query.column(service::edge::persistence::LinkEntity::column_name<"name">(), "l"),
+            query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"name">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
             linkEnabled,
             textDefault(query, jsonText(query, modelConfig, "responseMode"), "M1"),
-            query.column(service::edge::persistence::LinkEntity::column_name<"debug_enabled">(), "l"),
-            query.column(service::edge::persistence::DeviceEntity::column_name<"debug_enabled">(), "d"),
+            query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"debug_enabled">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
+            query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"debug_enabled">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"),
             textDefault(query, jsonText(query, connectionConfig, "frame"), "3E"),
             textDefault(query, jsonText(query, connectionConfig, "version"), "2007"),
             textDefault(query, jsonText(query, connectionConfig, "network"), "0"),
@@ -787,41 +789,41 @@ inline ruvia::db_query buildItemsQuery(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.unary(ruvia::db_unary_operator::is_null,
-                            query.column(service::edge::persistence::DeviceModelEntity::column_name<"deleted_at">(), "p"))),
+                            query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"))),
             "p")
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"));
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     return query;
 }
 
 inline ruvia::db_query appendModbusQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto config = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto config = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto itemSource = query.call(
         "jsonb_array_elements",
         {query.coalesce({jsonGet(query, config, "registers"),
@@ -830,7 +832,7 @@ inline ruvia::db_query appendModbusQuery(std::string_view nodeId) {
     const auto item = query.column("item");
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             jsonText(query, item, "id"),
             jsonText(query, item, "name"),
             nullableDefault(query, jsonText(query, item, "unit"), ""),
@@ -849,45 +851,45 @@ inline ruvia::db_query appendModbusQuery(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
                              query.value(std::string_view{"Modbus"}))),
             "p")
         .join_function(ruvia::db_join_type::cross, itemSource, {}, "item",
                       {.lateral_ = true})
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"))
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))
         .add_order_by(jsonText(query, item, "id"));
     return query;
 }
 
 inline ruvia::db_query appendS7Query(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto config = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto config = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto itemSource = query.call(
         "jsonb_array_elements",
         {query.coalesce({jsonGet(query, config, "areas"),
@@ -896,7 +898,7 @@ inline ruvia::db_query appendS7Query(std::string_view nodeId) {
     const auto item = query.column("item");
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             jsonText(query, item, "id"),
             jsonText(query, item, "name"),
             nullableDefault(query, jsonText(query, item, "unit"), ""),
@@ -913,45 +915,45 @@ inline ruvia::db_query appendS7Query(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
                              query.value(std::string_view{"S7"}))),
             "p")
         .join_function(ruvia::db_join_type::cross, itemSource, {}, "item",
                       {.lateral_ = true})
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"))
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))
         .add_order_by(jsonText(query, item, "id"));
     return query;
 }
 
 inline ruvia::db_query appendIndustrialQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto config = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto config = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto itemSource = query.call(
         "jsonb_array_elements",
         {query.coalesce({jsonGet(query, config, "points"),
@@ -960,7 +962,7 @@ inline ruvia::db_query appendIndustrialQuery(std::string_view nodeId) {
     const auto item = query.column("item");
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             jsonText(query, item, "id"),
             jsonText(query, item, "name"),
             nullableDefault(query, jsonText(query, item, "unit"), ""),
@@ -980,45 +982,45 @@ inline ruvia::db_query appendIndustrialQuery(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::in,
                              query.list({query.value("MC"), query.value("FINS"), query.value("DLT645")}))),
             "p")
         .join_function(ruvia::db_join_type::cross, itemSource, {}, "item",
                       {.lateral_ = true})
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"))
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))
         .add_order_by(jsonText(query, item, "id"));
     return query;
 }
 
 inline ruvia::db_query appendSl651FunctionsQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto config = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto config = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto functionSource = query.call(
         "jsonb_array_elements",
         {query.coalesce({jsonGet(query, config, "funcs"),
@@ -1026,7 +1028,7 @@ inline ruvia::db_query appendSl651FunctionsQuery(std::string_view nodeId) {
                                     ruvia::db_data_type::jsonb)})});
     const auto function = query.column("func");
     query
-        .select({query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
+        .select({query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
                  jsonText(query, function, "funcCode"),
                  jsonText(query, function, "name"),
                  jsonText(query, function, "dir")})
@@ -1034,45 +1036,45 @@ inline ruvia::db_query appendSl651FunctionsQuery(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
                              query.value(std::string_view{"SL651"}))),
             "p")
         .join_function(ruvia::db_join_type::cross, functionSource, {}, "func",
                       {.lateral_ = true})
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"))
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))
         .add_order_by(jsonText(query, function, "funcCode"));
     return query;
 }
 
 inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
     ruvia::db_query query;
-    const auto config = query.column(service::edge::persistence::DeviceModelEntity::column_name<"config">(), "p");
+    const auto config = query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"config">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
     const auto functionSource = query.call(
         "jsonb_array_elements",
         {query.coalesce({jsonGet(query, config, "funcs"),
@@ -1119,7 +1121,7 @@ inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
 
     query
         .select({
-            query.cast(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"), ruvia::db_data_type::text),
+            query.cast(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
             functionCode,
             jsonText(query, element, "id"),
             jsonText(query, element, "name"),
@@ -1139,26 +1141,26 @@ inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::LinkEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"id">(), "l"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"link_id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"link_id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
                 query.binary(
-                    query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"execution">(), "l"),
+                    query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"execution">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                                  ruvia::db_binary_operator::equal,
                                  query.value(std::string_view{"edge"})),
                     ruvia::db_binary_operator::and_value,
                     query.unary(ruvia::db_unary_operator::is_null,
-                                query.column(service::edge::persistence::LinkEntity::column_name<"deleted_at">(), "l")))),
+                                query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"deleted_at">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l")))),
             "l")
         .join(
             ruvia::db_join_type::inner, service::edge::persistence::DeviceModelEntity::table_name(),
             query.binary(
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"device_id">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"device_id">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
-                             query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d")),
+                             query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")),
                 ruvia::db_binary_operator::and_value,
-                query.binary(query.column(service::edge::persistence::DeviceModelEntity::column_name<"protocol">(), "p"),
+                query.binary(query.column(std::tuple_element_t<service::edge::persistence::DeviceModelEntity::column_index<"protocol">(), service::edge::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
                              ruvia::db_binary_operator::equal,
                              query.value(std::string_view{"SL651"}))),
             "p")
@@ -1166,13 +1168,13 @@ inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
                       {.lateral_ = true})
         .join(ruvia::db_join_type::cross, elementRows, {}, "values",
               {.lateral_ = true})
-        .where(query.binary(query.column(service::edge::persistence::LinkEntity::column_name<"edge_node_id">(), "l"),
+        .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::LinkEntity::column_index<"edge_node_id">(), service::edge::persistence::LinkEntity::columns_type>::name.view(), "l"),
                            ruvia::db_binary_operator::equal,
                            query.cast(query.value(nodeId),
                                       ruvia::db_data_type::uuid)))
         .and_where(query.unary(ruvia::db_unary_operator::is_null,
-                              query.column(service::edge::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .order_by(query.column(service::edge::persistence::DeviceEntity::column_name<"id">(), "d"))
+                              query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"deleted_at">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .order_by(query.column(std::tuple_element_t<service::edge::persistence::DeviceEntity::column_index<"id">(), service::edge::persistence::DeviceEntity::columns_type>::name.view(), "d"))
         .add_order_by(functionCode)
         .add_order_by(responseElement)
         .add_order_by(jsonText(query, element, "id"));
@@ -1191,11 +1193,11 @@ class ConfigService final {
         const auto linkId = protocol::uuidText(packet.endpoint_id());
         const auto deviceId = packet.device_id().size() == 16 ? protocol::uuidText(packet.device_id()) : std::string{};
         ruvia::db_query node;
-        node.select(node.column(persistence::EdgeNodeEntity::column_name<"name">()))
+        node.select(node.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"name">(), persistence::EdgeNodeEntity::columns_type>::name.view()))
             .from(persistence::EdgeNodeEntity::table_name())
             .where((persistence::EdgeNodeEntity::column<"id">() == nodeId).expression(node));
         ruvia::db_query link;
-        link.select({link.column(persistence::LinkEntity::column_name<"debug_enabled">()), link.subquery(node)})
+        link.select({link.column(std::tuple_element_t<persistence::LinkEntity::column_index<"debug_enabled">(), persistence::LinkEntity::columns_type>::name.view()), link.subquery(node)})
             .from(persistence::LinkEntity::table_name())
             .where((persistence::LinkEntity::column<"id">() == linkId &&
                 persistence::LinkEntity::column<"edge_node_id">() == nodeId &&
@@ -1206,7 +1208,7 @@ class ConfigService final {
         bool captureDevice = false;
         if (!deviceId.empty()) {
             ruvia::db_query device;
-            device.select(device.column(persistence::DeviceEntity::column_name<"debug_enabled">()))
+            device.select(device.column(std::tuple_element_t<persistence::DeviceEntity::column_index<"debug_enabled">(), persistence::DeviceEntity::columns_type>::name.view()))
                 .from(persistence::DeviceEntity::table_name())
                 .where((persistence::DeviceEntity::column<"id">() == deviceId &&
                     persistence::DeviceEntity::column<"link_id">() == linkId &&
@@ -1319,8 +1321,8 @@ class ConfigService final {
         ruvia::db_conflict_options conflict;
         conflict.columns_ = {"node_id", "revision"};
         conflict.update_ = {
-            {"sha256", insert.excluded(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"sha256">())},
-            {"item_count", insert.excluded(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"item_count">())},
+            {"sha256", insert.excluded(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"sha256">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view())},
+            {"item_count", insert.excluded(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"item_count">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view())},
             {"status", insert.value(std::string_view{"pending"})},
             {"message", insert.value(std::string_view{})},
             {"completed_at", insert.null_value()},
@@ -1468,10 +1470,10 @@ class ConfigService final {
         for (const auto& name : requiredProtocols) {
             ruvia::db_query capability;
             capability.select(capability.coalesce({capability.call("jsonb_exists", {
-                config::detail::jsonGet(capability, capability.column(persistence::EdgeNodeEntity::column_name<"capability">()), "protocols"),
+                config::detail::jsonGet(capability, capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()), "protocols"),
                 capability.value(name)}), capability.value(false)}))
                 .from(persistence::EdgeNodeEntity::table_name())
-                .where(capability.binary(capability.column(persistence::EdgeNodeEntity::column_name<"id">()),
+                .where(capability.binary(capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()),
                     ruvia::db_binary_operator::equal, capability.cast(capability.value(nodeId), ruvia::db_data_type::uuid)));
             const auto rows = co_await c.db().query(capability);
             if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
@@ -1558,14 +1560,14 @@ class ConfigService final {
               std::map<std::string, std::string>* calculations = nullptr) {
         std::vector<pb::ConfigItem> items;
         ruvia::db_query dtu;
-        dtu.select(dtu.column(persistence::EdgeDtuEntity::column_name<"wire_hex">()))
-            .from(persistence::EdgeDtuEntity::table_name()).where(dtu.binary(dtu.column(persistence::EdgeDtuEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
-                dtu.cast(dtu.value(nodeId), ruvia::db_data_type::uuid))).order_by(dtu.column(persistence::EdgeDtuEntity::column_name<"channel_id">()));
+        dtu.select(dtu.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"wire_hex">(), persistence::EdgeDtuEntity::columns_type>::name.view()))
+            .from(persistence::EdgeDtuEntity::table_name()).where(dtu.binary(dtu.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"node_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
+                dtu.cast(dtu.value(nodeId), ruvia::db_data_type::uuid))).order_by(dtu.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"channel_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()));
         const auto channels = co_await c.db().query(dtu);
         if (!channels.empty()) {
             ruvia::db_query capability;
-            capability.select(config::detail::jsonText(capability, capability.column(persistence::EdgeNodeEntity::column_name<"capability">()), "dtu"))
-                .from(persistence::EdgeNodeEntity::table_name()).where(capability.binary(capability.column(persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            capability.select(config::detail::jsonText(capability, capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()), "dtu"))
+                .from(persistence::EdgeNodeEntity::table_name()).where(capability.binary(capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                     capability.cast(capability.value(nodeId), ruvia::db_data_type::uuid)));
             const auto supported = co_await c.db().query(capability);
             if (supported.empty() || supported.front()[0].value().value_or("") != "true")
@@ -1590,8 +1592,8 @@ class ConfigService final {
             (*calculations)[std::string(row[0].value().value_or(""))] =
                 std::string(row[54].value().value_or("{}"));
         ruvia::db_query capability;
-        capability.select(config::detail::jsonText(capability, capability.column(persistence::EdgeNodeEntity::column_name<"capability">()), "derivedPoints"))
-            .from(persistence::EdgeNodeEntity::table_name()).where(capability.binary(capability.column(persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+        capability.select(config::detail::jsonText(capability, capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()), "derivedPoints"))
+            .from(persistence::EdgeNodeEntity::table_name()).where(capability.binary(capability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 capability.cast(capability.value(nodeId), ruvia::db_data_type::uuid)));
         const auto supported = co_await c.db().query(capability);
         const bool derivedSupported = !supported.empty() && supported.front()[0].value().value_or("") == "true";
@@ -1925,24 +1927,24 @@ class EdgeProjectionService {
         const auto cutoff = active.binary(active.call("now"), Op::subtract,
             active.cast(active.value("1 hour"), Type::interval));
         active.select(active.value(1)).from(Task::table_name(), "task")
-            .where(active.binary(active.column(Task::column_name<"task_type">(), "task"), Op::equal, active.value("firmware")))
+            .where(active.binary(active.column(std::tuple_element_t<Task::column_index<"task_type">(), Task::columns_type>::name.view(), "task"), Op::equal, active.value("firmware")))
             .and_where(active.binary(
-                active.binary(active.column(Task::column_name<"request">(), "task"), Op::json_get_text, active.value("firmware_id")),
-                Op::equal, active.cast(active.column(Firmware::column_name<"id">(), "firmware"), Type::text)))
+                active.binary(active.column(std::tuple_element_t<Task::column_index<"request">(), Task::columns_type>::name.view(), "task"), Op::json_get_text, active.value("firmware_id")),
+                Op::equal, active.cast(active.column(std::tuple_element_t<Firmware::column_index<"id">(), Firmware::columns_type>::name.view(), "firmware"), Type::text)))
             .and_where(active.binary(
-                active.binary(active.column(Task::column_name<"status">(), "task"), Op::not_in,
+                active.binary(active.column(std::tuple_element_t<Task::column_index<"status">(), Task::columns_type>::name.view(), "task"), Op::not_in,
                     active.list({active.value("succeeded"), active.value("failed")})), Op::or_value,
-                active.binary(active.coalesce({active.column(Task::column_name<"completed_at">(), "task"),
-                    active.column(Task::column_name<"updated_at">(), "task"), active.column(Task::column_name<"created_at">(), "task")}),
+                active.binary(active.coalesce({active.column(std::tuple_element_t<Task::column_index<"completed_at">(), Task::columns_type>::name.view(), "task"),
+                    active.column(std::tuple_element_t<Task::column_index<"updated_at">(), Task::columns_type>::name.view(), "task"), active.column(std::tuple_element_t<Task::column_index<"created_at">(), Task::columns_type>::name.view(), "task")}),
                     Op::greater_equal, cutoff)));
         ruvia::db_query candidates;
-        candidates.select({candidates.cast(candidates.column(Firmware::column_name<"id">(), "firmware"), Type::text),
-                           candidates.column(Firmware::column_name<"storage_path">(), "firmware")})
+        candidates.select({candidates.cast(candidates.column(std::tuple_element_t<Firmware::column_index<"id">(), Firmware::columns_type>::name.view(), "firmware"), Type::text),
+                           candidates.column(std::tuple_element_t<Firmware::column_index<"storage_path">(), Firmware::columns_type>::name.view(), "firmware")})
             .from(Firmware::table_name(), "firmware")
-            .where(candidates.binary(candidates.column(Firmware::column_name<"created_at">(), "firmware"), Op::less,
+            .where(candidates.binary(candidates.column(std::tuple_element_t<Firmware::column_index<"created_at">(), Firmware::columns_type>::name.view(), "firmware"), Op::less,
                 candidates.binary(candidates.call("now"), Op::subtract, candidates.cast(candidates.value("1 hour"), Type::interval))))
             .and_where(candidates.unary(ruvia::db_unary_operator::not_value, candidates.exists(active)))
-            .order_by(candidates.column(Firmware::column_name<"created_at">(), "firmware"))
+            .order_by(candidates.column(std::tuple_element_t<Firmware::column_index<"created_at">(), Firmware::columns_type>::name.view(), "firmware"))
             .limit(32);
         const auto rows = co_await transaction.query(candidates);
         std::vector<std::filesystem::path> removedPaths;
@@ -1952,7 +1954,7 @@ class EdgeProjectionService {
             if (!managedFirmwareFile(path, directory))
                 continue;
             ruvia::db_query removal;
-            removal.delete_from(Firmware::table_name()).where(removal.binary(removal.column(Firmware::column_name<"id">()),
+            removal.delete_from(Firmware::table_name()).where(removal.binary(removal.column(std::tuple_element_t<Firmware::column_index<"id">(), Firmware::columns_type>::name.view()),
                 Op::equal, removal.cast(removal.value(id), Type::uuid)));
             (void)co_await transaction.execute(removal);
             removedPaths.push_back(path);
@@ -1981,7 +1983,7 @@ class EdgeProjectionService {
         if (!co_await claimFirmwareCleanup(orphanTransaction))
             co_return;
         ruvia::db_query references;
-        references.select(references.column(Firmware::column_name<"storage_path">())).from(Firmware::table_name());
+        references.select(references.column(std::tuple_element_t<Firmware::column_index<"storage_path">(), Firmware::columns_type>::name.view())).from(Firmware::table_name());
         const auto referenced = co_await orphanTransaction.query(references);
         std::unordered_set<std::string> paths;
         for (const auto& row : referenced)
@@ -2002,9 +2004,9 @@ class EdgeProjectionService {
 
     static ruvia::task<void> hydrateAuth(ruvia::web_worker_context& context) {
         ruvia::db_query query;
-        query.select({query.column(service::edge::persistence::EdgeNodeEntity::column_name<"imei">()),
-                      query.cast(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_data_type::text),
-                      query.column(service::edge::persistence::EdgeNodeEntity::column_name<"enrollment_status">())})
+        query.select({query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"imei">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
+                      query.cast(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_data_type::text),
+                      query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())})
             .from(service::edge::persistence::EdgeNodeEntity::table_name());
         const auto rows = co_await context.db().query(query);
         if (rows.empty())
@@ -2058,16 +2060,16 @@ class EdgeProjectionService {
             if (!google::protobuf::util::MessageToJsonString(withoutDebug, &statusOnly).ok()) break;
             ruvia::db_query update;
             const auto projected = update.case_when({{update.binary(
-                config::detail::jsonText(update, update.column(persistence::EdgeDtuEntity::column_name<"config">()), "debugEnabled"),
+                config::detail::jsonText(update, update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"config">(), persistence::EdgeDtuEntity::columns_type>::name.view()), "debugEnabled"),
                 ruvia::db_binary_operator::equal, update.value("true")), update.cast(update.value(json), ruvia::db_data_type::jsonb)}},
                 update.cast(update.value(statusOnly), ruvia::db_data_type::jsonb));
             update.update(persistence::EdgeDtuEntity::table_name())
-                .set(persistence::EdgeDtuEntity::column_name<"status">(), projected)
-                .where(update.binary(update.column(persistence::EdgeDtuEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                .set(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"status">(), persistence::EdgeDtuEntity::columns_type>::name.view(), projected)
+                .where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"node_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                     update.cast(update.value(nodeId), ruvia::db_data_type::uuid)))
-                .and_where(update.binary(update.column(persistence::EdgeDtuEntity::column_name<"channel_id">()), ruvia::db_binary_operator::equal,
+                .and_where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"channel_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                     update.cast(update.value(protocol::uuidText(status.channel_id())), ruvia::db_data_type::uuid)))
-                .and_where(update.binary(update.column(persistence::EdgeDtuEntity::column_name<"status">()), ruvia::db_binary_operator::not_equal,
+                .and_where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"status">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_equal,
                     projected));
             (void)co_await context.db().execute(update);
             break;
@@ -2296,10 +2298,10 @@ class EdgeProjectionService {
                      status,
                      query.call("now"), query.call("now")});
 
-        const auto existingCapability = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"capability">(), "edge_node");
-        const auto existingMobile = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"mobile">(), "edge_node");
-        const auto existingStatus = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), "edge_node");
-        const auto excludedMobile = query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"mobile">());
+        const auto existingCapability = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "edge_node");
+        const auto existingMobile = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"mobile">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "edge_node");
+        const auto existingStatus = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "edge_node");
+        const auto excludedMobile = query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"mobile">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
         const auto apn = query.coalesce({
             query.null_if(config::detail::jsonText(query, excludedMobile, "apn"),
                          query.value(std::string_view{})),
@@ -2321,7 +2323,7 @@ class EdgeProjectionService {
                                query.cast(operatorName, ruvia::db_data_type::text)),
                            query.cast(query.value(true), ruvia::db_data_type::boolean)});
         const auto reportedCapabilities = query.binary(
-            query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()), ruvia::db_binary_operator::json_concat,
+            query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::json_concat,
             query.call("jsonb_build_object",
                        {jsonKey("terminal"),
                         config::detail::booleanText(
@@ -2331,7 +2333,7 @@ class EdgeProjectionService {
                             query, config::detail::jsonText(query, existingCapability, "serialDebug")),
                         jsonKey("vpn"),
                         query.coalesce({config::detail::jsonGet(query, existingCapability, "vpn"),
-                                        config::detail::jsonGet(query, query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()),
+                                        config::detail::jsonGet(query, query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                                                  "vpn")})}));
         const auto capabilityUpdate = query.binary(existingCapability,
             ruvia::db_binary_operator::json_concat, reportedCapabilities);
@@ -2354,11 +2356,11 @@ class EdgeProjectionService {
         ruvia::db_conflict_options conflict;
         conflict.columns_ = {"platform_id", "imei"};
         conflict.update_ = {
-            {"model", query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"model">())},
-            {"software_version", query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"software_version">())},
-            {"hostname", query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"hostname">())},
-            {"architecture", query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"architecture">())},
-            {"openwrt_release", query.excluded(service::edge::persistence::EdgeNodeEntity::column_name<"openwrt_release">())},
+            {"model", query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"model">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())},
+            {"software_version", query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"software_version">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())},
+            {"hostname", query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"hostname">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())},
+            {"architecture", query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"architecture">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())},
+            {"openwrt_release", query.excluded(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"openwrt_release">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())},
             {"capability", capabilityUpdate},
             {"mobile", mobileUpdate},
             {"status", statusUpdate},
@@ -2366,8 +2368,8 @@ class EdgeProjectionService {
             {"updated_at", query.call("now")},
         };
         query.on_conflict(conflict)
-            .returning({query.cast(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_data_type::text),
-                        query.column(service::edge::persistence::EdgeNodeEntity::column_name<"enrollment_status">())});
+            .returning({query.cast(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_data_type::text),
+                        query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view())});
         const auto rows = co_await context.db().query(query);
         const auto key = protocol::authKey(hello.imei());
         const auto nodeId = std::string(rows.front()[0].value().value_or(std::string_view{}));
@@ -2379,36 +2381,36 @@ class EdgeProjectionService {
             // changed firmware is validated against its current protocol set.
             ruvia::db_query target;
             target
-                .select({target.alias(target.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">(), "task"), "task_id"),
-                         target.alias(target.column(service::edge::persistence::EdgeFirmwareEntity::column_name<"id">(), "firmware"), "firmware_id")})
+                .select({target.alias(target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), "task_id"),
+                         target.alias(target.column(std::tuple_element_t<service::edge::persistence::EdgeFirmwareEntity::column_index<"id">(), service::edge::persistence::EdgeFirmwareEntity::columns_type>::name.view(), "firmware"), "firmware_id")})
                 .from(service::edge::persistence::EdgeTaskEntity::table_name(), "task")
                 .join(ruvia::db_join_type::inner, service::edge::persistence::EdgeFirmwareEntity::table_name(),
                       target.binary(
-                          target.cast(target.column(service::edge::persistence::EdgeFirmwareEntity::column_name<"id">(), "firmware"),
+                          target.cast(target.column(std::tuple_element_t<service::edge::persistence::EdgeFirmwareEntity::column_index<"id">(), service::edge::persistence::EdgeFirmwareEntity::columns_type>::name.view(), "firmware"),
                                       ruvia::db_data_type::text),
                           ruvia::db_binary_operator::equal,
                           config::detail::jsonText(
-                              target, target.column(service::edge::persistence::EdgeTaskEntity::column_name<"request">(), "task"), "firmware_id")),
+                              target, target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"request">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), "firmware_id")),
                       "firmware")
                 .where(target.binary(
-                    target.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">(), "task"), ruvia::db_binary_operator::equal,
+                    target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), ruvia::db_binary_operator::equal,
                     target.cast(target.value(nodeId), ruvia::db_data_type::uuid)))
-                .and_where(target.binary(target.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">(), "task"),
+                .and_where(target.binary(target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"),
                                         ruvia::db_binary_operator::equal,
                                         target.value(std::string_view{"firmware"})))
-                .and_where(target.binary(target.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), "task"),
+                .and_where(target.binary(target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"),
                                         ruvia::db_binary_operator::equal,
                                         target.value(std::string_view{"running"})))
                 .and_where(target.binary(
-                    config::detail::jsonText(target, target.column(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), "task"), "state"),
+                    config::detail::jsonText(target, target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), "state"),
                     ruvia::db_binary_operator::equal,
                     target.value(std::string_view{"flashing"})))
-                .order_by(target.column(service::edge::persistence::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc)
+                .order_by(target.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"created_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), ruvia::db_order_direction::desc)
                 .limit(1);
 
             ruvia::db_query completed;
             const auto rebootedResult = completed.binary(
-                completed.column(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), "task"), ruvia::db_binary_operator::json_concat,
+                completed.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"), ruvia::db_binary_operator::json_concat,
                 completed.call(
                     "jsonb_build_object",
                     {config::detail::jsonKey(completed, "state"),
@@ -2421,12 +2423,12 @@ class EdgeProjectionService {
                      completed.cast(completed.value(std::string_view(hello.software_version())),
                                     ruvia::db_data_type::text)}));
             completed.update(service::edge::persistence::EdgeTaskEntity::table_name(), "task")
-                .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), completed.value(std::string_view{"succeeded"}))
-                .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), rebootedResult)
-                .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), completed.call("now"))
-                .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), completed.call("now"))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), completed.value(std::string_view{"succeeded"}))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), rebootedResult)
+                .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), completed.call("now"))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), completed.call("now"))
                 .update_from("target")
-                .where(completed.binary(completed.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">(), "task"),
+                .where(completed.binary(completed.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), "task"),
                                         ruvia::db_binary_operator::equal,
                                         completed.column("task_id", "target")))
                 .returning({completed.column("firmware_id", "target")});
@@ -2435,12 +2437,12 @@ class EdgeProjectionService {
             recovery.with("target", target)
                 .with("completed", completed)
                 .update(service::edge::persistence::EdgeFirmwareEntity::table_name(), "firmware")
-                .set(service::edge::persistence::EdgeFirmwareEntity::column_name<"version">(), recovery.cast(
+                .set(std::tuple_element_t<service::edge::persistence::EdgeFirmwareEntity::column_index<"version">(), service::edge::persistence::EdgeFirmwareEntity::columns_type>::name.view(), recovery.cast(
                                                 recovery.value(std::string_view(
                                                     hello.software_version())),
                                                 ruvia::db_data_type::text))
                 .update_from("completed")
-                .where(recovery.binary(recovery.column(service::edge::persistence::EdgeFirmwareEntity::column_name<"id">(), "firmware"),
+                .where(recovery.binary(recovery.column(std::tuple_element_t<service::edge::persistence::EdgeFirmwareEntity::column_index<"id">(), service::edge::persistence::EdgeFirmwareEntity::columns_type>::name.view(), "firmware"),
                                        ruvia::db_binary_operator::equal,
                                        recovery.column("firmware_id", "completed")));
             (void)co_await context.db().execute(recovery);
@@ -2461,7 +2463,7 @@ class EdgeProjectionService {
         const auto boolean = [&query](bool value) {
             return query.cast(query.value(value), ruvia::db_data_type::boolean);
         };
-        const auto status = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
+        const auto status = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
         const auto desiredVersion = config::detail::configVersion(
             query, status, "desiredVersion");
         const auto receivedVersion = integer(heartbeat.active_config_version());
@@ -2493,7 +2495,7 @@ class EdgeProjectionService {
                                     integer(heartbeat.signal_rssi_dbm()),
                                     config::detail::jsonKey(query, "percent"),
                                     integer(heartbeat.signal_percent())});
-        const auto existingMobile = query.column(service::edge::persistence::EdgeNodeEntity::column_name<"mobile">());
+        const auto existingMobile = query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"mobile">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
         const auto apn = query.coalesce({
             query.null_if(text(heartbeat.apn()), query.value(std::string_view{})),
             config::detail::jsonText(query, existingMobile, "apn"),
@@ -2520,7 +2522,7 @@ class EdgeProjectionService {
                 query,
                 config::detail::jsonGet(
                     query,
-                    query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+                    query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                     "tcpTraffic"),
                 key);
         };
@@ -2581,14 +2583,14 @@ class EdgeProjectionService {
             }()
             : config::detail::jsonGet(
                   query,
-                  query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+                  query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                   "tcpTraffic");
         const auto vpnTrafficText = [&query](std::string_view key) {
             return config::detail::jsonText(
                 query,
                 config::detail::jsonGet(
                     query,
-                    query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+                    query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                     "vpnTraffic"),
                 key);
         };
@@ -2646,10 +2648,10 @@ class EdgeProjectionService {
             }()
             : config::detail::jsonGet(
                   query,
-                  query.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">()),
+                  query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                   "vpnTraffic");
         query.update(service::edge::persistence::EdgeNodeEntity::table_name())
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), query.call(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call(
                                "jsonb_build_object",
                                {config::detail::jsonKey(query, "config"), config,
                                 config::detail::jsonKey(query, "outbox"),
@@ -2665,42 +2667,42 @@ class EdgeProjectionService {
                                            {config::detail::jsonKey(query, "level"),
                                             config::detail::textDefault(
                                                 query, text(heartbeat.log_level()), "info")})}))
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"mobile">(), mobile)
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"capability">(), query.call(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"mobile">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), mobile)
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call(
                                   "jsonb_set",
-                                  {query.column(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()),
+                                  {query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                    config::detail::jsonPath(query, "{modemControl}"),
                                    config::detail::toJsonb(
                                        query, boolean(heartbeat.supports_modem_control())),
                                    query.cast(query.value(true), ruvia::db_data_type::boolean)}))
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"last_seen_at">(), query.call("now"))
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), query.call("now"))
-            .where(query.binary(query.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"last_seen_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), query.call("now"))
+            .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                 query.cast(query.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(query);
         if (heartbeat.active_config_version() != 0) {
             ruvia::db_query revision;
             revision.update(service::edge::persistence::EdgeConfigRevisionEntity::table_name(), "revision")
-                .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"status">(), revision.value(std::string_view{"applied"}))
-                .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"message">(), revision.value(std::string_view{}))
-                .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"completed_at">(), revision.coalesce({
-                    revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"completed_at">(), "revision"), revision.call("now")}))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"status">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view{"applied"}))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"message">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view{}))
+                .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"completed_at">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.coalesce({
+                    revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"completed_at">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), "revision"), revision.call("now")}))
                 .update_from(service::edge::persistence::EdgeNodeEntity::table_name(), "node")
                 .where(revision.binary(
-                    revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"node_id">(), "revision"), ruvia::db_binary_operator::equal,
-                    revision.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "node")))
+                    revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"node_id">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), "revision"), ruvia::db_binary_operator::equal,
+                    revision.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "node")))
                 .and_where(revision.binary(
-                    revision.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">(), "node"), ruvia::db_binary_operator::equal,
+                    revision.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "node"), ruvia::db_binary_operator::equal,
                     revision.cast(revision.value(nodeId), ruvia::db_data_type::uuid)))
                 .and_where(revision.binary(
-                    revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"revision">(), "revision"),
+                    revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"revision">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), "revision"),
                     ruvia::db_binary_operator::equal,
                     revision.cast(revision.value(static_cast<std::int64_t>(
                                                   heartbeat.active_config_version())),
                                                 ruvia::db_data_type::big_int)))
                 .and_where(revision.binary(
                     config::detail::configVersion(
-                        revision, revision.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), "node"), "desiredVersion"),
+                        revision, revision.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), "node"), "desiredVersion"),
                     ruvia::db_binary_operator::equal,
                     revision.cast(revision.value(static_cast<std::int64_t>(
                                                   heartbeat.active_config_version())),
@@ -2758,7 +2760,7 @@ class EdgeProjectionService {
         ruvia::db_query deleteInterfaces;
         deleteInterfaces.delete_from(service::edge::persistence::EdgeNodeInterfaceEntity::table_name())
             .where(deleteInterfaces.binary(
-                deleteInterfaces.column(service::edge::persistence::EdgeNodeInterfaceEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                deleteInterfaces.column(std::tuple_element_t<service::edge::persistence::EdgeNodeInterfaceEntity::column_index<"node_id">(), service::edge::persistence::EdgeNodeInterfaceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 deleteInterfaces.cast(deleteInterfaces.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(deleteInterfaces);
         for (const auto& item : report.interfaces()) {
@@ -2790,7 +2792,7 @@ class EdgeProjectionService {
         ruvia::db_query deleteNetworks;
         deleteNetworks.delete_from(service::edge::persistence::EdgeNodeNetworkEntity::table_name())
             .where(deleteNetworks.binary(
-                deleteNetworks.column(service::edge::persistence::EdgeNodeNetworkEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                deleteNetworks.column(std::tuple_element_t<service::edge::persistence::EdgeNodeNetworkEntity::column_index<"node_id">(), service::edge::persistence::EdgeNodeNetworkEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 deleteNetworks.cast(deleteNetworks.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(deleteNetworks);
         for (const auto& item : report.networks()) {
@@ -2821,7 +2823,7 @@ class EdgeProjectionService {
         ruvia::db_query deleteSerial;
         deleteSerial.delete_from(service::edge::persistence::EdgeNodeSerialEntity::table_name())
             .where(deleteSerial.binary(
-                deleteSerial.column(service::edge::persistence::EdgeNodeSerialEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                deleteSerial.column(std::tuple_element_t<service::edge::persistence::EdgeNodeSerialEntity::column_index<"node_id">(), service::edge::persistence::EdgeNodeSerialEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 deleteSerial.cast(deleteSerial.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(deleteSerial);
         for (const auto& item : report.serial_ports()) {
@@ -2852,10 +2854,10 @@ class EdgeProjectionService {
         const auto protocols = jsonArray(supported);
         ruvia::db_query terminal;
         terminal.update(service::edge::persistence::EdgeNodeEntity::table_name())
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"capability">(), terminal.call(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), terminal.call(
                                    "jsonb_set",
                                    {terminal.call("jsonb_set", {
-                                        terminal.column(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()),
+                                        terminal.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                         config::detail::jsonPath(terminal, "{protocols}"),
                                         terminal.cast(terminal.value(std::string_view(protocols)), ruvia::db_data_type::jsonb),
                                         terminal.value(true)}),
@@ -2866,38 +2868,38 @@ class EdgeProjectionService {
                                                                        ruvia::db_data_type::boolean)),
                                     terminal.cast(terminal.value(true),
                                                   ruvia::db_data_type::boolean)}))
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), terminal.call("now"))
-            .where(terminal.binary(terminal.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), terminal.call("now"))
+            .where(terminal.binary(terminal.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    terminal.cast(terminal.value(nodeId),
                                                  ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(terminal);
         ruvia::db_query serialCapability;
         serialCapability.update(persistence::EdgeNodeEntity::table_name())
-            .set(persistence::EdgeNodeEntity::column_name<"capability">(),
+            .set(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view(),
                 serialCapability.call("jsonb_set", {
-                    serialCapability.column(persistence::EdgeNodeEntity::column_name<"capability">()),
+                    serialCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()),
                     config::detail::jsonPath(serialCapability, "{serialDebug}"),
                     config::detail::toJsonb(serialCapability, serialCapability.cast(
                         serialCapability.value(report.supports_serial_debug()), ruvia::db_data_type::boolean)),
                     serialCapability.value(true)}))
-            .where(serialCapability.binary(serialCapability.column(persistence::EdgeNodeEntity::column_name<"id">()),
+            .where(serialCapability.binary(serialCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()),
                 ruvia::db_binary_operator::equal, serialCapability.cast(serialCapability.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(serialCapability);
         ruvia::db_query dtuCapability;
         dtuCapability.update(persistence::EdgeNodeEntity::table_name())
-            .set(persistence::EdgeNodeEntity::column_name<"capability">(), dtuCapability.call("jsonb_set", {
-                dtuCapability.column(persistence::EdgeNodeEntity::column_name<"capability">()),
+            .set(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view(), dtuCapability.call("jsonb_set", {
+                dtuCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()),
                 config::detail::jsonPath(dtuCapability, "{dtu}"),
                 config::detail::toJsonb(dtuCapability, dtuCapability.cast(dtuCapability.value(report.supports_dtu()), ruvia::db_data_type::boolean)), dtuCapability.value(true)}))
-            .where(dtuCapability.binary(dtuCapability.column(persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .where(dtuCapability.binary(dtuCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 dtuCapability.cast(dtuCapability.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(dtuCapability);
         ruvia::db_query derivedCapability;
         derivedCapability.update(persistence::EdgeNodeEntity::table_name())
-            .set(persistence::EdgeNodeEntity::column_name<"capability">(), derivedCapability.call("jsonb_set", {
-                derivedCapability.column(persistence::EdgeNodeEntity::column_name<"capability">()), config::detail::jsonPath(derivedCapability, "{derivedPoints}"),
+            .set(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view(), derivedCapability.call("jsonb_set", {
+                derivedCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"capability">(), persistence::EdgeNodeEntity::columns_type>::name.view()), config::detail::jsonPath(derivedCapability, "{derivedPoints}"),
                 config::detail::toJsonb(derivedCapability, derivedCapability.cast(derivedCapability.value(report.supports_derived_points()), ruvia::db_data_type::boolean)), derivedCapability.value(true)}))
-            .where(derivedCapability.binary(derivedCapability.column(persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, derivedCapability.cast(derivedCapability.value(nodeId), ruvia::db_data_type::uuid)));
+            .where(derivedCapability.binary(derivedCapability.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"id">(), persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, derivedCapability.cast(derivedCapability.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(derivedCapability);
         (void)co_await configService().requeueIfStale(context, nodeId);
         if (report.has_vpn()) {
@@ -2906,9 +2908,9 @@ class EdgeProjectionService {
                                           : std::string{};
             ruvia::db_query vpn;
             vpn.update(service::edge::persistence::EdgeNodeEntity::table_name())
-                .set(service::edge::persistence::EdgeNodeEntity::column_name<"capability">(), vpn.call(
+                .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), vpn.call(
                                        "jsonb_set",
-                                       {vpn.column(service::edge::persistence::EdgeNodeEntity::column_name<"capability">()),
+                                       {vpn.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"capability">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()),
                                         config::detail::jsonPath(vpn, "{vpn}"),
                                         vpn.call(
                                             "jsonb_build_object",
@@ -2927,8 +2929,8 @@ class EdgeProjectionService {
                                              vpn.cast(vpn.value(std::string_view(vpnPublicKey)),
                                                       ruvia::db_data_type::text)}),
                                         vpn.cast(vpn.value(true), ruvia::db_data_type::boolean)}))
-                .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), vpn.call("now"))
-                .where(vpn.binary(vpn.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+                .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), vpn.call("now"))
+                .where(vpn.binary(vpn.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                   vpn.cast(vpn.value(nodeId), ruvia::db_data_type::uuid)));
             (void)co_await context.db().execute(vpn);
         }
@@ -2937,32 +2939,32 @@ class EdgeProjectionService {
             if (validVpnPublicKey(publicKey)) {
                 ruvia::db_query activatedQuery;
                 activatedQuery.update(service::edge::persistence::VpnPeerEntity::table_name(), "p")
-                    .set(service::edge::persistence::VpnPeerEntity::column_name<"public_key">(), activatedQuery.value(std::string_view(publicKey)))
-                    .set(service::edge::persistence::VpnPeerEntity::column_name<"status">(), activatedQuery.value(std::string_view{"active"}))
-                    .set(service::edge::persistence::VpnPeerEntity::column_name<"updated_at">(), activatedQuery.call("now"))
+                    .set(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"public_key">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), activatedQuery.value(std::string_view(publicKey)))
+                    .set(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"status">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), activatedQuery.value(std::string_view{"active"}))
+                    .set(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"updated_at">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), activatedQuery.call("now"))
                     .update_from(service::edge::persistence::VpnNetworkEntity::table_name(), "n")
                     .where(activatedQuery.binary(
-                        activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"peer_type">(), "p"),
+                        activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"peer_type">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p"),
                         ruvia::db_binary_operator::equal,
                         activatedQuery.value(std::string_view{"edge"})))
                     .and_where(activatedQuery.binary(
-                        activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"edge_node_id">(), "p"),
+                        activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"edge_node_id">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p"),
                         ruvia::db_binary_operator::equal,
                         activatedQuery.cast(activatedQuery.value(nodeId),
                                             ruvia::db_data_type::uuid)))
                     .and_where(activatedQuery.binary(
-                        activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"status">(), "p"),
+                        activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"status">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p"),
                         ruvia::db_binary_operator::not_equal,
                         activatedQuery.value(std::string_view{"revoked"})))
                     .and_where(activatedQuery.binary(
-                        activatedQuery.column(service::edge::persistence::VpnNetworkEntity::column_name<"id">(), "n"),
+                        activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnNetworkEntity::column_index<"id">(), service::edge::persistence::VpnNetworkEntity::columns_type>::name.view(), "n"),
                         ruvia::db_binary_operator::equal,
-                        activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"network_id">(), "p")))
-                    .returning({activatedQuery.cast(activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"id">(), "p"),
+                        activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"network_id">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p")))
+                    .returning({activatedQuery.cast(activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"id">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p"),
                                                     ruvia::db_data_type::text),
-                                activatedQuery.cast(activatedQuery.column(service::edge::persistence::VpnPeerEntity::column_name<"network_id">(), "p"),
+                                activatedQuery.cast(activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"network_id">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "p"),
                                                     ruvia::db_data_type::text),
-                                activatedQuery.cast(activatedQuery.column(service::edge::persistence::VpnNetworkEntity::column_name<"created_by">(), "n"),
+                                activatedQuery.cast(activatedQuery.column(std::tuple_element_t<service::edge::persistence::VpnNetworkEntity::column_index<"created_by">(), service::edge::persistence::VpnNetworkEntity::columns_type>::name.view(), "n"),
                                                     ruvia::db_data_type::text)});
                 const auto activated = co_await context.db().query(activatedQuery);
                 for (const auto& row : activated) {
@@ -2997,19 +2999,19 @@ class EdgeProjectionService {
                                  (result.rolled_back() ? "true" : "false") + "}";
         ruvia::db_query query;
         query.update(service::edge::persistence::EdgeTaskEntity::table_name())
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), query.value(std::string_view(status)))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), query.cast(query.value(std::string_view(json)),
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.value(std::string_view(status)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.cast(query.value(std::string_view(json)),
                                        ruvia::db_data_type::jsonb))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), query.call("now"))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), query.call("now"))
-            .where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.call("now"))
+            .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                 query.cast(query.value(id), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.value(std::string_view{"network"})))
             .and_where(query.binary(
-                query.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">()), ruvia::db_binary_operator::not_in,
+                query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_in,
                 query.list({query.value(std::string_view{"succeeded"}),
                             query.value(std::string_view{"failed"})})));
         (void)co_await context.db().execute(query);
@@ -3029,36 +3031,36 @@ class EdgeProjectionService {
                                  ",\"errorMessage\":" + jsonQuoted(result.error_message()) + "}";
         ruvia::db_query transitioned;
         transitioned.update(service::edge::persistence::EdgeTaskEntity::table_name())
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), transitioned.value(std::string_view(status)))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), transitioned.cast(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.value(std::string_view(status)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.cast(
                                transitioned.value(std::string_view(json)),
                                ruvia::db_data_type::jsonb))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), transitioned.call("now"))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), transitioned.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.call("now"))
             .where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 transitioned.cast(transitioned.value(id), ruvia::db_data_type::uuid)))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 transitioned.cast(transitioned.value(nodeId), ruvia::db_data_type::uuid)))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">()), ruvia::db_binary_operator::equal,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 transitioned.value(std::string_view{"vpn"})))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">()), ruvia::db_binary_operator::not_in,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_in,
                 transitioned.list({transitioned.value(std::string_view{"succeeded"}),
                                    transitioned.value(std::string_view{"failed"})})))
             .returning({transitioned.alias(
                             config::detail::jsonText(
-                                transitioned, transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"request">()), "peerId"),
+                                transitioned, transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"request">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), "peerId"),
                             "peer_id"),
                         transitioned.alias(
                             config::detail::jsonText(
-                                transitioned, transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"request">()), "enabled"),
+                                transitioned, transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"request">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), "enabled"),
                             "enabled"),
                         transitioned.alias(
                             config::detail::jsonText(transitioned,
-                                                     transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"request">()),
+                                                     transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"request">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()),
                                                      "configVersion"),
                             "config_version")});
 
@@ -3069,7 +3071,7 @@ class EdgeProjectionService {
             update.cast(update.value(true), ruvia::db_data_type::boolean)});
         // An on-demand stop changes tunnel runtime only. Preallocated mappings
         // remain available to desktop discovery and the next enabled client.
-        const auto activeRoute = update.column(service::edge::persistence::VpnRouteEntity::column_name<"enabled">(), "route");
+        const auto activeRoute = update.column(std::tuple_element_t<service::edge::persistence::VpnRouteEntity::column_index<"enabled">(), service::edge::persistence::VpnRouteEntity::columns_type>::name.view(), "route");
         const auto routeStatus = update.case_when(
             {{activeRoute,
               update.cast(update.value(std::string_view{"active"}),
@@ -3089,20 +3091,20 @@ class EdgeProjectionService {
         ruvia::db_query peer;
         const auto taskPeerId = peer.import_expression(
             update.column("peer_id", "task"), "task", "task");
-        peer.select({peer.cast(peer.column(service::edge::persistence::VpnPeerEntity::column_name<"config_revision">(), "peer"),
+        peer.select({peer.cast(peer.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"config_revision">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "peer"),
                                ruvia::db_data_type::text)})
             .from(service::edge::persistence::VpnPeerEntity::table_name(), "peer")
-            .where(peer.binary(peer.column(service::edge::persistence::VpnPeerEntity::column_name<"id">(), "peer"),
+            .where(peer.binary(peer.column(std::tuple_element_t<service::edge::persistence::VpnPeerEntity::column_index<"id">(), service::edge::persistence::VpnPeerEntity::columns_type>::name.view(), "peer"),
                                ruvia::db_binary_operator::equal,
                                peer.cast(taskPeerId, ruvia::db_data_type::uuid)));
         update.with("transitioned", transitioned)
             .update(service::edge::persistence::VpnRouteEntity::table_name(), "route")
-            .set(service::edge::persistence::VpnRouteEntity::column_name<"status">(), statusValue)
-            .set(service::edge::persistence::VpnRouteEntity::column_name<"last_error">(), lastError)
-            .set(service::edge::persistence::VpnRouteEntity::column_name<"updated_at">(), update.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::VpnRouteEntity::column_index<"status">(), service::edge::persistence::VpnRouteEntity::columns_type>::name.view(), statusValue)
+            .set(std::tuple_element_t<service::edge::persistence::VpnRouteEntity::column_index<"last_error">(), service::edge::persistence::VpnRouteEntity::columns_type>::name.view(), lastError)
+            .set(std::tuple_element_t<service::edge::persistence::VpnRouteEntity::column_index<"updated_at">(), service::edge::persistence::VpnRouteEntity::columns_type>::name.view(), update.call("now"))
             .update_from("transitioned", "task")
             .where(update.binary(
-                update.column(service::edge::persistence::VpnRouteEntity::column_name<"edge_peer_id">(), "route"), ruvia::db_binary_operator::equal,
+                update.column(std::tuple_element_t<service::edge::persistence::VpnRouteEntity::column_index<"edge_peer_id">(), service::edge::persistence::VpnRouteEntity::columns_type>::name.view(), "route"), ruvia::db_binary_operator::equal,
                 update.cast(update.column("peer_id", "task"), ruvia::db_data_type::uuid)))
             .and_where(update.binary(update.subquery(peer),
                                     ruvia::db_binary_operator::equal,
@@ -3144,23 +3146,23 @@ class EdgeProjectionService {
             ",\"totalBytes\":" + std::to_string(result.total_bytes()) + "}";
         ruvia::db_query query;
         query.update(service::edge::persistence::EdgeTaskEntity::table_name())
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), query.value(std::string_view(status)))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), query.cast(query.value(std::string_view(json)),
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.value(std::string_view(status)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.cast(query.value(std::string_view(json)),
                                        ruvia::db_data_type::jsonb))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), query.call("now"))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), query.case_when(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.case_when(
                                      {{query.cast(query.value(completed),
                                                   ruvia::db_data_type::boolean),
                                        query.call("now")} },
                                      query.null_value()))
-            .where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                 query.cast(query.value(id), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.value(std::string_view{"firmware"})))
             .and_where(query.binary(
-                query.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">()), ruvia::db_binary_operator::not_in,
+                query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_in,
                 query.list({query.value(std::string_view{"succeeded"}),
                             query.value(std::string_view{"failed"})})));
         (void)co_await context.db().execute(query);
@@ -3187,23 +3189,23 @@ class EdgeProjectionService {
                                  "\",\"apn\":\"" + jsonEscape(result.apn()) + "\"}";
         ruvia::db_query query;
         query.update(service::edge::persistence::EdgeTaskEntity::table_name())
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), query.value(std::string_view(status)))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), query.cast(query.value(std::string_view(json)),
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.value(std::string_view(status)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.cast(query.value(std::string_view(json)),
                                        ruvia::db_data_type::jsonb))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), query.call("now"))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), query.case_when(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), query.case_when(
                                      {{query.cast(query.value(completed),
                                                   ruvia::db_data_type::boolean),
                                        query.call("now")} },
                                      query.null_value()))
-            .where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                 query.cast(query.value(id), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">()), ruvia::db_binary_operator::equal,
+            .and_where(query.binary(query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                    query.value(std::string_view{"modem"})))
             .and_where(query.binary(
-                query.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">()), ruvia::db_binary_operator::not_in,
+                query.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_in,
                 query.list({query.value(std::string_view{"succeeded"}),
                             query.value(std::string_view{"failed"})})));
         (void)co_await context.db().execute(query);
@@ -3219,33 +3221,33 @@ class EdgeProjectionService {
         const std::string json = "{\"message\":\"" + jsonEscape(result.message()) + "\"}";
         ruvia::db_query transitioned;
         transitioned.update(service::edge::persistence::EdgeTaskEntity::table_name())
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"status">(), transitioned.value(std::string_view(status)))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"result">(), transitioned.cast(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.value(std::string_view(status)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"result">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.cast(
                                transitioned.value(std::string_view(json)),
                                ruvia::db_data_type::jsonb))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"updated_at">(), transitioned.call("now"))
-            .set(service::edge::persistence::EdgeTaskEntity::column_name<"completed_at">(), transitioned.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"updated_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"completed_at">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view(), transitioned.call("now"))
             .where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 transitioned.cast(transitioned.value(id), ruvia::db_data_type::uuid)))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"node_id">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 transitioned.cast(transitioned.value(nodeId), ruvia::db_data_type::uuid)))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">()), ruvia::db_binary_operator::in,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::in,
                 transitioned.list({transitioned.value(std::string_view{"platform_upsert"}),
                                    transitioned.value(std::string_view{"platform_delete"})})))
             .and_where(transitioned.binary(
-                transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"status">()), ruvia::db_binary_operator::not_in,
+                transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"status">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_in,
                 transitioned.list({transitioned.value(std::string_view{"succeeded"}),
                                    transitioned.value(std::string_view{"failed"})})))
             .returning({transitioned.alias(
                             transitioned.cast(
                                 config::detail::jsonText(
-                                    transitioned, transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"request">()), "platform_id"),
+                                    transitioned, transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"request">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), "platform_id"),
                                 ruvia::db_data_type::uuid),
                             "platform_id"),
-                        transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<"task_type">())});
+                        transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<"task_type">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view())});
 
         ruvia::db_query updated;
         const auto success = updated.cast(updated.value(result.success()),
@@ -3254,7 +3256,7 @@ class EdgeProjectionService {
             updated.column("task_type", "task"), ruvia::db_binary_operator::equal,
             updated.value(std::string_view{"platform_delete"}));
         updated.update(service::edge::persistence::EdgeNodePlatformEntity::table_name(), "target")
-            .set(service::edge::persistence::EdgeNodePlatformEntity::column_name<"status">(), updated.call(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"status">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), updated.call(
                                "jsonb_build_object",
                                {config::detail::jsonKey(updated, "state"),
                                 updated.cast(updated.value(std::string_view(
@@ -3264,18 +3266,18 @@ class EdgeProjectionService {
                                 config::detail::jsonKey(updated, "message"),
                                 updated.cast(updated.value(std::string_view(result.message())),
                                              ruvia::db_data_type::text)}))
-            .set(service::edge::persistence::EdgeNodePlatformEntity::column_name<"updated_at">(), updated.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), updated.call("now"))
             .update_from("transitioned", "task")
             .where(updated.binary(
-                updated.column(service::edge::persistence::EdgeNodePlatformEntity::column_name<"node_id">(), "target"), ruvia::db_binary_operator::equal,
+                updated.column(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"node_id">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), "target"), ruvia::db_binary_operator::equal,
                 updated.cast(updated.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(updated.binary(updated.column(service::edge::persistence::EdgeNodePlatformEntity::column_name<"platform_id">(), "target"),
+            .and_where(updated.binary(updated.column(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"platform_id">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), "target"),
                                      ruvia::db_binary_operator::equal,
                                      updated.column("platform_id", "task")))
             .and_where(updated.unary(
                 ruvia::db_unary_operator::not_value,
                 updated.binary(success, ruvia::db_binary_operator::and_value, deleteTask)))
-            .returning({updated.column(service::edge::persistence::EdgeNodePlatformEntity::column_name<"platform_id">(), "target")});
+            .returning({updated.column(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"platform_id">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), "target")});
 
         ruvia::db_query cleanup;
         const auto cleanupSuccess = cleanup.import_expression(success);
@@ -3287,9 +3289,9 @@ class EdgeProjectionService {
             .where(cleanup.binary(cleanupSuccess, ruvia::db_binary_operator::and_value,
                                   cleanupDeleteTask))
             .and_where(cleanup.binary(
-                cleanup.column(service::edge::persistence::EdgeNodePlatformEntity::column_name<"node_id">(), "target"), ruvia::db_binary_operator::equal,
+                cleanup.column(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"node_id">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), "target"), ruvia::db_binary_operator::equal,
                 cleanup.cast(cleanup.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(cleanup.binary(cleanup.column(service::edge::persistence::EdgeNodePlatformEntity::column_name<"platform_id">(), "target"),
+            .and_where(cleanup.binary(cleanup.column(std::tuple_element_t<service::edge::persistence::EdgeNodePlatformEntity::column_index<"platform_id">(), service::edge::persistence::EdgeNodePlatformEntity::columns_type>::name.view(), "target"),
                                      ruvia::db_binary_operator::equal,
                                      cleanup.column("platform_id", "task")));
         (void)co_await context.db().execute(cleanup);
@@ -3315,23 +3317,23 @@ class EdgeProjectionService {
         const auto digest = hex(result.sha256());
         ruvia::db_query revision;
         revision.update(service::edge::persistence::EdgeConfigRevisionEntity::table_name())
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"status">(), revision.value(std::string_view{"applied"}))
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"message">(), revision.value(std::string_view{}))
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"completed_at">(), revision.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"status">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view{"applied"}))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"message">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view{}))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"completed_at">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.call("now"))
             .where(revision.binary(
-                revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"node_id">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 revision.cast(revision.value(nodeId), ruvia::db_data_type::uuid)))
             .and_where(revision.binary(
-                revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"revision">()), ruvia::db_binary_operator::equal,
+                revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"revision">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 revision.cast(revision.value(static_cast<std::int64_t>(result.revision())),
                               ruvia::db_data_type::big_int)))
-            .and_where(revision.binary(revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"sha256">()),
+            .and_where(revision.binary(revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"sha256">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view()),
                                       ruvia::db_binary_operator::equal,
                                       revision.value(std::string_view(digest))));
         (void)co_await context.db().execute(revision);
 
         ruvia::db_query node;
-        const auto status = node.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
+        const auto status = node.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
         const auto revisionValue = node.cast(
             node.value(static_cast<std::int64_t>(result.revision())),
             ruvia::db_data_type::big_int);
@@ -3369,9 +3371,9 @@ class EdgeProjectionService {
                                           node.value(std::string_view{})}))),
              node.cast(node.value(true), ruvia::db_data_type::boolean)});
         node.update(service::edge::persistence::EdgeNodeEntity::table_name())
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), configWithMessage)
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), node.call("now"))
-            .where(node.binary(node.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), configWithMessage)
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), node.call("now"))
+            .where(node.binary(node.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                node.cast(node.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(node);
     }
@@ -3384,20 +3386,20 @@ class EdgeProjectionService {
         const std::string message = result.code() + ": " + result.message();
         ruvia::db_query revision;
         revision.update(service::edge::persistence::EdgeConfigRevisionEntity::table_name())
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"status">(), revision.value(std::string_view{"rejected"}))
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"message">(), revision.value(std::string_view(message)))
-            .set(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"completed_at">(), revision.call("now"))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"status">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view{"rejected"}))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"message">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.value(std::string_view(message)))
+            .set(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"completed_at">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view(), revision.call("now"))
             .where(revision.binary(
-                revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"node_id">()), ruvia::db_binary_operator::equal,
+                revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"node_id">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 revision.cast(revision.value(nodeId), ruvia::db_data_type::uuid)))
             .and_where(revision.binary(
-                revision.column(service::edge::persistence::EdgeConfigRevisionEntity::column_name<"revision">()), ruvia::db_binary_operator::equal,
+                revision.column(std::tuple_element_t<service::edge::persistence::EdgeConfigRevisionEntity::column_index<"revision">(), service::edge::persistence::EdgeConfigRevisionEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                 revision.cast(revision.value(static_cast<std::int64_t>(result.revision())),
                               ruvia::db_data_type::big_int)));
         (void)co_await context.db().execute(revision);
 
         ruvia::db_query node;
-        const auto status = node.column(service::edge::persistence::EdgeNodeEntity::column_name<"status">());
+        const auto status = node.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view());
         const auto revisionValue = node.cast(
             node.value(static_cast<std::int64_t>(result.revision())),
             ruvia::db_data_type::big_int);
@@ -3420,15 +3422,15 @@ class EdgeProjectionService {
                            config::detail::toJsonb(node, state),
                            node.cast(node.value(true), ruvia::db_data_type::boolean)});
         node.update(service::edge::persistence::EdgeNodeEntity::table_name())
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"status">(), node.call(
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), node.call(
                                "jsonb_set",
                                {statusWithState,
                                 config::detail::jsonPath(node, "{config,message}"),
                                 config::detail::toJsonb(node, messageValue),
                                 node.cast(node.value(true),
                                           ruvia::db_data_type::boolean)}))
-            .set(service::edge::persistence::EdgeNodeEntity::column_name<"updated_at">(), node.call("now"))
-            .where(node.binary(node.column(service::edge::persistence::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal,
+            .set(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"updated_at">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view(), node.call("now"))
+            .where(node.binary(node.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
                                node.cast(node.value(nodeId), ruvia::db_data_type::uuid)));
         (void)co_await context.db().execute(node);
     }

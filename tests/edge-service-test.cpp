@@ -211,13 +211,13 @@ int main() {
         requireContains(vpnEdgeConfigSource, "task.cast(task.value(peerId), ruvia::db_data_type::text)", "VPN task peer id has no explicit PostgreSQL type");
         requireContains(vpnEdgeConfigSource, "task.cast(task.value(request->enabled()), ruvia::db_data_type::boolean)", "VPN task enabled flag has no explicit PostgreSQL type");
         requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:", "edge gateway does not project VPN configuration results");
-        requireContains(projectorServiceSource, "transitioned, transitioned.column(service::edge::persistence::EdgeTaskEntity::column_name<\"request\">()), \"enabled\")", "VPN result transition does not return the requested enabled state");
+        requireContains(projectorServiceSource, "transitioned, transitioned.column(std::tuple_element_t<service::edge::persistence::EdgeTaskEntity::column_index<\"request\">(), service::edge::persistence::EdgeTaskEntity::columns_type>::name.view()), \"enabled\")", "VPN result transition does not return the requested enabled state");
         requireContains(projectorServiceSource, "\"config_version\")", "VPN result transition does not return the requested config version");
         requireContains(projectorServiceSource, "update.cast(update.column(\"enabled\", \"task\"), ruvia::db_data_type::boolean)", "VPN result projection reads a column outside the transition CTE");
         requireContains(projectorServiceSource, "update.column(\"config_version\", \"task\")", "VPN result projection does not compare the returned config version");
         requireContains(vpnEdgeConfigSource, "superseded.cast(superseded.value(\"superseded\"), ruvia::db_data_type::text)", "new VPN tasks leave older tasks pending forever");
         requireContains(vpnServiceSource, "reusableEdgePeerId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()", "revoked Edge VPN peers are not reused when VPN is enabled again");
-        requireContains(vpnServiceSource, ".set(service::vpn::entities::VpnPeerEntity::column_name<\"revoked_at\">(), reactivation.null_value())", "reactivating an Edge VPN peer does not clear its revoked state");
+        requireContains(vpnServiceSource, ".set(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<\"revoked_at\">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view(), reactivation.null_value())", "reactivating an Edge VPN peer does not clear its revoked state");
         requireContains(vpnServiceSource, "\"vpn.peer.reactivate\"", "Edge VPN peer reactivation is not audited separately");
         requireMissing(dispatcherSource, "workers_.back().post(", "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(", "edge dispatcher still forwards wakeups between workers");
