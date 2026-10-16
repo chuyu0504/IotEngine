@@ -1,4 +1,5 @@
 #include "../common/ipc.h"
+#include "../common/files.h"
 #include "../common/product.h"
 #include <windows.h>
 #undef GetCurrentTime
@@ -13,6 +14,7 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Microsoft.UI.h>
+#include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
@@ -63,7 +65,7 @@ const wchar_t* layout=LR"XAML(
  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
  <Grid ColumnSpacing="12" Height="48">
   <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-  <Border Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="10" Width="40" Height="40"><FontIcon Glyph="&#xE774;" Foreground="White" FontSize="20"/></Border>
+  <Image x:Name="ProductIcon" Width="40" Height="40" AutomationProperties.Name="iot-egine"/>
   <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="iot-egine" Style="{ThemeResource SubtitleTextBlockStyle}"/><TextBlock Text="设备网络" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
   <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center"><Button x:Name="RepairService" Content="修复服务" Visibility="Collapsed"/><StackPanel x:Name="Account" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="AccountName" VerticalAlignment="Center"/><Button x:Name="Logout" Content="退出登录"/></StackPanel></StackPanel>
  </Grid>
@@ -85,7 +87,16 @@ const wchar_t* layout=LR"XAML(
  <Grid x:Name="DevicesPanel" Grid.Row="1" Visibility="Collapsed" RowSpacing="16">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="20,16"><StackPanel Orientation="Horizontal" Spacing="28"><TextBlock x:Name="NetworkState" Text="已登录" Style="{ThemeResource BodyStrongTextBlockStyle}"/><TextBlock x:Name="Address"/><TextBlock x:Name="SyncTime" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel></Border>
-  <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="Search" PlaceholderText="搜索设备名称或 IMEI"/><Button x:Name="Refresh" Grid.Column="1" Content="刷新"/><Button x:Name="Sync" Grid.Column="2" Content="同步配置"/><ToggleSwitch x:Name="VpnEnabled" Grid.Column="3" Header="VPN" OnContent="已开启" OffContent="已关闭"/></Grid>
+  <Grid Grid.Row="1" ColumnSpacing="8">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <TextBox x:Name="Search" PlaceholderText="搜索设备名称或 IMEI" VerticalAlignment="Center"/>
+   <Button x:Name="Refresh" Grid.Column="1" Content="刷新"/>
+   <Button x:Name="Sync" Grid.Column="2" Content="同步配置"/>
+   <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+    <TextBlock Text="VPN" VerticalAlignment="Center"/>
+    <ToggleSwitch x:Name="VpnEnabled" AutomationProperties.Name="VPN" OnContent="已开启" OffContent="已关闭" VerticalAlignment="Center"/>
+   </StackPanel>
+  </Grid>
   <InfoBar x:Name="DeviceMessage" Grid.Row="2" IsOpen="False" IsClosable="False" Severity="Warning"/>
   <Border Grid.Row="3" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"><Grid><ListView x:Name="DeviceList" SelectionMode="None" Padding="8"/><TextBlock x:Name="Empty" Text="正在读取设备…" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></Grid></Border>
   <Grid Grid.Row="4"><StackPanel Spacing="4"><TextBlock x:Name="Selection" Text="已选择 0 台"/><TextBlock x:Name="Hint" Text="关闭窗口后，连接继续运行" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel><Button x:Name="Apply" Content="应用选择" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{ThemeResource AccentButtonStyle}"/></Grid>
@@ -135,6 +146,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         try {
             Resources().MergedDictionaries().Append(XamlControlsResources());
             root=Markup::XamlReader::Load(layout).as<Grid>();
+            control<Image>(L"ProductIcon").Source(Media::Imaging::SvgImageSource(Uri(L"file:///"+(iotvpn::moduleDirectory()/L"product.svg").generic_wstring())));
             model=std::make_unique<iotvpn::gui::ConnectionController>([this](const Json& request,std::stop_token stop) {
                 if(startupOptions.test) return fixture(request);
                 try {
@@ -149,6 +161,9 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
                 }
             },startupOptions.test);
             window=Window(); window.Title(L"iot-egine"); window.Content(root);
+            const auto icon=LoadIconW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(1));
+            if(!icon) throw_last_error();
+            window.AppWindow().SetIcon(Microsoft::UI::GetIconIdFromIcon(icon));
             window.SystemBackdrop(MicaBackdrop());
             auto presenter=window.AppWindow().Presenter().as<Microsoft::UI::Windowing::OverlappedPresenter>();
             HWND handle{}; check_hresult(window.as<IWindowNative>()->get_WindowHandle(&handle));

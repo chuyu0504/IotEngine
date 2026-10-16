@@ -128,6 +128,7 @@ add_custom_command(
     "${CMAKE_CURRENT_SOURCE_DIR}/winui/credentials.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/product.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/product.ico"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/product.svg"
   VERBATIM)
 add_custom_target(windows-winui DEPENDS "${_winui_output}")
 
@@ -207,6 +208,7 @@ add_custom_command(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildWindowsInstaller.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/installer/Package.wxs"
     "${CMAKE_CURRENT_SOURCE_DIR}/installer/Bundle.wxs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/product.ico"
   VERBATIM)
 add_custom_target(windows-installer
   DEPENDS "${IOT_EGINE_WINDOWS_INSTALLER_OUTPUT}")
@@ -225,6 +227,7 @@ add_custom_target(windows-installer-from-package
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildWindowsInstaller.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/installer/Package.wxs"
     "${CMAKE_CURRENT_SOURCE_DIR}/installer/Bundle.wxs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/product.ico"
   VERBATIM)
 
 add_custom_target(windows-client ALL DEPENDS windows-package)

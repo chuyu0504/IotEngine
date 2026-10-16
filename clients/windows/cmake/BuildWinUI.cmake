@@ -182,6 +182,7 @@ set(_output "${BUILD_ROOT}/windows-winui/Release")
 if(NOT EXISTS "${_output}/iot-egine.exe")
   message(FATAL_ERROR "WinUI build did not produce ${_output}/iot-egine.exe")
 endif()
+file(COPY_FILE "${SOURCE_ROOT}/assets/product.svg" "${_output}/product.svg" ONLY_IF_DIFFERENT)
 file(GLOB _crt_candidates LIST_DIRECTORIES true
   "${_vs}/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT")
 list(SORT _crt_candidates ORDER DESCENDING)
