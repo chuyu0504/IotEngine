@@ -39,6 +39,7 @@
 #include "service/features/edge/edge.runtime.h"
 #include "service/features/edge/gateway/gateway.runtime.h"
 #include "service/features/messaging/messaging.runtime.h"
+#include "service/features/messaging/rpc/rpc.runtime.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/features/gb28181/gb28181.runtime.h"
 #include "service/features/gb28181/media/media.transport.h"
@@ -46,7 +47,7 @@
 #include "service/features/telemetry/telemetry.runtime.h"
 #include "service/features/telemetry/telemetry.service.h"
 #include "service/features/vpn/vpn.runtime.h"
-#include "service/middleware/live.h"
+#include "service/utils/change_feed.h"
 #include "service/modules/alert/alert.controller.h"
 #include "service/modules/device/device.controller.h"
 #include "service/modules/command/command.controller.h"
@@ -277,8 +278,8 @@ WorkerBudget workerBudget(
     };
 }
 
-service::message::outbox::Policy outboxPolicy(const ruvia::env& env) {
-    service::message::outbox::Policy policy;
+service::messaging::outbox::Policy outboxPolicy(const ruvia::env& env) {
+    service::messaging::outbox::Policy policy;
     policy.pendingAlertThreshold = env.get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
     policy.oldestAgeAlertMs = env.get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
     policy.deadLetterAlertThreshold = env.get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
@@ -292,14 +293,13 @@ service::message::outbox::Policy outboxPolicy(const ruvia::env& env) {
 }
 
 struct ServiceWorkerComponents {
-    std::shared_ptr<service::message::WorkerStreamMultiplexer> multiplexer;
+    std::shared_ptr<service::messaging::WorkerStreamMultiplexer> multiplexer;
     std::shared_ptr<service::edge::DispatcherRuntime> sessionDispatcherRuntime;
     std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
     std::shared_ptr<service::application::ComponentLifecycle> componentLifecycle;
     std::shared_ptr<service::telemetry::PersistenceRuntime> telemetry;
     std::shared_ptr<service::live::LiveChangeRuntime> liveChanges;
-    std::shared_ptr<service::live::QueryRuntime> apiQueries;
-    std::shared_ptr<service::rpc::RpcConsumerRuntime> rpcConsumer;
+    std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime> rpcConsumer;
     std::shared_ptr<service::command::CommandProcessingRuntime> commandProcessing;
     std::shared_ptr<service::access::DeliveryRuntime> openDeliveries;
     std::shared_ptr<service::runtime::Reconciler> configReconciler;
@@ -307,7 +307,7 @@ struct ServiceWorkerComponents {
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
     std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
     std::shared_ptr<service::alert::AlertBootstrap> alertBootstrap;
-    std::shared_ptr<service::message::outbox::OutboxRuntime> outboxRuntime;
+    std::shared_ptr<service::messaging::outbox::OutboxRuntime> outboxRuntime;
 };
 
 struct ApplicationComponents {
@@ -322,7 +322,7 @@ struct ApplicationComponents {
 };
 
 void registerRpcHandlers(
-    const std::shared_ptr<service::rpc::RpcConsumerRuntime>& rpcConsumer,
+    const std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime>& rpcConsumer,
     const ruvia::env& env
 ) {
     rpcConsumer->add("telemetry", service::telemetry::TelemetryService::executeProjection);
@@ -371,12 +371,11 @@ ApplicationComponents createComponents(
         workerComponents.observability->setGauge("iot_engine_service_workers", budget.service);
         workerComponents.observability->setGauge("iot_engine_collector_workers", budget.collector);
         workerComponents.componentLifecycle = std::make_shared<service::application::ComponentLifecycle>(*workerComponents.observability);
-        workerComponents.multiplexer = std::make_shared<service::message::WorkerStreamMultiplexer>();
+        workerComponents.multiplexer = std::make_shared<service::messaging::WorkerStreamMultiplexer>();
         workerComponents.sessionDispatcherRuntime = std::make_shared<service::edge::DispatcherRuntime>();
         workerComponents.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         workerComponents.liveChanges = std::make_shared<service::live::LiveChangeRuntime>(budget.collector);
-        workerComponents.apiQueries = std::make_shared<service::live::QueryRuntime>();
-        workerComponents.rpcConsumer = std::make_shared<service::rpc::RpcConsumerRuntime>();
+        workerComponents.rpcConsumer = std::make_shared<service::messaging::rpc::RpcConsumerRuntime>();
         registerRpcHandlers(workerComponents.rpcConsumer, env);
         workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
         workerComponents.openDeliveries = std::make_shared<service::access::DeliveryRuntime>();
@@ -392,7 +391,7 @@ ApplicationComponents createComponents(
             ? std::make_shared<service::gb28181::GbProjectionRuntime>()
             : nullptr;
         workerComponents.alertBootstrap = std::make_shared<service::alert::AlertBootstrap>();
-        workerComponents.outboxRuntime = std::make_shared<service::message::outbox::OutboxRuntime>(
+        workerComponents.outboxRuntime = std::make_shared<service::messaging::outbox::OutboxRuntime>(
             *workerComponents.observability,
             budget.collector,
             budget.service,
@@ -454,12 +453,6 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
                    },
                     .stop = [m = workerComponents.multiplexer] {
                         m->stop();
-                    } });
-    componentLifecycle.add({ .name = "api-live-queries", .start = [r = workerComponents.apiQueries, worker, index] {
-                       r->start(worker, index);
-                   },
-                    .stop = [r = workerComponents.apiQueries] {
-                        r->stop();
                     } });
     componentLifecycle.add({ .name = "live-queries", .start = [r = workerComponents.liveChanges, worker, index, count] {
                        r->start(worker, index, count);
@@ -644,6 +637,7 @@ void configureServer(
                 return service::edge::config::PlatformIdentity{platformId};
             })
         .use_worker_state<service::edge::SessionDispatcher>()
+        .use_worker_state<service::utils::ChangeFeed>()
         .database(ruvia::db_registration_config{
             .config_ = std::move(components.database),
         })

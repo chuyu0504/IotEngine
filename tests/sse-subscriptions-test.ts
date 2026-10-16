@@ -216,6 +216,84 @@ test('device channels share one connection, replay their own snapshots and isola
     expect(calls).toBe(1);
 });
 
+test('entity deltas merge into the page value, keep untouched rows and leave the shared user channel alone', async () => {
+    const wire = connection();
+    let calls = 0;
+    const subscriptions = sseRegistry({
+        session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
+        fetch: (async () => { calls++; return wire.response; }) as typeof fetch,
+    });
+    type Row = { id: string; online: boolean };
+    type Page = { list: Row[]; total: number; page: number };
+    const users: unknown[] = [], pages: Page[] = [], deltas: unknown[] = [], merged: Page[] = [], errors: Error[] = [];
+    const releaseUser = subscriptions.createShared('user').subscribe({ next: value => users.push(value), error: error => errors.push(error) });
+    const devices = subscriptions.create<Page>('/v1/device/events', 'devices');
+    const releasePlain = devices.subscribe({ next: value => pages.push(value), error: error => errors.push(error) });
+    const releaseDelta = devices.subscribe({
+        next: value => merged.push(value),
+        delta: (delta, value) => { deltas.push(delta); merged.push(value); },
+        error: error => errors.push(error),
+    });
+    await tick();
+    wire.send('user', { code: 0, data: { id: 'user' } });
+    wire.send('devices', { code: 0, data: { list: [{ id: 'a', online: false }, { id: 'b', online: false }, { id: 'c', online: false }], total: 30, page: 1 } });
+    wire.send('devices', { code: 0, message: 'ok', delta: { upsert: [{ id: 'b', online: true }, { id: 'unknown', online: true }], remove: [] } });
+    wire.send('devices', { code: 0, message: 'ok', delta: { upsert: [], remove: ['c', 'missing'] } });
+    wire.send('devices', { code: 0, message: 'ok', delta: { upsert: [{ id: 'unknown', online: false }], remove: ['missing'] } });
+    await tick();
+    expect(calls).toBe(1);
+    expect(pages).toHaveLength(3);
+    const [initial, updated, removed] = pages;
+    expect(updated.list.map(row => row.online)).toEqual([false, true, false]);
+    expect(updated.list[0]).toBe(initial.list[0]);
+    expect(updated.list[2]).toBe(initial.list[2]);
+    expect(updated.total).toBe(30);
+    expect(removed).toEqual({ list: [{ id: 'a', online: false }, { id: 'b', online: true }], total: 29, page: 1 });
+    expect(removed.list[1]).toBe(updated.list[1]);
+    expect(deltas).toEqual([
+        { upsert: [{ id: 'b', online: true }, { id: 'unknown', online: true }], remove: [] },
+        { upsert: [], remove: ['c', 'missing'] },
+    ]);
+    expect(merged).toEqual(pages);
+    expect(await devices.first()).toBe(removed);
+    expect(users).toEqual([{ id: 'user' }]);
+    wire.send('devices', { code: 0, data: { list: [{ id: 'd', online: true }], total: 1, page: 1 } });
+    await tick();
+    expect(pages.at(-1)).toEqual({ list: [{ id: 'd', online: true }], total: 1, page: 1 });
+    expect(merged.at(-1)).toBe(pages.at(-1));
+    expect(errors).toEqual([]);
+    releasePlain(); releaseDelta(); releaseUser();
+    await tick();
+    expect(wire.cancelled()).toBe(true);
+});
+
+test('a delta without a base snapshot rejects only its channel, while a malformed delta ends the source', async () => {
+    const wires = [connection(), connection()];
+    let calls = 0;
+    const subscriptions = sseRegistry({
+        session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
+        fetch: (async () => wires[calls++].response) as typeof fetch,
+    });
+    const errors: Record<string, Error[]> = { devices: [], realtime: [] };
+    const values: Record<string, unknown[]> = { devices: [], realtime: [] };
+    const releases = ['devices', 'realtime'].map(name => subscriptions.create('/v1/device/events', name)
+        .subscribe({ next: value => values[name].push(value), error: error => errors[name].push(error) }));
+    await tick();
+    wires[0].send('realtime', { code: 0, data: { list: [{ id: 'a' }], total: 1 } });
+    wires[0].send('devices', { code: 0, message: 'ok', delta: { upsert: [{ id: 'a' }], remove: [] } });
+    await tick();
+    expect(errors.devices.map(error => error.message)).toEqual(['实时增量缺少基准快照']);
+    expect(errors.realtime).toEqual([]);
+    wires[0].send('devices', { code: 0, data: { list: [{ id: 'a' }], total: 1 } });
+    wires[0].send('realtime', { code: 0, message: 'ok', delta: { upsert: [{ id: 'a' }], remove: [7] } });
+    await tick();
+    expect(values.devices).toEqual([{ list: [{ id: 'a' }], total: 1 }]);
+    expect(errors.realtime.map(error => error.message)).toEqual(['实时增量格式无效']);
+    expect(errors.devices.map(error => error.message)).toEqual(['实时增量缺少基准快照', '实时增量格式无效']);
+    expect(calls).toBe(1);
+    releases.forEach(release => release());
+});
+
 test('link list and selected debug packets share one wire and isolate packet updates', async () => {
     const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
     Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
@@ -551,12 +629,18 @@ test('edge page shares inventory, detail, logs and VPN with isolated named event
         await tick(); expect(requests).toHaveLength(1);
         expect(requests[0]).toContain('/v1/edge/events?');
         expect(requests[0]).toContain(`nodeId=${scope.nodeId}`);
-        wire.send('nodes', { code: 0, data: Array.from({length: 201}, (_, id) => ({id})) });
+        wire.send('nodes', { code: 0, data: Array.from({length: 201}, (_, id) => ({id: String(id), name: 'node'})) });
         wire.send('detail', { code: 0, data: { id: scope.nodeId } });
         wire.send('vpn', { code: 0, data: { peers: [], routes: [] } });
         wire.send('logs', { code: 0, data: { lines: ['first'] } });
         wire.send('logs', { code: 0, data: { lines: ['later'] } });
-        await tick(); expect(nodes).toHaveLength(1); expect(logs).toHaveLength(2);
+        wire.send('nodes', { code: 0, message: 'ok', delta: { upsert: [{ id: '7', name: 'renamed' }], remove: ['200'] } });
+        await tick(); expect(nodes).toHaveLength(2); expect(logs).toHaveLength(2);
+        const [initial, merged] = nodes as Array<Array<{ id: string; name: string }>>;
+        expect(merged).toHaveLength(200);
+        expect(merged[7]).toEqual({ id: '7', name: 'renamed' });
+        expect(merged[6]).toBe(initial[6]);
+        expect(await getEdgeInventory(scope).first()).toBe(merged);
         releases.pop()?.(); await tick(); expect(wire.cancelled()).toBe(false);
         expect(errors).toEqual([]);
     } finally {

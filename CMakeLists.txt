@@ -394,7 +394,7 @@ set_tests_properties(firmware-download PROPERTIES TIMEOUT 30)
 
 iot_engine_add_test(edge-debug-request LARGE
     SOURCES tests/edge-debug-request-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(edge-metadata
     SOURCES tests/edge-metadata-test.cpp
@@ -410,16 +410,25 @@ if(NOT REDIS_SERVER_EXECUTABLE)
 endif()
 iot_engine_add_test(collector-route LARGE
     SOURCES tests/collector-route-test.cpp
-    LIBRARIES ruvia::web OpenSSL::Crypto
+    LIBRARIES ruvia::web OpenSSL::Crypto spdlog::spdlog
     DEFINITIONS
         "IOT_TEST_REDIS_SERVER=\"${REDIS_SERVER_EXECUTABLE}\""
         "IOT_TEST_BUILD_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\""
     MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
 set_tests_properties(collector-route PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
+iot_engine_add_test(telemetry-latest LARGE
+    SOURCES tests/telemetry-latest-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto spdlog::spdlog
+    DEFINITIONS
+        "IOT_TEST_REDIS_SERVER=\"${REDIS_SERVER_EXECUTABLE}\""
+        "IOT_TEST_BUILD_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\""
+    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
+set_tests_properties(telemetry-latest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
 iot_engine_add_test(edge-service LARGE
     SOURCES tests/edge-service-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog
     DEFINITIONS IOT_ENGINE_TESTING)
 
 iot_engine_add_test(edge-projector NO_PROJECT_INCLUDE
@@ -440,7 +449,6 @@ iot_engine_add_test(alert-runtime LARGE
 
 foreach(test_name
         configuration-service
-        telemetry-latest
         telemetry-persistence
         command-service
         link-service

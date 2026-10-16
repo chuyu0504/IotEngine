@@ -7,7 +7,7 @@
 
 #include <ruvia/web/db/db_types.h>
 
-namespace service::message::outbox {
+namespace service::messaging::outbox {
 
 class PostgresNotifier final {
 public:
@@ -31,4 +31,4 @@ private:
     std::jthread thread_;
 };
 
-} // namespace service::message::outbox
+} // namespace service::messaging::outbox

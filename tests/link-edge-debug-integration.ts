@@ -54,6 +54,20 @@ async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>, eventName
     }
 }
 
+// Row of `id` carried by the next `links` event: a scope-wide change resends the
+// page, an entity-level change sends only the changed row as a delta.
+async function nextLinkRow(stream: Awaited<ReturnType<typeof subscribe>>, id: string) {
+    for (;;) {
+        const event = await stream.next();
+        if (event.event !== 'links') continue;
+        const result = JSON.parse(event.data);
+        assert.equal(result.code, 0, event.data);
+        const row = (result.delta ? result.delta.upsert : result.data.list).find((entry: { id: string }) => entry.id === id);
+        assert(row, event.data);
+        return row;
+    }
+}
+
 function decode(buffer: Buffer) {
     const fields = new Map<number, bigint | Buffer>();
     let position = 0;
@@ -160,9 +174,9 @@ try {
     assert.equal(Number(await redis.send('EXISTS', [`iot:debug:lease:link:${link}`])), 0,
         'SSE comment heartbeat recreated an expired debug lease');
     const renameCount = Number((await db`SELECT count(*)::int AS n FROM outbox_event WHERE event_type='query.changed' AND aggregate_type='link' AND aggregate_id='link'`)[0].n);
-    const renamed = snapshot(subscription, 'links');
+    const renamed = nextLinkRow(subscription, link);
     await request('PUT', `/v1/edge/${node}/name`, { name: `${tag}_renamed` });
-    assert.equal((await renamed).list[0].name, `${tag}_renamed · Modbus`);
+    assert.equal((await renamed).name, `${tag}_renamed · Modbus`);
     assert.equal(Number((await db`SELECT count(*)::int AS n FROM outbox_event WHERE event_type='query.changed' AND aggregate_type='link' AND aggregate_id='link'`)[0].n), renameCount + 1);
     await request('PUT', `/v1/edge/${node}/name`, { name: `${tag}_renamed` });
     assert.equal(Number((await db`SELECT count(*)::int AS n FROM outbox_event WHERE event_type='query.changed' AND aggregate_type='link' AND aggregate_id='link'`)[0].n), renameCount + 1);

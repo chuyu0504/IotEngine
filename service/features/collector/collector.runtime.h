@@ -1459,7 +1459,7 @@ class CollectorWorker final {
                         {},
                         action.parsed.source
                     );
-                    if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await message::redis::publishAndWake(
+                    if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await service::messaging::stream::publishAndWake(
                         redis_,
                         parsedStream(),
                         message::parsedFields(action.parsed),
@@ -1974,7 +1974,7 @@ class CollectorWorker final {
                 {},
                 retryReason
             );
-            (void)co_await message::redis::publishAndAcknowledge(
+            (void)co_await service::messaging::stream::publishAndAcknowledge(
                 redis_,
                 stream,
                 message::protocolTaskFields(task),
@@ -2094,7 +2094,7 @@ class CollectorWorker final {
     ) {
         auto fields = deadLetterFields(streamMessage.fields, streamMessage.id, reason, detail);
         const auto outputStream = deadLetterStream();
-        (void)co_await message::redis::publishAndAcknowledge(
+        (void)co_await service::messaging::stream::publishAndAcknowledge(
             redis_,
             outputStream,
             fields,
@@ -2110,7 +2110,7 @@ class CollectorWorker final {
         auto resultFields = commandResultFields(commandId, task, success, reason);
         const auto resultStream = commandResultStream();
         if (success) {
-            (void)co_await message::redis::publishAndAcknowledge(
+            (void)co_await service::messaging::stream::publishAndAcknowledge(
                 redis_,
                 resultStream,
                 resultFields,
@@ -2119,7 +2119,7 @@ class CollectorWorker final {
                 commandGroup(),
                 consumer_,
                 inputEntryId,
-                message::redis::StreamWake{ std::nullopt,
+                service::messaging::stream::StreamWake{ std::nullopt,
                                             message::WorkerStreamTask::CommandResult }
             );
             co_return;
@@ -2135,15 +2135,15 @@ class CollectorWorker final {
         auto deadFields = deadLetterFields(message::protocolTaskFields(task), inputEntryId, reason);
         const auto deadStream = deadLetterStream();
         const std::array publications{
-            message::redis::StreamPublication{ deadStream, deadFields, kDeadLetterCapacity },
-            message::redis::StreamPublication{
+            service::messaging::stream::StreamPublication{ deadStream, deadFields, kDeadLetterCapacity },
+            service::messaging::stream::StreamPublication{
                 resultStream,
                 resultFields,
                 10000,
-                message::redis::StreamWake{ std::nullopt,
+                service::messaging::stream::StreamWake{ std::nullopt,
                                             message::WorkerStreamTask::CommandResult } }
         };
-        (void)co_await message::redis::publishAllAndAcknowledge(
+        (void)co_await service::messaging::stream::publishAllAndAcknowledge(
             redis_,
             publications,
             inputStream,

@@ -43,9 +43,40 @@ async function checkTrigger() {
     } catch (error) { if (error !== rollback) throw error; }
     assert.equal((await db`SELECT id FROM outbox_event WHERE id=${id}`).length,0);
 }
+// Statement triggers of migration 0057 publish entity-level changes: topic in
+// aggregate_type, the distinct changed ids in aggregate_id, schema version 2.
+async function checkEntityChanges() {
+    const rollback = new Error('fixture rollback');
+    const first = crypto.randomUUID(), second = crypto.randomUUID();
+    try {
+        await db.begin(async tx => {
+            const changes = async (topic: string) => (await tx`SELECT aggregate_id,schema_version FROM outbox_event WHERE event_type='query.changed' AND aggregate_type=${topic} AND published_at IS NULL`) as { aggregate_id: string; schema_version: number }[];
+            const touching = async (id: string) => (await changes('device-group')).filter(row => row.aggregate_id.split(',').includes(id));
+            const before = (await changes('device-group')).length;
+            await tx`INSERT INTO device_group(id,name,created_by) SELECT unnest(ARRAY[${first}::uuid,${second}::uuid]),'live-fixture',(SELECT id FROM sys_user ORDER BY created_at LIMIT 1)`;
+            const inserted = await touching(first);
+            assert.equal(inserted.length,1,'one statement publishes one change');
+            assert.equal(inserted[0]!.schema_version,2);
+            assert.deepEqual(inserted[0]!.aggregate_id.split(',').sort(),[first,second].sort());
+            await tx`UPDATE device_group SET remark='x' WHERE id='00000000-0000-0000-0000-000000000000'`;
+            assert.equal((await changes('device-group')).length,before+1,'zero-row statements publish nothing');
+            await tx`UPDATE device_group SET remark='y' WHERE id=${first}`;
+            assert.equal((await touching(first)).filter(row => row.aggregate_id===first).length,1,'update publishes only the changed id');
+            const roles = (await changes('auth')).length;
+            await tx`UPDATE sys_role SET updated_at=updated_at WHERE id=(SELECT id FROM sys_role LIMIT 1)`;
+            const auth = await changes('auth');
+            assert.equal(auth.length,roles+1);
+            assert.ok(auth.some(row => row.aggregate_id==='' && row.schema_version===2),'auth changes are scope-wide');
+            throw rollback;
+        });
+    } catch (error) { if (error !== rollback) throw error; }
+    const legacy = await db`SELECT count(*) AS count FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE t.tgfoid='publish_query_change()'::regprocedure AND NOT t.tgisinternal AND c.relname='device_group' AND t.tgname NOT LIKE 'live_device_group_%'`;
+    assert.equal(Number(legacy[0].count),0,'old query triggers were replaced');
+}
 try {
     if (phase==='initial') {
         await checkTrigger();
+        await checkEntityChanges();
         const sentinel = crypto.randomUUID();
         await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,dead_lettered_at) VALUES(${sentinel},'query.changed','auth',${sentinel},'migration-sentinel',1,now())`;
         const current = await entry();

@@ -6,7 +6,7 @@
 #include "service/features/messaging/messaging.types.h"
 #include "service/utils/redis.h"
 
-namespace service::message::redis {
+namespace service::messaging::stream {
 
 inline constexpr std::string_view kAddAndWakeScript = R"lua(
 local arguments = {'MAXLEN', '~', ARGV[1], '*'}
@@ -20,9 +20,9 @@ template <typename Redis>
 ruvia::task<std::string> addAndWake(
     const Redis& redis,
     std::string_view stream,
-    const std::vector<StreamField>& fields,
+    const std::vector<service::message::StreamField>& fields,
     std::optional<std::size_t> workerIndex,
-    WorkerStreamTask task,
+    service::message::WorkerStreamTask task,
     std::size_t maxLength = 100000,
     std::string_view instance = service::runtime::instanceId()
 ) {
@@ -31,12 +31,12 @@ ruvia::task<std::string> addAndWake(
     }
     const std::vector<std::string> keyStore{
         std::string(stream),
-        workerWakeStream(workerIndex, instance)
+        service::message::workerWakeStream(workerIndex, instance)
     };
     std::vector<std::string> argumentStore{
         std::to_string(maxLength),
-        std::to_string(kWorkerWakeCapacity),
-        std::string(workerStreamTaskName(task))
+        std::to_string(service::message::kWorkerWakeCapacity),
+        std::string(service::message::workerStreamTaskName(task))
     };
     argumentStore.reserve(argumentStore.size() + fields.size() * 2);
     for (const auto& field : fields) {
@@ -46,25 +46,25 @@ ruvia::task<std::string> addAndWake(
     const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
     const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
     const auto reply = co_await redis.eval(kAddAndWakeScript, keys, arguments);
-    if (reply.kind() != redis_value::kind_type::string) {
-        throwValue("atomic XADD/wake", reply);
+    if (reply.kind() != ruvia::redis_value::kind_type::string) {
+        service::message::redis::throwValue("atomic XADD/wake", reply);
     }
     co_return std::string(reply.string());
 }
 
 template <typename Pipeline>
-void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vector<StreamField>& fields, std::optional<std::size_t> workerIndex, WorkerStreamTask task, std::size_t maxLength = 100000) {
+void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vector<service::message::StreamField>& fields, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::size_t maxLength = 100000) {
     if (fields.empty()) {
         throw std::invalid_argument("Redis Stream message must contain fields");
     }
     const std::vector<std::string> keyStore{
         std::string(stream),
-        workerWakeStream(workerIndex, service::runtime::instanceId())
+        service::message::workerWakeStream(workerIndex, service::runtime::instanceId())
     };
     std::vector<std::string> argumentStore{
         std::to_string(maxLength),
-        std::to_string(kWorkerWakeCapacity),
-        std::string(workerStreamTaskName(task))
+        std::to_string(service::message::kWorkerWakeCapacity),
+        std::string(service::message::workerStreamTaskName(task))
     };
     argumentStore.reserve(argumentStore.size() + fields.size() * 2);
     for (const auto& field : fields) {
@@ -73,22 +73,22 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
     }
     const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
     const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
-    queueEval(pipeline, kAddAndWakeScript, keys, arguments);
+    service::message::redis::queueEval(pipeline, kAddAndWakeScript, keys, arguments);
 }
 
 template <typename Redis>
-ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, WorkerStreamTask task) {
-    const std::vector<StreamField> fields{{ "task", std::string(workerStreamTaskName(task)) }};
-    (void)co_await add(redis, workerWakeStream(workerIndex, service::runtime::instanceId()), fields, kWorkerWakeCapacity);
+ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task) {
+    const std::vector<service::message::StreamField> fields{{ "task", std::string(service::message::workerStreamTaskName(task)) }};
+    (void)co_await service::message::redis::add(redis, service::message::workerWakeStream(workerIndex, service::runtime::instanceId()), fields, service::message::kWorkerWakeCapacity);
 }
 
 template <typename Redis>
 ruvia::task<std::string> publishAndWake(
     const Redis& redis,
     std::string_view stream,
-    const std::vector<StreamField>& fields,
+    const std::vector<service::message::StreamField>& fields,
     std::optional<std::size_t> workerIndex,
-    WorkerStreamTask task,
+    service::message::WorkerStreamTask task,
     std::size_t maxLength = 0,
     std::string_view instance = service::runtime::instanceId()
 ) {
@@ -171,7 +171,7 @@ return 1
     ownedKeys.reserve(publications.size() * 2 + 1);
     for (const auto& publication : publications) {
         ownedKeys.emplace_back(publication.stream);
-        ownedKeys.push_back(publication.wake ? workerWakeStream(publication.wake->workerIndex, service::runtime::instanceId()) : std::string(publication.stream));
+        ownedKeys.push_back(publication.wake ? service::message::workerWakeStream(publication.wake->workerIndex, service::runtime::instanceId()) : std::string(publication.stream));
     }
     ownedKeys.emplace_back(inputStream);
     const std::vector<std::string_view> keys(ownedKeys.begin(), ownedKeys.end());
@@ -192,7 +192,7 @@ return 1
         ownedArguments.push_back(std::to_string(publication.fields.size()));
         ownedArguments.push_back(
             publication.wake
-                ? std::string(workerStreamTaskName(publication.wake->task))
+                ? std::string(service::message::workerStreamTaskName(publication.wake->task))
                 : std::string{}
         );
         for (const auto& field : publication.fields) {
@@ -202,8 +202,8 @@ return 1
     }
     const std::vector<std::string_view> arguments(ownedArguments.begin(), ownedArguments.end());
     const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != redis_value::kind_type::integer) {
-        throwValue("atomic XPENDING/XADD/XACK/XDEL", reply);
+    if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+        service::message::redis::throwValue("atomic XPENDING/XADD/XACK/XDEL", reply);
     }
     co_return reply.integer() == 1;
 }
@@ -212,7 +212,7 @@ template <typename Redis>
 ruvia::task<bool> publishAndAcknowledge(
     const Redis& redis,
     std::string_view outputStream,
-    const std::vector<StreamField>& outputFields,
+    const std::vector<service::message::StreamField>& outputFields,
     std::size_t outputMaxLength,
     std::string_view inputStream,
     std::string_view inputGroup,
@@ -231,4 +231,4 @@ ruvia::task<bool> publishAndAcknowledge(
     );
 }
 
-} // namespace service::message::redis
+} // namespace service::messaging::stream

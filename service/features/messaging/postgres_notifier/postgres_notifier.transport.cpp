@@ -17,7 +17,7 @@
 #include <poll.h>
 #endif
 
-namespace service::message::outbox {
+namespace service::messaging::outbox {
 namespace {
 
 constexpr auto kReadWait = std::chrono::milliseconds(1000);
@@ -242,4 +242,4 @@ void PostgresNotifier::run(std::stop_token stopToken) {
     connected_.store(false, std::memory_order_release);
 }
 
-} // namespace service::message::outbox
+} // namespace service::messaging::outbox

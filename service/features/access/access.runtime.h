@@ -96,7 +96,7 @@ class DeliveryRuntime final {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Webhook
                                                 );
                                                 co_return;
@@ -228,7 +228,7 @@ class DeliveryRuntime final {
                     recovering = false;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Webhook,
                         context.get_stop_token(),
@@ -248,9 +248,9 @@ class DeliveryRuntime final {
                         sessionMessages.insert(sessionMessages.end(), batch.messages.begin(), batch.messages.end());
                     }
                     const auto sessionEventIds =
-                        service::message::idempotency::eventIds(sessionMessages);
+                        service::messaging::idempotency::eventIds(sessionMessages);
                     const auto pendingSessionIds =
-                        co_await service::message::idempotency::pending(
+                        co_await service::messaging::idempotency::pending(
                             context,
                             sessionReceiptConsumer,
                             sessionEventIds
@@ -258,7 +258,7 @@ class DeliveryRuntime final {
                     for (const auto& message : sessionMessages) {
                         refreshSessions =
                             refreshSessions ||
-                            (service::message::idempotency::shouldProcess(
+                            (service::messaging::idempotency::shouldProcess(
                                  message,
                                  pendingSessionIds
                              ) &&
@@ -267,7 +267,7 @@ class DeliveryRuntime final {
                     if (refreshSessions) {
                         co_await session::refresh(context);
                     }
-                    co_await service::message::idempotency::markProcessed(
+                    co_await service::messaging::idempotency::markProcessed(
                         context,
                         sessionReceiptConsumer,
                         sessionEventIds
@@ -283,16 +283,16 @@ class DeliveryRuntime final {
                         catalogMessages.insert(catalogMessages.end(), batch.messages.begin(), batch.messages.end());
                     }
                     const auto catalogEventIds =
-                        service::message::idempotency::eventIds(catalogMessages);
+                        service::messaging::idempotency::eventIds(catalogMessages);
                     const auto pendingCatalogIds =
-                        co_await service::message::idempotency::pending(
+                        co_await service::messaging::idempotency::pending(
                             context,
                             catalogReceiptConsumer,
                             catalogEventIds
                         );
                     for (const auto& message : catalogMessages) {
                         reloadCatalog = reloadCatalog ||
-                            (service::message::idempotency::shouldProcess(
+                            (service::messaging::idempotency::shouldProcess(
                                  message,
                                  pendingCatalogIds
                              ) &&
@@ -301,7 +301,7 @@ class DeliveryRuntime final {
                     if (reloadCatalog) {
                         catalog = co_await delivery::loadCatalog(context);
                     }
-                    co_await service::message::idempotency::markProcessed(
+                    co_await service::messaging::idempotency::markProcessed(
                         context,
                         catalogReceiptConsumer,
                         catalogEventIds

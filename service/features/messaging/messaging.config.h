@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace service::message::outbox {
+namespace service::messaging::outbox {
 
 struct Policy final {
     std::int64_t pendingAlertThreshold{ 1000 };
@@ -11,4 +11,4 @@ struct Policy final {
     std::int64_t receiptRetentionDays{ 30 };
 };
 
-} // namespace service::message::outbox
+} // namespace service::messaging::outbox

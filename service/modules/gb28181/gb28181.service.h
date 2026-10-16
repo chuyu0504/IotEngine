@@ -10,7 +10,7 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/middleware/rpc.h"
+#include "service/utils/rpc_client.h"
 #include "service/modules/gb28181/gb28181.types.h"
 
 namespace service::gb28181 {
@@ -462,7 +462,7 @@ class Gb28181Service final {
   private:
     template <typename Context>
     static ruvia::task<std::string> call(Context& c, std::string_view operation, std::string payload) {
-        co_return co_await service::rpc::call(c, "gb28181", operation, std::move(payload));
+        co_return co_await service::utils::callRpc(c, "gb28181", operation, std::move(payload));
     }
 };
 

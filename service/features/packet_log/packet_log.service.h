@@ -31,7 +31,7 @@ return 1
         const auto result = co_await redis.eval(script, keys, args);
         if (result.kind() == ruvia::redis_value::kind_type::error)
             message::redis::throwValue("finish debug acquisition", result);
-        co_await service::live::publish(redis, "packet-debug");
+        co_await service::live::publish(redis, service::message::live::topic::kPacketDebug);
     }
     template <typename Redis>
     static ruvia::task<void> recordPacket(const Redis& redis, service::common::UuidV7Generator& uuidGenerator, std::string_view linkId,
@@ -254,7 +254,9 @@ return changed and 1 or 0
             if (result.kind() == ruvia::redis_value::kind_type::error)
                 message::redis::throwValue("append debug packet", result);
         }
-        co_await service::live::publish(redis, "packet-debug");
+        std::vector<std::string> changedIds{ std::string(linkId) };
+        if (!deviceId.empty()) changedIds.emplace_back(deviceId);
+        co_await service::live::publish(redis, service::message::live::topic::kPacketDebug, changedIds);
     }
 };
 }

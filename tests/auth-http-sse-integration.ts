@@ -50,10 +50,13 @@ try {
     assert.equal(userChanged.event, 'user');
     assert.equal(JSON.parse(userChanged.data).data.nickname, 'shared user channel');
     await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
+    // An authorization change resends every channel whose payload changed; the
+    // still-denied groups channel is identical and therefore stays silent.
     const grantedChannels = new Map<string, any>();
     for (let count = 0; count < 3; count++) {
         const event = await stream.next(); grantedChannels.set(event.event, JSON.parse(event.data));
     }
+    assert.equal(grantedChannels.has('groups'), false);
     assert.equal(grantedChannels.get('devices').code, 0);
     assert.equal(grantedChannels.get('realtime').code, 0);
     assert(grantedChannels.get('user').data.permissions.includes('iot:device:query'));
@@ -66,7 +69,9 @@ try {
         await transaction`SET LOCAL session_replication_role = replica`;
         await transaction`UPDATE sys_user SET nickname='unannounced fixture change' WHERE id=${user.id}`;
     });
-    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'device.realtime']);
+    // Telemetry of a device outside this user's scope must neither reach the
+    // realtime channel nor reload any other channel.
+    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', 'device.realtime', 'ids', crypto.randomUUID()]);
     await stream.expectQuiet();
     await stream.close();
     console.log('PASS page SSE shares user profile, permission changes and scoped queries without an extra auth connection');

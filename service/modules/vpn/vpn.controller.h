@@ -1,4 +1,8 @@
 #pragma once
+#include <memory>
+#include <set>
+#include <string>
+
 #include <ruvia/web/controller.h>
 #include <ruvia/core/task_scope.h>
 
@@ -35,7 +39,7 @@ class VpnController final {
         const auto& body = c.req().validated<VpnListQuery>();
         const auto keyword = body.get<"keyword">() ? std::optional<std::string>(body.get<"keyword">()->view()) : std::nullopt;
         const auto status = body.get<"status">() ? std::optional<std::string>(body.get<"status">()->view()) : std::nullopt;
-        const auto payload = service::live::data(c, co_await vpnService().networks(request, *body.get<"page">(), *body.get<"pageSize">(), keyword, status));
+        const auto payload = service::middleware::dataJson(co_await vpnService().networks(request, *body.get<"page">(), *body.get<"pageSize">(), keyword, status));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
@@ -43,7 +47,7 @@ class VpnController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<VpnRoutePatchBody>();
         co_await vpnService().updateRoute(request, c.req().validated<VpnIdParams>().get<"id">().view(), body);
-        const auto payload = service::live::data(c, "null");
+        const auto payload = service::middleware::dataJson("null");
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
@@ -51,47 +55,47 @@ class VpnController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<VpnPeerBody>();
         const auto id = co_await vpnService().createPeer(request, body);
-        const auto payload = service::live::data(c, "{\"id\":" + service::utils::jsonQuoted(id) + "}");
+        const auto payload = service::middleware::dataJson("{\"id\":" + service::utils::jsonQuoted(id) + "}");
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> revokePeer(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await vpnService().revokePeer(request, c.req().validated<VpnIdParams>().get<"id">().view());
-        const auto payload = service::live::data(c, "null");
+        const auto payload = service::middleware::dataJson("null");
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> syncPeer(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await vpnService().syncPeer(request, c.req().validated<VpnIdParams>().get<"id">().view());
-        const auto payload = service::live::data(c, "null");
+        const auto payload = service::middleware::dataJson("null");
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> desktopDevices(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = service::live::data(c, co_await vpnService().desktopDevices(request));
+        const auto payload = service::middleware::dataJson(co_await vpnService().desktopDevices(request));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> desktopCreatePeer(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<VpnDesktopPeerBody>();
-        const auto payload = service::live::data(c, co_await vpnService().desktopCreatePeer(request, body));
+        const auto payload = service::middleware::dataJson(co_await vpnService().desktopCreatePeer(request, body));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> desktopUpdatePeer(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<VpnDesktopSelectionBody>();
-        const auto payload = service::live::data(c, co_await vpnService().desktopUpdatePeer(request, c.req().validated<VpnIdParams>().get<"id">().view(), body));
+        const auto payload = service::middleware::dataJson(co_await vpnService().desktopUpdatePeer(request, c.req().validated<VpnIdParams>().get<"id">().view(), body));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
     ruvia::task<ruvia::http_response> desktopPeerConfig(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = service::live::data(c, co_await vpnService().desktopPeerConfig(request, c.req().validated<VpnIdParams>().get<"id">().view()));
+        const auto payload = service::middleware::dataJson(co_await vpnService().desktopPeerConfig(request, c.req().validated<VpnIdParams>().get<"id">().view()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
@@ -120,15 +124,44 @@ class VpnController final {
             } catch (...) { leaseFailure = std::current_exception(); }
         };
         leases.spawn(renewLease());
-        std::vector<service::live::SnapshotChannel> channels;
-        channels.push_back({"snapshot", "vpn", [&c, &peerId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+        // Ids the shown config depends on: the Peer's network (vpn ids) and its
+        // selected Edge nodes (edge ids). Refreshed by every snapshot.
+        struct Scope final {
+            std::string networkId;
+            std::set<std::string, std::less<>> edgeNodeIds;
+        };
+        auto scope = std::make_shared<Scope>();
+        auto snapshot = [&peerId, scope](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:query");
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:enroll");
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-            co_return service::live::data(c, co_await vpnService().desktopPeerConfig(request, peerId));
-        }});
+            auto config = co_await vpnService().desktopPeerConfig(request, peerId);
+            scope->networkId = co_await vpnService().desktopPeerNetworkId(request, peerId);
+            scope->edgeNodeIds.clear();
+            const auto parsed = ruvia::json_value::parse(config);
+            if (const auto ids = parsed ? parsed->get<ruvia::array<ruvia::string>>("edgeNodeIds") : std::nullopt) {
+                for (const auto& id : *ids) scope->edgeNodeIds.emplace(id.view());
+            }
+            co_return service::middleware::dataJson(config);
+        };
+        std::vector<service::middleware::LiveChannel> channels;
+        channels.push_back({"snapshot", { std::string(service::message::live::topic::kVpn), std::string(service::message::live::topic::kEdge) }, snapshot,
+            [snapshot, scope](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+                const auto hits = [&](std::string_view topic, auto&& contains) {
+                    const auto* ids = changes.find(topic);
+                    if (!ids) return false;
+                    if (!*ids) return true;
+                    for (const auto& id : **ids) if (contains(id)) return true;
+                    return false;
+                };
+                if (!hits(service::message::live::topic::kVpn, [&](const std::string& id) { return id == scope->networkId; }) &&
+                    !hits(service::message::live::topic::kEdge, [&](const std::string& id) { return scope->edgeNodeIds.contains(id); })) {
+                    co_return std::nullopt;
+                }
+                co_return co_await snapshot(request);
+            }});
         try {
-            co_await service::live::serveSnapshotChannels(c, userId, std::move(channels), [&] {
+            co_await service::middleware::serveLive(c, userId, std::move(channels), [&] {
                 if (leaseFailure) std::rethrow_exception(leaseFailure);
                 (void)service::middleware::requireAuth(c);
             });
@@ -146,7 +179,7 @@ class VpnController final {
     ruvia::task<ruvia::http_response> desktopDeletePeer(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await vpnService().desktopDeletePeer(request, c.req().validated<VpnIdParams>().get<"id">().view());
-        const auto payload = service::live::data(c, "null");
+        const auto payload = service::middleware::dataJson("null");
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }

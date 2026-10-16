@@ -23,12 +23,12 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/middleware/rpc.h"
 #include "service/modules/command/command.entity.h"
 #include "service/modules/command/command.types.h"
 #include "service/modules/device/device.service.h"
 #include "service/modules/device/device.types.h"
 #include "service/utils/json.h"
+#include "service/utils/rpc_client.h"
 
 namespace service::command {
 
@@ -232,7 +232,7 @@ class CommandService final {
             pair.emplace_back(std::string_view(value));
         }
         prepareRequest.template set<"elements">(std::move(preparedElements));
-        const auto prepared = co_await service::rpc::call(context, "command", "prepare", service::message::rpc::encode(prepareRequest, context.arena()));
+        const auto prepared = co_await service::utils::callRpc(context, "command", "prepare", service::message::rpc::encode(prepareRequest, context.arena()));
         auto result = co_await appendPrepared(context, transaction, requestId, deviceId, submittedBy, prepared);
         co_await transaction.commit();
         co_return result;

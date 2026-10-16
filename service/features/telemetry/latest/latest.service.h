@@ -25,62 +25,59 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.transport.h"
+#include "service/utils/json.h"
 
 namespace service::telemetry::latest {
 
 inline constexpr std::string_view kOnlineDeadlinesBase =
     "iot:v2:schedule:device:online-deadlines";
 
+// Publishes realtime changes of the given devices; empty ids mean every device.
 template <typename Redis>
-ruvia::task<void> publishRealtimeChange(const Redis& redis) {
-    const std::vector<std::string> replyArguments{ "XADD", std::string(service::message::live::kChanges), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" };
-    const auto reply = co_await service::message::redis::command(
-        redis,
-        replyArguments
-    );
-    if (reply.kind() != ruvia::redis_value::kind_type::string) {
-        service::message::redis::throwValue("publish device change", reply);
-    }
+ruvia::task<void> publishRealtimeChange(const Redis& redis, std::span<const std::string> ids = {}) {
+    co_await service::live::publish(redis, service::message::live::topic::kDeviceRealtime, ids);
 }
 
 inline std::string onlineDeadlinesKey() {
     return std::string(kOnlineDeadlinesBase);
 }
 
-inline std::string jsonEscape(std::string_view value) {
-    std::string output;
-    output.reserve(value.size() + 8);
-    for (const char ch : value) {
-        switch (ch) {
-            case '"':
-                output += "\\\"";
-                break;
-            case '\\':
-                output += "\\\\";
-                break;
-            case '\n':
-                output += "\\n";
-                break;
-            case '\r':
-                output += "\\r";
-                break;
-            case '\t':
-                output += "\\t";
-                break;
-            default:
-                if (static_cast<unsigned char>(ch) < 0x20) {
-                    output += ' ';
-                } else {
-                    output.push_back(ch);
-                }
+// Runs one EVALSHA per call in a single pipeline and returns each integer
+// reply. The SHA is cached per worker thread by the caller; a NOSCRIPT reply
+// means that call did not run, so the script is loaded again and exactly those
+// calls are retried once.
+template <typename Redis>
+ruvia::task<std::vector<std::int64_t>> evalBatch(const Redis& redis, std::string_view script, std::string& sha, std::size_t keyCount, const std::vector<std::vector<std::string>>& calls, std::string_view operation) {
+    std::vector<std::int64_t> results(calls.size(), 0);
+    std::vector<std::size_t> pending(calls.size());
+    for (std::size_t index = 0; index < calls.size(); ++index) pending[index] = index;
+    for (int attempt = 0; attempt < 2 && !pending.empty(); ++attempt) {
+        if (sha.empty()) sha = std::string(co_await redis.script_load(script));
+        auto pipeline = redis.pipeline();
+        for (const auto index : pending) {
+            const auto& call = calls[index];
+            const std::vector<std::string_view> keys(call.begin(), call.begin() + static_cast<std::ptrdiff_t>(keyCount));
+            const std::vector<std::string_view> arguments(call.begin() + static_cast<std::ptrdiff_t>(keyCount), call.end());
+            service::message::redis::queueEvalSha(pipeline, sha, keys, arguments);
         }
+        const auto replies = co_await std::move(pipeline).exec();
+        std::vector<std::size_t> missing;
+        for (std::size_t position = 0; position < replies.size() && position < pending.size(); ++position) {
+            const auto& reply = replies[position];
+            if (reply.kind() == ruvia::redis_value::kind_type::integer) {
+                results[pending[position]] = reply.integer();
+            } else if (attempt == 0 && reply.kind() == ruvia::redis_value::kind_type::error && reply.error().starts_with("NOSCRIPT")) {
+                missing.push_back(pending[position]);
+            } else {
+                service::message::redis::throwValue(operation, reply);
+            }
+        }
+        if (!missing.empty()) sha.clear();
+        pending = std::move(missing);
     }
-    return output;
-}
-
-inline std::string jsonQuoted(std::string_view value) {
-    return "\"" + jsonEscape(value) + "\"";
+    co_return results;
 }
 
 inline std::string jsonKeySet(const std::vector<std::string>& keys) {
@@ -91,7 +88,7 @@ inline std::string jsonKeySet(const std::vector<std::string>& keys) {
             result.push_back(',');
         }
         first = false;
-        result += jsonQuoted(key);
+        result += service::utils::jsonQuoted(key);
         result += ":true";
     }
     result.push_back('}');
@@ -99,8 +96,8 @@ inline std::string jsonKeySet(const std::vector<std::string>& keys) {
 }
 
 inline std::string stateJson(std::string_view state, std::string_view reason, std::string_view lastReport, std::string_view onlineUntil, std::string_view updatedAt) {
-    std::string result = "{\"state\":" + jsonQuoted(state) +
-        ",\"reason\":" + jsonQuoted(reason) + ",\"lastReportAt\":";
+    std::string result = "{\"state\":" + service::utils::jsonQuoted(state) +
+        ",\"reason\":" + service::utils::jsonQuoted(reason) + ",\"lastReportAt\":";
     result += lastReport.empty() ? "null" : std::string(lastReport);
     result += ",\"onlineUntil\":";
     result += onlineUntil.empty() ? "null" : std::string(onlineUntil);
@@ -135,7 +132,8 @@ ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId
           { "_updated_at_ms", now }
     };
     co_await service::message::redis::setHash(redis, service::message::telemetry::latestKey(deviceId), latestFields);
-    co_await publishRealtimeChange(redis);
+    const std::string ids[]{ std::string(deviceId) };
+    co_await publishRealtimeChange(redis, ids);
 }
 
 template <typename Redis>
@@ -157,24 +155,25 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
         redis,
         zremArguments
     );
-    co_await publishRealtimeChange(redis);
+    const std::string ids[]{ std::string(deviceId) };
+    co_await publishRealtimeChange(redis, ids);
 }
 
 template <typename Redis>
 ruvia::task<void> signalFreshness(const Redis& redis) {
-    co_await service::message::redis::wakeWorker(
+    co_await service::messaging::stream::wakeWorker(
         redis,
         std::nullopt,
         service::message::WorkerStreamTask::Freshness
     );
 }
 
-template <typename Redis>
-ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages) {
-    if (messages.empty()) {
-        co_return;
-    }
-    static constexpr std::string_view script = R"lua(
+// Applies one parsed message to the device's latest/runtime hashes.
+// KEYS: online deadlines, freshness wake stream. ARGV: device id, code,
+// protocol, observed at, updated at, source, online window, values JSON.
+// Returns 1 when the device's realtime view changed, else 0; the caller
+// publishes one device.realtime change for the whole batch.
+inline constexpr std::string_view kUpdateLatestScript = R"lua(
 local function number_or(value, fallback)
   local number = tonumber(value)
   if number == nil then return fallback end
@@ -191,7 +190,7 @@ local payload = cjson.decode(ARGV[8])
 local runtime_key = 'iot:v2:runtime:device:' .. ARGV[1]
 local latest_key = 'iot:v2:device:' .. ARGV[1] .. ':latest'
 if redis.call('HGET', runtime_key, 'device_id') ~= ARGV[1] then
-  return -1
+  return 0
 end
 local configured_ids = {}
 local has_configured_ids = false
@@ -287,42 +286,42 @@ for element_id, point in pairs(payload.values or {}) do
   end
 end
 if observed_at >= current_report then touched = true end
-if touched then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device.realtime') end
-return count
-    )lua";
-    const auto scriptSha = co_await redis.script_load(script);
-    auto pipeline = redis.pipeline();
+if touched then return 1 end
+return 0
+)lua";
+
+template <typename Redis>
+ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages) {
+    if (messages.empty()) {
+        co_return;
+    }
+    thread_local std::string sha;
+    const auto deadlinesKey = onlineDeadlinesKey();
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    std::vector<std::vector<std::string>> calls;
+    calls.reserve(messages.size());
     for (const auto& parsed : messages) {
-        const auto observedAt = std::to_string(parsed.observedAtMs);
-        const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
-        const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
-        const auto deadlinesKey = onlineDeadlinesKey();
-        const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
-        const std::array<std::string_view, 14> command{
-            "EVALSHA",
-            scriptSha,
-            "3",
+        calls.push_back({
             deadlinesKey,
             wakeStream,
-            service::message::live::kChanges,
             parsed.deviceId,
             parsed.deviceCode,
             parsed.protocol,
-            observedAt,
-            updatedAt,
+            std::to_string(parsed.observedAtMs),
+            std::to_string(service::message::utcNowMilliseconds()),
             parsed.source,
-            onlineWindow,
+            std::to_string(parsed.onlineWindowMs),
             parsed.valuesJson
-        };
-        // redis_pipeline copies every argument synchronously.
-        pipeline.command(command);
+        });
     }
-    const auto replies = co_await std::move(pipeline).exec();
-    for (const auto& reply : replies) {
-        if (reply.kind() == ruvia::redis_value::kind_type::error) {
-            service::message::redis::throwValue("device latest update", reply);
-        }
+    const auto touched = co_await evalBatch(redis, kUpdateLatestScript, sha, 2, calls, "device latest update");
+    std::set<std::string, std::less<>> deviceIds;
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        if (touched[index] == 1) deviceIds.emplace(messages[index].deviceId);
     }
+    if (deviceIds.empty()) co_return;
+    const std::vector<std::string> ids(deviceIds.begin(), deviceIds.end());
+    co_await publishRealtimeChange(redis, ids);
 }
 
 template <typename Redis>
@@ -349,18 +348,10 @@ ruvia::task<std::int64_t> deadlineTimeMilliseconds(const Redis& redis) {
     co_return *seconds * 1000 + *microseconds / 1000;
 }
 
-template <typename Redis>
-ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
-    const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
-    const std::vector<std::string> dueArguments{ "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" };
-    const auto due = co_await service::message::redis::command(
-        redis,
-        dueArguments
-    );
-    if (due.kind() != ruvia::redis_value::kind_type::array) {
-        service::message::redis::throwValue("read device online deadlines", due);
-    }
-    static constexpr std::string_view script = R"lua(
+// Claims one due online deadline (the atomic ZREM) and marks the device stale.
+// KEYS: online deadlines. ARGV: device id, now (ms). Returns 1 when the
+// device turned offline; a renewed deadline is re-armed and returns 0.
+inline constexpr std::string_view kExpireStaleScript = R"lua(
 local function number_or(value, fallback)
   local number = tonumber(value)
   if number == nil then return fallback end
@@ -382,37 +373,41 @@ if expected <= now then
   redis.call('HSET', runtime_key, 'state', 'offline', 'state_reason', 'data_stale',
              'updated_at_ms', ARGV[2])
   redis.call('HSET', latest_key, '_state', state_json, '_updated_at_ms', ARGV[2])
-  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device.realtime')
   return 1
 end
 redis.call('ZADD', KEYS[1], expected, ARGV[1])
 return 0
 )lua";
-    if (due.array().empty()) {
+
+template <typename Redis>
+ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
+    const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
+    const std::vector<std::string> dueArguments{ "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" };
+    const auto due = co_await service::message::redis::command(
+        redis,
+        dueArguments
+    );
+    if (due.kind() != ruvia::redis_value::kind_type::array) {
+        service::message::redis::throwValue("read device online deadlines", due);
+    }
+    std::vector<std::vector<std::string>> calls;
+    calls.reserve(due.array().size());
+    for (const auto& code : due.array()) {
+        if (code.kind() == ruvia::redis_value::kind_type::string) {
+            calls.push_back({ deadlineKey, std::string(code.string()), now });
+        }
+    }
+    if (calls.empty()) {
         co_return;
     }
-    const auto scriptSha = co_await redis.script_load(script);
-    auto pipeline = redis.pipeline();
-    for (const auto& code : due.array()) {
-        if (code.kind() != ruvia::redis_value::kind_type::string) {
-            continue;
-        }
-        const std::array<std::string_view, 7> command{
-            "EVALSHA",
-            scriptSha,
-            "2",
-            deadlineKey,
-            service::message::live::kChanges,
-            code.string(),
-            now
-        };
-        pipeline.command(command);
+    thread_local std::string sha;
+    const auto expired = co_await evalBatch(redis, kExpireStaleScript, sha, 1, calls, "expire device online deadline");
+    std::vector<std::string> ids;
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        if (expired[index] == 1) ids.push_back(calls[index][1]);
     }
-    const auto replies = co_await std::move(pipeline).exec();
-    for (const auto& reply : replies) {
-        if (reply.kind() == ruvia::redis_value::kind_type::error) {
-            service::message::redis::throwValue("expire device online deadline", reply);
-        }
+    if (!ids.empty()) {
+        co_await publishRealtimeChange(redis, ids);
     }
 }
 
@@ -844,7 +839,12 @@ return 1
         co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
     co_await signalFreshness(redis);
-    co_await publishRealtimeChange(redis);
+    std::vector<std::string> projectedIds;
+    projectedIds.reserve(devices.size());
+    for (const auto& row : devices) {
+        projectedIds.emplace_back(row[0].value().value_or(std::string_view{}));
+    }
+    co_await publishRealtimeChange(redis, projectedIds);
 }
 
 template <typename Context>

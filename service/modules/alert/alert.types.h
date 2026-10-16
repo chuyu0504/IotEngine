@@ -162,4 +162,16 @@ RUVIA_MODEL(TemplateInput,
 RUVIA_MODEL(AlertIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 RUVIA_MODEL(AlertListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(ruleId, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(severity, ruvia::string), RUVIA_OPTIONAL_FIELD(category, ruvia::string));
 
+// One serialized record in the records page row shape.
+struct AlertRecordRow {
+    std::string id;
+    std::string json;
+};
+
+// Serialized records page and the rows it shows (live records channel).
+struct AlertRecordPage {
+    std::string json;
+    std::vector<AlertRecordRow> rows;
+};
+
 } // namespace service::alert

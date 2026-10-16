@@ -29,7 +29,6 @@
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
-#include "service/middleware/rpc.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/device/device.types.h"
 #include "service/modules/edge_node/edge_node.service.h"
@@ -39,6 +38,7 @@
 #include "service/utils/debug_idle.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
+#include "service/utils/rpc_client.h"
 
 namespace service::device {
 
@@ -404,8 +404,16 @@ class DeviceService {
         co_return result;
     }
 
+    // `onlyIds` re-reads just those devices through the same scoped query (live
+    // updates), so rows keep exactly the snapshot row shape.
     template <typename Context>
-    ruvia::task<DevicePageDataDto> list(Context& c) {
+    ruvia::task<DevicePageDataDto> list(Context& c, const std::vector<std::string>* onlyIds = nullptr) {
+        DevicePageDataDto result(ruvia::model_options{ .resource_ = c.arena() });
+        const auto ids = onlyIds ? validIds(*onlyIds) : std::vector<std::string>{};
+        if (onlyIds && ids.empty()) {
+            result.template set<"list">(ruvia::boxed_array<DeviceItemDto>(ruvia::model_options{ .resource_ = c.arena() })).template set<"total">(0);
+            co_return result;
+        }
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
@@ -418,6 +426,9 @@ class DeviceService {
             .order_by(query.column("group_id", "d"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::last)
             .add_order_by(query.column("created_at", "d"))
             .add_order_by(query.column("id", "d"));
+        if (onlyIds) {
+            restrictIds(query, query.column("id", "d"), ids);
+        }
         const auto rows = co_await c.db().query(query);
         ruvia::boxed_array<DeviceItemDto> items(ruvia::model_options{ .resource_ = c.arena() });
         std::map<std::string, DeviceItemDto*, std::less<>> itemsById;
@@ -427,13 +438,18 @@ class DeviceService {
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DevicePageDataDto result(ruvia::model_options{ .resource_ = c.arena() });
         result.template set<"list">(std::move(items)).template set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
 
     template <typename Context>
-    ruvia::task<DeviceRealtimePageDto> realtime(Context& c) {
+    ruvia::task<DeviceRealtimePageDto> realtime(Context& c, const std::vector<std::string>* onlyIds = nullptr) {
+        DeviceRealtimePageDto result(ruvia::model_options{ .resource_ = c.arena() });
+        const auto ids = onlyIds ? validIds(*onlyIds) : std::vector<std::string>{};
+        if (onlyIds && ids.empty()) {
+            result.template set<"list">(ruvia::boxed_array<DeviceRealtimeDto>(ruvia::model_options{ .resource_ = c.arena() })).template set<"total">(0);
+            co_return result;
+        }
         const auto actor = co_await deviceAccessService().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
@@ -443,6 +459,9 @@ class DeviceService {
             .join(ruvia::db_join_type::left, service::device::entities::LinkEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::device::entities::LinkEntity::column_index<"id">(), service::device::entities::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column("link_id", "d")), "l")
             .where(query.binary(query.column("access_rank", "d"), ruvia::db_binary_operator::greater, DeviceAccessService::integer(query, 0)))
             .order_by(query.column("id", "d"));
+        if (onlyIds) {
+            restrictIds(query, query.column("id", "d"), ids);
+        }
         const auto rows = co_await c.db().query(query);
         ruvia::boxed_array<DeviceRealtimeDto> items(
             ruvia::model_options{ .resource_ = c.arena() }
@@ -477,8 +496,66 @@ class DeviceService {
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DeviceRealtimePageDto result(ruvia::model_options{ .resource_ = c.arena() });
         result.template set<"list">(std::move(items)).template set<"total">(static_cast<std::int64_t>(rows.size()));
+        co_return result;
+    }
+
+    // Devices whose list/realtime rows show data of the given links, protocol
+    // configurations, edge nodes or groups (including descendants of a group:
+    // shared access inherits down the tree). Visibility is checked afterwards
+    // by the scoped list query.
+    template <typename Context>
+    ruvia::task<std::vector<std::string>> devicesReferencing(Context& c, const std::vector<std::string>& linkIds, const std::vector<std::string>& protocolConfigIds, const std::vector<std::string>& edgeNodeIds, const std::vector<std::string>& groupIds) {
+        using Device = service::device::entities::DeviceEntity;
+        using Link = service::device::entities::LinkEntity;
+        using Group = service::device::entities::DeviceGroupEntity;
+        const auto links = validIds(linkIds);
+        const auto protocols = validIds(protocolConfigIds);
+        const auto nodes = validIds(edgeNodeIds);
+        const auto groups = validIds(groupIds);
+        std::vector<std::string> result;
+        if (links.empty() && protocols.empty() && nodes.empty() && groups.empty()) {
+            co_return result;
+        }
+        ruvia::db_query query(c.pool());
+        std::vector<ruvia::db_query::expr_type> conditions;
+        if (!links.empty()) {
+            conditions.push_back(query.binary(query.column(std::tuple_element_t<Device::column_index<"link_id">(), Device::columns_type>::name.view(), "d"), ruvia::db_binary_operator::in, uuidList(query, links)));
+        }
+        if (!protocols.empty()) {
+            conditions.push_back(query.binary(query.column(std::tuple_element_t<Device::column_index<"protocol_config_id">(), Device::columns_type>::name.view(), "d"), ruvia::db_binary_operator::in, uuidList(query, protocols)));
+        }
+        if (!nodes.empty()) {
+            conditions.push_back(query.binary(query.column(std::tuple_element_t<Link::column_index<"edge_node_id">(), Link::columns_type>::name.view(), "l"), ruvia::db_binary_operator::in, uuidList(query, nodes)));
+        }
+        if (!groups.empty()) {
+            ruvia::db_query roots(query.resource());
+            roots.select(roots.column(std::tuple_element_t<Group::column_index<"id">(), Group::columns_type>::name.view(), "root"))
+                .from(Group::table_name(), "root")
+                .where(roots.binary(roots.column(std::tuple_element_t<Group::column_index<"id">(), Group::columns_type>::name.view(), "root"), ruvia::db_binary_operator::in, uuidList(roots, groups)));
+            ruvia::db_query children(query.resource());
+            children.select(children.column(std::tuple_element_t<Group::column_index<"id">(), Group::columns_type>::name.view(), "child"))
+                .from(Group::table_name(), "child")
+                .join(ruvia::db_join_type::inner, "changed_group", children.binary(children.column("id", "parent"), ruvia::db_binary_operator::equal, children.column(std::tuple_element_t<Group::column_index<"parent_id">(), Group::columns_type>::name.view(), "child")), "parent");
+            roots.combine(ruvia::db_set_operation::union_value, children);
+            query.with("changed_group", roots, { .recursive_ = true, .columns_ = { "id" } });
+            ruvia::db_query subtree(query.resource());
+            subtree.select(subtree.column("id")).from("changed_group");
+            conditions.push_back(query.binary(query.column(std::tuple_element_t<Device::column_index<"group_id">(), Device::columns_type>::name.view(), "d"), ruvia::db_binary_operator::in, query.subquery(subtree)));
+        }
+        auto matches = conditions.front();
+        for (std::size_t index = 1; index < conditions.size(); ++index) {
+            matches = query.binary(matches, ruvia::db_binary_operator::or_value, conditions[index]);
+        }
+        query.select(DeviceAccessService::text(query, query.column(std::tuple_element_t<Device::column_index<"id">(), Device::columns_type>::name.view(), "d")))
+            .from(Device::table_name(), "d")
+            .join(ruvia::db_join_type::left, Link::table_name(), query.binary(query.column(std::tuple_element_t<Link::column_index<"id">(), Link::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<Device::column_index<"link_id">(), Device::columns_type>::name.view(), "d")), "l")
+            .where(andAll(query, query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<Device::column_index<"deleted_at">(), Device::columns_type>::name.view(), "d")), matches));
+        const auto rows = co_await c.db().query(query);
+        result.reserve(rows.size());
+        for (const auto& row : rows) {
+            result.emplace_back(row[0].value().value_or(std::string_view{}));
+        }
         co_return result;
     }
 
@@ -627,7 +704,7 @@ class DeviceService {
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "initialize", service::message::rpc::encodeLinePair(id, deviceCode));
+            (void)co_await service::utils::callRpc(c, "telemetry", "initialize", service::message::rpc::encodeLinePair(id, deviceCode));
         } catch (...) {
             // PostgreSQL is authoritative; startup hydration or the first report repairs Redis.
         }
@@ -965,7 +1042,7 @@ return result
             co_await transaction.commit();
         }
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "project-device", std::string(id));
+            (void)co_await service::utils::callRpc(c, "telemetry", "project-device", std::string(id));
         } catch (...) {
             // PostgreSQL remains authoritative; startup hydration repairs Redis read models.
         }
@@ -1011,7 +1088,7 @@ return result
             co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, rows.front()[2].value().value_or(""));
         co_await transaction.commit();
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "erase-device", std::string(id));
+            (void)co_await service::utils::callRpc(c, "telemetry", "erase-device", std::string(id));
         } catch (...) {
             // The next startup hydration removes stale Redis state for deleted devices.
         }
@@ -2853,6 +2930,31 @@ return result
         if (rows.front()[0].value().value_or(std::string_view{}) != "t") {
             service::common::fail(17005, "只能管理自己创建的设备分组", 403);
         }
+    }
+
+    // Change-feed ids come from producers outside this request; only UUIDs reach SQL casts.
+    static std::vector<std::string> validIds(const std::vector<std::string>& ids) {
+        std::vector<std::string> result;
+        result.reserve(ids.size());
+        for (const auto& id : ids) {
+            if (service::common::isUuid(id)) {
+                result.push_back(id);
+            }
+        }
+        return result;
+    }
+
+    static ruvia::db_query::expr_type uuidList(ruvia::db_query& query, const std::vector<std::string>& ids) {
+        std::vector<ruvia::db_query::expr_type> values;
+        values.reserve(ids.size());
+        for (const auto& id : ids) {
+            values.push_back(DeviceAccessService::uuid(query, id));
+        }
+        return query.list(values);
+    }
+
+    static void restrictIds(ruvia::db_query& query, ruvia::db_query::expr_type column, const std::vector<std::string>& ids) {
+        query.and_where(query.binary(column, ruvia::db_binary_operator::in, uuidList(query, ids)));
     }
 
     static constexpr std::string_view kNilUuid = "00000000-0000-0000-0000-000000000000";

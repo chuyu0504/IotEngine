@@ -1006,7 +1006,7 @@ ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::strin
         { "response_payload", std::string(responsePayload) },
         { "used_at_ms", std::to_string(service::message::utcNowMilliseconds()) },
     };
-    (void)co_await service::message::redis::addAndWake(
+    (void)co_await service::messaging::stream::addAndWake(
         redis,
         service::message::access::stream::audit(),
         fields,

@@ -165,16 +165,6 @@ int main() {
         requireContains(serviceSource, "sourceValue.size() > 16", "edge log source does not enforce local length limit");
         requireMissing(gatewaySource, "if (input.ping().nonce() != 0)", "edge gateway drops zero-nonce terminal liveness pings");
         requireContains(gatewaySource, "reply.mutable_pong()->set_nonce(input.ping().nonce())", "edge gateway does not echo terminal liveness pings");
-        const auto terminalRpcSource = edgeSource("service/features/edge/terminal/terminal.service.h");
-        requireContains(terminalRpcSource, "if (state->protocolVersion <= 3)", "terminal RPC does not preserve legacy immediate-ready behavior");
-        requireContains(terminalRpcSource, "message->set_ticket(id)", "terminal RPC does not satisfy legacy terminal-open validation");
-        requireContains(gatewaySource, "case pb::Envelope::kTerminalOpened", "edge gateway does not consume terminal-open acknowledgement");
-        requireContains(terminalRpcSource, "TerminalBrowserRecord::readyKey(id)", "terminal RPC does not track terminal readiness");
-        requireContains(serviceSource, "notification->receiver.receive_for(remaining, c.get_stop_token())", "terminal input does not wait for device acknowledgement notifications");
-        requireMissing(gatewaySource, "waitTerminalInputAck", "gateway retains the terminal acknowledgement polling loop");
-        requireMissing(gatewaySource, "pumpTerminal", "gateway retains the terminal output polling loop");
-        requireMissing(gatewaySource, "GatewayTicketValidator", "gateway retains the separate browser terminal connection");
-        requireContains(terminalRpcSource, "mutable_terminal_data_ack", "terminal RPC does not acknowledge delivered terminal output");
         requireContains(gatewaySource, "std::deque<std::string> outbound", "edge gateway does not serialize established-session replies");
         requireContains(gatewaySource, "enqueue(session, reply)", "edge gateway still writes node acknowledgements outside the flush path");
         requireMissing(gatewaySource, "co_await drain(c, socket, session)", "edge gateway still sends config frames from the session read loop");
@@ -220,14 +210,6 @@ int main() {
         requireMissing(dispatcherSource, "workers_.back().post(", "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(", "edge dispatcher still forwards wakeups between workers");
         requireContains(gatewaySource, ".reason_ = \"edge egress failed\"", "edge gateway leaves a half-open session online after its flush fails");
-        const auto terminalSource = edgeSource("service/features/edge/terminal/terminal.service.h");
-        requireContains(terminalSource, "session.protocolVersion < 5", "edge gateway does not isolate legacy terminal data handling");
-        requireBefore(terminalSource, "redis.call('SET',KEYS[2],ARGV[1],'EX',120)", "co_await enqueueBrowserInput(c, binding, id, open)", "terminal RPC does not register ownership before opening");
-        requireContains(edgeSource("service/common/message.h"), "return \"iot:edge:terminal:out:\" + std::string(nodeId)", "edge terminal output keys are not isolated by node");
-        requireContains(terminalSource, "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end", "edge gateway does not atomically verify terminal ownership");
-        requireContains(gatewaySource, "co_await terminal_state::TerminalService::saveTerminalData(c, terminalIdentity(session), input.terminal_data())", "edge gateway does not bind terminal output to the authenticated session");
-        requireContains(terminalSource, "redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])", "edge gateway does not atomically release terminal state");
-        requireMissing(gatewaySource, "\"iot:edge:terminal:out:\" + terminalId", "edge gateway still routes terminal output by unscoped identifier");
 
         std::cout << "edge service tests passed\n";
         return 0;

@@ -3701,7 +3701,7 @@ return 1
                               actual.has_value() ? protocol::TelemetryValues::scalarText(actual.value()) : std::string{}});
             fields.push_back({prefix + "unit", actual.unit()});
         }
-        (void)co_await message::redis::publishAndWake(
+        (void)co_await service::messaging::stream::publishAndWake(
             context.redis(), message::commandResultStream(), fields,
             std::nullopt,
             service::message::WorkerStreamTask::CommandResult, 10000);

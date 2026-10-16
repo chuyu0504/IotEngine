@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
-import { openSnapshotSubscription } from './sse-fixture';
+import { openSnapshotSubscription, type SnapshotSubscription } from './sse-fixture';
 
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
@@ -47,6 +47,19 @@ async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>, eventName
     assert.equal(JSON.parse(event.data).code, 0);
     return JSON.parse(event.data).data;
 }
+// Entity changes of a visible link arrive as `{delta:{upsert,remove}}` in the snapshot row shape.
+async function delta(stream: SnapshotSubscription, eventName = 'links') {
+    let event = await stream.next();
+    while (event.event !== eventName && event.event !== 'error') event = await stream.next();
+    assert.equal(event.event,eventName);
+    const payload = JSON.parse(event.data);
+    assert.equal(payload.code, 0);
+    assert(payload.delta, `${eventName} must answer an entity change with a delta: ${event.data}`);
+    return payload.delta as {upsert:any[];remove:string[]};
+}
+function change(topic: string, ...ids: string[]) {
+    return redis.send('XADD',['iot:live:changes','*','schema_version','2','topic',topic,'ids',ids.join(',')]);
+}
 async function verifyRuntimeAggregation() {
     await redis.send('SET', [runtimeOwnerKey, runtimeOwner, 'EX', '300']);
     const endpoint = {mode:'TCP Client',targets:runtimeTargets.map((id,index) => ({id,name:`broker-${index}`,ip:'127.0.0.1',port:1883+index,status:'enabled'}))};
@@ -87,9 +100,13 @@ async function verifyRuntimeAggregation() {
     await worker(1,connected('1234'),[connected('1234'),standby],1);
     healthy(await detail());
     async function changed() {
-        const next = snapshot(stream);
-        await redis.send('XADD',['iot:live:changes','*','schema_version','1','topic','link','entity_id',runtimeLink]);
-        return (await next).list[0];
+        const next = delta(stream);
+        await change('link', runtimeLink);
+        const {upsert, remove} = await next;
+        assert.deepEqual(remove, []);
+        assert.equal(upsert.length, 1);
+        assert.equal(upsert[0].id, runtimeLink);
+        return upsert[0];
     }
     await worker(0,standby,[standby,standby],0);
     await worker(1,failed,[failed,fatal],0);
@@ -117,6 +134,8 @@ async function verifyRuntimeAggregation() {
     await worker(0,connected('1234'),[connected('1234'),standby],1);
     await worker(1,standby,[standby,connected('5678')],1);
     healthy(await changed());
+    // Another link's change is not visible on this filtered page.
+    await change('link', crypto.randomUUID());
     await stream.expectQuiet(1000);
     await stream.close();
 }
@@ -143,9 +162,9 @@ try {
     await request('PUT',`/v1/link/${link}`,{...configuration,name:''},15002);
     await request('PUT',`/v1/link/${link}`,{...configuration,protocol:'invalid'},10001);
     await request('PUT',`/v1/link/${link}`,{...configuration,protocol:'SL651'},15006);
-    const renamed = snapshot(subscription);
+    const renamed = delta(subscription);
     await request('PUT',`/v1/link/${link}`,{...configuration,name:`${tag}_updated`});
-    assert.equal((await renamed).list[0].name,`${tag}_updated`);
+    assert.deepEqual((await renamed).upsert.map(row => [row.id, row.name]), [[link, `${tag}_updated`]]);
     await subscription.close();
     await request('PUT',`/v1/link/${link}/debug`,{enabled:true});
     const debugSubscription = await subscribe(`/v1/link/events?keyword=${tag}&debugLinkId=${link}`);
@@ -158,13 +177,16 @@ try {
     await redis.send('HSET',[`iot:debug:v4:packet:${packet}`,'acquisition_id',acquisition,'payload_hex','00FF','direction','rx','time_ms','1001']);
     await redis.send('ZADD',[`iot:debug:v4:acquisition:${acquisition}:packets`,'1001',packet]);
     await redis.send('ZADD',[`iot:debug:v4:link:${link}`,'1000',acquisition]);
-    await redis.send('XADD',['iot:live:changes','*','schema_version','1','topic','packet-debug']);
+    await change('packet-debug', link);
     const debug = await debugPush;
     assert.equal(debug[0].id,acquisition);
     assert.equal(debug[0].packets[0].payload_hex,'00FF');
     await debugSubscription.expectQuiet(1000);
+    // Packets of another link must not reload this debug view.
+    await change('packet-debug', crypto.randomUUID());
+    await debugSubscription.expectQuiet(1000);
     await request('PUT', `/v1/link/${link}`, { ...configuration, name: `${tag}_debug_open` });
-    assert.equal((await snapshot(debugSubscription)).list[0].name, `${tag}_debug_open`);
+    assert.equal((await delta(debugSubscription)).upsert[0].name, `${tag}_debug_open`);
     await debugSubscription.close();
     await request('GET', '/v1/link/events?debugLinkId=invalid', undefined, 10001);
     await db`INSERT INTO sys_user(id,username,password_hash) VALUES(${other},${other},'unused-test-password')`;
@@ -182,7 +204,7 @@ try {
     assert.equal(JSON.parse(deniedPacketEvent.data).code, 11007);
     actor = admin;
     await request('PUT', `/v1/link/${link}`, { ...configuration, name: `${tag}_query_only` });
-    assert.equal((await snapshot(deniedDebug)).list[0].name, `${tag}_query_only`);
+    assert.equal((await delta(deniedDebug)).upsert[0].name, `${tag}_query_only`);
     await deniedDebug.close();
     await request('POST','/v1/link',{name:`${tag}_edge`,execution:'edge',edge_node_id:crypto.randomUUID(),protocol:'Modbus',endpoint:{transport:'serial',interface:'/dev/ttyS0',baud_rate:299},status:'disabled'},15002);
     await request('DELETE',`/v1/link/${link}`);

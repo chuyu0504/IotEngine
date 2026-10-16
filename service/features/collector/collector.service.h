@@ -952,7 +952,7 @@ class CollectorStateService final {
             ? std::string(reply.array()[1].string())
             : std::string{};
         const auto oldInstance = std::string(reply.array()[2].string());
-        co_await message::redis::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness);
+        co_await service::messaging::stream::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness);
         co_return DeviceRouteOwner{oldWorker, oldConnection, oldInstance};
     }
 
@@ -1000,7 +1000,7 @@ class CollectorStateService final {
             const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);
             const std::string_view keys[]{key, owner, changes};
-            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now};
+            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now, device.id};
             const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseLegacyScript, keys, args);
             if (reply.kind() != ruvia::redis_value::kind_type::integer)
                 message::redis::throwValue("erase legacy device route", reply);

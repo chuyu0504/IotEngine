@@ -42,7 +42,7 @@ class ProtocolController final {
         const auto protocol = protocolValue ? std::optional<std::string>(protocolValue->view()) : std::nullopt;
         const auto data = co_await protocolService().list(request, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), protocol);
         c.header("Content-Type", "application/json");
-        const auto payload = service::live::data(c, data);
+        const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
     }
 
@@ -53,7 +53,7 @@ class ProtocolController final {
         if (!protocol) service::common::fail(16003, "protocol 不能为空", 400);
         const auto data = co_await protocolService().options(request, std::string(protocol->view()), static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()));
         c.header("Content-Type", "application/json");
-        const auto payload = service::live::data(c, data);
+        const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
     }
 
@@ -61,7 +61,7 @@ class ProtocolController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto data = co_await protocolService().detail(request, id(c));
         c.header("Content-Type", "application/json");
-        const auto payload = service::live::data(c, data);
+        const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
     }
 

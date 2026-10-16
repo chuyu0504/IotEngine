@@ -2344,18 +2344,18 @@ void testAtomicStreamFinalizationContract() {
         { "command_id", "command-1" }
     };
     const std::array publications{
-        service::message::redis::StreamPublication{ "dead-letter", deadLetterFields, 100 },
-        service::message::redis::StreamPublication{
+        service::messaging::stream::StreamPublication{ "dead-letter", deadLetterFields, 100 },
+        service::messaging::stream::StreamPublication{
             "command-result",
             resultFields,
             200,
-            service::message::redis::StreamWake{
+            service::messaging::stream::StreamWake{
                 0,
                 service::message::WorkerStreamTask::CommandResult } }
     };
 
     RecordingRedis committed(1);
-    require(runTask(service::message::redis::publishAllAndAcknowledge(committed, publications, "command-input", "collector-group", "collector-0", "10-0")), "pending stream finalization did not report a commit");
+    require(runTask(service::messaging::stream::publishAllAndAcknowledge(committed, publications, "command-input", "collector-group", "collector-0", "10-0")), "pending stream finalization did not report a commit");
     require(committed.keys == std::vector<std::string>{ "dead-letter", "dead-letter", "command-result", service::message::workerWakeStream(0, service::runtime::instanceId()), "command-input" }, "atomic stream finalization changed Redis key order");
     require(committed.arguments == std::vector<std::string>{ "collector-group", "10-0", "collector-0", "100", "1", "", "source_entry_id", "10-0", "200", "1", "command-result", "command_id", "command-1" }, "atomic stream finalization encoded invalid arguments");
     const auto pendingCheck = committed.script.find("XPENDING");
@@ -2365,7 +2365,7 @@ void testAtomicStreamFinalizationContract() {
     require(committed.script.find("pending[1][2] ~= ARGV[3]") != std::string::npos, "atomic stream finalization did not enforce consumer ownership");
 
     RecordingRedis missingPending(0);
-    require(!runTask(service::message::redis::publishAllAndAcknowledge(missingPending, publications, "command-input", "collector-group", "collector-0", "10-0")), "missing PEL entry was reported as atomically finalized");
+    require(!runTask(service::messaging::stream::publishAllAndAcknowledge(missingPending, publications, "command-input", "collector-group", "collector-0", "10-0")), "missing PEL entry was reported as atomically finalized");
 }
 
 void testRuntimeProjectionRejectsRedisErrors() {
@@ -2555,9 +2555,11 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
     const auto publishedChange = std::ranges::any_of(
         context.redisClient.state->directCommands,
         [](const auto& command) {
-            return command.size() == 8 && command[0] == "XADD" &&
+            return command.size() == 12 && command[0] == "XADD" &&
                 command[1] == service::message::live::kChanges &&
-                command[6] == "topic" && command[7] == "device.realtime";
+                command[6] == "schema_version" && command[7] == "2" &&
+                command[8] == "topic" && command[9] == "device.realtime" &&
+                command[10] == "ids" && command[11] == "device-1";
         }
     );
     require(publishedChange, "latest projection did not notify device realtime subscribers");

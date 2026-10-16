@@ -83,6 +83,49 @@ class LinkService {
         co_return result;
     }
 
+    // Links among `ids` that pass the list filters, in the list row shape (live updates).
+    template <typename Context>
+    ruvia::task<ruvia::boxed_array<LinkItemDto>> listByIds(Context& c, const std::vector<std::string>& ids, std::optional<std::string> keyword, std::optional<std::string> mode, std::optional<std::string> protocol, std::optional<std::string> status) {
+        ruvia::boxed_array<LinkItemDto> links(ruvia::model_options{ .resource_ = c.arena() });
+        auto query = linkSelect(c.pool());
+        const auto values = uuidList(query, ids);
+        if (!values) {
+            co_return links;
+        }
+        applyFilters(query, keyword, mode, protocol, status);
+        query.and_where(query.binary(query.column(std::tuple_element_t<LinkEntity::column_index<"id">(), LinkEntity::columns_type>::name.view()), ruvia::db_binary_operator::in, *values));
+        const auto rows = co_await c.db().query(query);
+        for (const auto& row : rows) {
+            auto& item = links.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            co_await fill(c, item, row);
+        }
+        co_return links;
+    }
+
+    // Links used by the given devices (deleted ones included): edge links are
+    // listed only while a device uses them, so device changes alter their visibility.
+    template <typename Context>
+    ruvia::task<std::vector<std::string>> linksOfDevices(Context& c, const std::vector<std::string>& deviceIds) {
+        using Device = entities::DeviceEntity;
+        std::vector<std::string> result;
+        ruvia::db_query query(c.pool());
+        const auto values = uuidList(query, deviceIds);
+        if (!values) {
+            co_return result;
+        }
+        query.select(query.cast(query.column(std::tuple_element_t<Device::column_index<"link_id">(), Device::columns_type>::name.view()), ruvia::db_data_type::text))
+            .distinct()
+            .from(Device::table_name())
+            .where(query.binary(query.column(std::tuple_element_t<Device::column_index<"id">(), Device::columns_type>::name.view()), ruvia::db_binary_operator::in, *values));
+        const auto rows = co_await c.db().query(query);
+        for (const auto& row : rows) {
+            if (const auto id = row[0].value()) {
+                result.emplace_back(*id);
+            }
+        }
+        co_return result;
+    }
+
     template <typename Context>
     ruvia::task<LinkItemDto> detail(Context& c, std::string_view id) {
         auto query = linkSelect(c.pool());
@@ -856,6 +899,21 @@ return result
     static ruvia::task<void> requireEdgeDebugNode(Context& c, std::string_view nodeId) {
         if (!co_await edgeDebugNodeAvailable(c, nodeId))
             service::common::fail(15002, "节点未批准或不支持链路调试配置", 409);
+    }
+
+    // Change-feed ids come from producers outside this request; only UUIDs reach
+    // SQL casts. nullopt when no valid id remains.
+    static std::optional<ruvia::db_expression> uuidList(ruvia::db_query& query, const std::vector<std::string>& ids) {
+        std::vector<ruvia::db_expression> values;
+        for (const auto& id : ids) {
+            if (service::common::isUuid(id)) {
+                values.push_back(query.cast(query.value(id), ruvia::db_data_type::uuid));
+            }
+        }
+        if (values.empty()) {
+            return std::nullopt;
+        }
+        return query.list(values);
     }
 
     static ruvia::db_query linkSelect(std::pmr::memory_resource* resource) {

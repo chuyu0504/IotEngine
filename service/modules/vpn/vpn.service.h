@@ -21,7 +21,7 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/middleware/rpc.h"
+#include "service/utils/rpc_client.h"
 #include "service/modules/vpn/vpn.entity.h"
 #include "service/modules/vpn/vpn.types.h"
 #include "service/utils/json.h"
@@ -832,6 +832,19 @@ class VpnService final {
     ruvia::task<std::string> desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionBody& payload);
     template <typename Context>
     ruvia::task<std::string> desktopPeerConfig(Context& c, std::string_view id);
+    // Network of a desktop Peer; vpn change ids are network ids.
+    template <typename Context>
+    ruvia::task<std::string> desktopPeerNetworkId(Context& c, std::string_view id) {
+        using Op = ruvia::db_binary_operator;
+        requireUuid(id, "VPN Peer ID 无效");
+        ruvia::db_query query(c.pool());
+        query
+            .select(query.column(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<"network_id">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view()))
+            .from(service::vpn::entities::VpnPeerEntity::table_name())
+            .where(query.binary(query.column(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<"id">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view()), Op::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)));
+        const auto rows = co_await c.db().query(query);
+        co_return rows.empty() ? std::string{} : detail::rowValue(rows.front(), 0);
+    }
     template <typename Context>
     ruvia::task<void> desktopDeletePeer(Context& c, std::string_view id);
 
@@ -1297,7 +1310,7 @@ ruvia::task<void> VpnService::audit(Context& c, std::string_view actor, std::str
 
 template <typename Context>
 ruvia::task<std::string> VpnService::control(Context& c, std::string_view operation, std::string payload) {
-    co_return co_await service::rpc::call(c, "vpn", operation, std::move(payload));
+    co_return co_await service::utils::callRpc(c, "vpn", operation, std::move(payload));
 }
 
 template <typename Context>

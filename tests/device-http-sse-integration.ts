@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
-import { openSnapshotSubscription } from './sse-fixture';
+import { openSnapshotSubscription, type SnapshotSubscription } from './sse-fixture';
 
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
@@ -40,20 +40,59 @@ async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>, eventName
     assert.equal(JSON.parse(event.data).code, 0);
     return JSON.parse(event.data).data;
 }
-async function collectEvents(stream: Awaited<ReturnType<typeof subscribe>>, names: string[]) {
-    const remaining = new Set(names);
-    const data = new Map<string, any>();
-    while (remaining.size) {
-        const event = await stream.next();
-        if (event.event === 'error') {
-            assert.equal(event.event, names[0]);
-        }
-        if (!remaining.has(event.event)) continue;
-        assert.equal(JSON.parse(event.data).code, 0, event.event);
-        data.set(event.event, JSON.parse(event.data).data);
-        remaining.delete(event.event);
+type Row = { id: string; name?: string; deviceCount?: number; reportTime?: string };
+type ChannelData = { list: Row[] } | Row[];
+type ChannelPayload = { code: number; data?: ChannelData; delta?: { upsert: Row[]; remove: string[] } };
+type View = Map<string, ChannelData>;
+function rowsOf(view: View, name: string): Row[] {
+    const data = view.get(name);
+    assert(data, `${name} has no snapshot`);
+    return Array.isArray(data) ? data : data.list;
+}
+// Client view of one page connection: snapshots replace a channel, entity
+// deltas merge rows by id exactly as the web cache does.
+function apply(view: View, name: string, payload: ChannelPayload) {
+    assert.equal(payload.code, 0, `${name}: ${JSON.stringify(payload)}`);
+    if (!payload.delta) {
+        assert(payload.data !== undefined, `${name}: ${JSON.stringify(payload)}`);
+        view.set(name, payload.data);
+        return;
     }
-    return data;
+    const rows = new Map(rowsOf(view, name).map(row => [row.id, row]));
+    for (const id of payload.delta.remove) rows.delete(id);
+    for (const row of payload.delta.upsert) rows.set(row.id, row);
+    view.set(name, { list: [...rows.values()] });
+}
+async function until(stream: SnapshotSubscription, view: View, reached: () => boolean) {
+    while (!reached()) {
+        const event = await stream.next();
+        apply(view, event.event, JSON.parse(event.data));
+    }
+}
+// Applies trailing notifications of a write (e.g. telemetry initialization)
+// until the connection has been idle for two seconds.
+async function settle(stream: SnapshotSubscription, view: View) {
+    for (;;) {
+        let event;
+        try {
+            event = await stream.next(2000);
+        } catch (error) {
+            if ((error as Error).message === 'SSE event timeout') return;
+            throw error;
+        }
+        apply(view, event.event, JSON.parse(event.data));
+    }
+}
+async function nextPayload(stream: SnapshotSubscription, eventName: string): Promise<ChannelPayload> {
+    let event = await stream.next();
+    while (event.event !== eventName && event.event !== 'error') event = await stream.next();
+    assert.equal(event.event, eventName);
+    const payload: ChannelPayload = JSON.parse(event.data);
+    assert.equal(payload.code, 0, event.data);
+    return payload;
+}
+function change(topic: string, ...ids: string[]) {
+    return redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', topic, 'ids', ids.join(',')]);
 }
 try {
     await request('GET', '/v1/device', undefined, 11004, null);
@@ -64,14 +103,18 @@ try {
     await request('POST', '/v1/device/groups', {name:tag,status:'enabled',sort_order:1});
     group = (await db`SELECT id FROM device_group WHERE name=${tag}`)[0].id;
     const list = await subscribe('/v1/device/events');
-    await collectEvents(list, ['devices', 'groups', 'realtime']);
+    const view: View = new Map();
+    await until(list, view, () => ['devices', 'groups', 'realtime'].every(name => view.has(name)));
     await request('POST', '/v1/device', {name:tag,device_code:`MB-${tag}`,link_id:link,protocol_config_id:model,group_id:group,status:'disabled',online_timeout:120,remote_control:true,modbus_mode:'TCP',slave_id:1,timezone:'+08:00',heartbeat:{mode:'OFF'},registration:{mode:'ASCII',content:tag},parameters:{address:'A001', channel:2, enabled:true, empty:null, nested:{empty:null}},remark:'retained'});
-    const created = await collectEvents(list, ['devices', 'groups', 'realtime']);
-    const item = created.get('devices').list.find((row: {name:string}) => row.name === tag);
-    assert(item);
-    device = item.id;
-    const countedGroup = created.get('groups').find((row: {id:string}) => row.id === group);
-    assert.equal(countedGroup.deviceCount, 1, 'the shared connection must update group counts after device creation');
+    // A created device is a new visible row: devices and realtime resend their
+    // snapshot, and the group tree recounts.
+    await until(list, view, () => {
+        const created = rowsOf(view, 'devices').find(row => row.name === tag);
+        return created !== undefined
+            && rowsOf(view, 'groups').find(row => row.id === group)?.deviceCount === 1
+            && rowsOf(view, 'realtime').some(row => row.id === created.id);
+    });
+    device = rowsOf(view, 'devices').find(row => row.name === tag)!.id;
     await request('POST', `/v1/device/${device}/commands`, { elements: [] }, 10001);
     const detail = () => request('GET', `/v1/device/${device}`);
     assert.equal((await detail()).created_by, admin);
@@ -80,27 +123,32 @@ try {
     const modelOptions=await request('GET','/v1/protocol/configs/options?protocol=Modbus');
     assert.equal(modelOptions.list.find((row:{id:string})=>row.id===model).parameters.length,5);
     assert.deepEqual((await detail()).parameters, {address:'A001',channel:2,enabled:true,empty:null,nested:{empty:null}});
-    const realtime = list;
-    assert(created.get('realtime').list.some((row: {id:string}) => row.id === device));
-    // Drain the create notification before isolating a telemetry-only change.
+    assert(rowsOf(view, 'realtime').some(row => row.id === device));
+    // Apply trailing create notifications before isolating a telemetry-only change.
+    await settle(list, view);
     await list.expectQuiet();
     assert(list.commentCount > 0, 'idle connection must use comment-only keepalive');
     const reported = Date.now();
     await redis.send('EVAL', [
-        "redis.call('HSET',KEYS[1],'last_report_at_ms',ARGV[1]); return redis.call('XADD',KEYS[2],'*','topic','device.realtime')",
-        '2', `iot:v2:runtime:device:${device}`, 'iot:live:changes', String(reported),
+        "redis.call('HSET',KEYS[1],'last_report_at_ms',ARGV[1]); return redis.call('XADD',KEYS[2],'*','schema_version','2','topic','device.realtime','ids',ARGV[2])",
+        '2', `iot:v2:runtime:device:${device}`, 'iot:live:changes', String(reported), device,
     ]);
-    const telemetryEvent = await realtime.next();
+    const telemetryEvent = await list.next();
     assert.equal(telemetryEvent.event, 'realtime', 'telemetry must not rebuild metadata or groups');
-    const changedRealtime = JSON.parse(telemetryEvent.data).data.list.find((row: {id:string}) => row.id === device);
-    assert.equal(Date.parse(changedRealtime.reportTime), Math.floor(reported / 1000) * 1000);
-    // The metadata response also contains reportTime. A mistaken metadata query
-    // would therefore emit a changed snapshot during this idle observation.
+    const telemetry: ChannelPayload = JSON.parse(telemetryEvent.data);
+    assert.equal(telemetry.code, 0);
+    assert(telemetry.delta, 'telemetry must answer with an entity delta, not a snapshot');
+    assert.deepEqual(telemetry.delta.remove, []);
+    assert.deepEqual(telemetry.delta.upsert.map(row => row.id), [device], 'the delta must contain only the reporting device');
+    assert.equal(Date.parse(telemetry.delta.upsert[0].reportTime ?? ''), Math.floor(reported / 1000) * 1000);
+    // Exactly one event: a mistaken metadata or group query would emit here.
     await list.expectQuiet();
     const commentsBeforeDuplicate = list.commentCount;
-    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'device.realtime']);
+    await change('device.realtime', device);
     await list.expectQuiet(1000);
     assert.equal(list.commentCount, commentsBeforeDuplicate, 'duplicate notification must not trigger a heartbeat');
+    // Telemetry of a device outside the user's scope reaches nobody.
+    await change('device.realtime', crypto.randomUUID());
     await list.expectQuiet();
     assert(Array.isArray(await request('GET', '/v1/device/options')));
     await request('PUT', `/v1/device/${device}`, {name:`${tag}_updated`,remote_control:false});
@@ -132,13 +180,18 @@ try {
     await redis.send('HSET', [`iot:debug:v4:packet:${packet}`, 'acquisition_id', acquisition, 'payload_hex', '00FF', 'direction', 'rx', 'time_ms', '1001']);
     await redis.send('ZADD', [`iot:debug:v4:acquisition:${acquisition}:packets`, '1001', packet]);
     await redis.send('ZADD', [`iot:debug:v4:device:${device}`, '1000', acquisition]);
-    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'packet-debug']);
+    await change('packet-debug', device);
     const packetEvent = await debug.next();
     assert.equal(packetEvent.event, 'packets', 'packet updates must not rebuild other page channels');
     assert.equal(JSON.parse(packetEvent.data).data[0].packets[0].payload_hex, '00FF');
     await debug.expectQuiet(1000);
+    // Packets of another device must not reload this debug view.
+    await change('packet-debug', crypto.randomUUID());
+    await debug.expectQuiet(1000);
     await request('PUT', `/v1/device/${device}`, { name: `${tag}_debug_open` });
-    assert.equal((await snapshot(debug, 'devices')).list.find((row: {id:string}) => row.id === device).name, `${tag}_debug_open`);
+    const renamed = (await nextPayload(debug, 'devices')).delta;
+    assert(renamed, 'a device rename must answer with an entity delta');
+    assert.deepEqual(renamed.upsert.map(row => [row.id, row.name]), [[device, `${tag}_debug_open`]]);
     await debug.close();
     await request('GET', '/v1/device/events?debugDeviceId=invalid', undefined, 10001);
     console.log('device integration: command batch initial snapshot');

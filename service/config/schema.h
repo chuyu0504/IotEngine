@@ -1936,6 +1936,92 @@ END $schema$;
     ruvia::db_migration({.id_="0054_native_point_calculations", .sql_=std::string(kNativePointCalculationsMigration)}),
     ruvia::db_migration({.id_="0055_device_parameters", .sql_=std::string(kDeviceParametersMigration)}),
     ruvia::db_migration({.id_="0056_device_parameter_definitions", .sql_=std::string(kDeviceParameterDefinitionsMigration)}),
+    ruvia::db_migration({.id_="0057_entity_live_changes", .sql_=R"sql(
+DO $schema$
+DECLARE source RECORD; operation TEXT; transition_kind TEXT; target_topic TEXT; id_column TEXT;
+BEGIN
+-- TG_ARGV[0] = live topic, TG_ARGV[1] = optional id column. aggregate_id carries
+-- the distinct changed ids (comma separated, schema 2); more than 1000 ids or
+-- no id column means the whole topic changed (empty aggregate_id).
+CREATE OR REPLACE FUNCTION publish_query_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE changed BIGINT; identified BIGINT; distinct_ids BIGINT; ids TEXT;
+BEGIN
+  IF TG_NARGS > 1 THEN
+    EXECUTE format('SELECT count(*), count(%I), count(DISTINCT %I), string_agg(DISTINCT %I::text, '','') FROM query_changed_rows',
+        TG_ARGV[1], TG_ARGV[1], TG_ARGV[1])
+      INTO changed, identified, distinct_ids, ids;
+    IF changed = 0 THEN RETURN NULL; END IF;
+    -- Rows without an id or too many ids publish the whole topic.
+    IF identified < changed OR distinct_ids > 1000 THEN ids := ''; END IF;
+  ELSE
+    IF NOT EXISTS (SELECT 1 FROM query_changed_rows) THEN RETURN NULL; END IF;
+    ids := '';
+  END IF;
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed',TG_ARGV[0],COALESCE(ids,''),TG_OP,2);
+  RETURN NULL;
+END $fn$;
+CREATE TEMPORARY TABLE live_topic_mapping(relname TEXT PRIMARY KEY, topic TEXT NOT NULL, id_column TEXT) ON COMMIT DROP;
+INSERT INTO live_topic_mapping VALUES
+  ('sys_user','auth',NULL),('sys_role','auth',NULL),('sys_user_role','auth',NULL),
+  ('sys_department','auth',NULL),('device_access_grant','auth',NULL),
+  ('device_group_access_grant','auth',NULL),('open_access_key','auth',NULL),
+  ('open_access_key_device','auth',NULL),
+  ('device','device','id'),('device_group','device-group','id'),
+  ('link','link','id'),('protocol_config','protocol','id'),
+  ('edge_node','edge','id'),('edge_node_interface','edge','node_id'),
+  ('edge_node_serial','edge','node_id'),('edge_node_platform','edge','node_id'),
+  ('edge_task','edge','node_id'),('edge_config_revision','edge','node_id'),
+  ('edge_node_network','edge','node_id'),('edge_firmware','edge',NULL),
+  ('edge_node_group','edge-group','id'),
+  ('alert_rule','alert-rule','id'),('alert_rule_template','alert-rule',NULL),
+  ('open_alert_record','alert','id'),
+  ('open_webhook','access',NULL),('open_access_log','access',NULL),
+  ('vpn_network','vpn','id'),('vpn_peer','vpn','network_id'),
+  ('vpn_route','vpn','network_id'),('vpn_enrollment','vpn','network_id'),
+  ('vpn_access_rule','vpn',NULL),
+  ('gb28181_device','gb28181','id'),('gb28181_channel','gb28181','device_id'),
+  ('gb28181_record','gb28181','device_id'),('gb28181_stream','gb28181',NULL),
+  ('command_operation','command','id');
+FOR source IN
+  SELECT DISTINCT c.relname, n.nspname,
+    convert_from(substring(t.tgargs FROM 1 FOR
+      position(decode('00','hex') IN t.tgargs)-1),'UTF8') AS topic
+  FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE t.tgfoid='publish_query_change()'::regprocedure AND NOT t.tgisinternal
+LOOP
+  SELECT m.topic, m.id_column INTO target_topic, id_column
+    FROM live_topic_mapping m WHERE m.relname=source.relname;
+  IF NOT FOUND THEN target_topic := source.topic; id_column := NULL; END IF;
+  FOR operation IN
+    SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE t.tgfoid='publish_query_change()'::regprocedure AND NOT t.tgisinternal
+      AND c.relname=source.relname AND n.nspname=source.nspname
+  LOOP
+    EXECUTE format('DROP TRIGGER %I ON %I.%I',operation,source.nspname,source.relname);
+  END LOOP;
+  FOREACH operation IN ARRAY ARRAY['INSERT','UPDATE','DELETE'] LOOP
+    transition_kind := CASE WHEN operation='DELETE' THEN 'OLD' ELSE 'NEW' END;
+    IF id_column IS NULL THEN
+      EXECUTE format('CREATE TRIGGER %I AFTER %s ON %I.%I REFERENCING %s TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(%L)',
+        'live_' || source.relname || '_' || lower(operation),operation,source.nspname,source.relname,transition_kind,target_topic);
+    ELSE
+      EXECUTE format('CREATE TRIGGER %I AFTER %s ON %I.%I REFERENCING %s TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(%L,%L)',
+        'live_' || source.relname || '_' || lower(operation),operation,source.nspname,source.relname,transition_kind,target_topic,id_column);
+    END IF;
+  END LOOP;
+END LOOP;
+CREATE OR REPLACE FUNCTION publish_edge_dtu_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD IS NOT DISTINCT FROM NEW THEN RETURN NULL; END IF;
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed','edge-dtu',COALESCE(NEW.node_id,OLD.node_id)::text,TG_OP,2);
+  RETURN NULL;
+END $fn$;
+END $schema$;
+)sql"}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

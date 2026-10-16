@@ -615,7 +615,7 @@ class ConfigurationService final {
         auto version =
             co_await service::collector::config::project(context.redis(), snapshot, *context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
         if (notify)
-            co_await service::live::publish(context.redis(), "runtime-config");
+            co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
         co_await transaction.commit();
         co_return version;
     }

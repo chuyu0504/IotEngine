@@ -43,6 +43,24 @@ ruvia::task<std::string> field(const ruvia::redis_handle& redis,
     co_return std::string(reply.string());
 }
 
+// Topic and ids of the newest live change entry (schema version 2 required).
+ruvia::task<std::pair<std::string, std::string>> lastChange(const ruvia::redis_handle& redis) {
+    const auto reply = co_await command(redis, {"XREVRANGE", service::message::live::kChanges, "+", "-", "COUNT", "1"});
+    require(reply.kind() == ruvia::redis_value::kind_type::array && reply.array().size() == 1,
+            "live change stream is empty");
+    const auto fields = reply.array()[0].array()[1].array();
+    std::string version, topic, ids;
+    for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
+        const auto name = fields[index].string();
+        const auto value = std::string(fields[index + 1].string());
+        if (name == service::message::live::kSchemaVersionField) version = value;
+        if (name == service::message::live::kTopicField) topic = value;
+        if (name == service::message::live::kIdsField) ids = value;
+    }
+    require(version == service::message::live::kSchemaVersion, "live change lacks schema version 2");
+    co_return std::pair{topic, ids};
+}
+
 ruvia::task<std::pair<std::string, std::string>> readConnection(
         const ruvia::redis_handle& redis, std::string_view device) {
     const auto runtime = service::message::telemetry::runtimeKey(device);
@@ -214,6 +232,8 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
                                                      "worker-b", "duplicate_disconnect");
     require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == disconnectedEvents,
             "duplicate disconnect published a duplicate business event");
+    require(co_await lastChange(redis) == std::pair<std::string, std::string>{"device.state", std::string(device)},
+            "disconnect did not publish a device.state change for the device");
     require(!(co_await CollectorStateService::renewRoute(redis, device, "connection-a", 12, 3, "worker-b")),
             "disconnected connection was revived by renewal");
     require((co_await field(redis, runtime, "last_report_at_ms")) == "1700000000456" &&
@@ -382,6 +402,8 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     expireFromTwoWorkers(port);
     require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events + 1,
             "two workers failed to publish exactly one real connection expiry event");
+    require(co_await lastChange(redis) == std::pair<std::string, std::string>{"device.state", std::string(device)},
+            "connection expiry did not publish the expired device id");
     co_await service::telemetry::latest::expireConnections(redis);
     require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events + 1,
             "repeated expiry published duplicate disconnect events");

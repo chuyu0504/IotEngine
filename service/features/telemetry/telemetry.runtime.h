@@ -82,12 +82,12 @@ class PersistenceRuntime final : public TelemetryService {
                                                                          message::WorkerStreamTask::TelemetryLatest,
                                                                          message::WorkerStreamTask::TelemetryAlerts,
                                                                          message::WorkerStreamTask::TelemetryDelivery }) {
-                                                    message::workerStreamMultiplexer().signal(task);
+                                                    service::messaging::workerStreamMultiplexer().signal(task);
                                                 }
-                                                message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     message::WorkerStreamTask::Freshness
                                                 );
-                                                message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     message::WorkerStreamTask::FreshnessAlerts
                                                 );
                                                 co_return;
@@ -146,7 +146,7 @@ class PersistenceRuntime final : public TelemetryService {
                     if (wait.has_value() && wait->count() == 0) {
                         continue;
                     }
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         alerts ? service::message::WorkerStreamTask::FreshnessAlerts : service::message::WorkerStreamTask::Freshness,
                         context.get_stop_token(),
@@ -264,7 +264,7 @@ class PersistenceRuntime final : public TelemetryService {
                     continue;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         wakeTask,
                         context.get_stop_token(),
@@ -278,7 +278,7 @@ class PersistenceRuntime final : public TelemetryService {
                         if (consumerKind != Consumer::Alerts) {
                             co_await apply(context, consumerKind, batch.messages);
                             if (consumerKind == Consumer::Dispatch) {
-                                message::workerStreamMultiplexer().signalTelemetryConsumers();
+                                service::messaging::workerStreamMultiplexer().signalTelemetryConsumers();
                             }
                             co_await message::redis::acknowledgeAndDeleteMany(redis, batch.stream, group, batch.messages);
                         } else {

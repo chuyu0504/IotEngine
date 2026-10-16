@@ -83,7 +83,7 @@ class Reconciler final {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Reconciler
                                                 );
                                                 co_return;
@@ -217,7 +217,7 @@ class Reconciler final {
                         );
                         timeout = std::min(*timeout, untilCleanup);
                     }
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Reconciler,
                         context.get_stop_token(),
@@ -259,8 +259,8 @@ class Reconciler final {
                     for (const auto& batch : batches) {
                         received.insert(received.end(), batch.messages.begin(), batch.messages.end());
                     }
-                    const auto eventIds = service::message::idempotency::eventIds(received);
-                    const auto pendingIds = co_await service::message::idempotency::pending(
+                    const auto eventIds = service::messaging::idempotency::eventIds(received);
+                    const auto pendingIds = co_await service::messaging::idempotency::pending(
                         context,
                         kGroup,
                         eventIds
@@ -269,7 +269,7 @@ class Reconciler final {
                         batches,
                         [&pendingIds](const auto& batch) {
                             return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
-                                return service::message::idempotency::shouldProcess(
+                                return service::messaging::idempotency::shouldProcess(
                                            message,
                                            pendingIds
                                        ) &&
@@ -281,7 +281,7 @@ class Reconciler final {
                         batches,
                         [&pendingIds](const auto& batch) {
                             return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
-                                return service::message::idempotency::shouldProcess(
+                                return service::messaging::idempotency::shouldProcess(
                                            message,
                                            pendingIds
                                        ) &&
@@ -303,7 +303,7 @@ class Reconciler final {
                     if (alertRefreshRequired) {
                         co_await service::alert::metadata::refresh(context);
                     }
-                    co_await service::message::idempotency::markProcessed(
+                    co_await service::messaging::idempotency::markProcessed(
                         context,
                         kGroup,
                         eventIds

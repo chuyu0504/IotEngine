@@ -1,10 +1,10 @@
 #pragma once
 
-#include <memory>
-#include "service/features/edge/edge.config.h"
 #include <array>
 #include <chrono>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <terminal.pb.h>
@@ -12,24 +12,102 @@
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
+#include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.entity.h"
 #include "service/features/edge/terminal/terminal.types.h"
 #include "service/utils/base64.h"
+#include "service/utils/change_feed.h"
 #include "service/utils/json.h"
 
 namespace service::edge::terminal_state {
 
+// Terminal frames and input acknowledgements are directed messages: they reach
+// only the Service Worker holding the browser connection, resolved through the
+// route key that worker registered when it opened the terminal (topic only;
+// the waiter reads the frames from its own keys). A missing route drops it.
+
+// KEYS: node session, owner, browser binding, closed marker.
+// ARGV: node session, encoded binding.
+inline constexpr std::string_view kOpenTerminalScript = R"lua(
+if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('EXISTS',KEYS[4]) == 1 or redis.call('EXISTS',KEYS[2]) == 1 then return 0 end
+redis.call('SET',KEYS[2],ARGV[1],'EX',120)
+redis.call('SET',KEYS[3],ARGV[2],'EX',120)
+return 1
+)lua";
+
+// KEYS: node session, owner, browser binding, closed marker, node input queue,
+// input sequence, input ACK, output ACK, output sequence, ready marker.
+// ARGV: node session, encoded binding, envelope, kind, sequence.
+inline constexpr std::string_view kEnqueueBrowserInputScript = R"lua(
+if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('GET',KEYS[2]) ~= ARGV[1] or redis.call('GET',KEYS[3]) ~= ARGV[2] then return 0 end
+if ARGV[4] ~= 'close' and redis.call('EXISTS',KEYS[4]) == 1 then return 0 end
+if redis.call('LLEN',KEYS[5]) >= 4096 then return 0 end
+local sequence=tonumber(ARGV[5])
+if ARGV[4] == 'input' then
+ if redis.call('EXISTS',KEYS[10]) == 0 then return 0 end
+ if sequence > 0 then
+  local previous=tonumber(redis.call('GET',KEYS[6]) or '0')
+  if sequence ~= previous + 1 or tonumber(redis.call('GET',KEYS[7]) or '0') ~= previous then return 0 end
+  redis.call('SET',KEYS[6],ARGV[5],'EX',120)
+ end
+elseif ARGV[4] == 'ack' then
+ local previous=tonumber(redis.call('GET',KEYS[8]) or '0')
+ if sequence <= previous then return 1 end
+ if sequence ~= previous + 1 or sequence > tonumber(redis.call('GET',KEYS[9]) or '0') then return 0 end
+ redis.call('SET',KEYS[8],ARGV[5],'EX',120)
+end
+redis.call('RPUSH',KEYS[5],ARGV[3])
+redis.call('EXPIRE',KEYS[5],120)
+return 1
+)lua";
+
+inline constexpr std::string_view kDeleteKeysScript = R"lua(
+return redis.call('DEL',unpack(KEYS))
+)lua";
+
+// ARGV: lifetime in seconds of every key.
+inline constexpr std::string_view kExpireKeysScript = R"lua(
+for _,key in ipairs(KEYS) do redis.call('EXPIRE',key,ARGV[1]) end
+return 1
+)lua";
+
+// KEYS: node input queue. ARGV: envelope, queue limit, lifetime.
+inline constexpr std::string_view kEnqueueInputScript = R"lua(
+if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+local length = redis.call('RPUSH', KEYS[1], ARGV[1])
+if length == 1 then redis.call('EXPIRE', KEYS[1], ARGV[3]) end
+return length
+)lua";
+
+// KEYS: owner, output, input ACK, output sequence. ARGV: node session.
+inline constexpr std::string_view kReleaseTerminalSessionScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])
+return 1
+)lua";
+
 // Close only this terminal. Retain its final browser frame for the output pump.
+// KEYS: owner, output, input ACK, output sequence, event route, ACK route.
+// ARGV: node session, close frame, event topic, ACK topic, stream capacity,
+// stream lifetime (ms).
 inline constexpr std::string_view kFailScript = R"lua(
+local function notify(route, topic)
+  local stream = redis.call('GET', route)
+  if stream then
+    redis.call('XADD', stream, 'MAXLEN', '~', ARGV[5], '*', 'topic', topic)
+    redis.call('PEXPIRE', stream, ARGV[6])
+  end
+end
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])
 redis.call('RPUSH', KEYS[2], ARGV[2])
 redis.call('EXPIRE', KEYS[2], 120)
-redis.call('XADD',KEYS[5],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[3])
-redis.call('XADD',KEYS[5],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[4])
+notify(KEYS[5], ARGV[3])
+notify(KEYS[6], ARGV[4])
 return 1
 )lua";
 
@@ -44,6 +122,77 @@ for i = 2, 5 do
 end
 return 1
 )lua";
+
+// Ready, close and legacy data frames.
+// KEYS: owner, output, ready marker, remote-closed marker, event route, ACK route.
+// ARGV: node session, frame, lifetime, kind (ready|close|data), event topic,
+// ACK topic, stream capacity, stream lifetime (ms).
+inline constexpr std::string_view kSaveTerminalFrameScript = R"lua(
+local function notify(route, topic)
+  local stream = redis.call('GET', route)
+  if stream then
+    redis.call('XADD', stream, 'MAXLEN', '~', ARGV[7], '*', 'topic', topic)
+    redis.call('PEXPIRE', stream, ARGV[8])
+  end
+end
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call('LLEN',KEYS[2]) >= 64 then return -1 end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+if ARGV[4] == 'ready' then redis.call('SET',KEYS[3],'1','EX',ARGV[3]) end
+if ARGV[4] == 'close' then
+ redis.call('SET',KEYS[4],'1','EX',ARGV[3])
+ notify(KEYS[6], ARGV[6])
+end
+notify(KEYS[5], ARGV[5])
+return 1
+)lua";
+
+// Sequenced output (protocol 5+). Returns 2 for a duplicate, -1 for a gap or a
+// full backlog. KEYS: owner, output, output sequence, event route.
+// ARGV: node session, frame, sequence, lifetime, event topic, stream capacity,
+// stream lifetime (ms).
+inline constexpr std::string_view kSaveTerminalDataScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local previous = tonumber(redis.call('GET', KEYS[3]) or '0')
+local sequence = tonumber(ARGV[3])
+if sequence == previous then return 2 end
+if sequence ~= previous + 1 then return -1 end
+if redis.call('LLEN',KEYS[2]) >= 64 then return -1 end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+local stream = redis.call('GET', KEYS[4])
+if stream then
+  redis.call('XADD', stream, 'MAXLEN', '~', ARGV[6], '*', 'topic', ARGV[5])
+  redis.call('PEXPIRE', stream, ARGV[7])
+end
+return 1
+)lua";
+
+// Input acknowledgement (protocol 5+). KEYS: owner, input ACK, ACK route.
+// ARGV: node session, sequence, lifetime, ACK topic, stream capacity, stream
+// lifetime (ms).
+inline constexpr std::string_view kSaveTerminalAckScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local previous = tonumber(redis.call('GET', KEYS[2]) or '0')
+local sequence = tonumber(ARGV[2])
+if sequence == previous then return 1 end
+if sequence ~= previous + 1 then return -1 end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+local stream = redis.call('GET', KEYS[3])
+if stream then
+  redis.call('XADD', stream, 'MAXLEN', '~', ARGV[5], '*', 'topic', ARGV[4])
+  redis.call('PEXPIRE', stream, ARGV[6])
+end
+return 1
+)lua";
+
+// Lifetime of browser bindings and their routes; keepalive and resize renew it.
+inline constexpr auto kBrowserLifetime = std::chrono::seconds(120);
 
 namespace webpb = ::iot::edge::terminal::v1;
 
@@ -66,6 +215,8 @@ class TerminalService final {
         const auto ownerKey = TerminalSessionRecord::terminalSessionKey(node, id);
         const auto nodeKey = service::message::edge::sessionKey(node);
         const auto readyKey = TerminalBrowserRecord::readyKey(id);
+        const auto eventRoute = service::message::live::routeKey(service::message::terminal::terminalEventTopic(node, id));
+        const auto ackRoute = service::message::live::routeKey(service::message::terminal::terminalAckTopic(node, id));
         const auto dimensions = [&] {
             const auto& columns = input->get<"columns">();
             const auto& rows = input->get<"rows">();
@@ -89,16 +240,12 @@ class TerminalService final {
             }
             const TerminalBrowserRecord binding{ user, connection, node, std::string(*current) };
             const auto encoded = binding.encode();
+            // This RPC runs on the worker holding the browser connection; route
+            // the terminal's directed frames there before the node can answer.
+            co_await routeBrowser(c, node, id);
             const std::string_view keys[]{ nodeKey, ownerKey, bindingKey, closedKey };
             const std::string_view args[]{ binding.nodeSession, encoded };
-            const auto registered = co_await c.redis().eval(R"lua(
-if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('EXISTS',KEYS[4]) == 1 or redis.call('EXISTS',KEYS[2]) == 1 then return 0 end
-redis.call('SET',KEYS[2],ARGV[1],'EX',120)
-redis.call('SET',KEYS[3],ARGV[2],'EX',120)
-return 1
-)lua",
-                                                            keys,
-                                                            args);
+            const auto registered = co_await c.redis().eval(kOpenTerminalScript, keys, args);
             if (registered.kind() != ruvia::redis_value::kind_type::integer || registered.integer() != 1) {
                 service::common::fail(17018, "终端打开已取消或节点已重连", 409);
             }
@@ -124,6 +271,7 @@ return 1
         const auto stored = co_await c.redis().get(bindingKey);
         if (!stored && operation == "terminal-close") {
             co_await c.redis().set(closedKey, "1", { .expiration_ = ruvia::redis_set_expiration::expires_after(std::chrono::seconds(600)) });
+            co_await deleteKeys(c, std::array<std::string_view, 2>{ eventRoute, ackRoute });
             co_return "{}";
         }
         const auto binding = stored ? TerminalBrowserRecord::decode(*stored) : std::nullopt;
@@ -148,8 +296,7 @@ return 1
             co_await releaseTerminalSession(c, node, id, binding->nodeSession);
             const auto inputSequence = TerminalBrowserRecord::inputSequenceKey(id), outputAck = TerminalBrowserRecord::outputAckKey(id);
             const auto remoteClosedKey = TerminalBrowserRecord::remoteClosedKey(id);
-            const std::string_view keys[]{ bindingKey, readyKey, inputSequence, outputAck, remoteClosedKey };
-            (void)co_await c.redis().eval("return redis.call('DEL',unpack(KEYS))", keys, std::span<const std::string_view>{});
+            co_await deleteKeys(c, std::array<std::string_view, 7>{ bindingKey, readyKey, inputSequence, outputAck, remoteClosedKey, eventRoute, ackRoute });
             co_return "{}";
         }
         if (operation == "terminal-events") {
@@ -231,7 +378,13 @@ return 1
             }
             const auto inputSequence = TerminalBrowserRecord::inputSequenceKey(id), outputAck = TerminalBrowserRecord::outputAckKey(id);
             const std::string_view keys[]{ bindingKey, readyKey, inputSequence, outputAck };
-            (void)co_await c.redis().eval("for _,key in ipairs(KEYS) do redis.call('EXPIRE',key,120) end; return 1", keys, std::span<const std::string_view>{});
+            const auto lifetime = std::to_string(kBrowserLifetime.count());
+            const std::string_view args[]{ lifetime };
+            const auto renewed = co_await c.redis().eval(kExpireKeysScript, keys, args);
+            if (renewed.kind() != ruvia::redis_value::kind_type::integer) {
+                service::message::redis::throwValue("renew edge terminal browser state", renewed);
+            }
+            co_await routeBrowser(c, node, id);
             auto* resize = command.mutable_terminal_resize();
             resize->set_terminal_id(terminalBytes);
             resize->set_columns(columns);
@@ -241,6 +394,20 @@ return 1
         }
         co_await enqueueBrowserInput(c, *binding, id, command);
         co_return "{}";
+    }
+
+    template <typename Context>
+    static ruvia::task<void> routeBrowser(Context& c, std::string_view nodeId, std::string_view terminalId) {
+        co_await service::utils::ChangeFeed::route(c, service::message::terminal::terminalEventTopic(nodeId, terminalId), kBrowserLifetime);
+        co_await service::utils::ChangeFeed::route(c, service::message::terminal::terminalAckTopic(nodeId, terminalId), kBrowserLifetime);
+    }
+
+    template <typename Context>
+    static ruvia::task<void> deleteKeys(Context& c, std::span<const std::string_view> keys) {
+        const auto reply = co_await c.redis().eval(kDeleteKeysScript, keys, std::span<const std::string_view>{});
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::message::redis::throwValue("delete edge terminal browser state", reply);
+        }
     }
 
     template <typename Context>
@@ -257,30 +424,7 @@ return 1
                                                                                                                                                    : 0);
         const std::string_view keys[]{ currentKey, ownerKey, browserKey, closedKey, queueKey, sequenceKey, inputAckKey, outputAckKey, outputSequenceKey, readyKey };
         const std::string_view args[]{ binding.nodeSession, owner, encoded, kind, sequence };
-        const auto result = co_await c.redis().eval(R"lua(
-if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('GET',KEYS[2]) ~= ARGV[1] or redis.call('GET',KEYS[3]) ~= ARGV[2] then return 0 end
-if ARGV[4] ~= 'close' and redis.call('EXISTS',KEYS[4]) == 1 then return 0 end
-if redis.call('LLEN',KEYS[5]) >= 4096 then return 0 end
-local sequence=tonumber(ARGV[5])
-if ARGV[4] == 'input' then
- if redis.call('EXISTS',KEYS[10]) == 0 then return 0 end
- if sequence > 0 then
-  local previous=tonumber(redis.call('GET',KEYS[6]) or '0')
-  if sequence ~= previous + 1 or tonumber(redis.call('GET',KEYS[7]) or '0') ~= previous then return 0 end
-  redis.call('SET',KEYS[6],ARGV[5],'EX',120)
- end
-elseif ARGV[4] == 'ack' then
- local previous=tonumber(redis.call('GET',KEYS[8]) or '0')
- if sequence <= previous then return 1 end
- if sequence ~= previous + 1 or sequence > tonumber(redis.call('GET',KEYS[9]) or '0') then return 0 end
- redis.call('SET',KEYS[8],ARGV[5],'EX',120)
-end
-redis.call('RPUSH',KEYS[5],ARGV[3])
-redis.call('EXPIRE',KEYS[5],120)
-return 1
-)lua",
-                                                    keys,
-                                                    args);
+        const auto result = co_await c.redis().eval(kEnqueueBrowserInputScript, keys, args);
         if (result.kind() != ruvia::redis_value::kind_type::integer || result.integer() != 1) {
             service::common::fail(17018, "终端已关闭、尚未就绪或指令队列已满", 409);
         }
@@ -340,15 +484,9 @@ return 1
         // whose terminal_open it never saw. Overflow here drops the newest envelope
         // instead, so whatever the node does receive stays a valid prefix.
         const auto key = service::message::terminal::terminalInputKey(nodeId);
-        static constexpr std::string_view script = R"lua(
-if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
-local length = redis.call('RPUSH', KEYS[1], ARGV[1])
-if length == 1 then redis.call('EXPIRE', KEYS[1], ARGV[3]) end
-return length
-)lua";
         const std::string_view keys[]{ key };
         const std::string_view arguments[]{ wire, "4096", "120" };
-        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        const auto reply = co_await c.redis().eval(kEnqueueInputScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("enqueue edge terminal input", reply);
         }
@@ -360,18 +498,13 @@ return length
 
     template <typename Context>
     static ruvia::task<void> releaseTerminalSession(Context& c, std::string_view nodeId, std::string_view terminalId, std::string_view nodeSession) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])
-return 1
-)lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(nodeId, terminalId);
         const auto outputKey = service::message::terminal::terminalOutputKey(nodeId, terminalId);
         const auto inputAckKey = TerminalSessionRecord::terminalInputAckKey(nodeId, terminalId);
         const auto outputSequenceKey = TerminalSessionRecord::terminalOutputSequenceKey(nodeId, terminalId);
         const std::string_view keys[]{ ownershipKey, outputKey, inputAckKey, outputSequenceKey };
         const std::string_view arguments[]{ nodeSession };
-        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        const auto reply = co_await c.redis().eval(kReleaseTerminalSessionScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("release edge terminal session", reply);
         }
@@ -383,20 +516,6 @@ return 1
         if (!frame.SerializeToString(&wire)) {
             co_return;
         }
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-if redis.call('LLEN',KEYS[2]) >= 64 then return -1 end
-redis.call('RPUSH', KEYS[2], ARGV[2])
-redis.call('EXPIRE', KEYS[1], ARGV[3])
-redis.call('EXPIRE', KEYS[2], ARGV[3])
-if ARGV[4] == 'ready' then redis.call('SET',KEYS[3],'1','EX',ARGV[3]) end
-if ARGV[4] == 'close' then
- redis.call('SET',KEYS[5],'1','EX',ARGV[3])
- redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[6])
-end
-redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[5])
-return 1
-)lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(session.nodeId, terminalId);
         const auto outputKey = service::message::terminal::terminalOutputKey(session.nodeId, terminalId);
         const auto epoch = session_state::value(
@@ -408,12 +527,15 @@ return 1
         const std::string ttl = "120";
         const auto readyKey = TerminalBrowserRecord::readyKey(terminalId), remoteClosedKey = TerminalBrowserRecord::remoteClosedKey(terminalId);
         const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, terminalId), ackTopic = service::message::terminal::terminalAckTopic(session.nodeId, terminalId);
-        const std::string_view keys[]{ ownershipKey, outputKey, readyKey, service::message::live::kChanges, remoteClosedKey };
+        const auto eventRoute = service::message::live::routeKey(topic), ackRoute = service::message::live::routeKey(ackTopic);
+        const std::string_view keys[]{ ownershipKey, outputKey, readyKey, remoteClosedKey, eventRoute, ackRoute };
         const std::string_view arguments[]{ epoch, wire, ttl, frame.has_ready() ? "ready" : frame.has_close() ? "close"
                                                                                                               : "data",
                                             topic,
-                                            ackTopic };
-        const auto reply = co_await c.redis().eval(script, keys, arguments);
+                                            ackTopic,
+                                            service::message::live::kWorkerStreamCapacity,
+                                            service::message::live::kWorkerStreamTtlMilliseconds };
+        const auto reply = co_await c.redis().eval(kSaveTerminalFrameScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("append edge terminal output", reply);
         }
@@ -440,9 +562,10 @@ return 1
         const auto outputSequence = TerminalSessionRecord::terminalOutputSequenceKey(session.nodeId, terminalId);
         const auto epoch = session_state::value(session.epoch, session.protocolVersion, session.workerIndex, service::runtime::instanceId());
         const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, terminalId), ackTopic = service::message::terminal::terminalAckTopic(session.nodeId, terminalId);
-        const std::string_view keys[]{ owner, output, inputAck, outputSequence, service::message::live::kChanges };
-        const std::string_view args[]{ epoch, wire, topic, ackTopic };
-        const auto result = co_await c.redis().eval(terminal_state::kFailScript, keys, args);
+        const auto eventRoute = service::message::live::routeKey(topic), ackRoute = service::message::live::routeKey(ackTopic);
+        const std::string_view keys[]{ owner, output, inputAck, outputSequence, eventRoute, ackRoute };
+        const std::string_view args[]{ epoch, wire, topic, ackTopic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
+        const auto result = co_await c.redis().eval(kFailScript, keys, args);
         if (result.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("close failed terminal", result);
         }
@@ -482,20 +605,6 @@ return 1
         if (!frame.SerializeToString(&wire)) {
             co_return;
         }
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-local previous = tonumber(redis.call('GET', KEYS[3]) or '0')
-local sequence = tonumber(ARGV[3])
-if sequence == previous then return 2 end
-if sequence ~= previous + 1 then return -1 end
-if redis.call('LLEN',KEYS[2]) >= 64 then return -1 end
-redis.call('RPUSH', KEYS[2], ARGV[2])
-redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
-redis.call('EXPIRE', KEYS[1], ARGV[4])
-redis.call('EXPIRE', KEYS[2], ARGV[4])
-redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[5])
-return 1
-)lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(session.nodeId, id);
         const auto outputKey = service::message::terminal::terminalOutputKey(session.nodeId, id);
         const auto sequenceKey = TerminalSessionRecord::terminalOutputSequenceKey(session.nodeId, id);
@@ -508,9 +617,10 @@ return 1
         const auto sequence = std::to_string(data.sequence());
         const std::string ttl = "120";
         const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, id);
-        const std::string_view keys[]{ ownershipKey, outputKey, sequenceKey, service::message::live::kChanges };
-        const std::string_view arguments[]{ epoch, wire, sequence, ttl, topic };
-        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        const auto route = service::message::live::routeKey(topic);
+        const std::string_view keys[]{ ownershipKey, outputKey, sequenceKey, route };
+        const std::string_view arguments[]{ epoch, wire, sequence, ttl, topic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
+        const auto reply = co_await c.redis().eval(kSaveTerminalDataScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("append sequenced terminal output", reply);
         }
@@ -535,17 +645,6 @@ return 1
             co_await failTerminal(c, session, id, "terminal input sequence missing");
             co_return;
         }
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-local previous = tonumber(redis.call('GET', KEYS[2]) or '0')
-local sequence = tonumber(ARGV[2])
-if sequence == previous then return 1 end
-if sequence ~= previous + 1 then return -1 end
-redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
-redis.call('EXPIRE', KEYS[1], ARGV[3])
-redis.call('XADD',KEYS[3],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[4])
-return 1
-)lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(session.nodeId, id);
         const auto ackKey = TerminalSessionRecord::terminalInputAckKey(session.nodeId, id);
         const auto epoch = session_state::value(
@@ -557,9 +656,10 @@ return 1
         const auto sequence = std::to_string(ack.sequence());
         const std::string ttl = "120";
         const auto topic = service::message::terminal::terminalAckTopic(session.nodeId, id);
-        const std::string_view keys[]{ ownershipKey, ackKey, service::message::live::kChanges };
-        const std::string_view arguments[]{ epoch, sequence, ttl, topic };
-        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        const auto route = service::message::live::routeKey(topic);
+        const std::string_view keys[]{ ownershipKey, ackKey, route };
+        const std::string_view arguments[]{ epoch, sequence, ttl, topic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
+        const auto reply = co_await c.redis().eval(kSaveTerminalAckScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("advance terminal input ack", reply);
         }

@@ -218,7 +218,12 @@ class TelemetryService {
         switch (consumer) {
             case Consumer::History: {
                 (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false));
-                co_await latest::publishRealtimeChange(redis);
+                std::vector<std::string> deviceIds;
+                deviceIds.reserve(parsedMessages.size());
+                for (const auto& parsed : parsedMessages) deviceIds.emplace_back(parsed.deviceId);
+                std::ranges::sort(deviceIds);
+                deviceIds.erase(std::unique(deviceIds.begin(), deviceIds.end()), deviceIds.end());
+                co_await latest::publishRealtimeChange(redis, deviceIds);
                 break;
             }
             case Consumer::Latest:

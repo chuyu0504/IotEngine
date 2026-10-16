@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <span>
 #include <set>
 #include <optional>
 #include <memory_resource>
@@ -738,12 +739,98 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
 
 namespace service::message::live {
 
-// The live stream carries invalidation notices. Consumers rebuild their own
-// authorized snapshot and never treat a stream entry as response data.
+// Broadcast stream of committed business changes. An entry names the changed
+// entity kind (`topic`) and the affected entity ids (`ids`, comma separated).
+// Absent or empty ids mean the whole topic scope changed. Subscribers re-query
+// only the affected rows within their own authorization scope and never treat
+// an entry as response data.
 inline constexpr std::string_view kChanges{"iot:live:changes"};
+inline constexpr std::string_view kChangesCapacity{"100000"};
 inline constexpr std::string_view kTopicField{"topic"};
+inline constexpr std::string_view kIdsField{"ids"};
 inline constexpr std::string_view kSchemaVersionField{"schema_version"};
-inline constexpr std::string_view kSchemaVersion{"1"};
+inline constexpr std::string_view kSchemaVersion{"2"};
+// Larger batches are published scope-wide instead of carrying every id.
+inline constexpr std::size_t kMaximumIds = 1000;
+
+// Entity kinds published on kChanges. Each producer owns the meaning of ids:
+// device/device.state/device.realtime → device ids; device-group → group ids;
+// link → link ids; protocol → protocol config ids; edge, edge-dtu, edge-logs →
+// edge node ids; edge-group → edge node group ids; alert → alert record ids;
+// alert-rule → alert rule ids; command → command operation ids; packet-debug →
+// device and link ids; gb28181 → GB28181 device ids; vpn → VPN network ids.
+namespace topic {
+inline constexpr std::string_view kDevice{"device"};
+inline constexpr std::string_view kDeviceGroup{"device-group"};
+inline constexpr std::string_view kDeviceState{"device.state"};
+inline constexpr std::string_view kDeviceRealtime{"device.realtime"};
+inline constexpr std::string_view kLink{"link"};
+inline constexpr std::string_view kProtocol{"protocol"};
+inline constexpr std::string_view kEdge{"edge"};
+inline constexpr std::string_view kEdgeGroup{"edge-group"};
+inline constexpr std::string_view kEdgeDtu{"edge-dtu"};
+inline constexpr std::string_view kEdgeLogs{"edge-logs"};
+inline constexpr std::string_view kAlert{"alert"};
+inline constexpr std::string_view kAlertRule{"alert-rule"};
+inline constexpr std::string_view kAccess{"access"};
+inline constexpr std::string_view kVpn{"vpn"};
+inline constexpr std::string_view kGb28181{"gb28181"};
+inline constexpr std::string_view kCommand{"command"};
+inline constexpr std::string_view kPacketDebug{"packet-debug"};
+inline constexpr std::string_view kAuth{"auth"};
+inline constexpr std::string_view kRuntimeConfig{"runtime-config"};
+} // namespace topic
+
+inline std::string joinIds(std::span<const std::string> ids) {
+    if (ids.size() > kMaximumIds) {
+        return {};
+    }
+    std::string joined;
+    for (const auto& id : ids) {
+        if (id.empty()) {
+            continue;
+        }
+        if (!joined.empty()) {
+            joined.push_back(',');
+        }
+        joined += id;
+    }
+    return joined;
+}
+
+inline std::vector<std::string_view> splitIds(std::string_view ids) {
+    std::vector<std::string_view> result;
+    while (!ids.empty()) {
+        const auto separator = ids.find(',');
+        const auto id = ids.substr(0, separator);
+        if (!id.empty()) {
+            result.push_back(id);
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        ids.remove_prefix(separator + 1);
+    }
+    return result;
+}
+
+// Directed messages (RPC replies, terminal and serial frames, edge request
+// results) go to the stream of the one Service Worker waiting for them. Entries
+// carry only `topic`; the waiter reads the payload from its own keys. Streams are
+// named per process incarnation and expire when their worker is gone.
+inline constexpr std::string_view kWorkerStreamPrefix{"iot:live:worker:"};
+inline constexpr std::string_view kWorkerStreamCapacity{"10000"};
+inline constexpr std::string_view kWorkerStreamTtlMilliseconds{"600000"};
+
+inline std::string workerStream(std::string_view instance, std::size_t workerIndex) {
+    return std::string(kWorkerStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex);
+}
+
+// Reply route of one directed topic: the value is the waiting worker's stream.
+// Producers that do not know the waiter (node-side gateway) resolve it here.
+inline std::string routeKey(std::string_view topic) {
+    return "iot:live:route:" + std::string(topic);
+}
 
 } // namespace service::message::live
 
