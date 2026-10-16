@@ -35,11 +35,11 @@ import { usePermissions } from '@/hooks/use_permission';
 import {
     expandedMenuKeys,
     getVisibleNavigationGroups,
+    type NavigationFeatures,
     navigationGroups,
     type NavigationIcon,
 } from '@/routes/navigation';
-import { useGb28181Health } from '../pages/gb28181/gb28181.service';
-import { useCurrentUser, useLogout } from '../pages/login/login.service';
+import type { SessionUser } from '@/types/session';
 
 const { Header, Sider, Content } = Layout;
 
@@ -57,18 +57,20 @@ const navigationIcons: Record<NavigationIcon, ReactNode> = {
     user: <UserOutlined />,
 };
 
-export default function AdminLayout() {
+/** 会话与功能开关由路由层注入，布局不依赖页面 Service。 */
+export interface AdminLayoutProps {
+    user?: SessionUser;
+    userLoading: boolean;
+    features: NavigationFeatures;
+    onLogout: () => void;
+}
+
+export default function AdminLayout({ user, userLoading, features, onLogout }: AdminLayoutProps) {
     const [collapsed, setCollapsed] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
-    const { data: user, isLoading } = useCurrentUser();
-    const logout = useLogout();
     const { has } = usePermissions();
-    const canQueryGb28181 = has('iot:gb28181:query');
-    const { data: gb28181Health } = useGb28181Health({
-        enabled: canQueryGb28181,
-    });
-    const gb28181Enabled = gb28181Health?.enabled === true;
+    const gb28181Enabled = features.gb28181;
     const { token } = theme.useToken();
     const visibleGroups = useMemo(
         () => getVisibleNavigationGroups(has, { gb28181: gb28181Enabled }),
@@ -159,7 +161,7 @@ export default function AdminLayout() {
         return items;
     }, [visibleGroups]);
 
-    if (isLoading && !user) {
+    if (userLoading && !user) {
         return (
             <div className="flex h-screen items-center justify-center">
                 <Spin size="large" />
@@ -266,7 +268,7 @@ export default function AdminLayout() {
                                     label: '退出登录',
                                 },
                             ],
-                            onClick: () => logout.mutate(),
+                            onClick: onLogout,
                         }}
                     >
                         <Button type="text" className="h-10 px-2">

@@ -36,6 +36,11 @@ export default defineConfig(({ mode }) => {
             host: '0.0.0.0',
             port: 5173,
             proxy: {
+                '/v1': {
+                    target: backendUrl,
+                    changeOrigin: true,
+                    ws: true,
+                },
                 '/api': {
                     target: backendUrl,
                     changeOrigin: true,

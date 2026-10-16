@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { EdgeDebugConnection, DebugConnectionError, DebugOperationError } from '../web/pages/edge_node/edge_node.api';
+import { EdgeDebugConnection, DebugConnectionError, DebugOperationError } from '../web/lib/edge_debug_connection';
 
 class Socket {
     readyState = 0;

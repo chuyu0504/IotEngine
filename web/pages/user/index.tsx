@@ -8,14 +8,19 @@ import { useDebounceFn } from '@/hooks/use_debounce_fn';
 import { usePermissions } from '@/hooks/use_permission';
 import { validateForm } from '@/utils/validation';
 import { useDeptOptions } from '../dept/dept.service';
+import type { Dept } from '../dept/dept.types';
+import { useRoleOptions } from '../role/role.service';
+import type { Role } from '../role/role.types';
 import { createUserSchema, updateUserSchema } from './user.schema';
-import { useRoleOptions, useUserDelete, useUserList, useUserSave } from './user.service';
+import { useUserDelete, useUserList, useUserSave } from './user.service';
 import type { User } from './user.types';
 
 /**
  * 用户管理
  */
 const { Search } = Input;
+const EMPTY_ROLE_OPTIONS: Role.Option[] = [];
+const EMPTY_DEPT_OPTIONS: Dept.Option[] = [];
 interface UserFormValues {
     id?: string;
     username: string;
@@ -53,14 +58,12 @@ const SystemUserPage = () => {
         },
         { enabled: canQuery }
     );
-    const { data: roleOptionsData } = useRoleOptions({
+    const { data: roleOptions = EMPTY_ROLE_OPTIONS } = useRoleOptions({
         enabled: canAdd || canEdit,
     });
-    const roleOptions = roleOptionsData ?? [];
-    const { data: departmentOptionsData } = useDeptOptions({
+    const { data: departmentOptions = EMPTY_DEPT_OPTIONS } = useDeptOptions({
         enabled: (canAdd || canEdit) && canQueryDept,
     });
-    const departmentOptions = departmentOptionsData ?? [];
     const roleSelectOptions = useMemo(
         () => roleOptions.map((role) => ({ label: role.name, value: role.id })),
         [roleOptions]

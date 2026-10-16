@@ -1,11 +1,22 @@
 import { getEdgeInventory, observeEdgeDetail, getLogs, getEdgeVpnState } from '../web/pages/edge_node/edge_node.api';
 import { getDeviceList, getDeviceRealtimeSnapshot, getDeviceGroupsWithCount, getDeviceCommandStatuses, getDebugPackets as getDevicePackets } from '../web/pages/device/device.api';
 import { expect, spyOn, test } from 'bun:test';
-import { SseSubscriptions } from '../web/lib/sse_subscriptions';
+import { queryUrl } from '../web/lib/http';
+import { type LiveSession, LiveSubscriptions } from '../web/lib/live_subscriptions';
+import { SseTransport } from '../web/lib/sse_transport';
 import { getList as getLinks, getDebugPackets } from '../web/pages/link/link.api';
 import { useAuthStore } from '../web/store/auth_store';
 
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+function sseRegistry(options: {
+    session: () => LiveSession;
+    refresh: () => Promise<boolean>;
+    fetch: typeof fetch;
+    retryDelay?: (attempt: number, signal: AbortSignal) => Promise<void>;
+}) {
+    const { fetch, retryDelay, ...session } = options;
+    return new LiveSubscriptions({ ...session, transport: new SseTransport({ fetch, retryDelay }) });
+}
 function connection() {
     let writer!: ReadableStreamDefaultController<Uint8Array>;
     let cancelled = false;
@@ -30,7 +41,7 @@ function connection() {
 test('one healthy SSE connection shares snapshots and cancels only after the last observer leaves', async () => {
     const wire = connection();
     let calls = 0;
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async (url, init) => {
             calls++;
@@ -42,7 +53,7 @@ test('one healthy SSE connection shares snapshots and cancels only after the las
     });
     const values: unknown[][] = [[], []];
     const errors: Error[] = [];
-    const stream = subscriptions.create('/v1/device/events', { group: 'A&B' });
+    const stream = subscriptions.create(queryUrl('/v1/device/events', { group: 'A&B' }), 'snapshot');
     const first = stream.subscribe({ next: value => values[0].push(value), error: error => errors.push(error) });
     const second = stream.subscribe({ next: value => values[1].push(value), error: error => errors.push(error) });
     await tick();
@@ -63,13 +74,13 @@ test('one healthy SSE connection shares snapshots and cancels only after the las
 
 test('disconnect retries are bounded, and release cancels an open stream', async () => {
     let calls = 0, delays = 0;
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async () => { calls++; throw new TypeError('network failure'); }) as typeof fetch,
         retryDelay: async () => { delays++; },
     });
     const errors: Error[] = [];
-    const release = subscriptions.create('/v1/link/events').subscribe({ next: () => {}, error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: () => {}, error: error => errors.push(error) });
     await tick();
     expect(calls).toBe(9);
     expect(delays).toBe(8);
@@ -81,12 +92,12 @@ test('account replacement aborts old subscriptions and discards a late response'
     let session = { token: 'old', userId: 'old-user' };
     const wire = connection();
     let finish!: (response: Response) => void;
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => session, refresh: async () => false,
         fetch: (() => new Promise<Response>(resolve => { finish = resolve; })) as typeof fetch,
     });
     const values: unknown[] = [], errors: Error[] = [];
-    subscriptions.create('/v1/link/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+    subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     await tick();
     session = { token: 'new', userId: 'new-user' };
     subscriptions.sessionChanged();
@@ -101,7 +112,7 @@ test('expired stream refreshes its token and reconnects with a fresh snapshot', 
     let session = { token: 'old', userId: 'user' };
     let calls = 0, refreshes = 0;
     const wire = connection();
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => session,
         refresh: async () => { refreshes++; session = { ...session, token: 'fresh' }; return true; },
         fetch: (async (_url, init) => {
@@ -112,7 +123,7 @@ test('expired stream refreshes its token and reconnects with a fresh snapshot', 
         }) as typeof fetch,
     });
     const values: unknown[] = [], errors: Error[] = [];
-    const release = subscriptions.create('/v1/link/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     await tick();
     wire.send('snapshot', { code: 0, data: { id: 'user' } });
     await tick();
@@ -122,15 +133,34 @@ test('expired stream refreshes its token and reconnects with a fresh snapshot', 
     release();
 });
 
+test('a token still rejected after one refresh fails closed instead of refreshing again', async () => {
+    let session = { token: 'old', userId: 'user' };
+    let calls = 0, refreshes = 0;
+    const subscriptions = sseRegistry({
+        session: () => session,
+        refresh: async () => { refreshes++; session = { ...session, token: `fresh-${refreshes}` }; return true; },
+        fetch: (async () => {
+            calls++;
+            return new Response(JSON.stringify({ code: 11005, message: 'expired' }), { status: 401 });
+        }) as typeof fetch,
+    });
+    const errors: Error[] = [];
+    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: () => {}, error: error => errors.push(error) });
+    await tick(); await tick();
+    expect([calls, refreshes]).toEqual([2, 1]);
+    expect(errors.map(error => error.message)).toEqual(['expired']);
+    release();
+});
+
 test('business denial ends the subscription without a retry loop', async () => {
     const wire = connection();
     let calls = 0;
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async () => { calls++; return wire.response; }) as typeof fetch,
     });
     const errors: Error[] = [];
-    const release = subscriptions.create('/v1/link/events').subscribe({ next: () => {}, error: error => errors.push(error) });
+    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: () => {}, error: error => errors.push(error) });
     await tick();
     wire.send('error', { code: 11007, message: 'denied' });
     await tick();
@@ -143,13 +173,13 @@ test('business denial ends the subscription without a retry loop', async () => {
 test('device channels share one connection, replay their own snapshots and isolate permission errors', async () => {
     const wire = connection();
     let calls = 0;
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async (url) => { expect(String(url)).toBe('/v1/device/events'); calls++; return wire.response; }) as typeof fetch,
     });
     const values: Record<string, unknown[]> = { devices: [], groups: [], realtime: [] };
     const errors: Record<string, Error[]> = { devices: [], groups: [], realtime: [] };
-    const streams = ['devices', 'groups', 'realtime'].map(name => subscriptions.create('/v1/device/events', undefined, name));
+    const streams = ['devices', 'groups', 'realtime'].map(name => subscriptions.create('/v1/device/events', name));
     const releases = streams.map((stream, index) => {
         const name = ['devices', 'groups', 'realtime'][index];
         return stream.subscribe({ next: value => values[name].push(value), error: error => errors[name].push(error) });
@@ -294,7 +324,7 @@ test('device page API channels share one wire including debug packets and 256 co
 test('shared user information observes the page connection without a fallback after leaving', async () => {
     const requests: string[] = [];
     const wires: ReturnType<typeof connection>[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async (url, init) => {
             if (wires.length) expect(wires.at(-1)?.cancelled()).toBe(true);
@@ -307,7 +337,7 @@ test('shared user information observes the page connection without a fallback af
     const users: unknown[] = [], pages: unknown[] = [], errors: Error[] = [];
     const userStream = subscriptions.createShared('user');
     const user = userStream.subscribe({ next: value => users.push(value), error: error => errors.push(error) });
-    const page = subscriptions.create('/v1/device/events', undefined, 'devices').subscribe({ next: value => pages.push(value), error: error => errors.push(error) });
+    const page = subscriptions.create('/v1/device/events', 'devices').subscribe({ next: value => pages.push(value), error: error => errors.push(error) });
     await tick();
     expect(requests).toEqual(['/v1/device/events']);
     wires[0].send('devices', { code: 0, data: ['device'] });
@@ -333,7 +363,7 @@ test('a replacement waits until the cancelled response reader has finished relea
         cancel: () => cancelled,
     }), { headers: { 'Content-Type': 'text/event-stream' } });
     const replacement = connection();
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async url => {
             calls.push(String(url));
@@ -341,10 +371,10 @@ test('a replacement waits until the cancelled response reader has finished relea
         }) as typeof fetch,
     });
     const observer = { next: () => {}, error: () => {} };
-    const leave = subscriptions.create('/v1/link/events').subscribe(observer);
+    const leave = subscriptions.create('/v1/link/events', 'snapshot').subscribe(observer);
     await tick();
     leave();
-    const release = subscriptions.create('/v1/link/events', { debugLinkId: 'link' }).subscribe(observer);
+    const release = subscriptions.create(queryUrl('/v1/link/events', { debugLinkId: 'link' }), 'snapshot').subscribe(observer);
     await tick();
     expect(calls).toEqual(['/v1/link/events']);
     finishCancellation();
@@ -357,16 +387,16 @@ test('a replacement waits until the cancelled response reader has finished relea
 
 test('page transitions cancel the previous wire without opening an intermediate user connection', async () => {
     const requests: string[] = [], wires: ReturnType<typeof connection>[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async url => { requests.push(String(url)); const wire = connection(); wires.push(wire); return wire.response; }) as typeof fetch,
     });
     const user = subscriptions.createShared('user').subscribe({ next: () => {}, error: () => {} });
     await tick(); expect(requests).toEqual([]);
-    const first = subscriptions.create('/v1/alert/events', undefined, 'records').subscribe({ next: () => {}, error: () => {} });
+    const first = subscriptions.create('/v1/alert/events', 'records').subscribe({ next: () => {}, error: () => {} });
     await tick(); expect(wires[0].cancelled()).toBe(false);
     first();
-    const second = subscriptions.create('/v1/link/events', undefined, 'links').subscribe({ next: () => {}, error: () => {} });
+    const second = subscriptions.create('/v1/link/events', 'links').subscribe({ next: () => {}, error: () => {} });
     await tick();
     expect(requests).toEqual(['/v1/alert/events', '/v1/link/events']);
     expect(wires[0].cancelled()).toBe(true);
@@ -377,13 +407,13 @@ test('page transitions cancel the previous wire without opening an intermediate 
 
 test('a denied page does not turn its permission error into a user-profile failure', async () => {
     const requests: string[] = [], wires: ReturnType<typeof connection>[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async url => { requests.push(String(url)); const wire = connection(); wires.push(wire); return wire.response; }) as typeof fetch,
     });
     const userErrors: Error[] = [], pageErrors: Error[] = [], users: unknown[] = [];
     const user = subscriptions.createShared('user').subscribe({ next: value => users.push(value), error: error => userErrors.push(error) });
-    const page = subscriptions.create('/v1/edge/events').subscribe({ next: () => {}, error: error => pageErrors.push(error) });
+    const page = subscriptions.create('/v1/edge/events', 'snapshot').subscribe({ next: () => {}, error: error => pageErrors.push(error) });
     await tick(); wires[0].send('snapshot', { code: 11007, message: 'page denied' });
     await tick(); await tick();
     expect(requests).toEqual(['/v1/edge/events']);
@@ -397,7 +427,7 @@ test('a denied page does not turn its permission error into a user-profile failu
 test('shared user snapshots clear on token refresh and never leak across account replacement', async () => {
     let session = { token: 'old', userId: 'first' };
     const wires: ReturnType<typeof connection>[] = [], tokens: string[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => session, refresh: async () => false,
         fetch: (async (_url, init) => {
             tokens.push(new Headers(init?.headers).get('Authorization') ?? '');
@@ -407,7 +437,7 @@ test('shared user snapshots clear on token refresh and never leak across account
     const users: unknown[] = [], errors: Error[] = [];
     const shared = subscriptions.createShared('user');
     const firstUser = shared.subscribe({ next: value => users.push(value), error: error => errors.push(error) });
-    const firstPage = subscriptions.create('/v1/device/events', undefined, 'devices').subscribe({ next: () => {}, error: () => {} });
+    const firstPage = subscriptions.create('/v1/device/events', 'devices').subscribe({ next: () => {}, error: () => {} });
     await tick(); wires[0].send('user', { code: 0, data: { id: 'first', nickname: 'before' } });
     await tick();
     session = { ...session, token: 'fresh' }; subscriptions.sessionChanged();
@@ -421,7 +451,7 @@ test('shared user snapshots clear on token refresh and never leak across account
     expect(errors).toHaveLength(1);
     const replacement: unknown[] = [];
     const secondUser = shared.subscribe({ next: value => replacement.push(value), error: () => {} });
-    const secondPage = subscriptions.create('/v1/device/events', undefined, 'devices').subscribe({ next: () => {}, error: () => {} });
+    const secondPage = subscriptions.create('/v1/device/events', 'devices').subscribe({ next: () => {}, error: () => {} });
     await tick(); expect(replacement).toEqual([]);
     wires[2].send('user', { code: 0, data: { id: 'second' } });
     await tick(); expect(replacement).toEqual([{ id: 'second' }]);
@@ -434,13 +464,13 @@ test('shared user snapshots clear on token refresh and never leak across account
 test('API-prefixed paths can share the user channel without changing their URLs', async () => {
     const wire = connection();
     const urls: string[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async url => { urls.push(String(url)); return wire.response; }) as typeof fetch,
     });
     const errors: Error[] = [], values: unknown[] = [];
     const user = subscriptions.createShared('user').subscribe({ next: () => {}, error: error => errors.push(error) });
-    const page = subscriptions.create('/api/example/events').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
+    const page = subscriptions.create('/api/example/events', 'snapshot').subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     await tick(); expect(urls).toEqual(['/api/example/events']);
     wire.send('snapshot', { code: 0, data: [] });
     wire.send('user', { code: 0, data: { id: 'user' } });
@@ -451,13 +481,13 @@ test('API-prefixed paths can share the user channel without changing their URLs'
 test('manual retry after exhaustion restores the existing live observer beyond the first snapshot', async () => {
     let online = false, calls = 0;
     const wire = connection();
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         retryDelay: async () => {},
         fetch: (async () => { calls++; if (!online) throw new TypeError('offline'); return wire.response; }) as typeof fetch,
     });
     const values: unknown[] = [], errors: Error[] = [];
-    const stream = subscriptions.create('/v1/device/events', undefined, 'devices');
+    const stream = subscriptions.create('/v1/device/events', 'devices');
     const release = stream.subscribe({ next: value => values.push(value), error: error => errors.push(error) });
     try {
         await tick(); expect(calls).toBe(9); expect(errors).toHaveLength(1);
@@ -476,12 +506,12 @@ test('manual retry after exhaustion restores the existing live observer beyond t
 
 test('a late query reader reuses a healthy channel snapshot without reconnecting', async () => {
     const wires: ReturnType<typeof connection>[] = [];
-    const subscriptions = new SseSubscriptions({
+    const subscriptions = sseRegistry({
         session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
         fetch: (async () => { const wire = connection(); wires.push(wire); return wire.response; }) as typeof fetch,
     });
-    const list = subscriptions.create('/v1/device/events', undefined, 'devices');
-    const metrics = subscriptions.create('/v1/device/events', undefined, 'realtime');
+    const list = subscriptions.create('/v1/device/events', 'devices');
+    const metrics = subscriptions.create('/v1/device/events', 'realtime');
     const release = list.subscribe({ next: () => {}, error: () => {} });
     try {
         await tick();

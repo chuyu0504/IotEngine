@@ -33,13 +33,11 @@ export const useOpenDevices = () =>
     useQuery({
         queryKey: accessQueryKeys.devices(),
         queryFn: ({ signal }) => getDevices(signal),
-        refetchInterval: false,
     });
 export const useOpenKeys = () =>
     useQuery({
         queryKey: accessQueryKeys.keys(),
         queryFn: ({ signal }) => getKeys(signal),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
@@ -47,7 +45,6 @@ export const useOpenWebhooks = (accessKeyId?: string) =>
     useQuery({
         queryKey: accessQueryKeys.webhooks(accessKeyId),
         queryFn: ({ signal }) => getWebhooks(accessKeyId, signal),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
@@ -55,7 +52,6 @@ export const useOpenLogs = (query: Access.LogQuery) =>
     useQuery({
         queryKey: accessQueryKeys.logs(query),
         queryFn: ({ signal }) => getLogs(query, signal),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
@@ -123,7 +119,6 @@ export const useOpenMqtt = () =>
     useQuery({
         queryKey: accessQueryKeys.mqtt(),
         queryFn: ({ signal }) => getMqtt(signal),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });

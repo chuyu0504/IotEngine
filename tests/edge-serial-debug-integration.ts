@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
-import { EdgeDebugConnection, DebugOperationError } from '../web/pages/edge_node/edge_node.api';
+import { EdgeDebugConnection, DebugOperationError } from '../web/lib/edge_debug_connection';
 const db = new Bun.SQL(databaseUrl), redis = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001', admin = '00000000-0000-7000-8000-000000000002';
 const bytes = (id: string) => Buffer.from(id.replaceAll('-', ''), 'hex');

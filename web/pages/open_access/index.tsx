@@ -59,6 +59,10 @@ import {
 import type { Access } from './open_access.types';
 
 const { Search, TextArea } = Input;
+const EMPTY_KEYS: Access.KeyItem[] = [];
+const EMPTY_WEBHOOKS: Access.WebhookItem[] = [];
+const EMPTY_DEVICES: Access.DeviceOption[] = [];
+const EMPTY_MQTT: Access.MqttItem[] = [];
 const TAB_WEBHOOK = 'webhook';
 const TAB_LOG = 'access-log';
 const TAB_MQTT = 'mqtt';
@@ -830,18 +834,18 @@ function AccessContent() {
     const [editingWebhook, setEditingWebhook] = useState<Access.WebhookItem | null>(null);
     const [selectedLog, setSelectedLog] = useState<Access.LogItem | null>(null);
     const {
-        data: accessKeys = [],
+        data: accessKeys = EMPTY_KEYS,
         isLoading: loadingAccessKeys,
         isFetching: refreshingKeys,
         refetch: refreshKeys,
     } = useOpenKeys();
     const {
-        data: webhooks = [],
+        data: webhooks = EMPTY_WEBHOOKS,
         isLoading: loadingWebhooks,
         isFetching: refreshingWebhooks,
         refetch: refreshWebhooks,
     } = useOpenWebhooks();
-    const { data: devices = [], isLoading: loadingDevices } = useOpenDevices();
+    const { data: devices = EMPTY_DEVICES, isLoading: loadingDevices } = useOpenDevices();
     const {
         data: logPage,
         isLoading: loadingLogs,
@@ -856,7 +860,7 @@ function AccessContent() {
     const webhookUpdate = useWebhookUpdate();
     const webhookDelete = useWebhookDelete();
     const {
-        data: mqtt = [],
+        data: mqtt = EMPTY_MQTT,
         isLoading: loadingMqtt,
         isFetching: refreshingMqtt,
         refetch: refreshMqtt,

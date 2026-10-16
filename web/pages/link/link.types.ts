@@ -1,7 +1,7 @@
 import type { PageParams } from '@/types/pagination';
+import type { ProtocolType } from '../protocol/protocol.types';
 
 type LinkMode = 'TCP Server' | 'TCP Client';
-type LinkProtocol = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645' | 'MQTT';
 type LinkStatus = 'enabled' | 'disabled';
 type ConnectionStatus =
     | 'stopped'
@@ -47,7 +47,7 @@ interface LinkItem {
     edge_node_id?: string;
     id: string;
     name: string;
-    protocol: LinkProtocol;
+    protocol: ProtocolType;
     endpoint: LinkEndpoint;
     status: LinkStatus;
     runtime?: RuntimeStatus;
@@ -57,26 +57,26 @@ interface LinkItem {
 }
 interface LinkQuery extends PageParams {
     mode?: LinkMode;
-    protocol?: LinkProtocol;
+    protocol?: ProtocolType;
     status?: LinkStatus;
 }
 interface SaveLinkDto {
     execution?: 'collector' | 'edge';
     edge_node_id?: string;
     name: string;
-    protocol: LinkProtocol;
+    protocol: ProtocolType;
     endpoint: LinkEndpoint;
     status: LinkStatus;
 }
 interface LinkEnums {
     modes: LinkMode[];
-    protocols: LinkProtocol[];
+    protocols: ProtocolType[];
     statuses: LinkStatus[];
 }
 interface LinkOption extends LinkItem {}
 export namespace Link {
     export type Mode = LinkMode;
-    export type Protocol = LinkProtocol;
+    export type Protocol = ProtocolType;
     export type Status = LinkStatus;
     export type Connection = ConnectionStatus;
     export type Runtime = RuntimeStatus;

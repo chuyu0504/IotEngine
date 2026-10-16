@@ -35,17 +35,3 @@ test('business controllers expose HTTP and reserve WS events for edge debugging'
     expect(auth).toContain('RUVIA_POST("/login", login');
     expect(auth).toContain('RUVIA_POST("/refresh", refresh');
 });
-
-test('frontend allows ordinary GET but disables scheduled refetch and universal WS requests', async () => {
-    for (const path of await files('web')) {
-        if (!/\.[jt]sx?$/.test(path)) continue;
-        const source = await readFile(path, 'utf8');
-        for (const match of source.matchAll(/refetchInterval\s*:\s*([^,}\n]+)/g))
-            expect(match[1].trim()).toBe('false');
-        expect(source).not.toContain('/v1/channel');
-        expect(source).not.toContain('requestEvent(');
-    }
-    const api = await readFile('web/pages/device/device.api.ts', 'utf8');
-    expect(api).toMatch(/request\.get[<(]/);
-    expect(api).toContain('createSseSnapshotStream');
-});

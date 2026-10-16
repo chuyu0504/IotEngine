@@ -1,36 +1,43 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/use_mutation';
 import { useSnapshotQuery } from '@/hooks/use_snapshot_query';
+import { DebugOperationError } from '@/lib/edge_debug_connection';
 import { refreshAccessToken } from '@/pages/login/login.service';
 import { getMessageInstance } from '@/providers/message_context_bridge';
 import { useAuthStore } from '@/store/auth_store';
+import { fetchAllPages } from '@/utils/pagination';
 import {
+    acknowledgeTerminalOutput,
     authenticateDebugConnection,
     captureLogs,
     closeSerialDebug,
+    closeTerminal,
     configureDebugErrorNotification,
     configureNetwork,
     createEdgeGroup,
     createEdgeVpnPeer,
-    DebugOperationError,
     deleteDtuChannel,
     deleteEdgeGroup,
     deleteEnrollment,
     edgeDebugConnection,
-    getDtuChannels,
     getEdgeDetail,
     getEdgeGroups,
     getEdgeInventory,
     getEdgeVpnState,
     getLogs,
+    getPlmnNames,
     getSerialEvents,
+    getTerminalEvents,
     getVpnNetworks,
+    keepTerminalAlive,
     observeDtuChannels,
     observeEdgeDetail,
     openSerialDebug,
+    openTerminal,
     queryEdgeList,
     renameEdge,
+    resizeTerminal,
     reuseFirmware,
     revokeEdgeVpnPeer,
     saveDtuChannel,
@@ -43,16 +50,19 @@ import {
     updateEdgeGroup,
     updateEdgeVpnRoute,
     uploadFirmware,
+    writeTerminal,
 } from './edge_node.api';
 import {
     firmwareUpgradeSchema,
     serialDebugEventSchema,
     serialSettingsSchema,
+    terminalEventsSchema,
 } from './edge_node.schema';
 import type { Edge, EdgeVpn } from './edge_node.types';
-import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
+import { edgeLiveQueryKeys, edgeQueryKeys, plmnNamesQueryKey } from './edge_node.types';
 
-export { getWindowsClientDownloadUrl } from './edge_node.api';
+/** Windows client installer download. */
+export const windowsClientDownloadUrl = '/downloads/iot-egine-Setup-x64.exe';
 
 const buildGroupTree = (items: Edge.GroupItem[]) => {
     const index = new Map<string, Edge.GroupTreeItem>();
@@ -66,7 +76,29 @@ const buildGroupTree = (items: Edge.GroupItem[]) => {
     return roots;
 };
 
-export { mobileOperatorName } from '@/utils/mobile_operator';
+/** Resolves a reported PLMN code (MCC+MNC) to its operator name; other values pass through. */
+export function mobileOperatorName(value: string, names: Readonly<Record<string, string>>) {
+    const operator = value.trim();
+    if (!/^\d{5,6}$/.test(operator)) return operator;
+    return (
+        names[operator] ??
+        (operator.length === 6 ? names[operator.slice(0, 5)] : undefined) ??
+        operator
+    );
+}
+
+const EMPTY_PLMN_NAMES: Readonly<Record<string, string>> = {};
+
+/** Operator name resolver; codes show unchanged until the static PLMN table has loaded. */
+export function useMobileOperatorName() {
+    const { data: names = EMPTY_PLMN_NAMES } = useQuery({
+        queryKey: plmnNamesQueryKey,
+        queryFn: ({ signal }) => getPlmnNames(signal),
+        staleTime: Infinity,
+        gcTime: Infinity,
+    });
+    return useCallback((value: string) => mobileOperatorName(value, names), [names]);
+}
 
 export function serialPayloadHex(value: string, mode: 'hex' | 'text', ending = ''): string {
     if (mode === 'hex') {
@@ -477,28 +509,20 @@ export function normalizeReportedNetwork(
     };
 }
 
-export async function queryEdgeSelectionList(signal?: AbortSignal): Promise<Edge.Node[]> {
-    const first = await queryEdgeList({ page: 1, pageSize: 100 }, signal);
-    const nodes = new Map(first.list.map((node) => [node.id, node]));
-    for (let page = 2; page <= Math.ceil(first.total / 100); page++) {
-        const result = await queryEdgeList({ page, pageSize: 100 }, signal);
-        for (const node of result.list) nodes.set(node.id, node);
-    }
-    return [...nodes.values()];
-}
+export const queryEdgeSelectionList = (signal?: AbortSignal) =>
+    fetchAllPages(100, (page, pageSize) => queryEdgeList({ page, pageSize }, signal));
 export const useEdgeSelectionList = (enabled: boolean) =>
     useQuery({
-        queryKey: [...edgeQueryKeys.all, 'selection'],
+        queryKey: edgeQueryKeys.selection(),
         queryFn: ({ signal }) => queryEdgeSelectionList(signal),
         enabled,
         staleTime: 0,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
 export const useEdgeInventory = (enabled = true, scope?: Edge.EventScope) =>
     useSnapshotQuery({
-        queryKey: [...edgeQueryKeys.all, 'inventory'],
+        queryKey: edgeLiveQueryKeys.inventory(),
         streamKey: scope,
         queryFn: () => getEdgeInventory(scope),
         enabled,
@@ -506,15 +530,26 @@ export const useEdgeInventory = (enabled = true, scope?: Edge.EventScope) =>
     });
 export const useEdgeConfigurationDetail = (nodeId?: string) =>
     useQuery({
-        queryKey: [...edgeQueryKeys.detail(nodeId ?? ''), 'configuration'],
+        queryKey: edgeQueryKeys.configuration(nodeId),
         queryFn: ({ signal }) => getEdgeDetail(nodeId ?? '', signal),
         enabled: Boolean(nodeId),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
+/** Reads the current reported configuration of a node over HTTP, sharing its query cache. */
+export function useFetchEdgeConfiguration() {
+    const client = useQueryClient();
+    return useCallback(
+        (nodeId: string) =>
+            client.fetchQuery({
+                queryKey: edgeQueryKeys.configuration(nodeId),
+                queryFn: ({ signal }) => getEdgeDetail(nodeId, signal),
+            }),
+        [client]
+    );
+}
 export const useEdgeDetail = (scope: Edge.EventScope) =>
     useSnapshotQuery({
-        queryKey: edgeQueryKeys.detail(scope.nodeId),
+        queryKey: edgeLiveQueryKeys.detail(scope.nodeId),
         streamKey: scope,
         queryFn: () => observeEdgeDetail(scope),
         enabled: Boolean(scope.nodeId),
@@ -523,17 +558,16 @@ export const useEdgeGroupTree = () =>
     useQuery({
         queryKey: edgeQueryKeys.groups(),
         queryFn: async ({ signal }) => buildGroupTree(await getEdgeGroups(signal)),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
 export const useEdgeLogs = (scope: Edge.EventScope, enabled = true) => {
     const id = scope.nodeId;
     const result = useSnapshotQuery({
-        queryKey: [...edgeQueryKeys.logs(id, scope.logs), scope],
+        queryKey: edgeLiveQueryKeys.logs(id, scope.logs),
+        streamKey: scope,
         queryFn: () => getLogs(scope),
         enabled: enabled && Boolean(id && scope.logs),
-        staleTime: 0,
     });
     useEffect(() => {
         if (enabled && id) void captureLogs(id).catch(() => undefined);
@@ -655,30 +689,38 @@ export function useSetEdgeLogLevel() {
 
 export const useEdgeVpn = (scope: Edge.EventScope, enabled: boolean) => {
     const networks = useQuery({
-        queryKey: [...edgeVpnQueryKeys.all, 'networks'],
+        queryKey: edgeQueryKeys.vpnNetworks(),
         queryFn: ({ signal }) => getVpnNetworks(signal),
         enabled,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
     const state = useSnapshotQuery({
-        queryKey: [...edgeVpnQueryKeys.node(scope.nodeId), scope],
+        queryKey: edgeLiveQueryKeys.vpn(scope.nodeId),
+        streamKey: scope,
         queryFn: () => getEdgeVpnState(scope),
         enabled: enabled && Boolean(scope.nodeId && scope.vpn),
     });
+    const networkList = networks.data?.list;
+    const data = useMemo(
+        () => (state.data && networkList ? { ...state.data, networks: networkList } : undefined),
+        [state.data, networkList]
+    );
+    const refetchState = state.refetch;
+    const refetchNetworks = networks.refetch;
+    const refetch = useCallback(
+        () => Promise.all([refetchState(), refetchNetworks()]),
+        [refetchState, refetchNetworks]
+    );
     return {
-        ...state,
-        data:
-            state.data && networks.data
-                ? { ...state.data, networks: networks.data.list }
-                : undefined,
+        data,
+        error: state.error ?? networks.error,
         isLoading: state.isLoading || networks.isLoading,
         isFetching: state.isFetching || networks.isFetching,
-        refetch: () => Promise.all([state.refetch(), networks.refetch()]),
+        refetch,
     };
 };
-const vpnInvalidations = [edgeVpnQueryKeys.all, edgeQueryKeys.all];
+const vpnInvalidations = [edgeQueryKeys.all];
 export const useEdgeVpnPeerCreate = () =>
     useMutationWithMessage({
         mutationFn: createEdgeVpnPeer,
@@ -705,16 +747,227 @@ export const useEdgeVpnRouteUpdate = () =>
         invalidateKeys: vpnInvalidations,
     });
 
-export {
-    acknowledgeTerminalOutput,
-    closeTerminal,
-    getEdgeDetail,
-    getTerminalEvents,
-    keepTerminalAlive,
-    openTerminal,
-    resizeTerminal,
-    writeTerminal,
-} from './edge_node.api';
+const TERMINAL_INPUT_LIMIT = 256 * 1024;
+const TERMINAL_OUTPUT_LIMIT = 1024 * 1024;
+const TERMINAL_CHUNK_BYTES = 16384;
+
+/**
+ * Web terminal session on `screen`: open, 20s keepalive, serialized resize, 8ms input batching,
+ * in-order output with acknowledgement after rendering, and close.
+ */
+export function useTerminalSession(nodeId: string | undefined, screen: Edge.TerminalScreen | null) {
+    const [state, setState] = useState('正在连接…');
+    const [ended, setEnded] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+    const controlRef = useRef<{
+        input: (data: string) => void;
+        resize: (columns: number, rows: number) => void;
+    } | null>(null);
+
+    useEffect(() => {
+        void attempt;
+        if (!nodeId || !screen) return;
+        const targetNodeId = nodeId;
+        screen.reset();
+        setEnded(false);
+        setState('正在启动终端…');
+        let disposed = false;
+        let finished = false;
+        let ready = false;
+        let sessionId: string | undefined;
+        let release: (() => void) | undefined;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        let inputTimer: ReturnType<typeof setTimeout> | undefined;
+        let lastSize = '';
+        let resizing = false;
+        let pendingSize: { columns: number; rows: number } | undefined;
+        let lastOutputSequence = 0;
+        let pendingCloseReason: string | undefined;
+        let sending = false;
+        let rendering = false;
+        let inputBytes = 0;
+        let outputBytes = 0;
+        const inputQueue: Uint8Array[] = [];
+        const outputQueue: { bytes: Uint8Array; sequence: number }[] = [];
+        const encoder = new TextEncoder();
+        const openingTimeout = setTimeout(() => finish('终端启动超时'), 15000);
+        function finish(reason: string) {
+            if (finished) return;
+            finished = true;
+            ready = false;
+            release?.();
+            release = undefined;
+            clearTimeout(openingTimeout);
+            clearInterval(heartbeat);
+            clearTimeout(inputTimer);
+            inputQueue.length = 0;
+            outputQueue.length = 0;
+            inputBytes = 0;
+            outputBytes = 0;
+            screen?.closed();
+            if (sessionId) void closeTerminal(targetNodeId, sessionId).catch(() => undefined);
+            if (!disposed) {
+                setState(reason);
+                setEnded(true);
+            }
+        }
+        function fail(error: unknown) {
+            finish(error instanceof Error ? error.message : '终端通信失败');
+        }
+        async function flushResize() {
+            if (resizing || !ready || !sessionId || finished) return;
+            resizing = true;
+            try {
+                while (!finished && pendingSize) {
+                    const size = pendingSize;
+                    pendingSize = undefined;
+                    await resizeTerminal(targetNodeId, sessionId, size.columns, size.rows);
+                }
+            } catch (error) {
+                fail(error);
+            } finally {
+                resizing = false;
+            }
+        }
+        async function flushInput() {
+            inputTimer = undefined;
+            if (sending || !ready || !sessionId || finished) return;
+            sending = true;
+            try {
+                while (!finished && inputQueue.length > 0) {
+                    const next = inputQueue[0];
+                    const chunk = next.slice(0, TERMINAL_CHUNK_BYTES);
+                    if (chunk.length === next.length) inputQueue.shift();
+                    else inputQueue[0] = next.slice(chunk.length);
+                    inputBytes -= chunk.length;
+                    await writeTerminal(targetNodeId, sessionId, chunk);
+                }
+            } catch (error) {
+                fail(error);
+            } finally {
+                sending = false;
+            }
+        }
+        function renderOutput() {
+            if (disposed || finished || rendering) return;
+            if (outputQueue.length === 0) {
+                if (pendingCloseReason !== undefined) finish(pendingCloseReason);
+                return;
+            }
+            const item = outputQueue.shift();
+            if (!item || !sessionId || !screen) return;
+            rendering = true;
+            screen.write(item.bytes, () => {
+                if (disposed || finished || !sessionId) {
+                    rendering = false;
+                    return;
+                }
+                outputBytes -= item.bytes.length;
+                const confirmation =
+                    item.sequence > 0
+                        ? acknowledgeTerminalOutput(targetNodeId, sessionId, item.sequence)
+                        : Promise.resolve();
+                void confirmation
+                    .then(() => {
+                        rendering = false;
+                        renderOutput();
+                    })
+                    .catch(fail);
+            });
+        }
+        function receive(value: unknown) {
+            if (disposed || finished) return;
+            try {
+                for (const event of terminalEventsSchema.parse(value).events) {
+                    if (event.kind === 'ready') {
+                        ready = true;
+                        clearTimeout(openingTimeout);
+                        setState('已连接');
+                        screen?.ready();
+                        void flushInput();
+                    } else if (event.kind === 'close') {
+                        ready = false;
+                        screen?.closed();
+                        inputQueue.length = 0;
+                        inputBytes = 0;
+                        pendingCloseReason = event.reason || '终端已关闭';
+                        renderOutput();
+                        break;
+                    } else {
+                        const bytes = Uint8Array.from(atob(event.content), (character) =>
+                            character.charCodeAt(0)
+                        );
+                        if (
+                            bytes.length > TERMINAL_CHUNK_BYTES ||
+                            (event.sequence > 0 && event.sequence !== lastOutputSequence + 1)
+                        )
+                            throw new Error('终端数据顺序无效，请重新连接');
+                        if (event.sequence > 0) lastOutputSequence = event.sequence;
+                        if (outputBytes + bytes.length > TERMINAL_OUTPUT_LIMIT)
+                            throw new Error('终端输出超过处理能力，连接已关闭，请重新连接');
+                        outputQueue.push({ bytes, sequence: event.sequence });
+                        outputBytes += bytes.length;
+                        renderOutput();
+                    }
+                }
+            } catch (error) {
+                fail(error);
+            }
+        }
+        const control = {
+            input(data: string) {
+                if (finished) return;
+                const bytes = encoder.encode(data);
+                if (inputBytes + bytes.length > TERMINAL_INPUT_LIMIT) {
+                    finish('终端输入队列已满，连接已关闭，请重新连接');
+                    return;
+                }
+                inputQueue.push(bytes);
+                inputBytes += bytes.length;
+                if (inputTimer === undefined) inputTimer = setTimeout(() => void flushInput(), 8);
+            },
+            resize(columns: number, rows: number) {
+                const size = `${columns}:${rows}`;
+                if (!ready || !sessionId || finished || lastSize === size) return;
+                lastSize = size;
+                pendingSize = { columns, rows };
+                void flushResize();
+            },
+        };
+        controlRef.current = control;
+        const size = screen.size();
+        void openTerminal(targetNodeId, size.columns, size.rows)
+            .then(({ id }) => {
+                if (disposed || finished) {
+                    void closeTerminal(targetNodeId, id).catch(() => undefined);
+                    return;
+                }
+                sessionId = id;
+                release = getTerminalEvents(targetNodeId, id).subscribe({
+                    next: receive,
+                    error: fail,
+                });
+                heartbeat = setInterval(() => {
+                    if (!finished && !resizing)
+                        void keepTerminalAlive(targetNodeId, id).catch(fail);
+                }, 20000);
+            })
+            .catch(fail);
+        return () => {
+            disposed = true;
+            if (controlRef.current === control) controlRef.current = null;
+            finish('终端已关闭');
+        };
+    }, [nodeId, screen, attempt]);
+
+    const input = useCallback((data: string) => controlRef.current?.input(data), []);
+    const resize = useCallback(
+        (columns: number, rows: number) => controlRef.current?.resize(columns, rows),
+        []
+    );
+    const reconnect = useCallback(() => setAttempt((value) => value + 1), []);
+    return { state, ended, input, resize, reconnect };
+}
 
 async function restoreDebugConnectionSession(): Promise<void> {
     const token = useAuthStore.getState().token;
@@ -741,47 +994,23 @@ export function configureEdgeDebugConnection() {
     edgeDebugConnection.configureSessionRestore(restoreDebugConnectionSession);
 }
 
-export function useDtuChannels(scope: Edge.EventScope) {
-    const client = useQueryClient();
-    const [streamError, setStreamError] = useState<Error>();
-    const [attempt, setAttempt] = useState(0);
-    const token = useAuthStore((state) => state.token);
-    const signature = JSON.stringify(scope);
-    const id = scope.nodeId ?? '';
-    const result = useQuery({
-        queryKey: ['edge-dtu', id],
-        queryFn: ({ signal }) => getDtuChannels(id, signal),
-        enabled: Boolean(id && scope.dtu),
-        refetchInterval: false,
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
+export const useDtuChannels = (scope: Edge.EventScope) =>
+    useSnapshotQuery({
+        queryKey: edgeLiveQueryKeys.dtu(scope.nodeId),
+        streamKey: scope,
+        queryFn: () => observeDtuChannels(scope),
+        enabled: Boolean(scope.nodeId && scope.dtu),
     });
-    useEffect(() => {
-        void attempt;
-        const current: Edge.EventScope = JSON.parse(signature);
-        if (!current.nodeId || !current.dtu || !token) return;
-        setStreamError(undefined);
-        return observeDtuChannels(current).subscribe({
-            next: (value) => {
-                client.setQueryData(['edge-dtu', current.nodeId], value);
-                setStreamError(undefined);
-            },
-            error: setStreamError,
-        });
-    }, [client, signature, attempt, token]);
-    return { ...result, streamError, retryStream: () => setAttempt((value) => value + 1) };
-}
+// DTU channels are pushed over SSE after each write; there is no HTTP cache to invalidate.
 export const useDtuSave = (id: string) =>
     useMutationWithMessage({
         mutationFn: (data: Edge.DtuChannel) => saveDtuChannel(id, data),
         successMessage: '透传配置已保存并提交下发',
-        invalidateKeys: [['edge-dtu', id]],
     });
 export const useDtuDelete = (id: string) =>
     useMutationWithMessage({
         mutationFn: (channelId: string) => deleteDtuChannel(id, channelId),
         successMessage: '透传通道已删除并提交下发',
-        invalidateKeys: [['edge-dtu', id]],
     });
 export function dtuTraceHex(payload = '') {
     try {

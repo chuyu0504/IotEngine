@@ -1,9 +1,11 @@
 import type { UseQueryOptions } from '@tanstack/react-query';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/use_mutation';
 import type { RequestConfig } from '@/lib/http';
 import type { PaginatedResult } from '@/types/pagination';
+import { getGroupKey, normalizeGroupName } from '@/utils/group_key';
+import { fetchAllPages } from '@/utils/pagination';
 import { createQueryKeys } from '@/utils/query';
 import * as api from './protocol.api';
 import { formatTsapValue } from './protocol.schema';
@@ -12,6 +14,7 @@ import type {
     DerivedPoint,
     DeviceTypeFormValues,
     DeviceTypeTimingConfig,
+    ExpressionTestRequest,
     GroupSection,
     Modbus,
     MqttPreviewRequest,
@@ -27,7 +30,36 @@ import type {
 
 const MAX_PAGE_SIZE = 1000;
 
-export const previewMqttPayload = (data: MqttPreviewRequest) => api.previewMqtt(data);
+/** MQTT 样例报文解析预览，结果只用于编辑弹窗展示。 */
+export function useMqttPayloadPreview() {
+    return useMutation({ mutationFn: (data: MqttPreviewRequest) => api.previewMqtt(data) });
+}
+
+/** 派生值公式试算：按填写的测试值由服务端计算结果与命中的单位条件。 */
+export function useProtocolExpressionTest() {
+    return useMutation({ mutationFn: (data: ExpressionTestRequest) => api.testExpression(data) });
+}
+
+/**
+ * 用服务端表达式解析器校验公式语法与变量绑定，失败时抛出服务端给出的原因。
+ * 服务端先编译公式和全部单位条件，再计算公式并依次求值条件直到首个成立；
+ * 待校验公式排在恒成立条件之后，只被编译不被求值，结果与测试值无关。
+ */
+export async function validateProtocolExpression(
+    expression: string,
+    aliases: readonly string[]
+): Promise<void> {
+    const inputs = [...new Set(aliases.filter(Boolean))].map((alias) => ({ alias, value: 0 }));
+    await api.testExpression({
+        expression: '0',
+        inputs,
+        unit: '',
+        unitRules: [
+            { condition: '1', unit: '' },
+            { condition: expression, unit: '' },
+        ],
+    });
+}
 
 export function protocolPointOptions(item: Protocol.Item): { value: string; label: string }[] {
     const config = item.config;
@@ -47,27 +79,12 @@ export function protocolPointOptions(item: Protocol.Item): { value: string; labe
 export function protocolDerivedPoints(item: Protocol.Item): DerivedPoint[] {
     return (item.config as DeviceTypeTimingConfig).derivedPoints ?? [];
 }
-export const getAllProtocolConfigs = async (
-    params?: Protocol.Query,
-    requestConfig?: RequestConfig
-) => {
+export const getAllProtocolConfigs = (params?: Protocol.Query, requestConfig?: RequestConfig) => {
     const { page: _page, pageSize: _pageSize, ...filters } = params ?? {};
-    const first = await api.getList(
-        { ...filters, page: 1, pageSize: MAX_PAGE_SIZE },
-        requestConfig
+    return fetchAllPages(MAX_PAGE_SIZE, (page, pageSize) =>
+        api.getList({ ...filters, page, pageSize }, requestConfig)
     );
-    const count = Math.max(1, first.totalPages ?? Math.ceil(first.total / MAX_PAGE_SIZE));
-    const pages = await Promise.all(
-        Array.from({ length: count - 1 }, (_, index) =>
-            api.getList({ ...filters, page: index + 2, pageSize: MAX_PAGE_SIZE }, requestConfig)
-        )
-    );
-    return [first, ...pages].flatMap((page) => page.list);
 };
-
-export const normalizeGroupName = (group?: string) => group?.trim() || '';
-export const UNGROUPED_GROUP_KEY = '__ungrouped__';
-export const getGroupKey = (group?: string) => normalizeGroupName(group) || UNGROUPED_GROUP_KEY;
 
 export const buildGroupSections = <
     T extends {
@@ -100,29 +117,17 @@ export const buildGroupSections = <
         return a.label.localeCompare(b.label, 'zh-Hans-CN');
     });
 };
-export const sortSectionsByOrder = <
-    T extends {
-        key: string;
-    },
->(
-    sections: T[],
-    orderedKeys: string[]
-): T[] => {
-    const orderIndex = new Map<string, number>(orderedKeys.map((key, index) => [key, index]));
-    const originalIndex = new Map<string, number>(
-        sections.map((section, index) => [section.key, index])
+/** 拖拽结果与当前列表的条目顺序及所属分组完全相同，无需保存。 */
+export const hasSameGroupedOrder = <T extends { id: string; group?: string }>(
+    next: readonly T[],
+    current: readonly T[]
+) =>
+    next.length === current.length &&
+    next.every(
+        (item, index) =>
+            item.id === current[index]?.id &&
+            getGroupKey(item.group) === getGroupKey(current[index]?.group)
     );
-    return [...sections].sort((left, right) => {
-        const leftOrder = orderIndex.get(left.key);
-        const rightOrder = orderIndex.get(right.key);
-        if (leftOrder !== undefined && rightOrder !== undefined) {
-            return leftOrder - rightOrder;
-        }
-        if (leftOrder !== undefined) return -1;
-        if (rightOrder !== undefined) return 1;
-        return (originalIndex.get(left.key) ?? 0) - (originalIndex.get(right.key) ?? 0);
-    });
-};
 export const reorderItemsByGroupOrder = <
     T extends {
         group?: string;
@@ -195,7 +200,6 @@ export function useProtocolConfigList(
         queryKey: protocolQueryKeys.list(params),
         queryFn: ({ signal }) => getAllProtocolConfigs(params, { signal }),
         ...options,
-        refetchInterval: false,
     });
 }
 export function useProtocolConfigOptions(
@@ -206,7 +210,6 @@ export function useProtocolConfigOptions(
         queryKey: [...protocolQueryKeys.all, 'options', protocol],
         queryFn: ({ signal }) => api.getOptions(protocol, signal),
         ...options,
-        refetchInterval: false,
     });
 }
 export function useProtocolConfigDetail(
@@ -218,7 +221,6 @@ export function useProtocolConfigDetail(
         queryFn: ({ signal }) => api.getDetail(id as string, signal),
         enabled: Boolean(id),
         ...options,
-        refetchInterval: false,
     });
 }
 export function useProtocolConfigSave() {
@@ -647,5 +649,3 @@ export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
         remark: data?.remark ?? '',
     };
 };
-
-export const testProtocolExpression = api.testExpression;

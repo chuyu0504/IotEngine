@@ -3,7 +3,8 @@ import type { PageParams } from '@/types/pagination';
  * 协议配置类型定义
  */
 /** 协议类型 */
-export type ProtocolType = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645' | 'MQTT';
+export const PROTOCOL_TYPES = ['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT'] as const;
+export type ProtocolType = (typeof PROTOCOL_TYPES)[number];
 
 export interface DeviceParameterDefinition {
     name: string;

@@ -1,11 +1,11 @@
-import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
-import { getDeviceOptions } from '@/pages/device/device.service';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/use_mutation';
 import { useSnapshotQuery } from '@/hooks/use_snapshot_query';
-import type { PaginatedResult } from '@/types/pagination';
 import * as alertApi from './alert.api';
 import type { Alert } from './alert.types';
+
+/** `records` 与 `stats` 是 SSE 快照缓存，只随推送更新；写入后只失效规则与模板的 HTTP 查询。 */
 export const alertKeys = {
     ruleLists: ['alerts', 'rules'] as const,
     templateQueries: ['alerts', 'templates'] as const,
@@ -31,34 +31,29 @@ export function useAlertRuleList(params?: Record<string, unknown>) {
     return useQuery({
         queryKey: alertKeys.rules(params),
         queryFn: ({ signal }) => alertApi.getRules(params, signal),
-        refetchInterval: false,
     });
 }
 export function useAlertRecordList(
     params?: Record<string, unknown>,
-    options?: Omit<UseQueryOptions<PaginatedResult<Alert.RecordItem>>, 'queryKey' | 'queryFn'>
+    options?: { enabled?: boolean }
 ) {
     return useSnapshotQuery({
         queryKey: alertKeys.records(params),
         queryFn: () => alertApi.getRecords(params),
-        ...options,
+        enabled: options?.enabled ?? true,
     });
 }
 export function useAlertTemplateList(params?: Record<string, unknown>) {
     return useQuery({
         queryKey: alertKeys.templates(params),
         queryFn: ({ signal }) => alertApi.getTemplates(params, signal),
-        refetchInterval: false,
     });
 }
-export function useAlertStats(
-    params?: Record<string, unknown>,
-    options?: Omit<UseQueryOptions<Alert.ActiveStats>, 'queryKey' | 'queryFn'>
-) {
+export function useAlertStats(params?: Record<string, unknown>, options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: alertKeys.stats(params),
         queryFn: () => alertApi.getStats(params),
-        ...options,
+        enabled: options?.enabled ?? true,
     });
 }
 export function useAlertRuleSave() {
@@ -131,13 +126,5 @@ export function useAlertBatchAcknowledge() {
     return useMutationWithMessage({
         mutationFn: alertApi.batchAcknowledge,
         successMessage: '批量确认成功',
-    });
-}
-export function useDeviceOptions(options?: { enabled?: boolean }) {
-    return useQuery({
-        queryKey: ['devices', 'options'],
-        queryFn: ({ signal }) => getDeviceOptions(signal),
-        enabled: options?.enabled ?? true,
-        refetchInterval: false,
     });
 }

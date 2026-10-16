@@ -18,7 +18,6 @@ export function useDeptList(
         queryKey: deptQueryKeys.list(params),
         queryFn: ({ signal }) => getList(params, signal),
         ...options,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -27,7 +26,6 @@ export function useDeptOptions(options?: { enabled?: boolean }) {
         queryKey: deptQueryKeys.options(),
         queryFn: ({ signal }) => getOptions(signal),
         enabled: options?.enabled ?? true,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }

@@ -213,6 +213,8 @@ export interface DeviceStaticData extends EdgeConnection {
     /** 设备固有参数，控制模板通过 $param:名称 引用。 */
     parameters?: Record<string, unknown>;
 }
+/** 服务端遥测运行投影计算的在线状态，到期离线由服务端推送 */
+export type DeviceRuntimeState = 'online' | 'offline';
 /** 设备实时数据 */
 export interface DeviceRealtimeSnapshot {
     id: string;
@@ -222,6 +224,10 @@ export interface DeviceRealtimeSnapshot {
     connected?: boolean;
     /** 设备南向链路状态；不代表设备在线 */
     connectionState?: 'connected' | 'disconnected';
+    /** 设备在线状态（服务端权威） */
+    runtimeState?: DeviceRuntimeState;
+    /** 离线原因：data_stale、no_connection、no_data、startup */
+    runtimeReason?: string;
     elements?: DeviceElement[];
     edge_node_id?: string;
     edge_transport?: EdgeTransport;
@@ -326,6 +332,10 @@ export interface DeviceOverview extends DeviceStaticData {
     connected?: boolean;
     /** 设备南向链路状态；不代表设备在线 */
     connectionState?: 'connected' | 'disconnected';
+    /** 设备在线状态（服务端权威） */
+    runtimeState?: DeviceRuntimeState;
+    /** 离线原因：data_stale、no_connection、no_data、startup */
+    runtimeReason?: string;
     reportTime?: string;
     elements?: DeviceElement[];
     image?: {

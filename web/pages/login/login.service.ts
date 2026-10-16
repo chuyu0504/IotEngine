@@ -47,7 +47,6 @@ export function useCurrentUser() {
         initialData: user ?? undefined,
         initialDataUpdatedAt: 0,
         staleTime: Infinity,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
         refetchOnMount: 'always',

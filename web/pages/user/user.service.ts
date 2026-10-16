@@ -2,7 +2,6 @@ import { createQueryKeys } from '@/utils/query';
 import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/use_mutation';
 import type { PaginatedResult } from '@/types/pagination';
-import { getRoleOptions } from '@/pages/role/role.service';
 import { create, getList, getOptions, remove, update } from './user.api';
 import type { User } from './user.types';
 
@@ -13,7 +12,6 @@ const userQueryKeys = {
     ...userKeys,
     list: (params?: User.Query) => [...userKeys.lists(), params] as const,
 };
-const roleOptionQueryKey = ['roles', 'options'] as const;
 
 export function useUserList(
     params?: User.Query,
@@ -23,7 +21,6 @@ export function useUserList(
         queryKey: userQueryKeys.list(params),
         queryFn: ({ signal }) => getList(params, signal),
         ...options,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -35,17 +32,6 @@ export function useUserOptions(
         queryFn: ({ signal }) => getOptions(undefined, signal),
         staleTime: 5 * 60 * 1000,
         ...options,
-        refetchInterval: false,
-        refetchOnWindowFocus: false,
-    });
-}
-export function useRoleOptions(options?: { enabled?: boolean }) {
-    return useQuery({
-        queryKey: roleOptionQueryKey,
-        queryFn: ({ signal }) => getRoleOptions(signal),
-        staleTime: 5 * 60 * 1000,
-        enabled: options?.enabled ?? true,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
