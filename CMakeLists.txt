@@ -392,6 +392,10 @@ iot_engine_add_test(firmware-download
     LIBRARIES ruvia::web)
 set_tests_properties(firmware-download PROPERTIES TIMEOUT 30)
 
+iot_engine_add_test(firmware-storage LARGE
+    SOURCES tests/firmware-storage-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
+
 iot_engine_add_test(edge-debug-request LARGE
     SOURCES tests/edge-debug-request-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
@@ -431,8 +435,9 @@ iot_engine_add_test(edge-service LARGE
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog
     DEFINITIONS IOT_ENGINE_TESTING)
 
-iot_engine_add_test(edge-projector NO_PROJECT_INCLUDE
-    SOURCES tests/edge-projector-test.cpp)
+iot_engine_add_test(edge-projector
+    SOURCES tests/edge-projector-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(architecture
     SOURCES tests/architecture-test.cpp
@@ -561,6 +566,7 @@ foreach(test_name
         edge-session-integration
         edge-telemetry-upload-integration
         edge-terminal-integration
+        edge-vpn-integration
         entity-schema-audit
         firmware-http-integration
         gb-control-claim-integration

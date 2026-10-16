@@ -6,14 +6,15 @@
 
 #include <ruvia/core/event_loop_pool.h>
 
-#include "service/features/edge/edge.runtime.h"
+#include "service/features/edge/edge.service.h"
+#include "service/features/edge/projection/projection.runtime.h"
 #include "service/features/observability/observability.service.h"
 
 #include "tests/redis_reply.fixture.h"
 
 namespace {
-static_assert(!std::is_default_constructible_v<service::edge::EdgeProjectionRuntime>);
-static_assert(std::is_constructible_v<service::edge::EdgeProjectionRuntime, service::observability::RuntimeDiagnostics&>);
+static_assert(!std::is_default_constructible_v<service::edge::projection::ProjectionRuntime>);
+static_assert(std::is_constructible_v<service::edge::projection::ProjectionRuntime, service::observability::RuntimeDiagnostics&>);
 
 struct RecordingRedis {
     mutable std::vector<std::string> keys;

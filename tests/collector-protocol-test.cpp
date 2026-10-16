@@ -28,6 +28,7 @@
 
 #include "service/features/alert/alert.service.h"
 #include "service/features/collector/collector.protocol.h"
+#include "service/features/edge/projection/projection.service.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
@@ -3423,11 +3424,7 @@ void testEdgeParsedMessageContract() {
         .id = "2-0", .fields = service::message::parsedFields(parsed)};
     require(service::message::parsedFrom(rawStream).rawPayloads == parsed.rawPayloads,
             "edge history raw response array lost bytes or ordering in Redis serialization");
-    struct EdgeResponseProjection : service::edge::EdgeProjectionService {
-        using EdgeProjectionService::collectTelemetry;
-        using EdgeProjectionService::assembleTelemetryParts;
-        using EdgeProjectionService::storeTelemetryPart;
-    };
+    using EdgeResponseProjection = service::edge::projection::ProjectionService;
     service::edge::metadata::Catalog catalog;
     catalog[parsed.connectionId][parsed.deviceId] = {
         .linkId = parsed.linkId, .deviceCode = parsed.deviceCode,
@@ -3442,17 +3439,17 @@ void testEdgeParsedMessageContract() {
     record->set_observed_at_ms(parsed.observedAtMs);
     record->add_raw_payloads(std::string("\x03\x00\x00\x04", 4));
     record->add_raw_packet_ids(std::string(16, '\x05'));
-    std::vector<service::message::StreamMessage> projected;
+    std::vector<service::message::ParsedDeviceMessage> projected;
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
-    require(projected.size() == 1 && service::message::parsedFrom(projected.front()).rawPayloads ==
+    require(projected.size() == 1 && projected.front().rawPayloads ==
                 std::vector<std::vector<std::uint8_t>>{{0x03, 0x00, 0x00, 0x04}},
             "edge wire response did not become a single-item history raw payload array");
     record->set_raw_payloads(0, std::string("\x7e\x7e\x00\xff", 4));
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
-    require(service::message::parsedFrom(projected.front()).rawPayloads ==
+    require(projected.front().rawPayloads ==
                 std::vector<std::vector<std::uint8_t>>{{0x7e, 0x7e, 0x00, 0xff}},
             "edge raw array did not preserve the exact response");
     record->clear_raw_packet_ids();
@@ -3460,14 +3457,14 @@ void testEdgeParsedMessageContract() {
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
-    const auto legacyRecord = service::message::parsedFrom(projected.front());
+    const auto legacyRecord = projected.front();
     require(legacyRecord.rawPacketIds.size() == 2 &&
                 legacyRecord.rawPacketIds[0] != legacyRecord.rawPacketIds[1],
             "legacy telemetry did not retain distinct original frame identities");
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
-    require(service::message::parsedFrom(projected.front()).rawPacketIds == legacyRecord.rawPacketIds,
+    require(projected.front().rawPacketIds == legacyRecord.rawPacketIds,
             "legacy telemetry replay changed original frame identities");
     pb::TelemetryBatch rawBatch;
     auto& rawRecord = *rawBatch.add_records();
@@ -3490,7 +3487,7 @@ void testEdgeParsedMessageContract() {
     area->set_scale(1.0); area->set_decimals(-1);
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, rawBatch, projected, configuration);
-    const auto rawProjected = service::message::parsedFrom(projected.front());
+    const auto rawProjected = projected.front();
     require(rawProjected.rawPayloads == std::vector<std::vector<std::uint8_t>>{read, reply} &&
         rawProjected.rawPacketIds.size() == 2 && rawProjected.rawPacketIds[0] == rawProjected.rawPacketIds[1] + ":request" &&
         rawProjected.valuesJson.find("4660") != std::string::npos,

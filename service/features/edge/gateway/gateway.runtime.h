@@ -8,26 +8,32 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
 
+#include <ruvia/core/stop_token.h>
 #include <ruvia/core/task_scope.h>
+#include <ruvia/core/timer.h>
 #include <ruvia/web/controller.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
+#include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/edge.runtime.h"
 #include "service/features/edge/edge.service.h"
-#include "service/features/edge/firmware/firmware.service.h"
 #include "service/features/edge/gateway/gateway.service.h"
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/features/edge/serial_debug/serial_debug.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.service.h"
 #include "service/features/live/live.service.h"
+#include "service/middleware/log.h"
 
 namespace service::edge {
 
@@ -144,7 +150,7 @@ class GatewayController final {
                     input.protocol_version() != session.protocolVersion ||
                     input.payload_case() != pb::Envelope::kHeartbeat ||
                     (supportsCommandStartBefore &&
-                        (!input.heartbeat().has_nonce() || input.heartbeat().nonce() == 0)) ||
+                     (!input.heartbeat().has_nonce() || input.heartbeat().nonce() == 0)) ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
                     input.platform_id() !=
@@ -175,7 +181,8 @@ class GatewayController final {
                     bool sampleAvailable = false;
                     try {
                         heartbeatAck->set_database_time_ms(
-                            co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+                            co_await gateway::GatewayService::databaseTimeMilliseconds(c)
+                        );
                         sampleAvailable = true;
                     } catch (const std::exception&) {
                     }
@@ -252,14 +259,19 @@ class GatewayController final {
             bool sampleAvailable = false;
             try {
                 helloAck->set_database_time_ms(
-                    co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+                    co_await gateway::GatewayService::databaseTimeMilliseconds(c)
+                );
                 sampleAvailable = true;
             } catch (const std::exception&) {
             }
             if (!sampleAvailable) {
                 (void)co_await session_state::release(
-                    c.redis(), session.nodeId, session.epoch, session.protocolVersion,
-                    session.workerIndex);
+                    c.redis(),
+                    session.nodeId,
+                    session.epoch,
+                    session.protocolVersion,
+                    session.workerIndex
+                );
                 co_await socket.close(ruvia::websocket_close_options{
                     .code_ = 1011,
                     .reason_ = "database time sample unavailable",
@@ -478,14 +490,19 @@ class GatewayController final {
     }
 
     static ruvia::task<void> sendSessionEnvelope(
-        ruvia::context& c, ruvia::websocket& socket, Session& session, pb::Envelope& envelope) {
+        ruvia::context& c,
+        ruvia::websocket& socket,
+        Session& session,
+        pb::Envelope& envelope
+    ) {
         if (envelope.has_heartbeat_ack() && session.supportsCommandStartBefore &&
             envelope.heartbeat_ack().has_nonce()) {
             if (envelope.heartbeat_ack().nonce() == 0) {
                 throw std::runtime_error("correlated heartbeat nonce is invalid");
             }
             envelope.mutable_heartbeat_ack()->set_database_time_ms(
-                co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+                co_await gateway::GatewayService::databaseTimeMilliseconds(c)
+            );
         }
         co_await send(socket, envelope);
     }
@@ -531,9 +548,11 @@ class GatewayController final {
         // 旧固件按真实应用消息维护时序；新固件明确声明状态上报能力后，
         // 由原生 WS 探活维护连接，本任务只续租 Worker 的路由记录。
         const auto probeInterval = (live->session->statusReporting || live->session->sparseHeartbeat)
-            ? std::chrono::seconds(300) : std::chrono::seconds(20);
+            ? std::chrono::seconds(300)
+            : std::chrono::seconds(20);
         const auto idleTimeout = live->session->sparseHeartbeat
-            ? std::chrono::seconds(900) : std::chrono::seconds(60);
+            ? std::chrono::seconds(900)
+            : std::chrono::seconds(60);
         try {
             while (live->active && !live->scope->stop_requested()) {
                 (void)co_await ruvia::sleep_for(live->context->worker(), probeInterval, live->scope->get_stop_token());
@@ -544,9 +563,12 @@ class GatewayController final {
                     // Native WebSocket Ping/Pong owns transport liveness. Refresh
                     // this Worker's routing lease without sending application traffic.
                     if (!co_await session_state::refresh(
-                            live->context->redis(), live->session->nodeId,
-                            live->session->epoch, live->session->protocolVersion,
-                            live->session->workerIndex)) {
+                            live->context->redis(),
+                            live->session->nodeId,
+                            live->session->epoch,
+                            live->session->protocolVersion,
+                            live->session->workerIndex
+                        )) {
                         live->socket->abort();
                         break;
                     }
@@ -622,7 +644,7 @@ class GatewayController final {
             try {
                 co_await socket.close(
                     ruvia::websocket_close_options{ .code_ = 1011,
-                                                  .reason_ = "edge egress failed" }
+                                                    .reason_ = "edge egress failed" }
                 );
             } catch (...) {
                 socket.abort();
@@ -659,7 +681,10 @@ class GatewayController final {
                 co_return false;
             }
             gateway::GatewayService::applyCommandDeadline(
-                *envelope.mutable_command_request(), session.supportsCommandStartBefore, deadlineMs);
+                *envelope.mutable_command_request(),
+                session.supportsCommandStartBefore,
+                deadlineMs
+            );
         }
         protocol::bindSession(
             envelope,
@@ -712,7 +737,7 @@ class GatewayController final {
                 const auto now = service::message::utcNowMilliseconds();
                 if (session.capabilitySeen &&
                     (session.configSentAtMs == 0 || now - session.configSentAtMs >= retryIntervalMs)) {
-                    (void)co_await configService().requeueIfStale(
+                    (void)co_await ConfigService::requeueIfStale(
                         c,
                         session.nodeId,
                         input.heartbeat().active_config_version()
@@ -859,7 +884,7 @@ class GatewayController final {
             enqueue(session, reply);
             co_return;
         }
-        auto value = firmware::readChunk(
+        auto value = gateway::GatewayService::readFirmwareChunk(
             session.firmwarePath,
             session.firmwareSize,
             request.offset()
@@ -875,3 +900,140 @@ class GatewayController final {
 };
 
 } // namespace service::edge
+
+namespace service::edge::gateway {
+
+// Firmware storage cleanup driver, one instance per Service Worker. It sleeps
+// until the earliest deadline computed by GatewayService (no deadline: until an
+// event), then performs the cleanup only if it wins the storage claim. The
+// driver, its wakeup source and the RPC handler all run on the owning Worker.
+class FirmwareCleanupRuntime final {
+  public:
+    explicit FirmwareCleanupRuntime(std::filesystem::path directory)
+        : directory_(std::filesystem::absolute(std::move(directory)).lexically_normal()) {}
+
+    FirmwareCleanupRuntime(const FirmwareCleanupRuntime&) = delete;
+    FirmwareCleanupRuntime& operator=(const FirmwareCleanupRuntime&) = delete;
+
+    ~FirmwareCleanupRuntime() { stop(); }
+
+    void start(ruvia::web_worker_handle worker) {
+        if (stop_) {
+            return;
+        }
+        stop_ = std::make_unique<ruvia::stop_source>();
+        auto ready = std::make_shared<std::promise<void>>();
+        auto done = std::make_shared<std::promise<void>>();
+        auto started = ready->get_future();
+        stopped_ = done->get_future();
+        if (!worker.post([this, ready, done](ruvia::web_worker_context& context) {
+                       return run(context, ready, done);
+                   })
+                 .accepted()) {
+            stop_.reset();
+            stopped_ = {};
+            throw std::runtime_error("service worker rejected firmware cleanup");
+        }
+        started.get();
+    }
+
+    void stop() {
+        if (!stop_) {
+            return;
+        }
+        stop_->request_stop();
+        if (stopped_.valid()) {
+            stopped_.wait();
+        }
+        stop_.reset();
+    }
+
+    // RPC service::message::edge::firmware::kRpcComponent handler, executed on
+    // this Worker: records the event and wakes the driver to recompute.
+    ruvia::task<std::string> executeOperation(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token) {
+        if (operation != service::message::edge::firmware::kScheduleCleanupOperation || !payload.empty()) {
+            service::common::fail(10002, "Invalid firmware cleanup request", 400);
+        }
+        context.worker_state<FirmwareCleanupSignal>().request();
+        co_return std::string{};
+    }
+
+  private:
+    // Backoff after a lost claim, an empty claimed run or a failure, before the
+    // deadline is recomputed.
+    static constexpr auto kRetry = std::chrono::seconds(5);
+
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
+        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
+        auto& signal = context.worker_state<FirmwareCleanupSignal>();
+        signal.bind([this] {
+            if (wake_) {
+                wake_->request_stop();
+            }
+        });
+        ready->set_value();
+        try {
+            std::optional<std::chrono::steady_clock::time_point> due;
+            bool recompute = true;
+            while (!stop.stop_requested()) {
+                if (signal.consume() || recompute) {
+                    recompute = false;
+                    bool scheduled = false;
+                    try {
+                        const auto delay = co_await GatewayService::nextFirmwareCleanupDelay(context, directory_);
+                        due = delay ? std::optional(std::chrono::steady_clock::now() + *delay) : std::nullopt;
+                        scheduled = true;
+                    } catch (const std::exception& error) {
+                        LOG_ERROR << "firmware cleanup schedule failed: " << error.what();
+                    }
+                    if (!scheduled) {
+                        recompute = true;
+                        (void)co_await ruvia::sleep_for(context.worker(), kRetry, stop);
+                        continue;
+                    }
+                    if (signal.pending()) {
+                        continue;
+                    }
+                }
+                wake_ = std::make_unique<ruvia::stop_source>();
+                const auto wait = due ? std::max(*due - std::chrono::steady_clock::now(), std::chrono::steady_clock::duration::zero())
+                                      : std::chrono::steady_clock::duration::max();
+                (void)co_await ruvia::sleep_for(context.worker(), wait, ruvia::combine_stop_tokens(stop, wake_->token()));
+                wake_.reset();
+                if (stop.stop_requested()) {
+                    break;
+                }
+                if (signal.pending() || !due || std::chrono::steady_clock::now() < *due) {
+                    continue;
+                }
+                recompute = true;
+                bool backoff = true;
+                try {
+                    const auto result = co_await GatewayService::cleanupFirmwares(context, directory_);
+                    // A claimed run that removed nothing means the deadline is not
+                    // actually collectable yet; never spin on it.
+                    backoff = !result.claimed || result.removedRecords + result.removedFiles == 0;
+                } catch (const std::exception& error) {
+                    LOG_ERROR << "firmware cleanup failed: " << error.what();
+                }
+                if (backoff) {
+                    (void)co_await ruvia::sleep_for(context.worker(), kRetry, stop);
+                }
+            }
+        } catch (const std::exception& error) {
+            LOG_ERROR << "firmware cleanup stopped: " << error.what();
+        } catch (...) {
+            LOG_ERROR << "firmware cleanup stopped: unknown error";
+        }
+        signal.bind({});
+        wake_.reset();
+        done->set_value();
+    }
+
+    const std::filesystem::path directory_;
+    std::unique_ptr<ruvia::stop_source> stop_;
+    std::future<void> stopped_;
+    std::unique_ptr<ruvia::stop_source> wake_;
+};
+
+} // namespace service::edge::gateway

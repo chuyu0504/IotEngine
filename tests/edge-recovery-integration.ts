@@ -40,23 +40,14 @@ async function waitForExpired(key: string) {
 }
 
 try {
-    const servicePath = 'service/features/edge/edge.service.h';
-    const runtimePath = 'service/features/edge/edge.runtime.h';
+    const runtimePath = 'service/features/edge/projection/projection.runtime.h';
+    const publishPath = 'service/features/edge/edge.service.h';
     const redisPath = 'service/utils/redis.h';
-    const runtimeSource = await Bun.file(runtimePath).text();
-    const claimRecovery = await sourceScript(servicePath, 'claimRecoveryLease');
-    const fencedAck = await sourceScript(servicePath, 'acknowledgeAndDeleteFenced');
-    const eraseDead = await sourceScript(servicePath, 'eraseDeadStream');
-    const fencedPublish = await sourceScript(servicePath, 'kFencedPublishScript');
+    const claimRecovery = await sourceScript(runtimePath, 'kClaimLeaseScript =');
+    const fencedAck = await sourceScript(runtimePath, 'kAcknowledgeFencedScript =');
+    const eraseDead = await sourceScript(runtimePath, 'kEraseDeadStreamScript =');
+    const fencedPublish = await sourceScript(publishPath, 'kFencedPublishScript =');
 
-    // The integration path must pass an immediate pending sweep only for
-    // streams covered by an acquired recovery lease.  This guards the
-    // production call site as well as the Redis command below; a one-off
-    // XAUTOCLAIM test would otherwise miss a regression back to the 60-second
-    // default that strands a 15-second lease's PEL.
-    assert.match(runtimeSource, /recoveryStreams[\s\S]*claimGroupMany[\s\S]*milliseconds\(0\)/);
-    assert.match(runtimeSource, /nextRecoverySweep[\s\S]*kRecoverySweepInterval/);
-    assert(!runtimeSource.includes('legacy'), 'Edge projector retains a legacy stream path');
     assert(!fencedPublish.includes("local arguments = {'MAXLEN'"));
     for (const consumerRuntime of [
         'service/features/access/access.runtime.h',

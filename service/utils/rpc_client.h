@@ -5,11 +5,10 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <spdlog/spdlog.h>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <spdlog/spdlog.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -66,7 +65,7 @@ ruvia::task<std::string> callRpc(Context& context, std::string_view component, s
     const auto requestStream = Contract::requests(service::runtime::instanceId(), *topology.index);
     std::exception_ptr failure;
     try {
-        const std::vector<std::string> requestArguments{ "XADD", requestStream, "*", "version", std::string(Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
+        const auto requestArguments = Contract::requestArguments(requestStream, id, component, operation, std::move(payload), deadline);
         const auto enqueued = co_await service::message::redis::command(context.redis(), requestArguments);
         if (enqueued.kind() != ruvia::redis_value::kind_type::string) {
             service::message::redis::throwValue("RPC enqueue", enqueued);

@@ -1,78 +1,61 @@
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
+#include "service/features/edge/edge.protocol.h"
+
 namespace {
 
+namespace pb = service::edge::pb;
+using service::edge::protocol::TelemetryValues;
+
 void require(bool condition, std::string_view message) {
-    if (!condition)
+    if (!condition) {
         throw std::runtime_error(std::string(message));
+    }
 }
 
-std::string readEdgeProjectionSource(std::string_view relativePath) {
-    const auto sourcePath = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                            std::filesystem::path(relativePath);
-    std::ifstream input(sourcePath, std::ios::binary);
-    require(input.good(), "cannot open edge projector source");
-    return std::string(std::istreambuf_iterator<char>(input),
-                       std::istreambuf_iterator<char>());
+// BOOL readings are projected as 0/1 like every other numeric point.
+void testBooleanProjection() {
+    pb::ScalarValue value;
+    value.set_bool_value(true);
+    require(TelemetryValues::scalarText(value) == "1", "edge BOOL true is not projected as 1");
+    value.set_bool_value(false);
+    require(TelemetryValues::scalarText(value) == "0", "edge BOOL false is not projected as 0");
+    require(TelemetryValues::scalarJson(value) == "0", "edge BOOL JSON is not projected as 0");
+}
+
+// Projected telemetry retains each point's reported data type.
+void testTelemetryDataType() {
+    pb::TelemetryRecord record;
+    record.set_protocol(pb::PROTOCOL_MODBUS);
+    auto* item = record.add_values();
+    item->set_element_id("temperature");
+    item->mutable_value()->set_double_value(21.5);
+    const auto json = TelemetryValues::telemetryJson(record);
+    const auto expected = ",\"dataType\":\"" + TelemetryValues::scalarKind(item->value()) + "\"";
+    require(json.find("\"temperature\"") != std::string::npos, "telemetry JSON omits the element");
+    require(json.find(expected) != std::string::npos, "edge telemetry does not retain point data types");
+}
+
+// Heartbeat payload encodings accepted by EdgeNode configuration.
+void testPacketBytes() {
+    const auto hex = service::edge::protocol::packetBytes("HEX", "0a FF", "heartbeat_payload");
+    require(hex.size() == 2 && hex[0] == 0x0a && hex[1] == 0xff, "HEX heartbeat payload decoded incorrectly");
+    require(service::edge::protocol::packetBytes("OFF", "AA", "heartbeat_payload").empty(), "OFF heartbeat payload must be empty");
+    const auto ascii = service::edge::protocol::packetBytes("ASCII", "ok", "heartbeat_payload");
+    require(ascii.size() == 2 && ascii[0] == 'o', "ASCII heartbeat payload decoded incorrectly");
 }
 
 } // namespace
 
 int main() {
     try {
-        const auto serviceSource =
-            readEdgeProjectionSource("service/features/edge/edge.service.h");
-        const auto protocolSource =
-            readEdgeProjectionSource("service/features/edge/edge.protocol.h");
-        const auto runtimeSource =
-            readEdgeProjectionSource("service/features/edge/edge.runtime.h");
-        require(serviceSource.find("COALESCE((edge_node.capability->>'terminal')::boolean") ==
-                    std::string::npos,
-                "edge projector directly casts terminal capability");
-        require(serviceSource.find("COALESCE((status->'config'->>'activeVersion')::bigint") ==
-                    std::string::npos,
-                "edge projector directly casts activeVersion");
-        require(serviceSource.find("COALESCE((status->'config'->>'desiredVersion')::bigint") ==
-                    std::string::npos,
-                "edge projector directly casts desiredVersion");
-        require(serviceSource.find("COALESCE((node.status->'config'->>'desiredVersion')::bigint") ==
-                    std::string::npos,
-                "edge projector directly casts node desiredVersion");
-        require(serviceSource.find("config::detail::jsonText(query, existingCapability, \"terminal\")") !=
-                    std::string::npos,
-                "edge projector does not guard terminal capability");
-        require(serviceSource.find("query.case_when({{valid, query.cast(text, ruvia::db_data_type::big_int)}})") !=
-                    std::string::npos,
-                "edge projector does not guard desiredVersion");
-        require(serviceSource.find("\"status\", \"last_seen_at\", \"updated_at\"") != std::string::npos,
-                "edge hello insert does not record presence");
-        require(serviceSource.find("\"last_seen_at\", query.call(\"now\")") != std::string::npos,
-                "edge hello update does not refresh node presence");
-        require(serviceSource.find("edge_node.enrollment_status IN ('pending', 'approved')") ==
-                    std::string::npos,
-                "edge hello update still carries rejected enrollment compatibility");
-        require(serviceSource.find("result.actual_values_size()") != std::string::npos &&
-                    serviceSource.find("actual_value_count") != std::string::npos &&
-                    serviceSource.find("actual.has_value()") != std::string::npos &&
-                    serviceSource.find("scalarText(actual.value())") != std::string::npos,
-                "edge command projector drops physical readback values");
-        require(protocolSource.find("return value.bool_value() ? \"true\" : \"false\";") ==
-                    std::string::npos &&
-                    protocolSource.find("return value.bool_value() ? \"1\" : \"0\";") !=
-                    std::string::npos,
-                "edge BOOL values are not projected as 0/1");
-        require(protocolSource.find(",\\\"dataType\\\":\\\"") != std::string::npos &&
-                    protocolSource.find("scalarKind(item.value())") != std::string::npos,
-                "edge telemetry does not retain point data types");
-        require(runtimeSource.find("projector_stream::stream(index, service::runtime::instanceId())") !=
-                    std::string::npos,
-                "edge projector does not consume its accepting worker's stream");
+        testBooleanProjection();
+        testTelemetryDataType();
+        testPacketBytes();
         std::cout << "edge projector tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

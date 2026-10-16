@@ -1,13 +1,18 @@
 #pragma once
+
+#include <string>
+#include <string_view>
+
 #include <ruvia/web/db/db_entity.h>
 #include <ruvia/web/redis/redis_entity.h>
+
 #include "service/common/message.h"
-namespace service::vpn {
-RUVIA_REDIS_ENTITY(ReconciliationSchedule, "iot_vpn_reconciliation",
-    RUVIA_REDIS_COLUMN(id, ruvia::string, ruvia::redis_column_options{.primary_key_ = true}));
-}
 
 namespace service::vpn::persistence {
+
+// Per-instance drift-correction lease: present while this instance's Hub was
+// reconciled within the last drift period. Its TTL schedules the next drift run.
+RUVIA_REDIS_ENTITY(ReconciliationSchedule, "iot_vpn_reconciliation", RUVIA_REDIS_COLUMN(id, ruvia::string, ruvia::redis_column_options{ .primary_key_ = true }));
 
 // Read the connection resource owned by the desktop API through its Redis contract.
 // Per-member sorted-set expiry cannot be represented by a Redis ORM entity.
@@ -17,202 +22,21 @@ struct DesktopSessionSet final {
     }
 };
 
-RUVIA_DB_ENTITY(EdgeNodeEntity, "edge_node",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(platform_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(imei, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 15}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 100}),
-    RUVIA_DB_COLUMN(model, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 128, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(software_version, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(hostname, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(architecture, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(openwrt_release, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(enrollment_status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20, .default_expression_ = ruvia::fixed_string{"'pending'::character varying"}}),
-    RUVIA_DB_COLUMN(last_seen_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(approved_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(approved_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(network_config_version, std::int32_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"0"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{\"log\": {\"level\": \"info\"}, \"config\": {\"state\": \"idle\", \"message\": \"\", \"activeVersion\": 0, \"desiredVersion\": 0}, \"outbox\": {\"bytes\": 0, \"records\": 0}}'::jsonb"}}),
-    RUVIA_DB_COLUMN(capability, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(mobile, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(group_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}))
+// Latest desktop-session deadline already handled by one Service Worker. The
+// claim is a compare-and-set on a numeric string (kDesktopExpiryClaimScript),
+// which the Redis ORM cannot express.
+struct DesktopExpiryClaim final {
+    static constexpr std::string_view kKey{ "iot:vpn:desktop:expiry" };
+};
 
-RUVIA_DB_ENTITY(EdgeNodeNetworkEntity, "edge_node_network",
-    RUVIA_DB_COLUMN(node_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .primary_key_ = true, .length_ = 32}),
-    RUVIA_DB_COLUMN(address_mode, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 12}),
-    RUVIA_DB_COLUMN(device, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(is_up, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}),
-    RUVIA_DB_COLUMN(is_bridge, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}),
-    RUVIA_DB_COLUMN(ipv4, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 15}),
-    RUVIA_DB_COLUMN(prefix_length, std::int32_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .nullable_ = true}),
-    RUVIA_DB_COLUMN(gateway, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 15}),
-    RUVIA_DB_COLUMN(bridge_ports, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'[]'::jsonb"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(VpnEffectiveEdgeAccessEntity, "vpn_effective_edge_access", RUVIA_DB_COLUMN(peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(network_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_node_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_address, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .nullable_ = true }))
 
-RUVIA_DB_ENTITY(EdgeTaskEntity, "edge_task",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(node_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(task_type, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 30}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20, .default_expression_ = ruvia::fixed_string{"'pending'::character varying"}}),
-    RUVIA_DB_COLUMN(request, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(result, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(completed_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}))
+RUVIA_DB_ENTITY(VpnEffectiveRouteAccessEntity, "vpn_effective_route_access", RUVIA_DB_COLUMN(peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(virtual_cidr, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 18 }))
 
-RUVIA_DB_ENTITY(VpnEffectiveEdgeAccessEntity, "vpn_effective_edge_access",
-    RUVIA_DB_COLUMN(peer_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(network_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(edge_node_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(edge_address, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .nullable_ = true}))
+RUVIA_DB_ENTITY(VpnNetworkEntity, "vpn_network", RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(name, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 100 }), RUVIA_DB_COLUMN(overlay_cidr, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 18 }), RUVIA_DB_COLUMN(hub_public_key, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }), RUVIA_DB_COLUMN(hub_endpoint, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 255, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }), RUVIA_DB_COLUMN(hub_listen_port, std::int32_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{ "51820" } }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{ "status_enum" }, .default_expression_ = ruvia::fixed_string{ "'enabled'::status_enum" } }), RUVIA_DB_COLUMN(created_by, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(deleted_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(hub_private_key, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 44, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }))
 
-RUVIA_DB_ENTITY(VpnEffectiveRouteAccessEntity, "vpn_effective_route_access",
-    RUVIA_DB_COLUMN(peer_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(virtual_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 18}))
+RUVIA_DB_ENTITY(VpnPeerEntity, "vpn_peer", RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(network_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(peer_type, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16 }), RUVIA_DB_COLUMN(edge_node_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(user_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(name, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 100 }), RUVIA_DB_COLUMN(public_key, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }), RUVIA_DB_COLUMN(assigned_ipv4, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::inet }), RUVIA_DB_COLUMN(allowed_routes, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{ "'[]'::jsonb" } }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{ "'active'::character varying" } }), RUVIA_DB_COLUMN(config_revision, std::int64_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::big_int, .default_expression_ = ruvia::fixed_string{ "1" } }), RUVIA_DB_COLUMN(last_handshake_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(revoked_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(client_private_key, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 44, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }), RUVIA_DB_COLUMN(client_managed, bool, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{ "false" } }))
 
-RUVIA_DB_ENTITY(VpnNetworkEntity, "vpn_network",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 100}),
-    RUVIA_DB_COLUMN(overlay_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 18}),
-    RUVIA_DB_COLUMN(hub_public_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(hub_endpoint, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 255, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(hub_listen_port, std::int32_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"51820"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{"status_enum"}, .default_expression_ = ruvia::fixed_string{"'enabled'::status_enum"}}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(hub_private_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 44, .default_expression_ = ruvia::fixed_string{"''::character varying"}}))
-
-RUVIA_DB_ENTITY(VpnPeerEntity, "vpn_peer",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(network_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(peer_type, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16}),
-    RUVIA_DB_COLUMN(edge_node_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(user_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 100}),
-    RUVIA_DB_COLUMN(public_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(assigned_ipv4, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::inet}),
-    RUVIA_DB_COLUMN(allowed_routes, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'[]'::jsonb"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'active'::character varying"}}),
-    RUVIA_DB_COLUMN(config_revision, std::int64_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::big_int, .default_expression_ = ruvia::fixed_string{"1"}}),
-    RUVIA_DB_COLUMN(last_handshake_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(revoked_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(client_private_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 44, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(client_managed, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}))
-
-RUVIA_DB_ENTITY(VpnRouteEntity, "vpn_route",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(network_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(lan_interface, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32}),
-    RUVIA_DB_COLUMN(target_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 18}),
-    RUVIA_DB_COLUMN(virtual_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 18}),
-    RUVIA_DB_COLUMN(mode, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'nat'::character varying"}}),
-    RUVIA_DB_COLUMN(nat_mode, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'masquerade'::character varying"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'active'::character varying"}}),
-    RUVIA_DB_COLUMN(enabled, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"true"}}),
-    RUVIA_DB_COLUMN(last_error, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .default_expression_ = ruvia::fixed_string{"''::text"}}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(VpnRouteEntity, "vpn_route", RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(network_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(lan_interface, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 32 }), RUVIA_DB_COLUMN(target_cidr, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 18 }), RUVIA_DB_COLUMN(virtual_cidr, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 18 }), RUVIA_DB_COLUMN(mode, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{ "'nat'::character varying" } }), RUVIA_DB_COLUMN(nat_mode, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{ "'masquerade'::character varying" } }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{ "'active'::character varying" } }), RUVIA_DB_COLUMN(enabled, bool, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{ "true" } }), RUVIA_DB_COLUMN(last_error, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .default_expression_ = ruvia::fixed_string{ "''::text" } }), RUVIA_DB_COLUMN(created_by, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
 } // namespace service::vpn::persistence

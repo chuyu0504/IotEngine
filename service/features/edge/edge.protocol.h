@@ -10,6 +10,7 @@
 #include <openssl/evp.h>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <edge.pb.h>
 #include <google/protobuf/descriptor.h>
@@ -18,6 +19,7 @@
 
 #include "service/utils/json.h"
 #include "service/utils/crypto.h"
+#include "service/utils/number.h"
 #include "service/common/uuid.h"
 #include "service/common/message.h"
 
@@ -306,6 +308,51 @@ inline std::string bytes(const std::uint8_t* data, std::size_t size) {
     if (size == 0)
         return {};
     return {reinterpret_cast<const char*>(data), size};
+}
+
+// Device heartbeat payload text ("OFF" / "ASCII" / "HEX") as configured in the device model.
+inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_view content,
+                                             std::string_view name) {
+    std::vector<std::uint8_t> output;
+    if (mode == "OFF" || content.empty())
+        return output;
+    if (mode == "ASCII") {
+        output.assign(content.begin(), content.end());
+        return output;
+    }
+    if (mode != "HEX")
+        throw std::runtime_error("invalid edge config packet mode: " + std::string(name));
+
+    int high = -1;
+    for (const char character : content) {
+        if (character == ' ' || character == '\t' || character == '\r' || character == '\n')
+            continue;
+        const int digit = protocol::hexDigit(character);
+        if (digit < 0)
+            throw std::runtime_error("invalid edge config hex: " + std::string(name));
+        if (high < 0)
+            high = digit;
+        else {
+            output.push_back(static_cast<std::uint8_t>((high << 4U) | digit));
+            high = -1;
+        }
+    }
+    if (high >= 0)
+        throw std::runtime_error("invalid edge config hex: " + std::string(name));
+    return output;
+}
+
+inline void packet(std::string* output, std::string_view mode, std::string_view content,
+                   std::string_view name) {
+    const auto value = packetBytes(mode, content, name);
+    output->assign(protocol::bytes(value.data(), value.size()));
+}
+
+inline double number(std::string_view value, double fallback = 0.0) {
+    if (value.empty())
+        return fallback;
+    const auto result = service::utils::decimal(value);
+    return result.value_or(fallback);
 }
 
 inline bool fitsNanopbLimits(const google::protobuf::Message& message) {

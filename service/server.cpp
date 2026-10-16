@@ -38,6 +38,7 @@
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.runtime.h"
 #include "service/features/edge/gateway/gateway.runtime.h"
+#include "service/features/edge/projection/projection.runtime.h"
 #include "service/features/messaging/messaging.runtime.h"
 #include "service/features/messaging/rpc/rpc.runtime.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
@@ -250,8 +251,11 @@ struct ServiceWorkerComponents {
     std::shared_ptr<service::command::CommandProcessingRuntime> commandProcessing;
     std::shared_ptr<service::access::DeliveryRuntime> openDeliveries;
     std::shared_ptr<service::runtime::Reconciler> configReconciler;
-    std::shared_ptr<service::edge::EdgeProjectionRuntime> edgeProjection;
+    std::shared_ptr<service::edge::projection::ProjectionRuntime> edgeProjection;
+    std::shared_ptr<service::edge::gateway::FirmwareCleanupRuntime> firmwareCleanup;
+    // Serves the "vpn" RPC component; its background scheduling runs only when VPN_HUB_ENABLED.
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
+    bool vpnHubBackground{};
     std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
     std::shared_ptr<service::alert::AlertRuntime> alerts;
     std::shared_ptr<service::messaging::outbox::OutboxRuntime> outboxRuntime;
@@ -270,7 +274,7 @@ struct ApplicationComponents {
 
 void registerRpcHandlers(
     const std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime>& rpcConsumer,
-    const ruvia::env& env
+    const std::shared_ptr<service::edge::gateway::FirmwareCleanupRuntime>& firmwareCleanup
 ) {
     rpcConsumer->add("telemetry", service::telemetry::TelemetryService::executeProjection);
     rpcConsumer->add("alert", service::alert::metadata::executeRefreshOperation);
@@ -280,14 +284,10 @@ void registerRpcHandlers(
     rpcConsumer->add("edge", service::edge::EdgeControlService::executeOperation);
     rpcConsumer->add("edge-serial", service::edge::serial_debug::Service::executeBrowserOperation);
     rpcConsumer->add("edge-terminal", service::edge::terminal_state::TerminalService::executeBrowserOperation);
-    auto vpnControl = std::make_shared<service::vpn::VpnControlService>(
-        vpnHubConfig(env),
-        std::string(env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId))
-    );
     rpcConsumer->add(
-        "vpn",
-        [vpnControl](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
-            return vpnControl->executeOperation(context, operation, payload, stop);
+        std::string(service::message::edge::firmware::kRpcComponent),
+        [firmwareCleanup](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
+            return firmwareCleanup->executeOperation(context, operation, payload, stop);
         }
     );
 }
@@ -326,17 +326,24 @@ ApplicationComponents createComponents(
         workerComponents.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         workerComponents.liveChanges = std::make_shared<service::live::LiveChangeRuntime>(budget.collector);
         workerComponents.rpcConsumer = std::make_shared<service::messaging::rpc::RpcConsumerRuntime>();
-        registerRpcHandlers(workerComponents.rpcConsumer, env);
+        workerComponents.firmwareCleanup = std::make_shared<service::edge::gateway::FirmwareCleanupRuntime>(
+            std::filesystem::path(env.get("EDGE_FIRMWARE_DIR").value_or("firmware")));
+        registerRpcHandlers(workerComponents.rpcConsumer, workerComponents.firmwareCleanup);
         workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
         workerComponents.openDeliveries = std::make_shared<service::access::DeliveryRuntime>();
         workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
-        workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>(
-            *workerComponents.observability,
-            std::filesystem::path(env.get("EDGE_FIRMWARE_DIR").value_or("firmware")));
-        const auto enableVpnHub = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
-        workerComponents.vpnHubRuntime = enableVpnHub
-            ? std::make_shared<service::vpn::VpnHubRuntime>(vpnHubConfig(env))
-            : nullptr;
+        workerComponents.edgeProjection = std::make_shared<service::edge::projection::ProjectionRuntime>(
+            *workerComponents.observability);
+        workerComponents.vpnHubBackground = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
+        workerComponents.vpnHubRuntime = std::make_shared<service::vpn::VpnHubRuntime>(
+            vpnHubConfig(env),
+            std::string(env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId)));
+        workerComponents.rpcConsumer->add(
+            std::string(service::message::vpn::kRpcComponent),
+            [vpnHub = workerComponents.vpnHubRuntime](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
+                return vpnHub->executeOperation(context, operation, payload, stop);
+            }
+        );
         workerComponents.gbProjection = gb28181.enabled
             ? std::make_shared<service::gb28181::GbProjectionRuntime>()
             : nullptr;
@@ -446,13 +453,19 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
                     .stop = [r = workerComponents.edgeProjection] {
                         r->stop();
                     } });
+    componentLifecycle.add({ .name = "firmware-cleanup", .start = [r = workerComponents.firmwareCleanup, worker] {
+                                r->start(worker);
+                            },
+                             .stop = [r = workerComponents.firmwareCleanup] {
+                                 r->stop();
+                             } });
     componentLifecycle.add({ .name = "alerts", .start = [r = workerComponents.alerts, worker, index, count] {
                                 r->start(worker, index, count);
                             },
                              .stop = [r = workerComponents.alerts] {
                                  r->stop();
                              } });
-    if (workerComponents.vpnHubRuntime) {
+    if (workerComponents.vpnHubBackground) {
         componentLifecycle.add({ .name = "vpn", .start = [r = workerComponents.vpnHubRuntime, worker] {
                            r->start(worker);
                        },
@@ -588,6 +601,7 @@ void configureServer(
             })
         .use_worker_state<service::edge::SessionDispatcher>()
         .use_worker_state<service::utils::ChangeFeed>()
+        .use_worker_state<service::edge::gateway::FirmwareCleanupSignal>()
         .database(ruvia::db_registration_config{
             .config_ = std::move(components.database),
         })

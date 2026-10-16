@@ -28,13 +28,13 @@ std::string compileSql(const ruvia::db_query& query) {
 
 void testPacketBytesRejectInvalidHex() {
     const auto bytes =
-        service::edge::config::detail::packetBytes("HEX", "01 0a FF", "heartbeat_payload");
+        service::edge::protocol::packetBytes("HEX", "01 0a FF", "heartbeat_payload");
     require(bytes == std::vector<std::uint8_t>{0x01, 0x0a, 0xff},
             "edge config HEX packet changed valid bytes");
 
     bool rejectedBadDigit = false;
     try {
-        (void)service::edge::config::detail::packetBytes("HEX", "0G", "heartbeat_payload");
+        (void)service::edge::protocol::packetBytes("HEX", "0G", "heartbeat_payload");
     } catch (const std::runtime_error& error) {
         rejectedBadDigit =
             std::string_view(error.what()).find("invalid edge config hex: heartbeat_payload") !=
@@ -44,7 +44,7 @@ void testPacketBytesRejectInvalidHex() {
 
     bool rejectedOddNibble = false;
     try {
-        (void)service::edge::config::detail::packetBytes("HEX", "ABC", "heartbeat_payload");
+        (void)service::edge::protocol::packetBytes("HEX", "ABC", "heartbeat_payload");
     } catch (const std::runtime_error& error) {
         rejectedOddNibble =
             std::string_view(error.what()).find("invalid edge config hex: heartbeat_payload") !=
@@ -56,7 +56,7 @@ void testPacketBytesRejectInvalidHex() {
 void testPacketBytesRejectUnknownMode() {
     bool rejected = false;
     try {
-        (void)service::edge::config::detail::packetBytes("BASE64", "AA==", "heartbeat_payload");
+        (void)service::edge::protocol::packetBytes("BASE64", "AA==", "heartbeat_payload");
     } catch (const std::runtime_error& error) {
         rejected =
             std::string_view(error.what()).find(
@@ -73,9 +73,9 @@ void testReplaceQueueToleratesCorruptRevisionKey() {
 }
 
 void testNumberRejectsTrailingGarbage() {
-    require(service::edge::config::detail::number("1.25", -1.0) == 1.25,
+    require(service::edge::protocol::number("1.25", -1.0) == 1.25,
             "edge config decimal parser changed valid decimal");
-    require(service::edge::config::detail::number("1.25x", -1.0) == -1.0,
+    require(service::edge::protocol::number("1.25x", -1.0) == -1.0,
             "edge config decimal parser accepted trailing garbage");
 }
 

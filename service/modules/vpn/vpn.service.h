@@ -1,31 +1,32 @@
 #pragma once
 
-#include <tuple>
-
-#include <memory>
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <ruvia/web/context.h>
-#include <ruvia/web/model_object.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/model_object.h>
 
 #include "service/common/http.h"
+#include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/common/wireguard.h"
 #include "service/utils/rpc_client.h"
 #include "service/modules/vpn/vpn.entity.h"
 #include "service/modules/vpn/vpn.types.h"
 #include "service/utils/json.h"
-#include "service/utils/number.h"
 
 namespace service::vpn {
 
@@ -53,87 +54,6 @@ inline std::string jsonArray(const std::vector<std::string>& values) {
 
 inline ruvia::db_expression jsonKey(ruvia::db_query& query, std::string_view key) {
     return query.cast(query.value(key), ruvia::db_data_type::text);
-}
-
-inline bool validKey(std::string_view value) noexcept {
-    if (value.size() != 44 || value.back() != '=') {
-        return false;
-    }
-    for (const auto character : value) {
-        if (!((character >= 'A' && character <= 'Z') ||
-              (character >= 'a' && character <= 'z') ||
-              (character >= '0' && character <= '9') || character == '+' || character == '/' ||
-              character == '=')) {
-            return false;
-        }
-    }
-    return true;
-}
-
-inline int base64Value(char value) noexcept {
-    if (value >= 'A' && value <= 'Z') {
-        return value - 'A';
-    }
-    if (value >= 'a' && value <= 'z') {
-        return value - 'a' + 26;
-    }
-    if (value >= '0' && value <= '9') {
-        return value - '0' + 52;
-    }
-    if (value == '+') {
-        return 62;
-    }
-    if (value == '/') {
-        return 63;
-    }
-    return -1;
-}
-
-inline bool decodeKey(std::string_view input, std::array<unsigned char, 32>& output) noexcept {
-    if (input.size() != 44 || input.back() != '=') {
-        return false;
-    }
-    std::size_t outputIndex = 0;
-    for (std::size_t index = 0; index < input.size(); index += 4) {
-        const auto first = base64Value(input[index]);
-        const auto second = base64Value(input[index + 1]);
-        const auto third = input[index + 2] == '=' ? 0 : base64Value(input[index + 2]);
-        const auto fourth = input[index + 3] == '=' ? 0 : base64Value(input[index + 3]);
-        if (first < 0 || second < 0 || third < 0 || fourth < 0 ||
-            (index + 2 == input.size() - 1 && input[index + 2] != '=') ||
-            (index + 3 == input.size() - 1 && input[index + 3] != '=')) {
-            return false;
-        }
-        if (outputIndex < output.size()) {
-            output[outputIndex++] = static_cast<unsigned char>((first << 2) | (second >> 4));
-        }
-        if (index + 2 < input.size() - 1 && outputIndex < output.size()) {
-            output[outputIndex++] = static_cast<unsigned char>((second << 4) | (third >> 2));
-        }
-        if (index + 3 < input.size() - 1 && outputIndex < output.size()) {
-            output[outputIndex++] = static_cast<unsigned char>((third << 6) | fourth);
-        }
-    }
-    return outputIndex == output.size();
-}
-
-inline bool validManagedKey(std::string_view value) noexcept {
-    if (value.size() != 44 || value.back() != '=') {
-        return false;
-    }
-    for (std::size_t index = 0; index < 43; ++index) {
-        if (base64Value(value[index]) < 0) {
-            return false;
-        }
-    }
-    if ((base64Value(value[42]) & 3) != 0) {
-        return false;
-    }
-    std::array<unsigned char, 32> decoded{};
-    return decodeKey(value, decoded) &&
-        std::any_of(decoded.begin(), decoded.end(), [](auto byte) {
-               return byte != 0;
-           });
 }
 
 template <typename Db>
@@ -186,208 +106,6 @@ ruvia::task<void> advisoryLock(Db& db, std::pmr::memory_resource* resource, std:
 
 } // namespace detail
 
-namespace route_sync_detail {
-
-inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) {
-    return service::utils::parseInt64(
-               value.empty() ? std::nullopt : std::optional<std::string_view>(value)
-    )
-        .value_or(fallback);
-}
-
-} // namespace route_sync_detail
-
-// Reconcile the Edge bridge inventory with its VPN routes. This database
-// projection belongs to the management module; the VPN feature only receives
-// the resulting edge configuration through its Redis control operation.
-template <typename Db>
-ruvia::task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId, std::string_view networkId, std::string_view edgeNodeId, std::string_view actorId, service::common::UuidV7Generator& uuidGenerator) {
-    struct RouteRecord final {
-        std::string id;
-        std::string lanInterface;
-        std::optional<cidr::Ipv4Cidr> target;
-        std::optional<cidr::Ipv4Cidr> virtualNetwork;
-    };
-
-    struct BridgeRecord final {
-        std::string lanInterface;
-        cidr::Ipv4Cidr target;
-    };
-
-    using Op = ruvia::db_binary_operator;
-    ruvia::db_query bridgeQuery;
-    bridgeQuery
-        .select({ bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"name">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"device">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"ipv4">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"prefix_length">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()) })
-        .from(service::vpn::entities::EdgeNodeNetworkEntity::table_name())
-        .where(bridgeQuery.binary(
-            bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"node_id">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()),
-            Op::equal,
-            bridgeQuery.cast(bridgeQuery.value(edgeNodeId), ruvia::db_data_type::uuid)
-        ))
-        .and_where(bridgeQuery.binary(bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"is_bridge">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), Op::equal, bridgeQuery.value(true)))
-        .and_where(bridgeQuery.binary(
-            bridgeQuery.coalesce({ bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"ipv4">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), bridgeQuery.value("") }),
-            Op::not_equal,
-            bridgeQuery.value("")
-        ))
-        .and_where(bridgeQuery.between(bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"prefix_length">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()), bridgeQuery.value(1), bridgeQuery.value(30)))
-        .order_by(bridgeQuery.column(std::tuple_element_t<service::vpn::entities::EdgeNodeNetworkEntity::column_index<"name">(), service::vpn::entities::EdgeNodeNetworkEntity::columns_type>::name.view()));
-    const auto bridgeRows = co_await db.query(bridgeQuery);
-    std::vector<BridgeRecord> bridges;
-    for (const auto& row : bridgeRows) {
-        const auto address = detail::rowValue(row, 2);
-        const auto prefix = route_sync_detail::integer(detail::rowValue(row, 3));
-        const auto target = cidr::networkCidr(address, static_cast<std::uint8_t>(prefix));
-        if (!target || !cidr::isPrivateIpv4(*target)) {
-            continue;
-        }
-        const auto name = detail::rowValue(row, 1).empty()
-            ? detail::rowValue(row, 0)
-            : detail::rowValue(row, 1);
-        if (!name.empty()) {
-            bridges.push_back(BridgeRecord{ name, *target });
-        }
-    }
-    if (bridges.empty()) {
-        service::common::fail(21008, "EdgeNode 尚未上报可映射的私有桥接 LAN 网段", 409);
-    }
-
-    ruvia::db_query currentQuery;
-    currentQuery
-        .select({ currentQuery.cast(currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), ruvia::db_data_type::text), currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"lan_interface">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"target_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()) })
-        .from(service::vpn::entities::VpnRouteEntity::table_name())
-        .where(currentQuery.binary(
-            currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"edge_peer_id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()),
-            Op::equal,
-            currentQuery.cast(currentQuery.value(peerId), ruvia::db_data_type::uuid)
-        ))
-        .order_by(currentQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()));
-    const auto currentRows = co_await db.query(currentQuery);
-    std::vector<RouteRecord> current;
-    current.reserve(currentRows.size());
-    for (const auto& row : currentRows) {
-        current.push_back(RouteRecord{ detail::rowValue(row, 0), detail::rowValue(row, 1), cidr::parseCidr(detail::rowValue(row, 2), 1, 30), cidr::parseCidr(detail::rowValue(row, 3), 1, 30) });
-    }
-
-    ruvia::db_query allRoutesQuery;
-    allRoutesQuery
-        .select({ allRoutesQuery.cast(allRoutesQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), ruvia::db_data_type::text), allRoutesQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"lan_interface">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), allRoutesQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"target_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), allRoutesQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()) })
-        .from(service::vpn::entities::VpnRouteEntity::table_name());
-    const auto allRows = co_await db.query(allRoutesQuery);
-    std::vector<RouteRecord> allRoutes;
-    allRoutes.reserve(allRows.size());
-    for (const auto& row : allRows) {
-        allRoutes.push_back(RouteRecord{ detail::rowValue(row, 0), detail::rowValue(row, 1), cidr::parseCidr(detail::rowValue(row, 2), 1, 30), cidr::parseCidr(detail::rowValue(row, 3), 1, 30) });
-    }
-
-    const auto conflicts = [&](const cidr::Ipv4Cidr& candidate, std::string_view excludedId) {
-        for (const auto& route : allRoutes) {
-            if (route.id == excludedId) {
-                continue;
-            }
-            if (cidr::virtualMappingConflicts(candidate, route.target, route.virtualNetwork)) {
-                return true;
-            }
-        }
-        return false;
-    };
-    const auto chooseVirtual = [&](const cidr::Ipv4Cidr& target,
-                                   std::string_view excludedId) -> std::optional<cidr::Ipv4Cidr> {
-        if (const auto preferred = cidr::mappedVirtualCidr(target);
-            preferred && !preferred->overlaps(target) && !conflicts(*preferred, excludedId)) {
-            return preferred;
-        }
-        if (target.prefix < cidr::kVirtualLanPool.prefix) {
-            return std::nullopt;
-        }
-        const auto blockSize = static_cast<std::uint64_t>(target.size());
-        for (std::uint64_t offset = 0; offset < cidr::kVirtualLanPool.size(); offset += blockSize) {
-            const cidr::Ipv4Cidr candidate{
-                static_cast<std::uint32_t>(cidr::kVirtualLanPool.network + offset),
-                target.prefix
-            };
-            if (!candidate.overlaps(target) && !conflicts(candidate, excludedId)) {
-                return candidate;
-            }
-        }
-        return std::nullopt;
-    };
-
-    std::unordered_set<std::string> claimed;
-    for (const auto& bridge : bridges) {
-        auto existing = std::find_if(current.begin(), current.end(), [&](const auto& route) {
-            return !claimed.contains(route.id) &&
-                ((route.target && route.target->network == bridge.target.network &&
-                  route.target->prefix == bridge.target.prefix) ||
-                 route.lanInterface == bridge.lanInterface);
-        });
-        std::string routeId;
-        std::optional<cidr::Ipv4Cidr> virtualNetwork;
-        if (existing != current.end()) {
-            routeId = existing->id;
-            claimed.emplace(routeId);
-            if (existing->virtualNetwork &&
-                existing->virtualNetwork->prefix == bridge.target.prefix &&
-                cidr::kVirtualLanPool.contains(existing->virtualNetwork->network) &&
-                cidr::kVirtualLanPool.contains(existing->virtualNetwork->network + existing->virtualNetwork->size() - 1U) &&
-                !existing->virtualNetwork->overlaps(bridge.target) &&
-                !conflicts(*existing->virtualNetwork, routeId)) {
-                virtualNetwork = existing->virtualNetwork;
-            } else {
-                virtualNetwork = chooseVirtual(bridge.target, routeId);
-            }
-        } else {
-            virtualNetwork = chooseVirtual(bridge.target, {});
-        }
-        const auto excludedId = existing != current.end() ? existing->id : std::string{};
-        for (const auto& route : allRoutes) {
-            if (route.id == excludedId) {
-                continue;
-            }
-            if (cidr::realTargetConflictsVirtual(bridge.target, route.virtualNetwork)) {
-                service::common::fail(21002, "真实 LAN 与已有虚拟网段重叠", 409);
-            }
-        }
-        if (!virtualNetwork) {
-            service::common::fail(21009, "没有可用的全局唯一虚拟网段", 409);
-        }
-        const auto targetCidr = bridge.target.text();
-        const auto virtualCidr = virtualNetwork->text();
-        if (existing != current.end()) {
-            ruvia::db_query route;
-            route.update(service::vpn::entities::VpnRouteEntity::table_name())
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"network_id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.cast(route.value(networkId), ruvia::db_data_type::uuid))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"lan_interface">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value(bridge.lanInterface))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"target_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value(targetCidr))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value(virtualCidr))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"mode">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value("nat"))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"nat_mode">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value("masquerade"))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"enabled">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value(true))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"status">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value("active"))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"last_error">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.value(""))
-                .set(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"updated_at">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view(), route.call("now"))
-                .where(route.binary(route.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"id">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), Op::equal, route.cast(route.value(routeId), ruvia::db_data_type::uuid)));
-            (void)co_await db.execute(route);
-            for (auto& route : allRoutes) {
-                if (route.id == routeId) {
-                    route.lanInterface = bridge.lanInterface;
-                    route.target = bridge.target;
-                    route.virtualNetwork = virtualNetwork;
-                }
-            }
-        } else {
-            const auto id = uuidGenerator.next();
-            ruvia::db_query route;
-            route.insert_into(service::vpn::entities::VpnRouteEntity::table_name(), { "id", "network_id", "edge_peer_id", "lan_interface", "target_cidr", "virtual_cidr", "mode", "nat_mode", "enabled", "status", "created_by" })
-                .values({ route.cast(route.value(id), ruvia::db_data_type::uuid), route.cast(route.value(networkId), ruvia::db_data_type::uuid), route.cast(route.value(peerId), ruvia::db_data_type::uuid), route.value(bridge.lanInterface), route.value(targetCidr), route.value(virtualCidr), route.value("nat"), route.value("masquerade"), route.value(true), route.value("active"), route.cast(route.value(actorId), ruvia::db_data_type::uuid) });
-            (void)co_await db.execute(route);
-            allRoutes.push_back(
-                RouteRecord{ id, bridge.lanInterface, bridge.target, virtualNetwork }
-            );
-        }
-    }
-}
-
 class VpnService final {
   private:
     static std::int64_t integer(std::string_view, std::int64_t = 0);
@@ -400,6 +118,10 @@ class VpnService final {
     static ruvia::task<std::string> control(Context&, std::string_view, std::string);
     template <typename Context>
     static ruvia::task<void> queueEdgeConfig(Context&, std::string_view);
+    template <typename Context>
+    static ruvia::task<void> syncEdgeRoutes(Context&, std::string_view, std::string_view, std::string_view);
+    template <typename Context>
+    static ruvia::task<void> discardEdgePeer(Context&, std::string_view);
     template <typename Db>
     static ruvia::task<std::optional<std::uint32_t>> allocateAddressFromDb(
         Db&,
@@ -642,7 +364,7 @@ class VpnService final {
         }
         const std::string name(payload.get<"name">().view());
         auto publicKey = optionalVpnText(payload.get<"publicKey">()).value_or("");
-        if (!publicKey.empty() && !detail::validKey(publicKey)) {
+        if (!publicKey.empty() && !service::common::wireguard::validManagedKey(publicKey)) {
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         }
         std::string edgeNodeId;
@@ -687,7 +409,7 @@ class VpnService final {
                 service::common::fail(21004, "Edge 节点不存在或尚未批准", 404);
             }
             const auto reportedKey = detail::rowValue(edgeRows.front(), 0);
-            publicKey = detail::validKey(reportedKey) ? reportedKey : std::string{};
+            publicKey = service::common::wireguard::validManagedKey(reportedKey) ? reportedKey : std::string{};
             ruvia::db_query existingQuery(c.pool());
             const auto revokedFirst = existingQuery.case_when(
                 { { existingQuery.binary(existingQuery.column(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<"status">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view()), Op::equal, existingQuery.value("revoked")),
@@ -717,7 +439,9 @@ class VpnService final {
         }
         std::vector<std::string> allowedRoutes;
         if (const auto& routes = payload.get<"allowedRoutes">()) {
-            for (const auto& route : *routes) allowedRoutes.emplace_back(route.view());
+            for (const auto& route : *routes) {
+                allowedRoutes.emplace_back(route.view());
+            }
         }
         if (allowedRoutes.size() > 64) {
             service::common::fail(21001, "Peer 最多授权 64 条路由", 400);
@@ -725,18 +449,45 @@ class VpnService final {
         co_await validateAllowedRoutes(c, networkId, allowedRoutes);
         const auto id = reusableEdgePeerId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
                                                    : reusableEdgePeerId;
+        const bool edge = peerType == "edge";
         const auto status = publicKey.empty() ? "pending" : "active";
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
-        auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
+        // Address allocation here and route mapping in the VPN feature both take
+        // lock::kVpnAddressAllocation. The feature maps routes in its own transaction
+        // on this Worker, so no transaction of this request may hold the lock while
+        // the sync-edge-routes reply is awaited. An edge peer is mapped while its row
+        // is revoked: neither Hub reconciliation nor an edge capability report installs
+        // a revoked peer's key, so a failed mapping never exposes a half-created peer.
+        // A new edge peer is therefore first committed revoked, reserving its address.
         if (reusableEdgePeerId.empty()) {
+            using Peer = service::vpn::entities::VpnPeerEntity;
+            auto transaction = co_await c.db().begin_transaction();
+            co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
             const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
             const auto assignedText = detail::hostText(*assigned);
             ruvia::db_query insert(c.pool());
-            insert.insert_into(service::vpn::entities::VpnPeerEntity::table_name(), { "id", "network_id", "peer_type", "edge_node_id", "user_id", "name", "public_key", "assigned_ipv4", "allowed_routes", "status" })
-                .values({ insert.cast(insert.value(id), ruvia::db_data_type::uuid), insert.cast(insert.value(networkId), ruvia::db_data_type::uuid), insert.value(peerType), insert.cast(insert.null_if(insert.cast(insert.value(edgeNodeId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.cast(insert.null_if(insert.cast(insert.value(userId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.value(name), insert.value(publicKey), insert.cast(insert.value(assignedText), ruvia::db_data_type::inet), insert.cast(insert.value(allowedRoutesJson), ruvia::db_data_type::jsonb), insert.value(status) });
+            insert.insert_into(Peer::table_name(), { std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"network_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"edge_node_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"user_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"name">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"public_key">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"assigned_ipv4">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"allowed_routes">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"revoked_at">(), Peer::columns_type>::name.view() })
+                .values({ insert.cast(insert.value(id), ruvia::db_data_type::uuid), insert.cast(insert.value(networkId), ruvia::db_data_type::uuid), insert.value(peerType), insert.cast(insert.null_if(insert.cast(insert.value(edgeNodeId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.cast(insert.null_if(insert.cast(insert.value(userId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.value(name), insert.value(publicKey), insert.cast(insert.value(assignedText), ruvia::db_data_type::inet), insert.cast(insert.value(allowedRoutesJson), ruvia::db_data_type::jsonb), insert.value(edge ? "revoked" : status), edge ? insert.call("now") : insert.null_value() });
             (void)co_await transaction.execute(insert);
-        } else {
+            co_await transaction.commit();
+        }
+        if (edge) {
+            std::exception_ptr failure;
+            try {
+                co_await syncEdgeRoutes(c, id, networkId, edgeNodeId);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            if (failure) {
+                // Creation is all-or-nothing for the caller: drop the unmapped new
+                // peer. A reused row simply stays revoked.
+                if (reusableEdgePeerId.empty()) {
+                    co_await discardEdgePeer(c, id);
+                }
+                std::rethrow_exception(failure);
+            }
+            auto transaction = co_await c.db().begin_transaction();
+            co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
             ruvia::db_query reactivation(c.pool());
             reactivation
                 .update(service::vpn::entities::VpnPeerEntity::table_name())
@@ -752,13 +503,11 @@ class VpnService final {
                 .returning({ reactivation.column(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<"id">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view()) });
             const auto reactivated = co_await transaction.query(reactivation);
             if (reactivated.empty()) {
+                // A concurrent request for the same EdgeNode reactivated this row first.
                 service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
             }
+            co_await transaction.commit();
         }
-        if (peerType == "edge") {
-            co_await syncEdgeBridgeRoutes(transaction, id, networkId, edgeNodeId, c.userId, *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
-        }
-        co_await transaction.commit();
         co_await audit(c, c.userId, reusableEdgePeerId.empty() ? "vpn.peer.create" : "vpn.peer.reactivate", "vpn_peer", id, "success", "{}");
         if (peerType == "edge") {
             co_await queueEdgeConfig(c, id);
@@ -784,8 +533,9 @@ class VpnService final {
             service::common::fail(21004, "VPN Peer 不存在或已撤销", 404);
         }
         const auto key = detail::rowValue(rows.front(), 0);
-        if (detail::validKey(key)) {
-            (void)co_await control(c, "wireguard-remove-peer", key);
+        // Format-only check: any key that may be on the Hub interface must be removable.
+        if (service::common::wireguard::validKey(key)) {
+            (void)co_await control(c, service::message::vpn::kRemovePeerOperation, key);
         }
         const auto edgeNode = detail::rowValue(rows.front(), 1);
         if (!edgeNode.empty()) {
@@ -816,10 +566,8 @@ class VpnService final {
         }
         const auto edgeNodeId = detail::rowValue(rows.front(), 0);
         const auto networkId = detail::rowValue(rows.front(), 3);
-        auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
-        co_await syncEdgeBridgeRoutes(transaction, id, networkId, edgeNodeId, c.userId, *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
-        co_await transaction.commit();
+        // The feature maps routes under lock::kVpnAddressAllocation in its own transaction.
+        co_await syncEdgeRoutes(c, id, networkId, edgeNodeId);
         co_await queueEdgeConfig(c, id);
         (void)co_await reconcileHub(c);
     }
@@ -856,7 +604,11 @@ class VpnService final {
         const auto connectionId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         co_await renewDesktopSession(c, peerId, connectionId);
         std::exception_ptr failure;
-        try { co_await reconcileHub(c); } catch (...) { failure = std::current_exception(); }
+        try {
+            co_await reconcileHub(c);
+        } catch (...) {
+            failure = std::current_exception();
+        }
         if (failure) {
             co_await closeDesktopSession(c, peerId, connectionId);
             std::rethrow_exception(failure);
@@ -868,8 +620,8 @@ class VpnService final {
     ruvia::task<void> renewDesktopSession(Context& c, std::string_view peerId, std::string_view connectionId) {
         const auto key = entities::DesktopSessionSet::key(peerId);
         const auto duration = std::to_string(service::message::vpn::kDesktopSessionLeaseMs);
-        const std::string_view keys[]{key};
-        const std::string_view arguments[]{connectionId, duration};
+        const std::string_view keys[]{ key };
+        const std::string_view arguments[]{ connectionId, duration };
         const auto reply = co_await c.redis().eval(R"lua(
 local time=redis.call('TIME')
 local now=time[1]*1000+math.floor(time[2]/1000)
@@ -877,20 +629,24 @@ redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now)
 redis.call('ZADD',KEYS[1],now+tonumber(ARGV[2]),ARGV[1])
 redis.call('PEXPIRE',KEYS[1],ARGV[2])
 return 1
-)lua", keys, arguments);
-        if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1)
+)lua",
+                                                   keys,
+                                                   arguments);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
             service::message::redis::throwValue("renew desktop VPN session", reply);
+        }
     }
 
     template <typename Context>
     ruvia::task<void> closeDesktopSession(Context& c, std::string_view peerId, std::string_view connectionId) {
         const auto key = entities::DesktopSessionSet::key(peerId);
-        const std::string_view keys[]{key};
-        const std::string_view arguments[]{connectionId};
+        const std::string_view keys[]{ key };
+        const std::string_view arguments[]{ connectionId };
         // A late close removes only its own connection, including after reconnect.
         const auto reply = co_await c.redis().eval("return redis.call('ZREM',KEYS[1],ARGV[1])", keys, arguments);
-        if (reply.kind() != ruvia::redis_value::kind_type::integer)
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("close desktop VPN session", reply);
+        }
         co_await reconcileHub(c);
     }
 
@@ -911,6 +667,7 @@ inline void VpnService::requireUuid(std::string_view id, std::string_view messag
 
 template <typename Context>
 ruvia::task<std::string> VpnService::ensureDefaultNetwork(Context& c) {
+    using Network = service::vpn::entities::VpnNetworkEntity;
     const auto hubPublicKey =
         std::string(c.env().get("VPN_HUB_PUBLIC_KEY").value_or(""));
     const auto hubEndpoint =
@@ -933,9 +690,9 @@ ruvia::task<std::string> VpnService::ensureDefaultNetwork(Context& c) {
     } else {
         ruvia::db_query insert(c.pool());
         insert
-            .insert_into(service::vpn::entities::VpnNetworkEntity::table_name(), { "id", "name", "overlay_cidr", "hub_public_key", "hub_endpoint", "hub_listen_port", "created_by" })
+            .insert_into(Network::table_name(), { std::tuple_element_t<Network::column_index<"id">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"name">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"overlay_cidr">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"hub_public_key">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"hub_endpoint">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"hub_listen_port">(), Network::columns_type>::name.view(), std::tuple_element_t<Network::column_index<"created_by">(), Network::columns_type>::name.view() })
             .values({ insert.cast(insert.value(kDefaultNetworkId), ruvia::db_data_type::uuid), insert.value(kDefaultNetworkName), insert.value(kDefaultOverlayCidr), insert.value(hubPublicKey), insert.value(hubEndpoint), insert.value(static_cast<int>(hubListenPort)), insert.cast(insert.value(c.userId), ruvia::db_data_type::uuid) })
-            .on_conflict({ .columns_ = { "id" }, .update_ = { { "name", insert.excluded(std::tuple_element_t<service::vpn::entities::VpnNetworkEntity::column_index<"name">(), service::vpn::entities::VpnNetworkEntity::columns_type>::name.view()) }, { "overlay_cidr", insert.excluded(std::tuple_element_t<service::vpn::entities::VpnNetworkEntity::column_index<"overlay_cidr">(), service::vpn::entities::VpnNetworkEntity::columns_type>::name.view()) }, { "deleted_at", insert.null_value() }, { "updated_at", insert.call("now") } } })
+            .on_conflict({ .columns_ = { std::string(std::tuple_element_t<Network::column_index<"id">(), Network::columns_type>::name.view()) }, .update_ = { { std::string(std::tuple_element_t<Network::column_index<"name">(), Network::columns_type>::name.view()), insert.excluded(std::tuple_element_t<Network::column_index<"name">(), Network::columns_type>::name.view()) }, { std::string(std::tuple_element_t<Network::column_index<"overlay_cidr">(), Network::columns_type>::name.view()), insert.excluded(std::tuple_element_t<Network::column_index<"overlay_cidr">(), Network::columns_type>::name.view()) }, { std::string(std::tuple_element_t<Network::column_index<"deleted_at">(), Network::columns_type>::name.view()), insert.null_value() }, { std::string(std::tuple_element_t<Network::column_index<"updated_at">(), Network::columns_type>::name.view()), insert.call("now") } } })
             .returning({ insert.cast(insert.column(std::tuple_element_t<service::vpn::entities::VpnNetworkEntity::column_index<"id">(), service::vpn::entities::VpnNetworkEntity::columns_type>::name.view()), ruvia::db_data_type::text) });
         const auto inserted = co_await transaction.query(insert);
         if (inserted.empty()) {
@@ -1071,9 +828,11 @@ ruvia::task<std::string> VpnService::desktopDevices(Context& c) {
 
 template <typename Context>
 ruvia::task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesktopPeerBody& payload) {
+    using Peer = service::vpn::entities::VpnPeerEntity;
+    using Selection = service::vpn::entities::VpnPeerEdgeSelectionEntity;
     const std::string name(payload.get<"name">().view());
     const std::string publicKey(payload.get<"publicKey">().view());
-    if (!detail::validManagedKey(publicKey)) {
+    if (!service::common::wireguard::validManagedKey(publicKey)) {
         service::common::fail(21001, "WireGuard 公钥格式无效", 400);
     }
     const auto ids = normalizeVpnNodeIds(payload.get<"edgeNodeIds">());
@@ -1133,13 +892,13 @@ ruvia::task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesk
     const auto assignedText = detail::hostText(*assigned);
     ruvia::db_query insert(c.pool());
     insert
-        .insert_into(service::vpn::entities::VpnPeerEntity::table_name(), { "id", "network_id", "peer_type", "user_id", "name", "public_key", "assigned_ipv4", "allowed_routes", "status", "client_managed" })
+        .insert_into(Peer::table_name(), { std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"network_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"user_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"name">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"public_key">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"assigned_ipv4">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"allowed_routes">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"client_managed">(), Peer::columns_type>::name.view() })
         .values({ insert.cast(insert.value(id), ruvia::db_data_type::uuid), insert.cast(insert.value(networkId), ruvia::db_data_type::uuid), insert.value("windows"), insert.cast(insert.value(c.userId), ruvia::db_data_type::uuid), insert.value(name), insert.value(publicKey), insert.cast(insert.value(assignedText), ruvia::db_data_type::inet), insert.cast(insert.value("[]"), ruvia::db_data_type::jsonb), insert.value("active"), insert.value(true) });
     (void)co_await tx.execute(insert);
     for (const auto& edge : ids) {
         ruvia::db_query selection(c.pool());
         selection
-            .insert_into(service::vpn::entities::VpnPeerEdgeSelectionEntity::table_name(), { "peer_id", "edge_node_id" })
+            .insert_into(Selection::table_name(), { std::tuple_element_t<Selection::column_index<"peer_id">(), Selection::columns_type>::name.view(), std::tuple_element_t<Selection::column_index<"edge_node_id">(), Selection::columns_type>::name.view() })
             .values({ selection.cast(selection.value(id), ruvia::db_data_type::uuid), selection.cast(selection.value(edge), ruvia::db_data_type::uuid) });
         (void)co_await tx.execute(selection);
     }
@@ -1151,6 +910,7 @@ ruvia::task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesk
 
 template <typename Context>
 ruvia::task<std::string> VpnService::desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionBody& payload) {
+    using Selection = service::vpn::entities::VpnPeerEdgeSelectionEntity;
     requireUuid(id, "VPN Peer ID 无效");
     const auto ids = normalizeVpnNodeIds(payload.get<"edgeNodeIds">());
     auto tx = co_await c.db().begin_transaction();
@@ -1180,7 +940,7 @@ ruvia::task<std::string> VpnService::desktopUpdatePeer(Context& c, std::string_v
     for (const auto& edge : ids) {
         ruvia::db_query selection(c.pool());
         selection
-            .insert_into(service::vpn::entities::VpnPeerEdgeSelectionEntity::table_name(), { "peer_id", "edge_node_id" })
+            .insert_into(Selection::table_name(), { std::tuple_element_t<Selection::column_index<"peer_id">(), Selection::columns_type>::name.view(), std::tuple_element_t<Selection::column_index<"edge_node_id">(), Selection::columns_type>::name.view() })
             .values({ selection.cast(selection.value(id), ruvia::db_data_type::uuid), selection.cast(selection.value(edge), ruvia::db_data_type::uuid) });
         (void)co_await tx.execute(selection);
     }
@@ -1264,7 +1024,7 @@ ruvia::task<std::string> VpnService::desktopPeerConfig(Context& c, std::string_v
     if (rows.empty()) {
         service::common::fail(21004, "Windows VPN 配置不存在或不属于当前用户", 404);
     }
-    if (!detail::validManagedKey(detail::rowValue(rows.front(), 1)) || detail::rowValue(rows.front(), 2).empty()) {
+    if (!service::common::wireguard::validManagedKey(detail::rowValue(rows.front(), 1)) || detail::rowValue(rows.front(), 2).empty()) {
         service::common::fail(21005, "VPN Hub 尚未配置完成", 503);
     }
     co_return detail::rowValue(rows.front(), 0);
@@ -1295,27 +1055,51 @@ ruvia::task<void> VpnService::desktopDeletePeer(Context& c, std::string_view id)
 
 template <typename Context>
 ruvia::task<void> VpnService::queueEdgeConfig(Context& c, std::string_view peerId) {
-    (void)co_await control(c, "queue-edge-config", service::message::rpc::encodeLinePair(peerId, c.userId));
+    (void)co_await control(c, service::message::vpn::kQueueEdgeConfigOperation, service::message::rpc::encodeLinePair(peerId, c.userId));
+}
+
+template <typename Context>
+ruvia::task<void> VpnService::syncEdgeRoutes(Context& c, std::string_view peerId, std::string_view networkId, std::string_view edgeNodeId) {
+    service::message::vpn::EdgeRouteSync request(ruvia::model_options{ .resource_ = c.pool() });
+    request.set<"peerId">(peerId).set<"networkId">(networkId).set<"edgeNodeId">(edgeNodeId).set<"actorId">(std::string_view(c.userId));
+    (void)co_await control(c, service::message::vpn::kSyncEdgeRoutesOperation, service::message::rpc::encode(request, c.pool()));
+}
+
+template <typename Context>
+ruvia::task<void> VpnService::discardEdgePeer(Context& c, std::string_view id) {
+    using Op = ruvia::db_binary_operator;
+    using Peer = service::vpn::entities::VpnPeerEntity;
+    auto transaction = co_await c.db().begin_transaction();
+    co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
+    ruvia::db_query removal(c.pool());
+    removal.delete_from(Peer::table_name())
+        .where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view()), Op::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid)))
+        .and_where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view()), Op::equal, removal.value("edge")))
+        // A concurrent request may have reactivated the row meanwhile; keep it then.
+        .and_where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view()), Op::equal, removal.value("revoked")));
+    (void)co_await transaction.execute(removal);
+    co_await transaction.commit();
 }
 
 template <typename Context>
 ruvia::task<void> VpnService::audit(Context& c, std::string_view actor, std::string_view action, std::string_view resource, std::string_view resourceId, std::string_view outcome, std::string_view details) {
+    using Audit = service::vpn::entities::SecurityAuditLogEntity;
     const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
     ruvia::db_query insert(c.pool());
     insert
-        .insert_into(service::vpn::entities::SecurityAuditLogEntity::table_name(), { "id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "details" })
+        .insert_into(service::vpn::entities::SecurityAuditLogEntity::table_name(), { std::tuple_element_t<Audit::column_index<"id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"actor_user_id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"action">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"resource_type">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"resource_id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"outcome">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"details">(), Audit::columns_type>::name.view() })
         .values({ insert.cast(insert.value(auditId), ruvia::db_data_type::uuid), insert.cast(insert.value(actor), ruvia::db_data_type::uuid), insert.value(action), insert.value(resource), insert.cast(insert.null_if(insert.cast(insert.value(resourceId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.value(outcome), insert.cast(insert.value(details), ruvia::db_data_type::jsonb) });
     (void)co_await c.db().execute(insert);
 }
 
 template <typename Context>
 ruvia::task<std::string> VpnService::control(Context& c, std::string_view operation, std::string payload) {
-    co_return co_await service::utils::callRpc(c, "vpn", operation, std::move(payload));
+    co_return co_await service::utils::callRpc(c, service::message::vpn::kRpcComponent, operation, std::move(payload));
 }
 
 template <typename Context>
 ruvia::task<void> VpnService::reconcileHub(Context& c) {
-    (void)co_await control(c, "reconcile", std::string{});
+    (void)co_await control(c, service::message::vpn::kReconcileOperation, std::string{});
 }
 
 inline VpnService& vpnService() {
