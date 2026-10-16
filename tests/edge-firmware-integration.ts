@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { access, readdir, unlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
+import { apiBase, databaseUrl, fixtureDirectory, redisUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl), redis = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001';
@@ -104,7 +104,7 @@ try {
     assert.equal(stored.length, 1, 'Concurrent upload created duplicate records');
     assert.equal((await db`SELECT 1 FROM edge_task WHERE node_id=${node} AND request->>'firmware_id'=${stored[0].id}`).length, 4);
     const directory = path.dirname(stored[0].storage_path);
-    assert(directory.includes('system-orm-fixture-'), 'File test must stay in disposable fixture');
+    assert(directory.startsWith(path.resolve(fixtureDirectory) + path.sep), 'File test must stay in disposable fixture');
     assert.equal((await readdir(directory)).filter(file => file.endsWith('.bin')).length, 1, 'Duplicate file remained');
 
     // 同一固件的 WS 分块读取和偏移续传，使用模拟节点，不刷写真实设备。

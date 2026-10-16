@@ -9,7 +9,7 @@ const db = new Bun.SQL(databaseUrl);
 const migration = '0049_industrial_protocols';
 const tables = ['link', 'protocol_config', 'device_data'];
 async function journal() {
-    return db`SELECT migration_id,checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`;
+    return [...await db`SELECT migration_id,checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`];
 }
 async function constraints() {
     return db`SELECT c.relname,pg_get_constraintdef(k.oid) AS definition FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid

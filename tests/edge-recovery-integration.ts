@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
+import { redisUrl } from './architecture-fixture';
 
 // This test deliberately talks to Redis through the same stream, consumer
 // group, lease, and registry keys used by the Edge projector.  It is intended
 // for the disposable Redis fixture; never point it at a production instance.
-const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL ?? Bun.env.REDIS_URL;
-assert(redisUrl, 'ARCHITECTURE_REDIS_URL or REDIS_URL is required');
 const redis = new Bun.RedisClient(redisUrl);
 const suffix = crypto.randomUUID();
 const oldInstance = `edge-old-${suffix}`;

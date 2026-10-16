@@ -22,6 +22,21 @@ env:
   UPX_WINDOWS_SHA256: fa5380bca4c2718547aaa0134bc0d8a7fa27e102f0ac6371573d60d1c21d64de
 
 jobs:
+  vcpkg_revision:
+    name: Resolve vcpkg revision
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      # Both platform builds and both packages use this one vcpkg commit.
+      - name: Resolve latest vcpkg commit
+        id: resolve
+        run: |
+          set -euo pipefail
+          commit=$(git ls-remote https://github.com/microsoft/vcpkg.git HEAD | cut -f1)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
   windows_client:
     name: Windows client installer
     runs-on: windows-2025
@@ -89,52 +104,51 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Protocol and validation tests
-        run: >-
-          bun test
-          ./tests/session-refresh-test.ts
-          ./tests/alert-query-cache-test.ts
-          ./tests/http-request-test.ts
-          ./tests/sse-subscriptions-test.ts
-          ./tests/client-architecture-test.ts
-          ./tests/frontend-architecture-test.ts
-          ./tests/navigation-test.ts
-          ./tests/edge-group-view-test.ts
-          ./tests/terminal-protocol-test.ts
-          ./tests/terminal-channel-test.ts
-          ./tests/edge-terminal-connection-test.ts
-          ./tests/edge-serial-debug-test.ts
-          ./tests/command-validation-test.ts
-          ./tests/protocol-schema-test.ts
-          ./tests/mqtt-schema-test.ts
-          ./tests/json-editor-test.ts
-          ./tests/open-access-mqtt-schema-test.ts
-          ./tests/device-status-test.ts
-          ./tests/sse-test.ts
-          ./tests/snapshot-stream-test.ts
-          ./tests/edge-debug-refresh-test.ts
-          ./tests/edge-debug-connection-test.ts
-          ./tests/edge-debug-subscriptions-test.ts
-          ./tests/firmware-upload-test.ts
-          ./tests/live-api-contract-test.ts
-          ./tests/device-card-label-test.tsx
-          ./tests/edge-network-view-test.ts
-          ./tests/packet-debug-test.ts
-          ./tests/edge-dtu-config-test.ts
-          ./tests/edge-log-level-test.ts
-          ./tests/edge-mobile-operator-test.ts
-          ./tests/protocol-import-test.ts
-          ./tests/protocol-tsap-test.ts
-          ./tests/sl651-config-test.ts
+      # terminal-state-test.ts runs Lua scripts against a real redis-server.
+      - name: Install Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+
+      - name: Frontend and contract tests
+        run: |
+          shopt -s nullglob
+          tests=(./tests/*-test.ts ./tests/*-test.tsx)
+          bun test "${tests[@]}"
 
   ubuntu_build:
     name: Ubuntu build
+    needs: vcpkg_revision
     runs-on: ubuntu-24.04
     env:
       CC: gcc-13
       CXX: g++-13
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_COMMIT: ${{ needs.vcpkg_revision.outputs.commit }}
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg
+    # Disposable servers for `ctest -L integration` (docs/build.md).
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg18
+        env:
+          POSTGRES_USER: iot_test
+          POSTGRES_PASSWORD: iot_test
+        ports:
+          - 127.0.0.1:25432:5432
+        options: >-
+          --health-cmd "pg_isready -U iot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:latest
+        ports:
+          - 127.0.0.1:26379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
@@ -142,6 +156,7 @@ jobs:
           persist-credentials: false
 
       - name: Install toolchain
+        id: toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-13 g++-13 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make redis-server
@@ -150,6 +165,7 @@ jobs:
           printf '#include <expected>\nint main() { std::expected<int, int> value{42}; return *value == 42 ? 0 : 1; }\n' > /tmp/iot-cxx23.cpp
           "$CXX" -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
           /tmp/iot-cxx23
+          echo "compiler=gcc-$("$CXX" -dumpfullversion)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -159,22 +175,22 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Bootstrap latest vcpkg
-        id: vcpkg
+      - name: Bootstrap vcpkg ${{ env.VCPKG_COMMIT }}
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git init --quiet "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" fetch --quiet --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_COMMIT"
+          git -C "$VCPKG_ROOT" checkout --quiet --detach FETCH_HEAD
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
           mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-          echo "commit=$(git -C "$VCPKG_ROOT" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Restore vcpkg binary cache
         id: restore-vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcc13-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ steps.toolchain.outputs.compiler }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-${{ runner.arch }}-gcc13-
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ steps.toolchain.outputs.compiler }}-
 
       - name: Configure
         id: configure
@@ -212,7 +228,33 @@ jobs:
       - name: Test
         # Hosted runners do not reliably deliver the IPv6 UDP loopback packet
         # used by gb28181-sip; keep that test available for local/targeted runs.
-        run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" --exclude-regex '^gb28181-sip$'
+        run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" --label-exclude integration --exclude-regex '^gb28181-sip$'
+
+      # Concurrent fixtures each run iot-engine with per-worker pools; the
+      # default 100 connections are not enough. Services take no command line.
+      - name: Prepare integration services
+        run: |
+          set -euo pipefail
+          docker exec ${{ job.services.postgres.id }} psql -U iot_test -d postgres -c 'ALTER SYSTEM SET max_connections = 500'
+          docker restart ${{ job.services.postgres.id }}
+          until docker exec ${{ job.services.postgres.id }} pg_isready -U iot_test; do sleep 1; done
+          docker run -d --name iotci-mqtt -p 127.0.0.1:21883:1883 eclipse-mosquitto:latest mosquitto -c /mosquitto-no-auth.conf
+
+      - name: Integration tests
+        env:
+          IOT_TEST_POSTGRES_URL: postgres://iot_test:iot_test@127.0.0.1:25432/postgres
+          IOT_TEST_REDIS_URL: redis://127.0.0.1:26379
+          IOT_TEST_MQTT_URL: mqtt://127.0.0.1:21883
+        run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" --label-regex integration --parallel 4
+
+      - name: Upload integration fixture logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-fixtures-${{ github.sha }}
+          path: build/ci/integration/*/instance-*/engine.*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Install UPX
         run: |
@@ -232,6 +274,7 @@ jobs:
           cmake -E make_directory build/artifact
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
           cmake -E copy_directory build/web build/artifact/web
+          printf 'source=%s\nvcpkg=%s\n' "$GITHUB_SHA" "$VCPKG_COMMIT" > build/artifact/build-info.txt
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact \
             -P ports/cmake/stage-third-party-notices.cmake
           "$UPX_BIN" --best --lzma build/artifact/iot-engine
@@ -250,15 +293,28 @@ jobs:
 
   windows_build:
     name: Windows MSVC build
+    needs: vcpkg_revision
     runs-on: windows-2025
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_COMMIT: ${{ needs.vcpkg_revision.outputs.commit }}
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      # The Visual Studio generator uses this default toolset.
+      - name: Detect MSVC toolset
+        id: toolchain
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $version = (Get-Content "$installation\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt" -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Unexpected MSVC toolset version: $version" }
+          "compiler=msvc-$version" >> $env:GITHUB_OUTPUT
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -268,23 +324,25 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Bootstrap latest vcpkg
-        id: vcpkg
+      - name: Bootstrap vcpkg ${{ env.VCPKG_COMMIT }}
         shell: pwsh
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git init --quiet $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT fetch --quiet --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $env:VCPKG_ROOT checkout --quiet --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          "commit=$(git -C $env:VCPKG_ROOT rev-parse HEAD)" >> $env:GITHUB_OUTPUT
 
       - name: Restore vcpkg binary cache
         id: restore-vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-msvc-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-windows-static-${{ steps.toolchain.outputs.compiler }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-${{ runner.arch }}-msvc-
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-windows-static-${{ steps.toolchain.outputs.compiler }}-
 
       - name: Configure
         id: configure
@@ -323,6 +381,9 @@ jobs:
       - name: Test
         # Hosted runners do not reliably deliver the IPv6 UDP loopback packet
         # used by gb28181-sip; keep that test available for local/targeted runs.
+        # Windows runners have no PostgreSQL/TimescaleDB and Redis service
+        # containers, so the `integration` tests report as skipped here and run
+        # in ubuntu_build.
         run: ctest --test-dir build/ci --output-on-failure --build-config ${{ env.BUILD_TYPE }} --exclude-regex '^gb28181-sip$'
 
       - name: Install UPX
@@ -347,6 +408,7 @@ jobs:
           cmake -E make_directory build/artifact
           cmake -E copy "build/ci/$env:BUILD_TYPE/iot-engine.exe" build/artifact/iot-engine.exe
           cmake -E copy_directory build/web build/artifact/web
+          "source=$env:GITHUB_SHA`nvcpkg=$env:VCPKG_COMMIT`n" | Set-Content -NoNewline -Encoding ascii build/artifact/build-info.txt
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact `
             -P ports/cmake/stage-third-party-notices.cmake
           & $env:UPX_BIN --best --lzma build/artifact/iot-engine.exe
@@ -371,7 +433,7 @@ jobs:
 
   ubuntu_package:
     name: Linux deployment package
-    needs: [ubuntu_build, windows_client, web_quality]
+    needs: [vcpkg_revision, ubuntu_build, windows_build, windows_client, web_quality]
     runs-on: ubuntu-24.04
     steps:
       - name: Download Linux build output
@@ -386,6 +448,7 @@ jobs:
           tar -xzf build/linux-build.tar.gz -C build/artifact
           test -x build/artifact/iot-engine
           test -s build/artifact/web/index.html
+          grep -qx "vcpkg=${{ needs.vcpkg_revision.outputs.commit }}" build/artifact/build-info.txt
 
       - name: Download Windows client for source-site distribution
         uses: actions/download-artifact@v8
@@ -408,7 +471,7 @@ jobs:
 
   windows_package:
     name: Windows deployment package
-    needs: [windows_build, windows_client, web_quality]
+    needs: [vcpkg_revision, ubuntu_build, windows_build, windows_client, web_quality]
     runs-on: windows-2025
     steps:
       - name: Download Windows build output
@@ -422,6 +485,7 @@ jobs:
           Expand-Archive -Path build/windows-build.zip -DestinationPath build/artifact
           if (!(Test-Path build/artifact/iot-engine.exe)) { throw 'Missing server executable' }
           if (!(Test-Path build/artifact/web/index.html)) { throw 'Missing frontend entry' }
+          if (!((Get-Content build/artifact/build-info.txt) -contains 'vcpkg=${{ needs.vcpkg_revision.outputs.commit }}')) { throw 'Artifact was built from another vcpkg commit' }
 
       - name: Download Windows client for source-site distribution
         uses: actions/download-artifact@v8

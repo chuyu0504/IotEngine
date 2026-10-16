@@ -8,7 +8,7 @@ const path = resolve(Bun.env.ARCHITECTURE_MIGRATION_STATE ?? '');
 assert(path.startsWith(resolve('build') + sep));
 const migration = '0053_open_mqtt';
 async function journal() {
-    return db`SELECT migration_id, checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`;
+    return [...await db`SELECT migration_id, checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`];
 }
 async function verify() {
     assert.equal((await db`SELECT to_regclass('public.open_mqtt') AS name`)[0].name, 'open_mqtt');

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { unlink, readdir } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
+import { apiBase, databaseUrl, fixtureDirectory, redisUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl), redis = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001', admin = '00000000-0000-7000-8000-000000000002';
@@ -143,7 +143,7 @@ try {
     socket?.close();
     await db`DELETE FROM edge_task WHERE node_id=${node}`;
     for (const file of firmware) {
-        assert(resolve(file.storage_path).startsWith(resolve('build') + '\\'), 'Refusing to delete file outside disposable build fixture');
+        assert(resolve(file.storage_path).startsWith(resolve(fixtureDirectory) + sep), 'Refusing to delete file outside disposable build fixture');
         await db`DELETE FROM edge_firmware WHERE id=${file.id}`;
         await unlink(file.storage_path);
     }

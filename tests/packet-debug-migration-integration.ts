@@ -7,7 +7,7 @@ assert(path.startsWith(resolve('build') + sep));
 const db = new Bun.SQL(databaseUrl);
 const migration = '0048_packet_debug_switches';
 async function journal() {
-    return (await db`SELECT migration_id,checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`);
+    return [...await db`SELECT migration_id,checksum FROM sys_schema_migrations WHERE migration_id<>${migration} ORDER BY migration_id`];
 }
 async function schema() {
     const rows = await db`SELECT table_name,data_type,is_nullable,column_default FROM information_schema.columns

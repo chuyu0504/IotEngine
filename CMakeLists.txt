@@ -61,8 +61,8 @@ FetchContent_Declare(ruvia
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
-    GIT_REPOSITORY https://github.com/nanopb/nanopb.git
-    GIT_TAG cad3c18ef15a663e30e3e43e3a752b66378adec1
+    URL https://github.com/nanopb/nanopb/archive/cad3c18ef15a663e30e3e43e3a752b66378adec1.tar.gz
+    URL_HASH SHA256=10e5f014e91a540959cdb82ce486a25fb9a369cabefae128d9bda4ccb3598e30
     # The server uses the standard C++ Protobuf runtime. Fetch nanopb only for the
     # exact nanopb.proto option schema shared with the OpenWrt nanopb generator.
     SOURCE_SUBDIR _runtime_sources_only)
@@ -72,9 +72,9 @@ FetchContent_MakeAvailable(nanopb)
 # does not ship a CMake build or a vcpkg port, so build its upstream static
 # library directly from the source list used by its own MSVC project.
 FetchContent_Declare(faac_source
-    GIT_REPOSITORY https://github.com/knik0/faac.git
-    GIT_TAG 3aec0c1cef9442fe2f8eb86a5b475c68e94f3306
-    GIT_SHALLOW TRUE)
+    # faac-1.31.1
+    URL https://github.com/knik0/faac/archive/3aec0c1cef9442fe2f8eb86a5b475c68e94f3306.tar.gz
+    URL_HASH SHA256=ad2b27ebeb8299b1603aeea8e8d1b37ba6bb8116bc7f33fec883795008424160)
 FetchContent_MakeAvailable(faac_source)
 add_library(faac STATIC
     "${faac_source_SOURCE_DIR}/libfaac/bitstream.c"
@@ -294,7 +294,6 @@ add_executable(iot-engine
     service/features/gb28181/sip/sip.transport.cpp)
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
@@ -473,8 +472,6 @@ iot_engine_add_test(gb28181-media
         spdlog::spdlog
         mk_api
         OpenSSL::Crypto
-    INCLUDE_DIRECTORIES
-        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     MSVC_DEFINITIONS
         NOMINMAX
         WIN32_LEAN_AND_MEAN)
@@ -503,8 +500,6 @@ iot_engine_add_test(gb28181-projector LARGE
         service/features/gb28181/device/device.runtime.cpp
         service/features/gb28181/media/media.runtime.cpp
     LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
-    INCLUDE_DIRECTORIES
-        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     DEFINITIONS IOT_ENGINE_TESTING)
 
 iot_engine_add_test(gb28181-sip
@@ -522,8 +517,6 @@ iot_engine_add_test(gb28181-sip
         spdlog::spdlog
         mk_api
         OpenSSL::Crypto
-    INCLUDE_DIRECTORIES
-        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     MSVC_DEFINITIONS
         NOMINMAX
         WIN32_LEAN_AND_MEAN)
@@ -535,6 +528,109 @@ add_custom_target(iot-engine-web ALL
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building frontend into ${CMAKE_BINARY_DIR}/web"
     VERBATIM)
+
+# Bun integration tests (`ctest -L integration`). Database and Redis come from
+# IOT_TEST_POSTGRES_URL and IOT_TEST_REDIS_URL; see docs/build.md.
+iot_engine_add_integration_fixture(api)
+foreach(test_name
+        access-http-sse-integration
+        alert-orm-integration
+        architecture-integration
+        auth-http-sse-integration
+        auth-rate-limit-integration
+        business-orm-integration
+        channel-model-integration
+        collector-publication-integration
+        current-device-model-integration
+        derived-points-integration
+        device-endpoint-integration
+        device-http-sse-integration
+        device-parameter-definitions-migration-integration
+        device-parameters-migration-integration
+        edge-config-reconnect-integration
+        edge-dtu-integration
+        edge-firmware-integration
+        edge-http-sse-integration
+        edge-liveness-integration
+        edge-recovery-integration
+        edge-serial-debug-integration
+        edge-session-integration
+        edge-telemetry-upload-integration
+        edge-terminal-integration
+        entity-schema-audit
+        firmware-http-integration
+        gb-control-claim-integration
+        gb-owner-lease-integration
+        gb-projection-publish-integration
+        industrial-edge-integration
+        industrial-protocol-integration
+        link-edge-debug-integration
+        link-http-sse-integration
+        mqtt-integration
+        native-points-migration-integration
+        outbox-notification-integration
+        packet-debug-collector-integration
+        packet-debug-storage-integration
+        protocol-http-integration
+        protocol-offset-integration
+        protocol-point-integration
+        rpc-integration
+        rpc-receipt-integration
+        system-http-integration
+        system-orm-integration
+        telemetry-consumers-integration
+        vpn-desktop-integration)
+    iot_engine_add_integration("${test_name}" FIXTURE api)
+endforeach()
+iot_engine_add_integration(open-access-mqtt-integration FIXTURE api MQTT)
+
+if(WIN32)
+    # The probe comes from the Windows client build (clients/windows).
+    set(IOT_ENGINE_WINDOWS_CLIENT_PROBE
+        "${CMAKE_BINARY_DIR}/windows-client/Release/vpn_platform_http_probe.exe"
+        CACHE FILEPATH "vpn_platform_http_probe.exe for windows-native-backend-integration")
+    iot_engine_add_integration(windows-native-backend-integration
+        FIXTURE api EXECUTABLE "${IOT_ENGINE_WINDOWS_CLIENT_PROBE}")
+endif()
+
+# Expiring a Redis owner makes the instance permanently unready. The test also
+# revokes SCAN from the shared Redis server's default user.
+iot_engine_add_integration_fixture(edge-recovery)
+iot_engine_add_integration(edge-recovery-application FIXTURE edge-recovery RUN_SERIAL)
+
+iot_engine_add_integration_fixture(gb28181 GB28181)
+iot_engine_add_integration(gb28181-worker-integration FIXTURE gb28181)
+
+# Two independently running API instances on one database and Redis.
+iot_engine_add_integration_fixture(multi-instance INSTANCES 2)
+iot_engine_add_integration(live-query-multi-instance-integration FIXTURE multi-instance)
+iot_engine_add_integration(config-notification-integration FIXTURE multi-instance)
+
+iot_engine_add_integration_fixture(upload-startup SEED_UPLOADS)
+iot_engine_add_integration(upload-startup-recovery-integration FIXTURE upload-startup)
+
+iot_engine_add_integration_fixture(single-process GB28181 SETTINGS VPN_HUB_ENABLED=true)
+iot_engine_add_integration(runtime-single-process-integration FIXTURE single-process)
+
+iot_engine_add_integration_fixture(migration MANAGED)
+iot_engine_add_integration(replay-counter-migration-integration
+    FIXTURE migration MIGRATION_FAILURE outbox_replay_counter)
+iot_engine_add_integration(packet-debug-migration-integration
+    FIXTURE migration MIGRATION_FAILURE debug_enabled)
+iot_engine_add_integration(industrial-protocol-migration-integration
+    FIXTURE migration MIGRATION_FAILURE protocol_config_protocol_check)
+iot_engine_add_integration(dead-letter-query-migration-integration
+    FIXTURE migration MIGRATION_FAILURE live_dead_letters)
+iot_engine_add_integration(open-mqtt-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
+iot_engine_add_integration(mqtt-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
+
+iot_engine_add_integration_fixture(storage-policy MANAGED)
+iot_engine_add_integration(storage-policy-integration FIXTURE storage-policy)
+
+iot_engine_add_integration(upload-recovery-integration
+    EXECUTABLE "$<TARGET_FILE:api-upload-test>")
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")
     add_custom_target(iot-engine-env ALL

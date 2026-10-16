@@ -6,7 +6,7 @@ import { request, type IncomingMessage } from 'node:http';
 import { databaseUrl } from './architecture-fixture';
 
 const dbUrl = databaseUrl;
-const ports = (Bun.env.LIVE_QUERY_API_PORTS ?? '55102,55103')
+const ports = (Bun.env.LIVE_QUERY_API_PORTS ?? '')
     .split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value > 0);
 assert.equal(ports.length, 2, 'LIVE_QUERY_API_PORTS must contain exactly two ports');
 const db = new Bun.SQL(dbUrl);

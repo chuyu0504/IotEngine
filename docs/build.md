@@ -1,9 +1,10 @@
 # 源码构建
 
 第三方依赖由根目录 `vcpkg.json` 声明，配置阶段通过 vcpkg 清单模式安装到构建目录的 `vcpkg_installed/`。
-vcpkg 与 Ruvia 一致跟踪最新端口，不固定 baseline；CI 每次克隆最新 vcpkg 提交。
-Ruvia、ZLMediaKit、FAAC、nanopb 不在 vcpkg 中，仍由 CMake FetchContent 固定完整提交获取，
-Ruvia 使用带 SHA-256 校验的归档，其依赖由本项目清单统一提供。
+vcpkg 与 Ruvia 一致跟踪最新端口，不固定 baseline；CI 的 `vcpkg_revision` 作业每次只解析一次最新 vcpkg 提交，
+Linux 与 Windows 构建都检出该提交，两个部署包都等待两个平台构建测试通过，制品内 `build-info.txt` 记录源码提交与 vcpkg 提交。
+Ruvia、ZLMediaKit、FAAC、nanopb 不在 vcpkg 中，仍由 CMake FetchContent 固定获取：
+Ruvia、FAAC（`faac-1.31.1`）、nanopb 使用固定提交并带 SHA-256 校验的归档，ZLMediaKit 固定完整提交；Ruvia 的依赖由本项目清单统一提供。
 `ports/vcpkg/` 只保留需要调整的 overlay 端口：`usrsctp` 在上游端口基础上将内部 `timingsafe_bcmp` 重命名为 `usrsctp_timingsafe_bcmp`。
 
 ## 工具链
@@ -40,6 +41,39 @@ ctest --test-dir build --build-config Release --output-on-failure
 `collector-route` 回归测试会启动独立的内存 Redis，使用随机本地端口，验证连接租约到期、续期、重连保护、截止事件与遥测保留。
 需将 `redis-server` 加入 `PATH`；测试临时目录与日志位于根 `build/`，不连接生产 Redis。
 Linux CI 安装该工具并运行真实 Redis 回归；缺少工具的环境会明确标记该项为跳过，不能据此认定连接租约行为已验证。
+
+### 集成测试
+
+`tests/*-integration.ts` 等 Bun 集成测试注册为带 `integration` 标签的 CTest 用例，由 `ports/cmake/integration-fixture.cmake`
+作为 CTest fixture 准备数据库与 Redis、启动并停止 `iot-engine`。数据库与 Redis 由环境变量提供：
+
+|变量|内容|
+|---|---|
+|`IOT_TEST_POSTGRES_URL`|PostgreSQL/TimescaleDB 服务器，`postgres://user[:password]@host[:port][/database]`，账号须可建库|
+|`IOT_TEST_REDIS_URL`|Redis 服务器，`redis://[[user]:password@]host[:port]`，不带库号|
+|`IOT_TEST_MQTT_URL`|仅 `open-access-mqtt-integration` 使用的匿名 MQTT Broker，`mqtt://host:port`|
+
+每个 fixture 在该服务器上重建自己的 `iot_architecture_<fixture>` 数据库，独占一个 Redis 库号（1–15）与从
+`IOT_ENGINE_INTEGRATION_PORT_BASE`（默认 25100）起的十个本机端口，结束后删除数据库并清空 Redis 库；
+进程配置、日志与测试状态位于构建目录的 `integration/<fixture>/`。只允许本机地址，禁止指向生产服务。
+缺少变量时用例以返回码 77 明确跳过。并行的 fixture 各自运行带连接池的 `iot-engine`，PostgreSQL 的
+`max_connections` 需提高到 500（默认 100 会报 `too many clients`）。本地使用官方镜像：
+
+```sh
+docker run -d --name iotci-postgres -p 127.0.0.1:25432:5432 -e POSTGRES_USER=iot_test -e POSTGRES_PASSWORD=iot_test timescale/timescaledb:latest-pg18 -c max_connections=500
+docker run -d --name iotci-redis -p 127.0.0.1:26379:6379 redis:latest
+docker run -d --name iotci-mqtt -p 127.0.0.1:21883:1883 eclipse-mosquitto:latest mosquitto -c /mosquitto-no-auth.conf
+IOT_TEST_POSTGRES_URL=postgres://iot_test:iot_test@127.0.0.1:25432/postgres \
+IOT_TEST_REDIS_URL=redis://127.0.0.1:26379 \
+IOT_TEST_MQTT_URL=mqtt://127.0.0.1:21883 \
+ctest --test-dir build --build-config Release --output-on-failure -L integration -j 4
+```
+
+Linux CI 以 GitHub Actions `services:` 提供同样镜像并运行 `ctest -L integration`；Windows 托管 Runner 没有服务容器，
+这些用例在 Windows 作业中报告为跳过。`windows-native-backend-integration` 仅在 Windows 注册，
+需 `IOT_ENGINE_WINDOWS_CLIENT_PROBE` 指向 Windows 客户端构建的 `vpn_platform_http_probe.exe`；
+`windows-http-sse-integration` 由 `clients/windows` 的 `windows-native-tests` 运行。
+前端与契约测试在仓库根执行 `bun test ./tests/*-test.ts ./tests/*-test.tsx`，其中 `terminal-state-test.ts` 需要 `PATH` 中的 `redis-server`。
 
 Windows：
 

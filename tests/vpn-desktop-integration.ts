@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
 import { pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 import { consumeServerSentEvents } from '../web/lib/sse';
+import { apiBase as api, databaseUrl, redisUrl } from './architecture-fixture';
 
-// Run with Run-VpnDesktopIntegration.ps1. Refuse to mutate another database.
-const fixture = resolve(process.env.VPN_DESKTOP_FIXTURE ?? 'build/vpn-desktop-fixture');
-const api = 'http://127.0.0.1:55112';
-const db = new Bun.SQL('postgres://architecture_test@127.0.0.1:55449/iot_architecture');
-const presence = new Bun.RedisClient('redis://127.0.0.1:56449');
+const db = new Bun.SQL(databaseUrl);
+const presence = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001';
 const admin = '00000000-0000-7000-8000-000000000002';
 const network = '00000000-0000-7000-8000-000000000004';
@@ -105,8 +102,6 @@ async function connectEdge() {
     });
 }
 try {
-    const [location] = await db`SELECT current_setting('data_directory') AS path`;
-    assert.equal(resolve(location.path).toLowerCase(), resolve(fixture, 'postgres').toLowerCase(), 'requires the disposable VPN fixture cluster');
     assert.equal((await db`SELECT to_regclass('public.vpn_effective_edge_access') AS name`)[0].name, 'vpn_effective_edge_access');
     const salt = randomBytes(16); const hash = `pbkdf2_sha256$210000$${salt.toString('hex')}$${pbkdf2Sync(password, salt, 210000, 32, 'sha256').toString('hex')}`;
     await db`INSERT INTO sys_role(id,code,name,status,permissions) VALUES

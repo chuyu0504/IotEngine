@@ -1,7 +1,7 @@
 // One disposable local process must already be running with media and VPN enabled.
 import assert from 'node:assert/strict';
+import { apiBase as base } from './architecture-fixture';
 
-const base = process.env.TEST_BASE_URL ?? 'http://127.0.0.1:55102';
 const health = await fetch(`${base}/internal/health/ready`, { signal: AbortSignal.timeout(5000) });
 assert.equal(health.status, 200, 'Single process is not ready');
 const state = await health.json();
