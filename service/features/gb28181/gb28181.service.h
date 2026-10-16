@@ -34,6 +34,7 @@
 #include "service/features/gb28181/gb28181.protocol.h"
 #include "service/features/gb28181/gb28181.types.h"
 #include "service/middleware/log.h"
+#include "service/utils/change_feed.h"
 #include "service/utils/redis.h"
 
 namespace service::gb28181 {
@@ -273,11 +274,15 @@ return 1
 
 // Reply publication and PEL removal are one Redis transaction.  A worker crash
 // between the two cannot acknowledge a command whose response was never made
-// visible to the Service Worker.
-// KEYS[1]=reply stream, KEYS[2]=control stream, KEYS[3]=result key, KEYS[4]=claim key.
+// visible to the Service Worker.  The waiting Service Worker routed the reply
+// stream to its directed live stream; the script notifies that stream only, so
+// no other worker wakes and the waiter never polls.
+// KEYS[1]=reply stream, KEYS[2]=control stream, KEYS[3]=result key, KEYS[4]=claim key,
+// KEYS[5]=live route key of the reply stream.
 // ARGV[1]=request ID, ARGV[2]=operation, ARGV[3]=status, ARGV[4]=payload,
 // ARGV[5]=group, ARGV[6]=entry ID, ARGV[7]=encoded result, ARGV[8]=result TTL,
-// ARGV[9]=reply TTL, ARGV[10]=control TTL, ARGV[11]=claim owner.
+// ARGV[9]=reply TTL, ARGV[10]=control TTL, ARGV[11]=claim owner,
+// ARGV[12]=directed stream capacity, ARGV[13]=directed stream TTL (ms).
 inline constexpr std::string_view kPublishReplyAndAcknowledgeScript = R"lua(
 if ARGV[7] ~= '' and redis.call('EXISTS', KEYS[3]) == 0 then
   redis.call('SET', KEYS[3], ARGV[7], 'EX', ARGV[8])
@@ -291,6 +296,11 @@ local acknowledged = redis.call('XACK', KEYS[2], ARGV[5], ARGV[6])
 redis.call('XDEL', KEYS[2], ARGV[6])
 if ARGV[11] ~= '' and redis.call('GET', KEYS[4]) == ARGV[11] then
   redis.call('DEL', KEYS[4])
+end
+local waiter = redis.call('GET', KEYS[5])
+if waiter then
+  redis.call('XADD', waiter, 'MAXLEN', '~', ARGV[12], '*', 'topic', KEYS[1])
+  redis.call('PEXPIRE', waiter, ARGV[13])
 end
 return acknowledged
 )lua";
@@ -1274,8 +1284,9 @@ class GbControlService final {
     ) {
         const std::string result = ControlResultRecord{ std::string(status), std::string(payload) }.encode();
         const std::string_view ttl{ "600" };
-        const std::string_view keys[]{ replyStream, controlStream, resultKey, claimKey };
-        const std::string_view arguments[]{ requestId, operation, status, payload, group, messageId, result, ttl, ttl, ttl, claimOwner };
+        const auto route = service::message::live::routeKey(replyStream);
+        const std::string_view keys[]{ replyStream, controlStream, resultKey, claimKey, route };
+        const std::string_view arguments[]{ requestId, operation, status, payload, group, messageId, result, ttl, ttl, ttl, claimOwner, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await redis.eval(kPublishReplyAndAcknowledgeScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::message::redis::throwValue("GB28181 reply/ack", reply);
@@ -1445,6 +1456,8 @@ class GbControlService final {
   private:
     static constexpr std::string_view kOwnerLeaseMs{ "15000" };
     static constexpr std::string_view kCollectorStreamTtlSeconds{ "600" };
+    // Covers the 15 s control deadline plus the reply's publication delay.
+    static constexpr auto kReplyRouteLifetime = std::chrono::seconds(20);
 
     static service::message::gb28181::Health healthJson(ruvia::web_worker_context& context, const ConfigProjectionRecord& state) {
         const ruvia::model_options options{ .resource_ = context.pool() };
@@ -1463,67 +1476,77 @@ class GbControlService final {
         return result;
     }
 
+    // The entry of an XREAD reply that answers `requestId`, if any.
+    static std::optional<service::message::StreamMessage> matchingReply(const ruvia::redis_value& reply, std::string_view requestId) {
+        for (const auto& streamReply : reply.array()) {
+            if (streamReply.kind() != ruvia::redis_value::kind_type::array ||
+                streamReply.array().size() != 2) {
+                continue;
+            }
+            const auto& entries = streamReply.array()[1];
+            if (entries.kind() != ruvia::redis_value::kind_type::array) {
+                continue;
+            }
+            for (const auto& entry : entries.array()) {
+                if (entry.kind() != ruvia::redis_value::kind_type::array ||
+                    entry.array().size() != 2) {
+                    continue;
+                }
+                const auto& id = entry.array()[0];
+                const auto& fields = entry.array()[1];
+                if (id.kind() != ruvia::redis_value::kind_type::string ||
+                    fields.kind() != ruvia::redis_value::kind_type::array) {
+                    continue;
+                }
+                service::message::StreamMessage message;
+                message.id = std::string(id.string());
+                for (std::size_t index = 0; index + 1 < fields.array().size(); index += 2) {
+                    const auto& name = fields.array()[index];
+                    const auto& value = fields.array()[index + 1];
+                    if (name.kind() != ruvia::redis_value::kind_type::string ||
+                        value.kind() != ruvia::redis_value::kind_type::string) {
+                        continue;
+                    }
+                    message.fields.push_back({ std::string(name.string()), std::string(value.string()) });
+                }
+                if (message.get("request_id") == requestId) {
+                    return message;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    // The Collector's reply script notifies this worker's directed live stream
+    // (routed before the command was published), so the wait wakes on the reply
+    // instead of polling. Each wake re-reads the reply stream; a feed recovery
+    // or a lost notification only costs one extra read before the deadline.
     static ruvia::task<std::optional<service::message::StreamMessage>> readControlReply(
-        const ruvia::worker_handle& worker,
         const ruvia::redis_handle& redis,
         std::string_view stream,
         std::string_view requestId,
+        service::utils::ChangeFeed::Subscription& notification,
         ruvia::stop_token stop,
         std::chrono::system_clock::time_point deadline
     ) {
         const auto boundedRedis = redis.with_options({ .stop_token_ = stop });
-        while (!stop.stop_requested() &&
-               std::chrono::system_clock::now() < deadline) {
+        while (!stop.stop_requested()) {
+            (void)notification.take();
             const std::vector<std::string> replyArguments{ "XREAD", "COUNT", "1", "STREAMS", std::string(stream), "0-0" };
             const auto reply = co_await service::message::redis::command(
                 boundedRedis,
                 replyArguments
             );
-            if (reply.null()) {
-                (void)co_await ruvia::sleep_for(worker, std::chrono::milliseconds(100), stop);
-                continue;
-            }
-            if (reply.kind() != ruvia::redis_value::kind_type::array) {
+            if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::array) {
                 service::message::redis::throwValue("XREAD GB28181 reply", reply);
             }
-            for (const auto& streamReply : reply.array()) {
-                if (streamReply.kind() != ruvia::redis_value::kind_type::array ||
-                    streamReply.array().size() != 2) {
-                    continue;
-                }
-                const auto& entries = streamReply.array()[1];
-                if (entries.kind() != ruvia::redis_value::kind_type::array) {
-                    continue;
-                }
-                for (const auto& entry : entries.array()) {
-                    if (entry.kind() != ruvia::redis_value::kind_type::array ||
-                        entry.array().size() != 2) {
-                        continue;
-                    }
-                    const auto& id = entry.array()[0];
-                    const auto& fields = entry.array()[1];
-                    if (id.kind() != ruvia::redis_value::kind_type::string ||
-                        fields.kind() != ruvia::redis_value::kind_type::array) {
-                        continue;
-                    }
-                    service::message::StreamMessage message;
-                    message.id = std::string(id.string());
-                    for (std::size_t index = 0; index + 1 < fields.array().size();
-                         index += 2) {
-                        const auto& name = fields.array()[index];
-                        const auto& value = fields.array()[index + 1];
-                        if (name.kind() != ruvia::redis_value::kind_type::string ||
-                            value.kind() != ruvia::redis_value::kind_type::string) {
-                            continue;
-                        }
-                        message.fields.push_back(
-                            { std::string(name.string()), std::string(value.string()) }
-                        );
-                    }
-                    if (message.get("request_id") == requestId) {
-                        co_return message;
-                    }
-                }
+            if (const auto message = reply.null() ? std::nullopt : matchingReply(reply, requestId)) {
+                co_return message;
+            }
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::system_clock::now());
+            if (remaining.count() <= 0 ||
+                co_await notification.wait(remaining, stop) == service::utils::ChangeWait::Stopped) {
+                break;
             }
         }
         if (stop.stop_requested()) {
@@ -1563,6 +1586,10 @@ class GbControlService final {
                                     deadline.time_since_epoch()
         )
                                     .count();
+        // Wait and route before publishing so the Collector's reply always
+        // finds this worker's directed stream.
+        auto replyNotification = co_await context.worker_state<service::utils::ChangeFeed>().await(context, replyStream);
+        co_await service::utils::ChangeFeed::route(context, replyStream, kReplyRouteLifetime);
         std::exception_ptr publishFailure;
         try {
             const auto controlKey = control_protocol::stream::control(*owner, *instance);
@@ -1595,13 +1622,14 @@ class GbControlService final {
                 co_await GbControlService::markControlCancelled(context.redis(), cancelKey);
             } catch (...) {
             }
+            co_await discardReply(context.redis(), replyStream);
             std::rethrow_exception(publishFailure);
         }
 
         std::optional<service::message::StreamMessage> response;
         std::exception_ptr failure;
         try {
-            response = co_await readControlReply(context.worker(), context.redis(), replyStream, requestId, stop, deadline);
+            response = co_await readControlReply(context.redis(), replyStream, requestId, *replyNotification, stop, deadline);
         } catch (...) {
             failure = std::current_exception();
         }
@@ -1613,10 +1641,7 @@ class GbControlService final {
                 co_await GbControlService::markControlCancelled(context.redis(), cancelKey);
             } catch (...) {
             }
-            try {
-                (void)co_await context.redis().del(replyStream);
-            } catch (...) {
-            }
+            co_await discardReply(context.redis(), replyStream);
             std::rethrow_exception(failure);
         }
         if (!response) {
@@ -1624,21 +1649,31 @@ class GbControlService final {
                 co_await GbControlService::markControlCancelled(context.redis(), cancelKey);
             } catch (...) {
             }
-            try {
-                (void)co_await context.redis().del(replyStream);
-            } catch (...) {
-            }
+            co_await discardReply(context.redis(), replyStream);
             throw std::runtime_error(
                 "GB28181 Collector did not reply before deadline"
             );
         }
-        (void)co_await context.redis().del(replyStream);
+        co_await discardReply(context.redis(), replyStream);
         const auto status = response->get("status");
         const auto result = response->get("payload");
         if (status != "ok") {
             throw std::runtime_error(result.empty() ? "GB28181 Collector operation failed" : std::string(result));
         }
         co_return std::string(result);
+    }
+
+    // Drops the reply stream and its live route; both also expire on their own.
+    static ruvia::task<void> discardReply(const ruvia::redis_handle& redis, std::string_view replyStream) {
+        try {
+            const std::vector<std::string> arguments{ "DEL", std::string(replyStream), service::message::live::routeKey(replyStream) };
+            const auto reply = co_await service::message::redis::command(redis, arguments);
+            if (reply.kind() == ruvia::redis_value::kind_type::error) {
+                service::message::redis::throwValue("discard GB28181 reply", reply);
+            }
+        } catch (const std::exception& error) {
+            LOG_WARN << "GB28181 reply " << replyStream << " was not discarded: " << error.what();
+        }
     }
 
     static ruvia::task<std::string> dispatchByOwnerKey(

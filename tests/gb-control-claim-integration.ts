@@ -20,6 +20,15 @@ const publish = async (token: string) => Number(await redis.send('EVAL', [
     publishLua, '2', stream, keys[0], token,
     'request_id', 'command-1', 'operation', 'test-operation', 'payload', '{"value":1}',
 ]));
+const replyLua = script('kPublishReplyAndAcknowledgeScript');
+const reply = `${prefix}:reply`;
+const result = `${prefix}:result`;
+const route = `iot:live:route:${reply}`;
+const waiter = `${prefix}:waiter`;
+const publishReply = async (entryId: string) => Number(await redis.send('EVAL', [
+    replyLua, '5', reply, stream, result, keys[1], route,
+    'command-1', 'test-operation', 'ok', '{"done":true}', 'group', entryId, 'ok\n{"done":true}', '600', '600', '600', '', '10000', '600000',
+]));
 
 try {
     const time = await redis.send('TIME', []) as string[];
@@ -57,7 +66,29 @@ try {
     assert.equal(Number(await redis.send('XLEN', [stream])), 1);
     console.log('PASS GB28181 control claim owner fencing, cancellation, deadline and duplicate exclusion');
     console.log('PASS GB28181 control publication owner fencing, payload and stream expiry');
+
+    // The reply wakes only the Service Worker that routed the reply stream.
+    await redis.send('XGROUP', ['CREATE', stream, 'group', '0']);
+    const claimNext = async () => {
+        const [[entryId]] = await redis.send('XRANGE', [stream, '-', '+']) as unknown as [string, string[]][];
+        await redis.send('XREADGROUP', ['GROUP', 'group', 'collector', 'COUNT', '1', 'STREAMS', stream, '>']);
+        return entryId;
+    };
+    const entryId = await claimNext();
+    assert.equal(await publishReply(entryId), 1);
+    assert.equal(Number(await redis.send('XLEN', [stream])), 0, 'reply acknowledges and deletes the control entry');
+    assert.equal(Number(await redis.send('EXISTS', [waiter])), 0, 'an unrouted reply notifies no worker');
+    const replies = await redis.send('XRANGE', [reply, '-', '+']) as unknown as [string, string[]][];
+    assert.deepEqual(replies.map(([, fields]) => fields), [['request_id', 'command-1', 'operation', 'test-operation', 'status', 'ok', 'payload', '{"done":true}']]);
+    await redis.send('SET', [route, waiter, 'EX', '20']);
+    await redis.send('XADD', [stream, '*', 'request_id', 'command-2']);
+    assert.equal(await publishReply(await claimNext()), 1);
+    const notifications = await redis.send('XRANGE', [waiter, '-', '+']) as unknown as [string, string[]][];
+    assert.deepEqual(notifications.map(([, fields]) => fields), [['topic', reply]]);
+    const waiterTtl = Number(await redis.send('PTTL', [waiter]));
+    assert(waiterTtl > 0 && waiterTtl <= 600000, 'directed stream expires with its worker');
+    console.log('PASS GB28181 reply publication notifies only the routed Service Worker stream');
 } finally {
-    await redis.send('DEL', [...keys, stream]);
+    await redis.send('DEL', [...keys, stream, reply, result, route, waiter]);
     redis.close();
 }
