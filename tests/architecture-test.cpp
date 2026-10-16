@@ -486,7 +486,8 @@ std::string withoutEntityScriptDefinitions(const std::string& content) {
     // 实体可声明纯 Redis 映射文本；只排除完整 constexpr 原始字面量声明，
     // 客户端调用和其他包含命令的表达式仍保留在 I/O 边界检查中。
     static const std::regex scriptDefinition(
-        R"definition(\bstatic\s+constexpr\s+std::string_view\s+[A-Za-z_]\w*\s*=\s*R"lua\([\s\S]*?\)lua"\s*;)definition");
+        R"definition(\b(?:static|inline)\s+constexpr\s+std::string_view\s+[A-Za-z_]\w*\s*=\s*R"lua\([\s\S]*?\)lua"\s*;)definition"
+    );
     return std::regex_replace(content, scriptDefinition, " ");
 }
 

@@ -16,23 +16,25 @@ struct DeviceDebugIndex {
 };
 
 // 连接租约与永久遥测投影分别存储。跨键有效性读取需要 Redis Lua，
-// ORM 无法原子读取连接 TTL、链路归属和最后上报时间。
-struct DeviceConnectionState final {
-    static constexpr std::string_view readScript = R"lua(
-local report = redis.call('HGET', KEYS[1], 'last_report_at_ms') or ''
+// ORM 无法原子读取连接 TTL、链路归属、最后上报时间和遥测运行状态。
+// 返回 {connection_id, last_report_at_ms, state, state_reason}；连接无效时 connection_id 为空。
+inline constexpr std::string_view kDeviceConnectionStateScript = R"lua(
+local runtime = redis.call('HMGET', KEYS[1], 'last_report_at_ms', 'state', 'state_reason')
+local report = runtime[1] or ''
+local state = runtime[2] or ''
+local reason = runtime[3] or ''
 local route = redis.call('HMGET', KEYS[2],
   'connection_id', 'instance_id', 'worker_id', 'worker_instance_id', 'session_epoch', 'link_id')
-if redis.call('PTTL', KEYS[2]) <= 0 then return {'', report} end
+if redis.call('PTTL', KEYS[2]) <= 0 then return {'', report, state, reason} end
 for index = 1, 6 do
-  if not route[index] or route[index] == '' then return {'', report} end
+  if not route[index] or route[index] == '' then return {'', report, state, reason} end
 end
 if not string.match(route[3], '^%d+$') or not string.match(route[5], '^[1-9]%d*$') then
-  return {'', report}
+  return {'', report, state, reason}
 end
-if redis.call('GET', ARGV[1] .. route[6]) ~= route[2] then return {'', report} end
-return {route[1], report}
+if redis.call('GET', ARGV[1] .. route[6]) ~= route[2] then return {'', report, state, reason} end
+return {route[1], report, state, reason}
 )lua";
-};
 
 RUVIA_DB_ENTITY(DeviceEntity, "device", RUVIA_DB_COLUMN(debug_enabled, bool, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{ "false" } }), RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(name, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 100 }), RUVIA_DB_COLUMN(link_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(protocol_config_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(group_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{ "status_enum" }, .default_expression_ = ruvia::fixed_string{ "'enabled'::status_enum" } }), RUVIA_DB_COLUMN(protocol_params, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{ "'{}'::jsonb" } }), RUVIA_DB_COLUMN(remark, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .nullable_ = true }), RUVIA_DB_COLUMN(created_by, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(deleted_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(protocol_address, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text }))
 

@@ -459,6 +459,7 @@ class DeviceService {
                 .template set<"deviceCode">(row[1].value().value_or(std::string_view{}))
                 .template set<"connected">(false)
                 .template set<"connectionState">("disconnected")
+                .template set<"runtimeState">("offline")
                 .template set<"elements">(ruvia::boxed_array<DeviceElementDto>(
                     ruvia::model_options{ .resource_ = c.arena() }
                 ))
@@ -1594,6 +1595,7 @@ return result
         }
         item.template set<"connected">(false);
         item.template set<"connectionState">("disconnected");
+        item.template set<"runtimeState">("offline");
         item.template set<"elements">(ruvia::boxed_array<DeviceElementDto>(
             ruvia::model_options{ .resource_ = c.arena() }
         ));
@@ -1661,7 +1663,9 @@ return result
             }
             // 原子核验连接租约与链路归属；读取不会延长租约，也不读取历史连接身份。
             pipeline.command(
-                "EVAL", entities::DeviceConnectionState::readScript, "2",
+                "EVAL",
+                entities::kDeviceConnectionStateScript,
+                "2",
                 service::telemetry::latest::runtimeKey(id),
                 service::message::collector::connectionKey(id),
                 service::message::collector::kLinkOwnerPrefix
@@ -2143,6 +2147,13 @@ return result
         item.template set<"connectionState">(
             connected ? "connected" : "disconnected"
         );
+        // 在线状态由遥测运行投影按设备在线窗口计算并在到期时推送，客户端不再自行推导。
+        const auto state = redisArrayField(reply, 2);
+        item.template set<"runtimeState">(state == "online" ? "online" : "offline");
+        const auto reason = redisArrayField(reply, 3);
+        if (!reason.empty()) {
+            item.template set<"runtimeReason">(reason);
+        }
     }
 
     template <typename Context, typename Item>
