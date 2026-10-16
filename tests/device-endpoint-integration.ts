@@ -42,7 +42,11 @@ try {
     await request('POST','/v1/link',{...connection,execution:'edge'},15002);
     await request('PUT',`/v1/link/${firstLink}`,{...connection,execution:'edge'},15002);
     await request('DELETE',`/v1/link/${firstLink}`,undefined,15002);
-    await request('PUT',`/v1/link/${firstLink}/debug`,{enabled:true},15002);
+    // Packet debugging stays available on device-managed edge links of an approved node.
+    await request('PUT',`/v1/link/${firstLink}/debug`,{enabled:true});
+    assert.equal((await db`SELECT debug_enabled FROM link WHERE id=${firstLink}`)[0].debug_enabled,true);
+    await request('PUT',`/v1/link/${firstLink}/debug`,{enabled:false});
+    assert.equal((await db`SELECT debug_enabled FROM link WHERE id=${firstLink}`)[0].debug_enabled,false);
     // Repeated saving must reuse the endpoint rather than generating a new row.
     await request('PUT',`/v1/device/${deviceId}`,body);
     assert.equal((await db`SELECT link_id FROM device WHERE id=${deviceId}`)[0].link_id,firstLink);

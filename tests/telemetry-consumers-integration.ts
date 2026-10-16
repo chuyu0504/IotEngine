@@ -55,6 +55,10 @@ try {
         values: { [point]: { name: 'temperature', unit: 'C', value: 42 } },
     });
     const fields = [
+        'acquisition_id',
+        event,
+        'raw_packet_ids',
+        '[]',
         'message_id',
         event,
         'causation_id',
@@ -140,9 +144,11 @@ try {
     await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
         VALUES(${slDevice},${slDevice},${slLink},${slModel},'{"device_code":"0001000102"}'::jsonb,${admin})`;
     const raw = '7E7E010001000102FFFA320031020025260914142500F1F1000100010249F0F02609141425392300000587371B000125272B0000000001FFB028000000000303CF39';
-    async function publishSlReport(payload: string, sampleTime: string, receivedTime: string) {
+    // The collector derives one acquisition ID per SL651 report and reuses it for retransmissions.
+    async function publishSlReport(acquisition: string, payload: string, sampleTime: string, receivedTime: string) {
         const report = [...fields];
         const replace = (key: string, value: string) => { report[report.indexOf(key) + 1] = value; };
+        replace('acquisition_id', acquisition);
         replace('message_id', id());
         replace('causation_id', id());
         replace('connection_id', id());
@@ -155,17 +161,19 @@ try {
         replace('raw_payload_hex', JSON.stringify([payload]));
         await publishFixtureEvent(redis, stream, report, 'telemetry');
     }
-    await publishSlReport(raw, now, now);
+    const slReport = id();
+    await publishSlReport(slReport, raw, now, now);
     await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length === 1,
         'SL651 initial report did not persist');
     const stored = (await db`SELECT id FROM device_data WHERE device_id=${slDevice}`)[0].id;
-    await Promise.all([5000, 10000].map(offset => publishSlReport(raw, now, String(Number(now) + offset))));
+    assert.equal(stored, slReport, 'history identity must be the collector acquisition ID');
+    await Promise.all([5000, 10000].map(offset => publishSlReport(slReport, raw, now, String(Number(now) + offset))));
     // Simulate receipt expiration: durable uniqueness must also survive Redis receipt loss.
     await Bun.sleep(500);
     await redis.send('DEL', [`iot:telemetry:fanout:${stored}`]);
-    await publishSlReport(raw, now, String(Number(now) + 15000));
+    await publishSlReport(slReport, raw, now, String(Number(now) + 15000));
     // A later sample acts as a processing barrier and must remain a separate record.
-    await publishSlReport(raw, String(Number(now) + 60000), String(Number(now) + 60000));
+    await publishSlReport(id(), raw, String(Number(now) + 60000), String(Number(now) + 60000));
     await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length >= 2,
         'SL651 next sample was incorrectly deduplicated');
     await Bun.sleep(500);

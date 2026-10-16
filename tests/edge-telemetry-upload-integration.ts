@@ -64,15 +64,19 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('
 const now = Math.floor(Date.now()/1000);
 const unsigned = `${encode({alg:'HS256',typ:'JWT'})}.${encode({iss:'iot-engine',aud:'iot-engine-web',sub:admin,user_id:admin,username:'debug-test',token_type:'access',iat:now,exp:now+3600})}`;
 const token = `${unsigned}.${createHmac('sha256','architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
-async function debugSwitch(scope: string, id: string, enabled: boolean) {
+// Device switches always queue a configuration; link switches only when the value changes.
+async function debugSwitch(scope: string, id: string, enabled: boolean, queues = true) {
     const [before] = await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`;
     const response = await fetch(`${apiBase}/v1/${scope}/${id}/debug`, { method:'PUT', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'}, body:JSON.stringify({enabled}) });
     const body = await response.text();
     assert.equal(response.status,200,body);
     assert.equal(JSON.parse(body).code,0,body);
     const [after] = await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`;
-    assert(BigInt(after.revision ?? 0) > BigInt(before.revision ?? 0),
-        `${scope} debug switch must queue a new edge configuration, including when disabled`);
+    if (queues)
+        assert(BigInt(after.revision ?? 0) > BigInt(before.revision ?? 0),
+            `${scope} debug switch must queue a new edge configuration, including when disabled`);
+    else
+        assert.equal(after.revision, before.revision, `unchanged ${scope} debug switch queued another edge configuration`);
 }
 async function queryDetails(path: string) {
     const response = await fetch(apiBase+path, {
@@ -113,6 +117,7 @@ for (let index = 0; index < 14; ++index) {
     checksum += digit;
 }
 const imei = baseImei + String((10 - checksum % 10) % 10);
+const nodeName = `调试边缘节点-${imei}`;
 let socket: WebSocket | undefined;
 const devices: string[] = [];
 const uploadKey = `test:telemetry-upload:${uuid()}`;
@@ -130,7 +135,7 @@ try {
     console.log('PASS Redis out-of-order parts, duplicate retry, conflict rejection and durable partial state');
 
     await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${imei},'approved')`;
-    await db`UPDATE edge_node SET name=${'调试边缘节点'} WHERE id=${node}`;
+    await db`UPDATE edge_node SET name=${nodeName} WHERE id=${node}`;
     await redis.send('SET', [`iot:edge:auth:${imei}`, `${node}|approved`]);
     let epoch = 0n, sequence = 1n;
     const envelope = (tag: number, payload: Buffer) => Buffer.concat([
@@ -187,13 +192,16 @@ try {
             VALUES(${link},${link},${protocol},${endpoint}::jsonb,${admin},'edge',${node},'disabled')`;
         await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
             VALUES(${device},${device},${link},${model},'{"device_code":"1"}'::jsonb,${admin})`;
+        let linkDebug = false;
         for (const [linkOn, deviceOn] of [[false,false],[true,false],[true,true],[false,true],[false,false]]) {
-            await debugSwitch('link',link,linkOn);
+            await debugSwitch('link',link,linkOn,linkOn !== linkDebug);
+            linkDebug = linkOn;
             await debugSwitch('device',device,deviceOn);
             const view = await queryDetails(`/v1/device/${device}`);
             assert.equal(view.debug_enabled,deviceOn);
             assert.equal(view.link_debug_enabled,linkOn);
-            const links = await liveSnapshot<{ list: { id: string; debug_enabled: boolean }[] }>(`/v1/link/events?keyword=${link}`, 'links');
+            // Edge links are listed by their derived "<node name> · <protocol>" name.
+            const links = await liveSnapshot<{ list: { id: string; debug_enabled: boolean }[] }>(`/v1/link/events?keyword=${encodeURIComponent(nodeName)}&protocol=${protocol}`, 'links');
             const linkView = links.list.find(item => item.id === link);
             assert(linkView);
             assert.equal(linkView.debug_enabled,linkOn);
@@ -280,9 +288,9 @@ try {
         assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
         for (const packet of round.packets) {
             assert.equal(packet.edge_node_id,node);
-            assert.equal(packet.edge_node_name,'调试边缘节点');
+            assert.equal(packet.edge_node_name,nodeName);
         }
-        const linkRounds = await liveSnapshot<DebugRound[]>(`/v1/link/events?keyword=${link}&debugLinkId=${link}`, 'packets');
+        const linkRounds = await liveSnapshot<DebugRound[]>(`/v1/link/events?keyword=${encodeURIComponent(nodeName)}&protocol=${protocol}&debugLinkId=${link}`, 'packets');
         const linkRound = linkRounds.find(entry => entry.id === report);
         assert.equal(linkRound,undefined,'device-only debugging must not add a link acquisition');
         assert.equal(round.history_id,undefined);
