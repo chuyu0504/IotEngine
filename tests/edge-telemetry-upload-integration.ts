@@ -117,8 +117,8 @@ let socket: WebSocket | undefined;
 const devices: string[] = [];
 const uploadKey = `test:telemetry-upload:${uuid()}`;
 try {
-    const source = await Bun.file('service/features/edge/edge.service.h').text();
-    const script = source.slice(source.indexOf('kStoreTelemetryPart =')).match(/R"lua\(([\s\S]*?)\)lua"/)![1];
+    const source = await Bun.file('service/features/edge/projection/projection.entity.h').text();
+    const script = source.slice(source.indexOf('kStoreTelemetryPartScript =')).match(/R"lua\(([\s\S]*?)\)lua"/)![1];
     const store = (index: number, content: string, signature = 'metadata') =>
         redis.send('EVAL', [script, '1', uploadKey, signature, String(index), '2', content]);
     assert.equal(await store(1, 'second'), 0);

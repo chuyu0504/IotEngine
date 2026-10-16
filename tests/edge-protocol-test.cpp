@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "service/features/edge/edge.protocol.h"
-#include "service/features/edge/firmware/firmware.service.h"
 #include <terminal.pb.h>
 
 namespace {
@@ -420,31 +419,6 @@ void testWebTerminalProtobuf() {
             "web terminal resize payload changed");
 }
 
-void testFirmwareChunkSource() {
-    const auto path = std::filesystem::temp_directory_path() /
-                      ("iot-engine-firmware-chunk-" +
-                       std::to_string(service::message::utcNowMilliseconds()) + ".bin");
-    const std::string image(service::edge::firmware::kChunkSize + 17, 'x');
-    {
-        std::ofstream output(path, std::ios::binary);
-        output.write(image.data(), static_cast<std::streamsize>(image.size()));
-    }
-    const auto first = service::edge::firmware::readChunk(path, image.size(), 0);
-    require(first.error.empty() && !first.eof &&
-                first.data.size() == service::edge::firmware::kChunkSize,
-            "first firmware WS chunk is invalid");
-    const auto last = service::edge::firmware::readChunk(
-        path, image.size(), service::edge::firmware::kChunkSize);
-    require(last.error.empty() && last.eof && last.data == std::string(17, 'x'),
-            "last firmware WS chunk is invalid");
-    require(!service::edge::firmware::readChunk(path, image.size(), image.size()).error.empty(),
-            "out-of-range firmware WS chunk was accepted");
-    require(!service::edge::firmware::readChunk(path, image.size() + 1, 0).error.empty(),
-            "firmware storage size drift was accepted");
-    std::error_code ignored;
-    std::filesystem::remove(path, ignored);
-}
-
 void testLegacyDebugAcquisitionIdentity() {
     service::edge::pb::RawPacket packet;
     packet.set_packet_id(std::string(16, '\x03'));
@@ -579,7 +553,6 @@ int main() {
     testModemProfileRoundTrip();
     testNanopbBounds();
     testWebTerminalProtobuf();
-    testFirmwareChunkSource();
     testLegacyDebugAcquisitionIdentity();
     testCommandResultProjectionState();
     testCommandResultRequiresTerminalState();

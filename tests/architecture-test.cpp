@@ -740,7 +740,7 @@ void testSymmetricServiceWorkers() {
     const auto freshness = source("service/features/telemetry/telemetry.runtime.h");
     const auto reconciler = source("service/features/configuration/configuration.runtime.h");
     const auto webhook = source("service/features/access/access.runtime.h");
-    const auto edge = source("service/features/edge/edge.runtime.h");
+    const auto edge = source("service/features/edge/projection/projection.runtime.h");
     for (const auto* component : {&freshness, &reconciler, &webhook, &edge}) {
         require(component->find("workers_.front().post") == std::string::npos &&
                     component->find("workers_.back().post") == std::string::npos,
@@ -758,7 +758,7 @@ void testSymmetricServiceWorkers() {
                 std::string::npos &&
                 webhook.find("session::ensure(context)") != std::string::npos,
             "access-session projection does not claim shared work with idempotent startup");
-    require(edge.find("projector_stream::stream(index, service::runtime::instanceId())") != std::string::npos,
+    require(edge.find("projector_stream::stream(workerIndex, instance)") != std::string::npos,
              "edge projection is not isolated by accepting Worker");
 
     for (const auto path : {
@@ -809,7 +809,7 @@ void testWorkerStreamMultiplexing() {
              "service/features/command/command.runtime.h",
              "service/features/access/access.runtime.h",
              "service/features/configuration/configuration.runtime.h",
-             "service/features/edge/edge.runtime.h",
+             "service/features/edge/projection/projection.runtime.h",
         }) {
         const auto consumer = source(path);
         require(consumer.find("workerStreamMultiplexer().wait") !=

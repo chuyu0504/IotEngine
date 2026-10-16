@@ -9,12 +9,12 @@
 #include "tests/redis_reply.fixture.h"
 
 #include "service/features/observability/observability.service.h"
-#include "service/features/edge/edge.runtime.h"
+#include "service/features/edge/projection/projection.runtime.h"
 #include "service/middleware/live.h"
 
 namespace {
-static_assert(!std::is_default_constructible_v<service::edge::EdgeProjectionRuntime>);
-static_assert(std::is_constructible_v<service::edge::EdgeProjectionRuntime,
+static_assert(!std::is_default_constructible_v<service::edge::projection::ProjectionRuntime>);
+static_assert(std::is_constructible_v<service::edge::projection::ProjectionRuntime,
               service::observability::RuntimeDiagnostics&>);
 
 struct RecordingRedis {
@@ -48,7 +48,7 @@ ruvia::task<Observation> observe(ruvia::event_loop loop, ruvia::worker_handle fo
     bus.setWorkerIndex(index);
     service::observability::RuntimeDiagnostics diagnostics;
     diagnostics.identifyWorker(index);
-    service::edge::EdgeProjectionRuntime projector(diagnostics);
+    service::edge::projection::ProjectionRuntime projector(diagnostics);
     bool rejected = false;
     try {
         (void)bus.subscribe(foreign, "device");

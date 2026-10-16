@@ -62,6 +62,11 @@ inline std::optional<Ipv4Cidr> mappedVirtualCidr(const Ipv4Cidr& real) noexcept 
 
 } // namespace service::message::vpn
 
+namespace service::message::device {
+// Device timezone used when protocol parameters omit `timezone`.
+inline constexpr std::string_view kDefaultTimezone{"+08:00"};
+} // namespace service::message::device
+
 namespace service::message {
 
 namespace edge {
@@ -779,6 +784,17 @@ struct Contract final {
         return "ERR\n" + std::to_string(status) + "\n" + std::string(code) + "\n" +
                std::string(message);
     }
+    // XADD argument vector of one request entry on `requests(instance, worker)`.
+    static std::vector<std::string> requestArguments(std::string_view stream, std::string_view id,
+                                                     std::string_view component,
+                                                     std::string_view operation,
+                                                     std::string payload,
+                                                     std::int64_t deadline) {
+        return {"XADD", std::string(stream), "*", "version", std::string(version),
+                "id", std::string(id), "component", std::string(component),
+                "operation", std::string(operation), "payload", std::move(payload),
+                "deadline", std::to_string(deadline)};
+    }
 };
 
 // Serializes an RPC request or reply model. Every JSON RPC payload is a model below.
@@ -1201,6 +1217,22 @@ inline std::string ownerToken(std::size_t workerIndex, std::string_view instance
 
 } // namespace service::message::edge::projector_stream
 
+namespace service::message::edge::firmware {
+
+// Firmware storage cleanup is scheduled per Service Worker from its earliest
+// deadline (edge_firmware/edge_task plus its own firmware directory). This RPC
+// asks the receiving Worker to recompute that deadline after a change that can
+// make it earlier. It is appended to the caller's own Worker request stream
+// (service::message::rpc::Contract::requests), the payload is empty and the
+// reply body is empty.
+inline constexpr std::string_view kRpcComponent{ "edge-firmware" };
+// Senders: modules/edge_node after a firmware upload or EdgeNode deletion
+// finishes (service::rpc::call), and the Edge projector after a firmware
+// edge_task transitions to succeeded/failed (appended without waiting).
+inline constexpr std::string_view kScheduleCleanupOperation{ "schedule-cleanup" };
+
+} // namespace service::message::edge::firmware
+
 
 namespace service::message::command {
 
@@ -1478,5 +1510,50 @@ RUVIA_MODEL(RuntimeStatus,
     RUVIA_REQUIRED_FIELD(code, ruvia::string),
     RUVIA_REQUIRED_FIELD(message, ruvia::string),
     RUVIA_REQUIRED_FIELD(runtimePeerCount, ruvia::int64));
+
+inline constexpr std::string_view kRpcComponent{"vpn"};
+
+// VPN module -> VPN feature operations.
+// queue-edge-config: payload rpc::encodeLinePair(peerId, actorId).
+inline constexpr std::string_view kQueueEdgeConfigOperation{"queue-edge-config"};
+// reconcile: empty payload; replies RuntimeStatus.
+inline constexpr std::string_view kReconcileOperation{"reconcile"};
+// wireguard-remove-peer: payload is the WireGuard public key text.
+inline constexpr std::string_view kRemovePeerOperation{"wireguard-remove-peer"};
+// sync-edge-routes: payload EdgeRouteSync. The feature takes
+// lock::kVpnAddressAllocation in its own transaction, so the caller must not
+// hold that lock (or any transaction) while it waits for the reply.
+inline constexpr std::string_view kSyncEdgeRoutesOperation{"sync-edge-routes"};
+
+// Reconcile vpn_route with the Edge bridge inventory of one edge peer.
+// actorId becomes vpn_route.created_by of newly mapped routes.
+RUVIA_MODEL(EdgeRouteSync,
+    RUVIA_REQUIRED_FIELD(peerId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(networkId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(edgeNodeId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(actorId, ruvia::string));
+
+// Edge projection -> VPN feature notifications. The Edge projector appends them
+// to its own Worker's RPC request stream and does not wait for the reply; the
+// VPN handler logs failures itself because nobody reads the stored reply.
+inline constexpr std::string_view kEdgeCapabilityOperation{"edge-capability"};
+inline constexpr std::string_view kEdgeConfigResultOperation{"edge-config-result"};
+
+// An approved EdgeNode reported VPN support with a managed WireGuard public key
+// (common/wireguard.h validManagedKey). The VPN feature activates the edge peer,
+// synchronizes bridge routes, queues the VPN config and reconciles the Hub.
+RUVIA_MODEL(EdgeCapability,
+    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(publicKey, ruvia::string));
+
+// A VPN config task reached a terminal state on the Edge side. edge_task has
+// already been transitioned by the Edge projector; the VPN feature projects the
+// result onto vpn_route when configVersion still equals vpn_peer.config_revision.
+RUVIA_MODEL(EdgeConfigResult,
+    RUVIA_REQUIRED_FIELD(peerId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(configVersion, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value),
+    RUVIA_REQUIRED_FIELD(applied, ruvia::bool_value),
+    RUVIA_REQUIRED_FIELD(errorMessage, ruvia::string));
 
 } // namespace service::message::vpn

@@ -149,7 +149,20 @@ try {
     const unrelated = path.join(directory, 'retain.bin'), uploading = path.join(directory, `${crypto.randomUUID()}.upload`);
     for (const file of [orphan, fresh, unrelated, uploading]) await writeFile(file, 'fixture');
     for (const file of [orphan, unrelated, uploading, recentRecord.storage_path, activeRecord.storage_path]) await utimes(file, old, old);
-    await until(async () => !(await exists(stored[0].storage_path)) && !(await exists(orphan)), 'Expired firmware cleanup did not run', 85000);
+    // 截止时间按事件重算，不周期扫描。直接改库/改 mtime 不产生事件，这里按
+    // edge-firmware/schedule-cleanup RPC 契约通知每个 Worker（等同上传或任务终态事件）。
+    const streams: string[] = [];
+    let cursor = '0';
+    do {
+        const [next, keys] = await redis.send('SCAN', [cursor, 'MATCH', 'iot:rpc:requests:*', 'TYPE', 'stream', 'COUNT', '100']) as [string, string[]];
+        cursor = next; streams.push(...keys);
+    } while (cursor !== '0');
+    assert(streams.length > 0, 'No Worker RPC request stream');
+    const requests = streams.map(() => crypto.randomUUID());
+    await Promise.all(streams.map((stream, index) => redis.send('XADD', [stream, '*', 'version', '1', 'id', requests[index], 'component', 'edge-firmware',
+        'operation', 'schedule-cleanup', 'payload', '', 'deadline', String(Date.now() + 120000)])));
+    await until(async () => (await Promise.all(requests.map(id => redis.send('GET', [`iot:rpc:reply:${id}`])))).some(reply => reply === 'OK\n'), 'Firmware cleanup schedule RPC not acknowledged');
+    await until(async () => !(await exists(stored[0].storage_path)) && !(await exists(orphan)), 'Expired firmware cleanup did not run');
     assert.equal((await db`SELECT 1 FROM edge_firmware WHERE id=${stored[0].id}`).length, 0);
     assert((await db`SELECT 1 FROM edge_task WHERE node_id=${node}`).length > 0, 'Task history was deleted');
     for (const file of [recentRecord.storage_path, activeRecord.storage_path, fresh, unrelated, uploading]) assert(await exists(file), `Protected file removed: ${file}`);

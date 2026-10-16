@@ -34,7 +34,8 @@ class RpcRequestClient final {
             service::message::rpc::Contract::requests(service::runtime::instanceId(), service::live::bus().workerIndex());
         std::exception_ptr failure;
         try {
-            const std::vector<std::string> resultArguments{ "XADD", requestStream, "*", "version", std::string(service::message::rpc::Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
+            const auto resultArguments = service::message::rpc::Contract::requestArguments(
+                requestStream, id, component, operation, std::move(payload), deadline);
             const auto result = co_await service::message::redis::command(context.redis(), resultArguments);
             if (result.kind() != ruvia::redis_value::kind_type::string) {
                 service::message::redis::throwValue("RPC enqueue", result);
