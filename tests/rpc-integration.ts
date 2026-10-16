@@ -125,6 +125,9 @@ async function postCommand(
                         },
                     },
                     (response) => {
+                        // Bun releases IncomingMessage.socket back to the agent before
+                        // 'end'; read the connection identity while the response owns it.
+                        const responseSocket = socketNumber(response.socket);
                         let text = '';
                         response.setEncoding('utf8');
                         response.on('data', (chunk) => {
@@ -141,7 +144,7 @@ async function postCommand(
                             resolve({
                                 status: response.statusCode ?? 0,
                                 body: parsed,
-                                socketNumber: socketNumber(response.socket),
+                                socketNumber: responseSocket,
                             });
                         });
                     }

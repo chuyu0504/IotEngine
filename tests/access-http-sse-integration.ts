@@ -156,11 +156,13 @@ try {
         assert.equal((await fetch(apiBase+path)).status,401,path);
     console.log('PASS access HTTP/SSE: key/webhook CRUD, rotation, typed partial updates, null clearing, header SQL oracle, persisted usage/log queries, permissions, public HTTP/SSE compatibility');
 } finally {
-    if (webhook) await db`DELETE FROM open_webhook WHERE id=${webhook}`;
-    if (key) { await db`DELETE FROM open_access_log WHERE access_key_id=${key}`; await db`DELETE FROM open_access_key_device WHERE access_key_id=${key}`; await db`DELETE FROM open_access_key WHERE id=${key}`; }
-    if (device) await db`DELETE FROM device WHERE id=${device}`;
-    if (link) await db`DELETE FROM link WHERE id=${link}`;
-    if (model) await db`DELETE FROM protocol_config WHERE id=${model}`;
+    // Soft-delete like the API: late access audits and delivery results still
+    // reference these rows, and a missing row would fail their persistence.
+    if (webhook) await db`UPDATE open_webhook SET deleted_at=NOW() WHERE id=${webhook}`;
+    if (key) { await db`DELETE FROM open_access_log WHERE access_key_id=${key}`; await db`DELETE FROM open_access_key_device WHERE access_key_id=${key}`; await db`UPDATE open_access_key SET deleted_at=NOW() WHERE id=${key}`; }
+    if (device) await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
+    if (link) await db`UPDATE link SET status='disabled',deleted_at=NOW() WHERE id=${link}`;
+    if (model) await db`UPDATE protocol_config SET deleted_at=NOW() WHERE id=${model}`;
     await db`DELETE FROM sys_user_role WHERE user_id=${user}`;
     await db`DELETE FROM sys_role WHERE id=${role}`;
     await db`DELETE FROM sys_user WHERE id=${user}`;

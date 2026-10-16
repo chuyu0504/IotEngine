@@ -161,7 +161,8 @@ async function verify(protocol: 'MC' | 'FINS' | 'DLT645', version: string) {
         }
         console.log(`PASS ${protocol} ${version}: API configuration, snapshot, TCP polling, persistence, write and readback`);
     } finally {
-        await db`DELETE FROM open_access_key WHERE id=${keyId}`;
+        // Soft-delete like the API: late access audits still reference the key.
+        await db`UPDATE open_access_key SET deleted_at=NOW() WHERE id=${keyId}`;
         await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
         await db`UPDATE link SET status='disabled',deleted_at=NOW() WHERE id=${link}`;
         server.stop(true);

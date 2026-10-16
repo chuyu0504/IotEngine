@@ -9,6 +9,7 @@ const platform = '00000000-0000-7000-8000-000000000001';
 const admin = '00000000-0000-7000-8000-000000000002';
 const network = '00000000-0000-7000-8000-000000000004';
 const edgeA = randomUUID(), edgeB = randomUUID(), routeA = randomUUID();
+const imeiA = '900000000000001', imeiB = '900000000000002';
 const roleVpn = randomUUID(), roleEdge = randomUUID(), user = randomUUID(), other = randomUUID();
 const suffix = randomBytes(4).toString('hex');
 const username = `vpn-${suffix}`, othername = `other-${suffix}`;
@@ -89,7 +90,7 @@ async function connectEdge() {
     const envelope=(tag:number,payload:Buffer)=>Buffer.concat([wireField(1,6),wireField(2,id(randomUUID())),wireField(3,id(edgeA)),wireField(4,id(platform)),wireField(5,epoch),wireField(6,Date.now()),wireField(8,sequence++),wireField(tag,payload)]);
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(new Error('Edge Hello timed out')),10000);
-        socket.onopen=()=>socket.send(envelope(20,Buffer.concat([wireField(1,'900000000000001'),wireField(2,'fixture'),wireField(35,1),wireField(37,1)])));
+        socket.onopen=()=>socket.send(envelope(20,Buffer.concat([wireField(1,imeiA),wireField(2,'fixture'),wireField(35,1),wireField(37,1)])));
         socket.onerror=()=>{clearTimeout(timer);reject(new Error('Edge connection failed'));};
         socket.onmessage=event=>{
             const incoming=wireFields(Buffer.from(event.data as ArrayBuffer));
@@ -113,9 +114,11 @@ try {
     for (const account of [user,other]) for (const role of [roleVpn,roleEdge])
         await db`INSERT INTO sys_user_role(id,user_id,role_id) VALUES (${randomUUID()},${account},${role})`;
     await db`UPDATE vpn_network SET hub_public_key=${publicKey()},hub_endpoint='127.0.0.1',hub_listen_port=51820,status='enabled' WHERE id=${network}`;
-    for (const [edge,name,address] of [[edgeA,'Edge A','100.96.0.20'],[edgeB,'Edge B','100.96.0.21']]) {
+    for (const [edge,name,address,imei] of [[edgeA,'Edge A','100.96.0.20',imeiA],[edgeB,'Edge B','100.96.0.21',imeiB]]) {
         await db`INSERT INTO edge_node(id,platform_id,imei,name,model,enrollment_status,approved_by,approved_at,capability) VALUES
-            (${edge},${platform},${edge === edgeA ? '900000000000001' : '900000000000002'},${name},'test','approved',${admin},NOW(),'{"vpn":{"supportsVpn":true}}'::jsonb)`;
+            (${edge},${platform},${imei},${name},'test','approved',${admin},NOW(),'{"vpn":{"supportsVpn":true}}'::jsonb)`;
+        // The gateway authorizes Hello from the Redis enrollment cache, which is hydrated only at startup.
+        await presence.send('SET',[`iot:edge:auth:${imei}`,`${edge}|approved`]);
         await db`INSERT INTO vpn_peer(id,network_id,peer_type,edge_node_id,name,public_key,assigned_ipv4,status) VALUES
             (${edge},${network},'edge',${edge},${name},${publicKey()},${address}::inet,'active')`;
     }
@@ -294,7 +297,7 @@ try {
     for (const path of ['/v1/vpn/networks','/v1/vpn/desktop/devices','/v1/vpn/desktop/peers/'+peer+'/config'])
         assert.equal((await fetch(api+path)).status,401,path);
 } finally {
-    await presence.del(`iot:edge:session:${edgeA}`); presence.close();
+    await presence.del(`iot:edge:session:${edgeA}`); await presence.send('DEL',[`iot:edge:auth:${imeiA}`,`iot:edge:auth:${imeiB}`]); presence.close();
     for (const release of releases) release();
 
     if (seeded) {
