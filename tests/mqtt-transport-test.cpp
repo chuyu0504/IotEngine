@@ -73,7 +73,7 @@ void testBrokerReconnect() {
         connections.insert(info.connectionId);
         apply(engine.connected(std::move(info)));
     },
-                     [&](service::message::IngressPacket input) {
+                     [&](IngressPacket input) {
                          input.messageId = uuid.next();
                          apply(engine.consume(input));
                      },

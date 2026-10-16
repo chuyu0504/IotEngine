@@ -1,13 +1,10 @@
 #pragma once
 
-#include "service/features/collector/scheduling/scheduling.protocol.h"
-#include "service/features/collector/register_value/register_value.protocol.h"
-
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +20,9 @@
 #include <vector>
 
 #include "service/features/collector/collector.protocol.h"
+#include "service/features/collector/register_value/register_value.protocol.h"
+#include "service/features/collector/scheduling/scheduling.protocol.h"
+#include "service/utils/json.h"
 
 namespace service::collector::s7 {
 
@@ -60,67 +60,6 @@ inline std::uint16_t remoteTsap(const DeviceDefinition& device) {
 inline std::uint16_t localTsap(const DeviceDefinition& device) {
     return device.s7ConnectionMode == "TSAP" ? parseHex16(device.s7LocalTsap).value_or(0x0100)
                                              : 0x0100;
-}
-
-inline std::string jsonEscape(std::string_view value) {
-    static constexpr std::array<char, 16> digits{'0', '1', '2', '3', '4', '5', '6', '7',
-                                                 '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
-    std::string result;
-    result.reserve(value.size() + 8);
-    const auto continuation = [&value](std::size_t index) {
-        return index < value.size() && (static_cast<unsigned char>(value[index]) & 0xC0U) == 0x80U;
-    };
-    for (std::size_t index = 0; index < value.size();) {
-        const auto byte = static_cast<unsigned char>(value[index]);
-        if (byte == '\\' || byte == '"') {
-            result.push_back('\\');
-            result.push_back(static_cast<char>(byte));
-            ++index;
-            continue;
-        }
-        if (byte >= 0x20 && byte < 0x80) {
-            result.push_back(static_cast<char>(byte));
-            ++index;
-            continue;
-        }
-        std::size_t length = 0;
-        if (byte >= 0xC2 && byte <= 0xDF && continuation(index + 1))
-            length = 2;
-        else if (byte == 0xE0 && index + 2 < value.size() &&
-                 static_cast<unsigned char>(value[index + 1]) >= 0xA0 &&
-                 static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2))
-            length = 3;
-        else if (((byte >= 0xE1 && byte <= 0xEC) || (byte >= 0xEE && byte <= 0xEF)) &&
-                 continuation(index + 1) && continuation(index + 2))
-            length = 3;
-        else if (byte == 0xED && index + 2 < value.size() &&
-                 static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
-                 static_cast<unsigned char>(value[index + 1]) <= 0x9F && continuation(index + 2))
-            length = 3;
-        else if (byte == 0xF0 && index + 3 < value.size() &&
-                 static_cast<unsigned char>(value[index + 1]) >= 0x90 &&
-                 static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2) &&
-                 continuation(index + 3))
-            length = 4;
-        else if (byte >= 0xF1 && byte <= 0xF3 && continuation(index + 1) &&
-                 continuation(index + 2) && continuation(index + 3))
-            length = 4;
-        else if (byte == 0xF4 && index + 3 < value.size() &&
-                 static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
-                 static_cast<unsigned char>(value[index + 1]) <= 0x8F && continuation(index + 2) &&
-                 continuation(index + 3))
-            length = 4;
-        if (length != 0) {
-            result.append(value.substr(index, length));
-            index += length;
-            continue;
-        }
-        result += "\\u00";
-        result.push_back(digits[byte >> 4U]);
-        result.push_back(digits[byte & 0x0FU]);
-        ++index;
-    }
-    return result;
 }
 
 inline std::uint32_t be32(std::span<const std::uint8_t> bytes) {
@@ -179,7 +118,7 @@ inline std::optional<std::string> decodeJson(std::span<const std::uint8_t> bytes
         std::string value(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         if (const auto zero = value.find('\0'); zero != std::string::npos)
             value.resize(zero);
-        return "\"" + jsonEscape(value) + "\"";
+        return service::utils::jsonQuoted(value);
     }
     return std::nullopt;
 }
@@ -1655,9 +1594,9 @@ class Session final : public ProtocolSession,
                 if (!first)
                     json << ',';
                 first = false;
-                json << '\"' << detail::jsonEscape(element.id) << "\":{\"name\":\""
-                     << detail::jsonEscape(element.name) << "\",\"value\":" << *value
-                     << ",\"unit\":\"" << detail::jsonEscape(element.unit) << "\"}";
+                json << '\"' << service::utils::jsonEscape(element.id) << "\":{\"name\":\""
+                     << service::utils::jsonEscape(element.name) << "\",\"value\":" << *value
+                     << ",\"unit\":\"" << service::utils::jsonEscape(element.unit) << "\"}";
             }
         }
         json << "}}";

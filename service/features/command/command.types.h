@@ -1,52 +1,30 @@
 #pragma once
 
-#include <algorithm>
-#include <array>
-#include <string_view>
+#include <cstddef>
+#include <cstdint>
 #include <string>
+#include <vector>
+
+#include "service/common/message.h"
 
 namespace service::command {
 
-inline constexpr std::array<std::string_view, 2> kCommandResultAcceptingStatuses{
-    "DISPATCHING", "AWAITING_RESULT"};
+// 设备当前 Collector 连接的路由身份，来自 Redis 动态连接键。
+struct DeviceRoute {
+    std::size_t workerIndex = 0;
+    std::string instanceId;
+    std::string connectionId;
+    std::uint64_t sessionEpoch = 0;
+};
 
-inline std::string_view expiredDispatchState(bool claimPersisted) {
-    return claimPersisted ? "UNKNOWN" : "REJECTED";
-}
+enum class PendingQueueKind { Stream,
+                              List };
 
-inline bool terminalState(std::string_view state) {
-    return state == "SUCCEEDED" || state == "REJECTED" || state == "UNKNOWN" ||
-           state == "READBACK_MISMATCH" || state == "FAILED";
-}
-
-inline bool retryableFailure(std::string_view reason) {
-    static constexpr std::array<std::string_view, 12> permanentMarkers{
-        "invalid", "required", "not_supported", "mismatch", "conflict", "queue_full",
-        "busy", "negative_ack", "protocol_route_mismatch", "stale_session_epoch",
-        "readback", "write_ack_missing"};
-    const auto contains = [reason](std::string_view marker) {
-        return reason.find(marker) != std::string_view::npos;
-    };
-    if (std::any_of(permanentMarkers.begin(), permanentMarkers.end(), contains))
-        return false;
-    return contains("timeout") || contains("temporarily_unavailable") || contains("redis");
-}
-
-// A timeout or failed readback is not evidence that a physical write did not happen.
-inline std::string_view collectorResultState(bool success, std::string_view reason) {
-    if (!success && reason.starts_with("device_negative_ack:")) return "FAILED";
-    if (reason.find("write_ack_missing") != std::string_view::npos)
-        return "UNKNOWN";
-    if (reason.find("readback_mismatch") != std::string_view::npos)
-        return "READBACK_MISMATCH";
-    if (reason.find("readback") != std::string_view::npos)
-        return "UNKNOWN";
-    if (success) return "SUCCEEDED";
-    if (reason == "command_invalid" || reason.starts_with("command_invalid:") ||
-        reason == "stale_session_epoch" || reason == "dispatch_deadline_expired" ||
-        reason == "connection_route_missing" || reason.ends_with("_device_offline"))
-        return "REJECTED";
-    return "UNKNOWN";
-}
+// 已持久化、待写入物理下发队列的一条命令：Stream 使用字段，List 使用编码后的负载。
+struct PendingDispatch {
+    message::ProtocolTask task;
+    std::vector<message::StreamField> streamFields;
+    std::string listPayload;
+};
 
 } // namespace service::command

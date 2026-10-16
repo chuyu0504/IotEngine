@@ -914,8 +914,19 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                             auto parsed = service::message::parsedFrom(*it);
                             const auto calculation = rawCalculations.find(parsed.messageId);
                             if (calculation == rawCalculations.end()) { ++it; continue; }
+                            const auto prepared = service::telemetry::derived::DerivedService::prepare(parsed.deviceId, calculation->second);
+                            if (!prepared) {
+                                scheduleDerivedExpiry(context, parsed, calculation->second, std::nullopt);
+                                ++it;
+                                continue;
+                            }
                             const auto result = co_await service::telemetry::derived::DerivedService::append(
-                                redis, calculation->second, parsed, false, true);
+                                redis,
+                                *prepared,
+                                parsed,
+                                false,
+                                true
+                            );
                             scheduleDerivedExpiry(context, parsed, calculation->second, result.nextDeadline);
                             if (result.published) it = telemetry.erase(it);
                             else ++it;
@@ -1032,8 +1043,12 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         parsed.observedAtMs = parsed.occurredAtMs = service::message::utcNowMilliseconds();
         parsed.valuesJson = "{\"values\":{}}";
         try {
-            const auto result = co_await service::telemetry::derived::DerivedService::append(context.redis(), config, parsed, true);
-            scheduleDerivedExpiry(context, std::move(parsed), std::move(config), result.nextDeadline);
+            const auto prepared = service::telemetry::derived::DerivedService::prepare(parsed.deviceId, config);
+            std::optional<std::int64_t> next;
+            if (prepared) {
+                next = (co_await service::telemetry::derived::DerivedService::append(context.redis(), *prepared, parsed, true)).nextDeadline;
+            }
+            scheduleDerivedExpiry(context, std::move(parsed), std::move(config), next);
         } catch (const std::exception& error) {
             std::cerr << "edge derived expiry failed: " << error.what() << '\n';
             scheduleDerivedExpiry(context, std::move(parsed), std::move(config), service::message::utcNowMilliseconds() + 1000);

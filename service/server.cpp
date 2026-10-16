@@ -306,7 +306,7 @@ struct ServiceWorkerComponents {
     std::shared_ptr<service::edge::EdgeProjectionRuntime> edgeProjection;
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
     std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
-    std::shared_ptr<service::alert::AlertBootstrap> alertBootstrap;
+    std::shared_ptr<service::alert::AlertRuntime> alerts;
     std::shared_ptr<service::message::outbox::OutboxRuntime> outboxRuntime;
 };
 
@@ -391,7 +391,7 @@ ApplicationComponents createComponents(
         workerComponents.gbProjection = gb28181.enabled
             ? std::make_shared<service::gb28181::GbProjectionRuntime>()
             : nullptr;
-        workerComponents.alertBootstrap = std::make_shared<service::alert::AlertBootstrap>();
+        workerComponents.alerts = std::make_shared<service::alert::AlertRuntime>();
         workerComponents.outboxRuntime = std::make_shared<service::message::outbox::OutboxRuntime>(
             *workerComponents.observability,
             budget.collector,
@@ -503,12 +503,12 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
                     .stop = [r = workerComponents.edgeProjection] {
                         r->stop();
                     } });
-    componentLifecycle.add({ .name = "alerts", .start = [r = workerComponents.alertBootstrap, worker, index, count] {
-                       r->start(worker, index, count);
-                   },
-                    .stop = [r = workerComponents.alertBootstrap] {
-                        r->stop();
-                    } });
+    componentLifecycle.add({ .name = "alerts", .start = [r = workerComponents.alerts, worker, index, count] {
+                                r->start(worker, index, count);
+                            },
+                             .stop = [r = workerComponents.alerts] {
+                                 r->stop();
+                             } });
     if (workerComponents.vpnHubRuntime) {
         componentLifecycle.add({ .name = "vpn", .start = [r = workerComponents.vpnHubRuntime, worker] {
                            r->start(worker);

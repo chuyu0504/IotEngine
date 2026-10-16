@@ -121,8 +121,8 @@ class CommandProcessingRuntime final {
                 bool dispatchFailed = false;
                 std::optional<std::chrono::milliseconds> dispatchDelay;
                 try {
-                    co_await repository::dispatch(context);
-                    dispatchDelay = co_await repository::nextDispatchDelay(context);
+                    co_await CommandDispatchService::dispatch(context);
+                    dispatchDelay = co_await CommandDispatchService::nextDispatchDelay(context);
                 } catch (const std::exception& error) {
                     std::cerr << "command dispatch failed: " << error.what() << '\n';
                     dispatchFailed = true;

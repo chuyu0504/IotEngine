@@ -34,6 +34,8 @@ class Calculation final {
   public:
     explicit Calculation(std::vector<common::DerivedPoint> definitions) : definitions_(std::move(definitions)) {}
 
+    [[nodiscard]] const std::vector<common::DerivedPoint>& definitions() const noexcept { return definitions_; }
+
     std::map<std::string, Sample> advance(State& state, const std::map<std::string, Sample>& incoming, std::int64_t now) const {
         const auto windowCount = std::count_if(definitions_.begin(), definitions_.end(), [](const auto& point) {
             return point.kind != "expression";

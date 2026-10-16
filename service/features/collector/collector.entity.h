@@ -80,7 +80,7 @@ struct DeviceDefinition {
     std::string linkMode;
     std::string targetId;
     std::string protocol;
-    std::string timezone = "+08:00";
+    std::string timezone{ service::message::device::kDefaultTimezone };
     std::string sl651ResponseMode = "M1";
     std::int64_t onlineTimeout = 300;
     std::string heartbeatMode = "OFF";

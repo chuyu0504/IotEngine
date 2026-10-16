@@ -1,22 +1,20 @@
 #pragma once
 
-#include <tuple>
-
-#include <optional>
 #include <charconv>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/redis/redis_repository.h>
-#include "service/features/messaging/messaging.entity.h"
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/features/access/access.service.h"
+#include "service/features/messaging/messaging.entity.h"
 #include "service/features/messaging/messaging.transport.h"
 
 namespace service::message {
@@ -280,7 +278,21 @@ class OutboxService {
                 if (event.type == "query.changed") {
                     co_await service::live::publish(context.redis(), event.aggregate);
                 } else if (event.aggregate == "command") {
-                    co_await service::access::event::publish(context.redis(), event.id, event.type, event.aggregateId, event.deviceCode, integer(event.occurredAtMs), event.data);
+                    const auto publication = service::message::access::stream::eventPublication(
+                        event.id,
+                        event.type,
+                        event.aggregateId,
+                        event.deviceCode,
+                        integer(event.occurredAtMs),
+                        event.data,
+                        service::runtime::instanceId()
+                    );
+                    const std::vector<std::string_view> keys(publication.keys.begin(), publication.keys.end());
+                    const std::vector<std::string_view> arguments(publication.arguments.begin(), publication.arguments.end());
+                    const auto reply = co_await context.redis().eval(service::message::access::stream::kPublishEventScript, keys, arguments);
+                    if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::string) {
+                        service::message::redis::throwValue("publish open-access event", reply);
+                    }
                 } else {
                     co_await publishConfigEnvelope(context.redis(), event.id, event.type, event.aggregate, event.aggregateId, event.action, event.schemaVersion, event.occurredAtMs, serviceWorkerCount_);
                 }
@@ -378,9 +390,7 @@ class OutboxService {
             co_await collectStream(context, "webhook_config_" + std::to_string(index), service::message::access::stream::catalogChanges(index), "iot-engine:open-webhook");
         }
         for (std::size_t index = 0; index < collectorWorkerCount_; ++index) {
-            const auto suffix = std::to_string(index);
-            co_await collectStream(context, "ingress_" + suffix, message::ingressStream(index, service::runtime::instanceId()), "iot-engine:collector");
-            co_await collectStream(context, "dead_letter_" + suffix, message::deadLetterStream(index, service::runtime::instanceId()), {});
+            co_await collectStream(context, "dead_letter_" + std::to_string(index), message::deadLetterStream(index, service::runtime::instanceId()), {});
         }
 
         // The operations endpoints run on any Service Worker. Publish this

@@ -1,22 +1,31 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <locale>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <map>
-#include <optional>
+
 #include <ruvia/web/model_object.h>
-#include "service/utils/crypto.h"
 
 #include "service/common/message.h"
-#include "service/features/collector/collector.types.h"
 #include "service/features/collector/collector.config.h"
+#include "service/features/collector/collector.types.h"
 #include "service/features/collector/mqtt/mqtt.types.h"
+#include "service/utils/crypto.h"
 #include "service/utils/json.h"
 #include "service/utils/payload.h"
 
@@ -197,16 +206,6 @@ class ProtocolSessionFactory {
 };
 
 } // namespace service::collector
-
-#include <algorithm>
-#include <charconv>
-#include <cctype>
-#include <cmath>
-#include <limits>
-#include <locale>
-#include <set>
-#include <sstream>
-
 
 namespace service::collector::command {
 

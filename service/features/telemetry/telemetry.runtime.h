@@ -1,9 +1,31 @@
 #pragma once
 
-#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <future>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
+#include <ruvia/core/task.h>
+#include <ruvia/core/timer.h>
+#include <ruvia/web/web_worker.h>
+
+#include "service/common/message.h"
+#include "service/common/uuid.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/telemetry/latest/latest.service.h"
 #include "service/features/telemetry/telemetry.service.h"
+#include "service/middleware/log.h"
 
 namespace service::telemetry {
 class PersistenceRuntime final : public TelemetryService {
@@ -29,14 +51,14 @@ class PersistenceRuntime final : public TelemetryService {
         }
         std::vector<std::future<void>> readiness;
         try {
-            for (const auto consumer : { Consumer::Dispatch, Consumer::History, Consumer::Latest, Consumer::Alerts, Consumer::Delivery }) {
+            for (const auto& route : kRoutes) {
                 auto ready = std::make_shared<std::promise<void>>();
                 auto stopped = std::make_shared<std::promise<void>>();
                 readiness.push_back(ready->get_future());
                 stopped_.push_back(stopped->get_future().share());
                 const auto posted = worker_.post(
-                    [this, consumer, ready, stopped](ruvia::web_worker_context& context) {
-                        return run(context, workerIndex_, consumer, ready, stopped);
+                    [this, &route, ready, stopped](ruvia::web_worker_context& context) {
+                        return run(context, workerIndex_, route, ready, stopped);
                     }
                 );
                 if (!posted.accepted()) {
@@ -45,21 +67,19 @@ class PersistenceRuntime final : public TelemetryService {
                     throw std::runtime_error("service worker rejected telemetry consumer");
                 }
             }
-            for (const auto alerts : { false, true }) {
-                auto ready = std::make_shared<std::promise<void>>();
-                auto stopped = std::make_shared<std::promise<void>>();
-                readiness.push_back(ready->get_future());
-                stopped_.push_back(stopped->get_future().share());
-                const auto posted = worker_.post(
-                    [this, alerts, ready, stopped](ruvia::web_worker_context& context) {
-                        return maintainFreshness(context, workerIndex_, alerts, ready, stopped);
-                    }
-                );
-                if (!posted.accepted()) {
-                    stopped->set_value();
-                    stop();
-                    throw std::runtime_error("service worker rejected telemetry freshness task");
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = worker_.post(
+                [this, ready, stopped](ruvia::web_worker_context& context) {
+                    return maintainFreshness(context, workerIndex_, ready, stopped);
                 }
+            );
+            if (!posted.accepted()) {
+                stopped->set_value();
+                stop();
+                throw std::runtime_error("service worker rejected telemetry freshness task");
             }
             for (auto& ready : readiness) {
                 ready.get();
@@ -75,27 +95,15 @@ class PersistenceRuntime final : public TelemetryService {
             return;
         }
         if (worker_.valid()) {
-            const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                for (const auto task : { message::WorkerStreamTask::Telemetry,
-                                                                         message::WorkerStreamTask::TelemetryHistory,
-                                                                         message::WorkerStreamTask::TelemetryLatest,
-                                                                         message::WorkerStreamTask::TelemetryAlerts,
-                                                                         message::WorkerStreamTask::TelemetryDelivery }) {
-                                                    message::workerStreamMultiplexer().signal(task);
-                                                }
-                                                message::workerStreamMultiplexer().signal(
-                                                    message::WorkerStreamTask::Freshness
-                                                );
-                                                message::workerStreamMultiplexer().signal(
-                                                    message::WorkerStreamTask::FreshnessAlerts
-                                                );
-                                                co_return;
-                                            })
-                                          .accepted();
-            if (!wakeAccepted) {
-                // A closed worker already propagates its stop token to these tasks.
-            }
+            // A closed worker already propagates its stop token to these tasks.
+            (void)worker_.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
+                             for (const auto& route : kRoutes) {
+                                 message::workerStreamMultiplexer().signal(route.wake);
+                             }
+                             message::workerStreamMultiplexer().signal(message::WorkerStreamTask::Freshness);
+                             co_return;
+                         })
+                .accepted();
         }
         for (const auto& stopped : stopped_) {
             if (stopped.valid()) {
@@ -107,13 +115,24 @@ class PersistenceRuntime final : public TelemetryService {
     }
 
   private:
+    struct Route final {
+        Consumer consumer;
+        std::string_view name;
+        message::WorkerStreamTask wake;
+    };
+
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
     static constexpr std::size_t kBatchSize = 256;
+    static constexpr std::array<Route, 4> kRoutes{ {
+        { Consumer::Dispatch, "dispatch", message::WorkerStreamTask::Telemetry },
+        { Consumer::History, "history", message::WorkerStreamTask::TelemetryHistory },
+        { Consumer::Latest, "latest", message::WorkerStreamTask::TelemetryLatest },
+        { Consumer::Delivery, "delivery", message::WorkerStreamTask::TelemetryDelivery },
+    } };
 
     ruvia::task<void> maintainFreshness(
         ruvia::web_worker_context& context,
         std::size_t index,
-        bool alerts,
         std::shared_ptr<std::promise<void>> ready,
         std::shared_ptr<std::promise<void>> stopped
     ) {
@@ -123,23 +142,12 @@ class PersistenceRuntime final : public TelemetryService {
             while (running_.load() && !context.get_stop_token().stop_requested()) {
                 bool failed = false;
                 try {
-                    std::optional<std::int64_t> deadline;
-                    if (alerts) {
-                        // Offline deadlines are a shared availability queue. Each
-                        // Service Worker runs the same claim-and-remove operation;
-                        // the Redis script makes a due member visible to one worker.
-                        co_await service::alert::AlertEvaluationService::evaluateOfflineDue(
-                            context
-                        );
-                        deadline = co_await service::alert::metadata::nextOfflineDeadline(redis);
-                    } else {
-                        // The current deadline set is shared by all identical
-                        // Service Workers and claimed atomically in Redis.
-                        co_await latest::expireStale(redis);
-                        co_await latest::expireConnections(redis);
-                        deadline = co_await latest::nextDeadline(redis);
-                    }
-                    const auto now = !alerts && deadline
+                    // The current deadline set is shared by all identical
+                    // Service Workers and claimed atomically in Redis.
+                    co_await latest::expireStale(redis);
+                    co_await latest::expireConnections(redis);
+                    const auto deadline = co_await latest::nextDeadline(redis);
+                    const auto now = deadline
                         ? co_await latest::deadlineTimeMilliseconds(redis)
                         : service::message::utcNowMilliseconds();
                     const auto wait = latest::deadlineWait(now, deadline);
@@ -148,7 +156,7 @@ class PersistenceRuntime final : public TelemetryService {
                     }
                     co_await service::message::workerStreamMultiplexer().wait(
                         index,
-                        alerts ? service::message::WorkerStreamTask::FreshnessAlerts : service::message::WorkerStreamTask::Freshness,
+                        service::message::WorkerStreamTask::Freshness,
                         context.get_stop_token(),
                         wait
                     );
@@ -156,8 +164,7 @@ class PersistenceRuntime final : public TelemetryService {
                     if (context.get_stop_token().stop_requested()) {
                         break;
                     }
-                    std::cerr << "telemetry freshness maintenance failed: " << error.what()
-                              << '\n';
+                    LOG_ERROR << "telemetry freshness maintenance failed: " << error.what();
                     failed = true;
                 }
                 if (failed) {
@@ -176,9 +183,10 @@ class PersistenceRuntime final : public TelemetryService {
         }
     }
 
-    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, Consumer consumerKind, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
-        const auto group = std::string(kGroup) + ":" + std::string(consumerNames[static_cast<std::size_t>(consumerKind)]);
-        const auto wakeTask = static_cast<message::WorkerStreamTask>(static_cast<unsigned>(message::WorkerStreamTask::Telemetry) + static_cast<unsigned>(consumerKind));
+    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, const Route& route, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
+        const auto consumerKind = route.consumer;
+        const auto group = std::string(kGroup) + ":" + std::string(route.name);
+        const auto wakeTask = route.wake;
         try {
             const auto redis = context.redis();
             std::vector<std::string> streams;
@@ -231,8 +239,7 @@ class PersistenceRuntime final : public TelemetryService {
                     if (!running_.load() || context.get_stop_token().stop_requested()) {
                         break;
                     }
-                    std::cerr << "telemetry stream read failed for service worker " << index
-                              << ": " << error.what() << '\n';
+                    LOG_ERROR << "telemetry stream read failed for service worker " << index << ": " << error.what();
                     recovering = true;
                     readFailed = true;
                     groupMissing = std::string_view(error.what()).find("NOGROUP") !=
@@ -248,8 +255,7 @@ class PersistenceRuntime final : public TelemetryService {
                         );
                         readFailed = false;
                     } catch (const std::exception& ensureError) {
-                        std::cerr << "telemetry stream group recovery failed for service worker "
-                                  << index << ": " << ensureError.what() << '\n';
+                        LOG_ERROR << "telemetry stream group recovery failed for service worker " << index << ": " << ensureError.what();
                     }
                 }
                 if (!running_.load() || context.get_stop_token().stop_requested()) {
@@ -275,22 +281,18 @@ class PersistenceRuntime final : public TelemetryService {
                 bool failed = false;
                 for (const auto& batch : batches) {
                     try {
-                        if (consumerKind != Consumer::Alerts) {
-                            co_await apply(context, consumerKind, batch.messages);
-                            if (consumerKind == Consumer::Dispatch) {
-                                message::workerStreamMultiplexer().signalTelemetryConsumers();
-                            }
-                            co_await message::redis::acknowledgeAndDeleteMany(redis, batch.stream, group, batch.messages);
-                        } else {
-                            for (const auto& entry : batch.messages) {
-                                const std::vector<message::StreamMessage> one{ entry };
-                                co_await apply(context, consumerKind, one);
-                                co_await message::redis::acknowledgeAndDeleteMany(redis, batch.stream, group, one);
+                        co_await apply(context, consumerKind, batch.messages);
+                        if (consumerKind == Consumer::Dispatch) {
+                            // 本组件消费者在本 Worker 内唤醒；告警消费者由 kFanoutScript 经 Redis 唤醒流通知。
+                            for (const auto& consumerRoute : kRoutes) {
+                                if (consumerRoute.consumer != Consumer::Dispatch) {
+                                    message::workerStreamMultiplexer().signal(consumerRoute.wake);
+                                }
                             }
                         }
+                        co_await message::redis::acknowledgeAndDeleteMany(redis, batch.stream, group, batch.messages);
                     } catch (const std::exception& error) {
-                        std::cerr << "telemetry persistence failed for service worker " << index
-                                  << ": " << error.what() << '\n';
+                        LOG_ERROR << "telemetry persistence failed for service worker " << index << ": " << error.what();
                         recovering = true;
                         failed = true;
                     }

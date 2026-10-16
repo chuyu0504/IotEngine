@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <chrono>
 #include <iomanip>
 #include <map>
 #include <optional>
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "service/features/collector/collector.protocol.h"
+#include "service/utils/json.h"
 
 namespace service::collector::sl651 {
 
@@ -93,34 +94,6 @@ inline std::string base64(std::span<const std::uint8_t> bytes) {
     return result;
 }
 
-inline std::string jsonEscape(std::string_view value) {
-    std::string result;
-    result.reserve(value.size() + 8);
-    for (const auto character : value) {
-        switch (character) {
-        case '\\':
-            result += "\\\\";
-            break;
-        case '"':
-            result += "\\\"";
-            break;
-        case '\n':
-            result += "\\n";
-            break;
-        case '\r':
-            result += "\\r";
-            break;
-        case '\t':
-            result += "\\t";
-            break;
-        default:
-            if (static_cast<unsigned char>(character) >= 0x20)
-                result.push_back(character);
-        }
-    }
-    return result;
-}
-
 inline std::vector<std::uint8_t> hexBytes(std::string_view value) { return message::fromHex(value); }
 
 inline std::uint8_t bcdByte(unsigned value) {
@@ -173,7 +146,7 @@ inline std::vector<std::uint8_t> encodeValue(const ElementDefinition& element,
 
 inline std::chrono::seconds timezoneOffset(std::string_view timezone) {
     if (timezone.size() != 6 || (timezone[0] != '+' && timezone[0] != '-') || timezone[3] != ':')
-        return std::chrono::hours(8);
+        timezone = service::message::device::kDefaultTimezone;
     const auto hours = (timezone[1] - '0') * 10 + timezone[2] - '0';
     const auto minutes = (timezone[4] - '0') * 10 + timezone[5] - '0';
     const auto seconds = std::chrono::hours(hours) + std::chrono::minutes(minutes);
@@ -1155,11 +1128,11 @@ class Session final : public ProtocolSession,
             if (!first)
                 json << ',';
             first = false;
-            json << '\"' << detail::jsonEscape(element.id) << "\":{\"name\":\""
-                 << detail::jsonEscape(element.name) << "\",\"value\":\""
-                 << detail::jsonEscape(value) << "\",\"unit\":\""
-                 << detail::jsonEscape(element.unit) << "\",\"type\":\""
-                 << detail::jsonEscape(element.encoding) << "\"}";
+            json << '\"' << service::utils::jsonEscape(element.id) << "\":{\"name\":\""
+                 << service::utils::jsonEscape(element.name) << "\",\"value\":\""
+                 << service::utils::jsonEscape(value) << "\",\"unit\":\""
+                 << service::utils::jsonEscape(element.unit) << "\",\"type\":\""
+                 << service::utils::jsonEscape(element.encoding) << "\"}";
         }
         json << "}}";
         return json.str();

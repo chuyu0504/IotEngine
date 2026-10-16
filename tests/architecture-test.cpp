@@ -639,11 +639,11 @@ void testLifecycleRollback() {
 }
 
 void testMessageEnvelope() {
-    service::message::IngressPacket packet;
+    service::message::EgressPacket packet;
     packet.messageId = "event-1";
-    packet.linkId = "link-1";
     packet.connectionId = "connection-1";
-    const auto fields = service::message::ingressFields(packet);
+    packet.payload = { 0x01 };
+    const auto fields = service::message::egressFields(packet);
     const auto field = [&](std::string_view name) {
         for (const auto& item : fields)
             if (item.name == name)
@@ -652,7 +652,7 @@ void testMessageEnvelope() {
     };
     require(field("event_id") == packet.messageId, "message envelope has no event id");
     require(field("schema_version") == "2", "message envelope has no schema version");
-    require(field("event_type") == "packet", "message envelope has no event type");
+    require(field("event_type") == "packet.egress", "message envelope has no event type");
 }
 
 void testExplicitOutbox() {
@@ -680,17 +680,12 @@ void testExplicitOutbox() {
 }
 
 void testOutboxOperations() {
+    // 运行配置变更的回执检查与写入归 ConfigurationService::applyRuntimeChanges，运行时在其返回后才确认。
     const auto reconciler = source("service/features/configuration/configuration.runtime.h");
-    const auto webhook = source("service/features/access/access.runtime.h");
-    for (const auto* consumer : {&reconciler, &webhook}) {
-        require(consumer->find("idempotency::pending") != std::string::npos,
-                "outbox consumer does not check durable receipts");
-        require(consumer->find("idempotency::markProcessed") != std::string::npos,
-                "outbox consumer does not persist durable receipts");
-        require(consumer->find("idempotency::markProcessed") <
-                    consumer->find("acknowledgeAndDeleteMany"),
-                "outbox consumer acknowledges before persisting its receipt");
-    }
+    const auto configuration = source("service/features/configuration/configuration.service.h");
+    require(configuration.find("idempotency::pending") != std::string::npos, "outbox consumer does not check durable receipts");
+    require(configuration.find("idempotency::markProcessed") != std::string::npos, "outbox consumer does not persist durable receipts");
+    require(reconciler.find("applyRuntimeChanges") != std::string::npos && reconciler.find("applyRuntimeChanges") < reconciler.find("acknowledgeAndDeleteMany"), "outbox consumer acknowledges before persisting its receipt");
     const auto dispatcher = source("service/features/messaging/messaging.service.h");
     require(dispatcher.find(".delete_from(service::messaging::persistence::OutboxConsumerReceiptEntity::table_name())") != std::string::npos,
             "outbox consumer receipts have no retention cleanup");

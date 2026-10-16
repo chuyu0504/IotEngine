@@ -203,8 +203,8 @@ try {
         'PASS durable dispatch, timeout ambiguity, late confirmation, duplicate result, DB status authority'
     );
 
-    const source = await Bun.file('service/features/command/command.service.h').text();
-    const script = source.match(/R"lua\(([\s\S]*?)\)lua"/)![1];
+    const source = await Bun.file('service/features/command/command.entity.h').text();
+    const script = source.match(/kPendingBatchDispatchScript = R"lua\(([\s\S]*?)\)lua"/)![1];
     const capacityQueue = `architecture-capacity:${id()}`;
     assert.equal(
         await redis.send('EVAL', [script, '1', capacityQueue, 'list', '1', '1', '1', 'first']),

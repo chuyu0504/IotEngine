@@ -33,6 +33,13 @@ inline std::string eventTopic(std::string_view nodeId, std::string_view sessionI
 }
 } // namespace service::message::serial_debug
 
+namespace service::message::device {
+
+// 设备未配置 timezone 时，设备本地时间按此 UTC 偏移解释。
+inline constexpr std::string_view kDefaultTimezone{ "+08:00" };
+
+} // namespace service::message::device
+
 namespace service::message::vpn {
 
 inline constexpr std::int64_t kDesktopSessionLeaseMs{45000};
@@ -142,7 +149,6 @@ inline std::string webhookEnvelope(std::string_view eventType, std::string_view 
 inline constexpr std::string_view kMessageSchemaVersion{"2"};
 
 inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
-inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw:worker:";
 inline constexpr std::string_view kEgressStreamPrefix = "iot:channel:socket:egress:worker:";
 inline constexpr std::string_view kCommandStreamPrefix = "iot:channel:command:worker:";
 inline constexpr std::string_view kLinkEventStreamPrefix = "iot:channel:link:event:worker:";
@@ -157,10 +163,6 @@ inline std::string workerStream(std::string_view prefix, std::size_t workerIndex
 
 inline std::string configStream(std::size_t workerIndex, std::string_view instance) {
     return workerStream(kConfigStreamPrefix, workerIndex, {}, instance);
-}
-
-inline std::string ingressStream(std::size_t workerIndex, std::string_view instance) {
-    return workerStream(kIngressStreamPrefix, workerIndex, {}, instance);
 }
 
 inline std::string parsedStream() { return "iot:v3:telemetry"; }
@@ -203,30 +205,6 @@ struct StreamMessage {
                 return field.value;
         return {};
     }
-};
-
-struct IngressPacket {
-    std::string messageId;
-    std::string workerInstanceId;
-    std::string linkId;
-    std::string connectionId;
-    std::string remoteAddress;
-    std::uint64_t sessionEpoch = 0;
-    std::int64_t occurredAtMs = 0;
-    std::vector<std::uint8_t> payload;
-};
-
-struct ConnectionEvent {
-    std::string messageId;
-    std::string workerInstanceId;
-    std::string eventType;
-    std::string linkId;
-    std::string connectionId;
-    std::string remoteAddress;
-    std::string targetId;
-    std::string reason;
-    std::uint64_t sessionEpoch = 0;
-    std::int64_t occurredAtMs = 0;
 };
 
 struct EgressPacket {
@@ -395,101 +373,6 @@ inline std::vector<std::vector<std::uint8_t>> rawPayloadsFromJson(std::string_vi
         skipWhitespace();
     }
     return {};
-}
-
-inline std::vector<StreamField> ingressFields(const IngressPacket& packet) {
-    return {{"event_type", "packet"},
-            {"event_id", packet.messageId},
-            {"schema_version", std::string(kMessageSchemaVersion)},
-            {"message_id", packet.messageId},
-            {"worker_instance_id", packet.workerInstanceId},
-            {"link_id", packet.linkId},
-            {"connection_id", packet.connectionId},
-            {"remote_address", packet.remoteAddress},
-            {"session_epoch", std::to_string(packet.sessionEpoch)},
-            {"occurred_at_ms", std::to_string(packet.occurredAtMs)},
-            {"payload_hex", toHex(packet.payload)}};
-}
-
-inline IngressPacket ingressFrom(const StreamMessage& message) {
-    const auto require = [&message](std::string_view name) {
-        const auto value = message.get(name);
-        if (value.empty())
-            throw std::runtime_error("Missing ingress field: " + std::string(name));
-        return value;
-    };
-    const auto eventType = message.get("event_type");
-    if (!eventType.empty() && eventType != "packet")
-        throw std::runtime_error("Ingress message is not a packet");
-    const auto integer = [&require](std::string_view name) {
-        const auto value = require(name);
-        std::int64_t result = 0;
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size())
-            throw std::runtime_error("Invalid ingress integer field: " + std::string(name));
-        return result;
-    };
-    IngressPacket packet;
-    packet.messageId = std::string(require("message_id"));
-    packet.workerInstanceId = std::string(require("worker_instance_id"));
-    packet.linkId = std::string(require("link_id"));
-    packet.connectionId = std::string(require("connection_id"));
-    packet.remoteAddress = std::string(message.get("remote_address"));
-    packet.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch"));
-    packet.occurredAtMs = integer("occurred_at_ms");
-    const auto payload = require("payload_hex");
-    packet.payload = fromHex(payload);
-    if (packet.payload.empty() && !payload.empty())
-        throw std::runtime_error("Invalid ingress HEX payload");
-    return packet;
-}
-
-inline std::vector<StreamField> connectionEventFields(const ConnectionEvent& event) {
-    return {{"event_type", event.eventType},
-            {"event_id", event.messageId},
-            {"schema_version", std::string(kMessageSchemaVersion)},
-            {"message_id", event.messageId},
-            {"worker_instance_id", event.workerInstanceId},
-            {"link_id", event.linkId},
-            {"connection_id", event.connectionId},
-            {"remote_address", event.remoteAddress},
-            {"target_id", event.targetId},
-            {"reason", event.reason},
-            {"session_epoch", std::to_string(event.sessionEpoch)},
-            {"occurred_at_ms", std::to_string(event.occurredAtMs)}};
-}
-
-inline ConnectionEvent connectionEventFrom(const StreamMessage& message) {
-    const auto require = [&message](std::string_view name) {
-        const auto value = message.get(name);
-        if (value.empty())
-            throw std::runtime_error("Missing connection event field: " + std::string(name));
-        return value;
-    };
-    const auto integer = [&require](std::string_view name) {
-        const auto value = require(name);
-        std::int64_t result = 0;
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size() || result < 0)
-            throw std::runtime_error("Invalid connection event integer: " + std::string(name));
-        return result;
-    };
-    ConnectionEvent event;
-    event.eventType = std::string(require("event_type"));
-    if (event.eventType != "connected" && event.eventType != "disconnected")
-        throw std::runtime_error("Invalid connection event type");
-    event.messageId = std::string(require("message_id"));
-    event.workerInstanceId = std::string(require("worker_instance_id"));
-    event.linkId = std::string(require("link_id"));
-    event.connectionId = std::string(require("connection_id"));
-    event.remoteAddress = std::string(message.get("remote_address"));
-    event.targetId = std::string(message.get("target_id"));
-    event.reason = std::string(message.get("reason"));
-    event.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch"));
-    event.occurredAtMs = integer("occurred_at_ms");
-    return event;
 }
 
 inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
@@ -902,7 +785,22 @@ inline std::string canonicalPointJson(std::string_view value, std::string_view d
     return std::string(value);
 }
 
+// Dispatch 把 parsedStream() 的每条规范化遥测复制到四个消费者流；各消费者独立 XACK+XDEL。
+inline constexpr std::string_view kHistoryStream{ "iot:v3:telemetry:history" };
+inline constexpr std::string_view kLatestStream{ "iot:v3:telemetry:latest" };
+inline constexpr std::string_view kAlertsStream{ "iot:v3:telemetry:alerts" };
+inline constexpr std::string_view kDeliveryStream{ "iot:v3:telemetry:delivery" };
+// 每条遥测 messageId 的复制回执：<prefix><messageId>，7 天过期。
+inline constexpr std::string_view kFanoutReceiptPrefix{ "iot:telemetry:fanout:" };
+
 } // namespace service::message::telemetry
+
+namespace service::message::alert {
+
+// 设备配置变更通知：configuration 消费运行配置变更后发布，alert 消费后刷新告警元数据。
+inline constexpr std::string_view kMetadataChangesStream{ "iot:alert:metadata-changes" };
+
+} // namespace service::message::alert
 
 namespace service::message::access::session {
 
@@ -1176,6 +1074,57 @@ inline std::string sessionChanges() {
     return std::string(kSessionChangesBase);
 }
 
+// 开放接入事件发布契约（Webhook/开放 MQTT 消费 event() 流）：同一 eventType + eventId 只写入一次，
+// 幂等键保留 kEventPublicationTtlSeconds；写入后唤醒发布实例的共享 Webhook 任务。
+// KEYS：1=事件流，2=幂等键，3=唤醒流；ARGV：1=事件流长度上限，2=幂等键 TTL 秒，3=唤醒流长度上限，
+// 4=唤醒任务名，5.. 为事件字段名/值。已发布时返回 false。
+inline constexpr std::string_view kPublishEventScript = R"lua(
+if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[1], '*'}
+for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
+return id
+)lua";
+
+inline constexpr std::size_t kEventCapacity = 100000;
+inline constexpr std::int64_t kEventPublicationTtlSeconds = 7 * 24 * 60 * 60;
+
+inline std::string eventPublicationKey(std::string_view eventId, std::string_view eventType) {
+    return "iot:open-access:event:published:" + std::string(eventType) + ":" + std::string(eventId);
+}
+
+// kPublishEventScript 的键与参数；事件字段：event_id、event_type、device_id、device_code、occurred_at_ms、data_json。
+struct EventPublication final {
+    std::array<std::string, 3> keys;
+    std::array<std::string, 16> arguments;
+};
+
+inline EventPublication eventPublication(std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instance) {
+    return EventPublication{
+        .keys = { event(), eventPublicationKey(eventId, eventType), workerWakeStream(std::nullopt, instance) },
+        .arguments = {
+            std::to_string(kEventCapacity),
+            std::to_string(kEventPublicationTtlSeconds),
+            std::to_string(kWorkerWakeCapacity),
+            std::string(workerStreamTaskName(WorkerStreamTask::Webhook)),
+            "event_id",
+            std::string(eventId),
+            "event_type",
+            std::string(eventType),
+            "device_id",
+            std::string(deviceId),
+            "device_code",
+            std::string(deviceCode),
+            "occurred_at_ms",
+            std::to_string(occurredAtMs),
+            "data_json",
+            std::string(dataJson),
+        },
+    };
+}
+
 } // namespace service::message::access::stream
 
 namespace service::message::edge::projector_stream {
@@ -1228,6 +1177,66 @@ RUVIA_MODEL(PreparedBatch,
     RUVIA_REQUIRED_FIELD(maximum, ruvia::int64),
     RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
     RUVIA_REQUIRED_FIELD(commands, ruvia::boxed_array<PreparedCommand>));
+
+// Collector 命令结果与 Service 命令投影共享的状态语义。
+inline constexpr std::array<std::string_view, 2> kResultAcceptingStatuses{ "DISPATCHING", "AWAITING_RESULT" };
+
+inline std::string_view expiredDispatchState(bool claimPersisted) {
+    return claimPersisted ? "UNKNOWN" : "REJECTED";
+}
+
+inline bool terminalState(std::string_view state) {
+    return state == "SUCCEEDED" || state == "REJECTED" || state == "UNKNOWN" || state == "READBACK_MISMATCH" ||
+        state == "FAILED";
+}
+
+inline bool retryableFailure(std::string_view reason) {
+    static constexpr std::array<std::string_view, 12> permanentMarkers{
+        "invalid",
+        "required",
+        "not_supported",
+        "mismatch",
+        "conflict",
+        "queue_full",
+        "busy",
+        "negative_ack",
+        "protocol_route_mismatch",
+        "stale_session_epoch",
+        "readback",
+        "write_ack_missing"
+    };
+    const auto contains = [reason](std::string_view marker) {
+        return reason.find(marker) != std::string_view::npos;
+    };
+    if (std::any_of(permanentMarkers.begin(), permanentMarkers.end(), contains)) {
+        return false;
+    }
+    return contains("timeout") || contains("temporarily_unavailable") || contains("redis");
+}
+
+// 超时或回读失败不能证明物理写入没有发生。
+inline std::string_view collectorResultState(bool success, std::string_view reason) {
+    if (!success && reason.starts_with("device_negative_ack:")) {
+        return "FAILED";
+    }
+    if (reason.find("write_ack_missing") != std::string_view::npos) {
+        return "UNKNOWN";
+    }
+    if (reason.find("readback_mismatch") != std::string_view::npos) {
+        return "READBACK_MISMATCH";
+    }
+    if (reason.find("readback") != std::string_view::npos) {
+        return "UNKNOWN";
+    }
+    if (success) {
+        return "SUCCEEDED";
+    }
+    if (reason == "command_invalid" || reason.starts_with("command_invalid:") || reason == "stale_session_epoch" ||
+        reason == "dispatch_deadline_expired" || reason == "connection_route_missing" || reason.ends_with("_device_offline")) {
+        return "REJECTED";
+    }
+    return "UNKNOWN";
+}
 
 } // namespace service::message::command
 

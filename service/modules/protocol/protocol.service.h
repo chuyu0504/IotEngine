@@ -1,9 +1,5 @@
 #pragma once
 
-#include <tuple>
-
-#include <memory>
-#include <map>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -11,19 +7,25 @@
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
-#include <ruvia/web/model_object.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/model_object.h>
 
 #include "service/common/database.h"
+#include "service/common/derived_point.h"
 #include "service/common/http.h"
+#include "service/common/message.h"
+#include "service/common/mqtt_report.h"
 #include "service/common/uuid.h"
 #include "service/middleware/rpc.h"
 #include "service/modules/edge_node/edge_node.service.h"
@@ -35,8 +37,6 @@
 #include "service/modules/system/user/user.entity.h"
 #include "service/utils/json.h"
 #include "service/utils/payload.h"
-#include "service/common/derived_point.h"
-#include "service/common/mqtt_report.h"
 
 namespace service::protocol {
 
@@ -1039,24 +1039,13 @@ class ProtocolService {
             const auto topic = body.get<"topic">().view();
             if (topic.empty() || topic.find_first_of("+#") != std::string_view::npos || topic.find('\0') != std::string_view::npos)
                 throw std::invalid_argument("示例 Topic 须为不含通配符的具体 Topic");
-            const auto option = [](const auto& value, std::string fallback) { return value ? std::string(value->view()) : fallback; };
-            const auto format = option(config.get<"payloadFormat">(), "json");
-            const auto codeField = option(config.get<"deviceCodeField">(), "");
-            const auto identity = option(config.get<"identitySource">(), codeField.empty() ? "bound" : "payload");
+            const auto option = [](const auto& value, std::string_view fallback) {
+                return value ? std::string(value->view()) : std::string(fallback);
+            };
+            const auto layout = service::common::mqttReportLayout(config);
             const auto deviceCode = option(body.get<"deviceCode">(), "");
-            auto filter = std::string(config.get<"topic">()->view());
-            constexpr std::string_view marker = "{deviceCode}";
-            for (auto i = filter.find(marker); i != std::string::npos; i = filter.find(marker, i + deviceCode.size())) filter.replace(i, marker.size(), deviceCode);
-            const auto levels = utils::splitPayload(body.get<"topic">().view(), "/"), pattern = utils::splitPayload(filter, "/");
-            bool matched = !(body.get<"topic">().view().starts_with('$') && !filter.starts_with('$'));
-            std::size_t index = 0;
-            for (; matched && index < pattern.size(); ++index) {
-                if (pattern[index] == "#") break;
-                matched = index < levels.size() && (pattern[index] == "+" || pattern[index] == levels[index]);
-            }
-            if (!matched || (index == pattern.size() && index != levels.size())) throw std::invalid_argument("示例 Topic 未匹配订阅配置");
             auto payload = std::string(body.get<"payload">().view());
-            if (format == "binary") {
+            if (layout.format == "binary") {
                 std::string hex;
                 for (const unsigned char ch : payload) if (!std::isspace(ch)) hex += static_cast<char>(ch);
                 if (hex.size() % 2) throw std::invalid_argument("二进制示例须为完整的 HEX 字节");
@@ -1068,43 +1057,32 @@ class ProtocolService {
                 }
             }
             if (payload.size() > 1048576) throw std::invalid_argument("示例负载超过 1 MiB");
-            const auto records = utils::payloadRecords(payload, format, option(config.get<"recordsPath">(), ""), option(config.get<"recordDelimiter">(), "\n"), static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{0}).value_));
+            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            const auto records = service::common::decodeMqttReport(layout, topic, payload, deviceCode, option(body.get<"timezone">(), service::message::device::kDefaultTimezone), now);
             MqttPreviewResult result;
             ruvia::array<MqttPreviewRecord> output;
-            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            for (const auto& input : records) {
-                utils::PayloadRecord record(input, format, option(config.get<"delimiter">(), ","));
+            for (const auto& record : records) {
                 MqttPreviewRecord row; ruvia::array<ruvia::string> errors; ruvia::array<MqttPreviewPoint> points;
-                auto code = deviceCode;
-                if (identity == "payload") {
-                    const auto value = record.field(codeField); code = value ? utils::payloadScalarText(*value) : "";
-                } else if (identity == "topic") {
-                    const auto segment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::int64{1}).value_);
-                    code = segment < levels.size() ? std::string(levels[segment]) : "";
+                if (record.deviceCode.empty()) {
+                    errors.push_back(ruvia::string("未提取到设备编码"));
+                } else if (!deviceCode.empty() && record.deviceCode != deviceCode) {
+                    errors.push_back(ruvia::string("设备编码与测试设备不匹配，实际接入将跳过此记录"));
                 }
-                if (code.empty()) errors.push_back(ruvia::string("未提取到设备编码"));
-                else if (!deviceCode.empty() && code != deviceCode) errors.push_back(ruvia::string("设备编码与测试设备不匹配，实际接入将跳过此记录"));
-                auto occurredAt = now;
-                const auto timeField = option(config.get<"timeField">(), "");
-                if (!timeField.empty()) if (const auto time = record.field(timeField)) {
-                    const auto timestamp = utils::payloadTimestamp(*time, option(config.get<"timeFormat">(), "unix_ms"), option(body.get<"timezone">(), "+08:00"));
-                    if (timestamp) occurredAt = *timestamp; else errors.push_back(ruvia::string("设备时间无效，实际接入将跳过此记录"));
+                if (!record.timeValid) {
+                    errors.push_back(ruvia::string("设备时间无效，实际接入将跳过此记录"));
                 }
-                for (const auto& point : *config.get<"points">()) {
-                    if (point.get<"field">().view().empty()) continue;
-                    auto inputValue = record.field(point.get<"field">().view());
-                    if (inputValue) if (const auto& enums = point.get<"enumValues">(); enums && !enums->empty()) {
-                        const auto key = utils::payloadScalarText(*inputValue); bool found = false;
-                        for (const auto& value : *enums) if (value.get<"input">().view() == key) { inputValue = utils::PayloadScalar{std::string(value.get<"output">().view())}; found = true; break; }
-                        if (!found) inputValue.reset();
+                for (std::size_t index = 0; index < layout.points.size(); ++index) {
+                    const auto& point = layout.points[index];
+                    const auto& value = record.values[index];
+                    if (!value) {
+                        errors.push_back(ruvia::string(point.name + "：字段缺失或类型转换失败"));
+                        continue;
                     }
-                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view()) : std::nullopt;
-                    if (!value) { errors.push_back(ruvia::string(std::string(point.get<"name">().view()) + "：字段缺失或类型转换失败")); continue; }
                     MqttPreviewPoint preview;
-                    preview.set<"id">(point.get<"id">().view()).set<"name">(point.get<"name">().view()).set<"value">(utils::payloadScalarText(*value)).set<"unit">(option(point.get<"unit">(), ""));
+                    preview.set<"id">(point.id).set<"name">(point.name).set<"value">(utils::payloadScalarText(*value)).set<"unit">(point.unit);
                     points.push_back(std::move(preview));
                 }
-                row.set<"deviceCode">(code).set<"time">(common::utcTimestampFromMilliseconds(occurredAt)).set<"points">(std::move(points)).set<"errors">(std::move(errors));
+                row.set<"deviceCode">(record.deviceCode).set<"time">(common::utcTimestampFromMilliseconds(record.occurredAtMs)).set<"points">(std::move(points)).set<"errors">(std::move(errors));
                 output.push_back(std::move(row));
             }
             result.set<"records">(std::move(output)); return result;

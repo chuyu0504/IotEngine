@@ -1,46 +1,49 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory_resource>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <set>
-#include <map>
+
+#include <ruvia/web/db/db_entity.h>
+#include <ruvia/web/db/db_predicate.h>
+#include <ruvia/web/redis/redis_types.h>
+
 #include "service/common/message.h"
 #include "service/utils/json.h"
-#include <stdexcept>
-#include <ruvia/web/redis/redis_types.h>
-#include <ruvia/web/db/db_entity.h>
 
 namespace service::access::persistence {
 
-RUVIA_DB_ENTITY(DeviceEntity, "device",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 100}),
-    RUVIA_DB_COLUMN(link_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(protocol_config_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(group_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{"status_enum"}, .default_expression_ = ruvia::fixed_string{"'enabled'::status_enum"}}),
-    RUVIA_DB_COLUMN(protocol_params, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(remark, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .nullable_ = true}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(protocol_address, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text}))
+// 访问会话投影激活：KEYS[1]=当前版本指针，KEYS[2]=新版本 Hash；ARGV[1]=新版本，ARGV[2]=版本键前缀，
+// ARGV[3]=旧版本保留秒数。切换指针、持久化新版本并让旧版本按宽限期过期，返回旧版本或空串。
+inline constexpr std::string_view kSessionActivateScript = R"lua(
+local previous = redis.call('GET', KEYS[1])
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('PERSIST', KEYS[2])
+if previous and previous ~= ARGV[1] then
+  redis.call('EXPIRE', ARGV[2] .. previous, ARGV[3])
+end
+return previous or ''
+)lua";
+
+// 投递结果入队与 DeliveryProgressRecord 进度原子写入：KEYS[1]=结果流，KEYS[2]=进度 Hash，KEYS[3]=唤醒流；
+// ARGV[1]=目标 ID，ARGV[2]=结果流长度上限，ARGV[3]=进度 TTL 秒，ARGV[4]=唤醒流长度上限，ARGV[5]=唤醒任务名，
+// ARGV[6]='1' 时记录目标已完成，ARGV[7..]=结果字段名/值。目标已完成时返回 false。
+inline constexpr std::string_view kDeliveryResultScript = R"lua(
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[2], '*'}
+for index = 7, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+if ARGV[6] == '1' then
+redis.call('HSET', KEYS[2], ARGV[1], '1')
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+end
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
+return id
+)lua";
 
 RUVIA_DB_ENTITY(OpenAccessKeyEntity, "open_access_key",
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -218,10 +221,6 @@ struct DeliveryProgressRecord final {
         return record;
     }
 };
-
-} // namespace service::access::delivery
-
-namespace service::access::delivery {
 
 // Existing telemetry Hash uses dynamic point fields and JSON values. Redis ORM
 // cannot map this fixed key format and heterogeneous fields. Preserve missing

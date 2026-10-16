@@ -8,7 +8,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,9 +17,7 @@
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
-#include "service/features/alert/alert.service.h"
 #include "service/features/configuration/configuration.service.h"
-#include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
@@ -105,11 +102,6 @@ class Reconciler final {
     static constexpr std::size_t kBatchSize = 256;
     static constexpr std::size_t kCoalesceLimit = 4096;
     static constexpr auto kCoalesceWindow = std::chrono::milliseconds(25);
-
-    static bool requiresProjection(const service::message::StreamMessage& message) {
-        const auto aggregate = message.get("aggregate");
-        return aggregate == "link" || aggregate == "device" || aggregate == "protocol";
-    }
 
     ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         try {
@@ -259,55 +251,10 @@ class Reconciler final {
                     for (const auto& batch : batches) {
                         received.insert(received.end(), batch.messages.begin(), batch.messages.end());
                     }
-                    const auto eventIds = service::message::idempotency::eventIds(received);
-                    const auto pendingIds = co_await service::message::idempotency::pending(
-                        context,
-                        kGroup,
-                        eventIds
-                    );
-                    const auto projectionRequired = std::ranges::any_of(
-                        batches,
-                        [&pendingIds](const auto& batch) {
-                            return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
-                                return service::message::idempotency::shouldProcess(
-                                           message,
-                                           pendingIds
-                                       ) &&
-                                    requiresProjection(message);
-                            });
-                        }
-                    );
-                    const auto alertRefreshRequired = std::ranges::any_of(
-                        batches,
-                        [&pendingIds](const auto& batch) {
-                            return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
-                                return service::message::idempotency::shouldProcess(
-                                           message,
-                                           pendingIds
-                                       ) &&
-                                    message.get("aggregate") == "device";
-                            });
-                        }
-                    );
-                    if (projectionRequired) {
-                        (void)co_await service::configuration::ConfigurationService::project(
-                            context,
-                            true
-                        );
+                    if (co_await service::configuration::ConfigurationService::applyRuntimeChanges(context, kGroup, received)) {
                         cleanupDeadline = std::chrono::steady_clock::now() +
-                            std::chrono::milliseconds(
-                                              service::collector::config::
-                                                  kSnapshotGraceMilliseconds
-                            );
+                            std::chrono::milliseconds(service::collector::config::kSnapshotGraceMilliseconds);
                     }
-                    if (alertRefreshRequired) {
-                        co_await service::alert::metadata::refresh(context);
-                    }
-                    co_await service::message::idempotency::markProcessed(
-                        context,
-                        kGroup,
-                        eventIds
-                    );
                     for (const auto& batch : batches) {
                         co_await service::message::redis::acknowledgeAndDeleteMany(
                             redis,

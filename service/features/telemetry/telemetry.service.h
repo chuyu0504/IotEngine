@@ -1,169 +1,140 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <memory_resource>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include <ruvia/core/stop_token.h>
-
-#include "service/utils/number.h"
-#include "service/features/telemetry/telemetry.entity.h"
+#include <ruvia/core/task.h>
+#include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
-#include <utility>
-#include <spdlog/spdlog.h>
-#include "service/features/messaging/messaging.transport.h"
+#include <ruvia/web/web_worker.h>
+
+#include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/uuid.h"
+#include "service/features/access/access.service.h"
+#include "service/features/configuration/configuration.entity.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/telemetry/latest/latest.entity.h"
 #include "service/features/telemetry/latest/latest.service.h"
+#include "service/features/telemetry/telemetry.entity.h"
 #include "service/features/telemetry/telemetry.protocol.h"
+#include "service/utils/json.h"
 
 namespace service::telemetry {
+
+// Dispatch 读取 parsedStream() 并复制到各消费者流；告警复制流由 alert 组件消费。
 enum class Consumer { Dispatch,
                       History,
                       Latest,
-                      Alerts,
                       Delivery };
-inline constexpr std::array<std::string_view, 5> consumerNames{ "dispatch", "history", "latest", "alerts", "delivery" };
 
 inline std::string consumerStream(Consumer consumer) {
-    auto stream = service::message::parsedStream();
-    if (consumer != Consumer::Dispatch) {
-        stream += ':' + std::string(consumerNames[static_cast<std::size_t>(consumer)]);
+    switch (consumer) {
+        case Consumer::History:
+            return std::string(message::telemetry::kHistoryStream);
+        case Consumer::Latest:
+            return std::string(message::telemetry::kLatestStream);
+        case Consumer::Delivery:
+            return std::string(message::telemetry::kDeliveryStream);
+        case Consumer::Dispatch:
+            break;
     }
-    return stream;
+    return message::parsedStream();
 }
 
-// The ingress receipt and all four durable copies are committed atomically.
-// Consumer streams never trim pending entries. Each consumer owns XACK/XDEL.
+// 一批遥测的复制回执与四份消费者副本在一个脚本内原子提交；消费者流从不修剪待确认条目，各消费者自行 XACK+XDEL。
+// KEYS[1..4]: history、latest、alerts、delivery 消费者流；KEYS[5]: 本实例共享唤醒流；KEYS[6..]: 每条遥测的复制回执键（与条目一一对应）。
+// ARGV[1]: 唤醒流容量；ARGV[2]: 告警消费者的唤醒任务名；之后按条目顺序依次为 <字段名值个数> <name> <value> ...
+// 回执已存在时不重复复制；若重复投递携带原始帧身份（raw_packet_ids 非空），只向 history 追加以补记原始帧关联。
+// 告警复制流属于 alert 组件，有新副本时经 Redis 唤醒流通知其消费者。返回新复制的条目数。
 inline constexpr std::string_view kFanoutScript = R"lua(
-if redis.call('EXISTS',KEYS[1]) ~= 0 then
- for i=1,#ARGV,2 do
-  if ARGV[i] == 'raw_packet_ids' and ARGV[i+1] ~= '[]' then
-   redis.call('XADD',KEYS[2],'*',unpack(ARGV))
-   break
-  end
- end
- return 0
-end
-for i=2,5 do
+for i=1,4 do
  local kind = redis.call('TYPE',KEYS[i]).ok
  if kind ~= 'none' and kind ~= 'stream' then
   return redis.error_reply('telemetry consumer key must be a stream')
  end
 end
-local args = {'*'}
-for i=1,#ARGV do args[#args+1]=ARGV[i] end
-for i=2,5 do redis.call('XADD',KEYS[i],unpack(args)) end
-redis.call('SET',KEYS[1],'1','EX',604800)
-return 1
+local copied = 0
+local cursor = 3
+for entry=6,#KEYS do
+ local count = tonumber(ARGV[cursor])
+ if not count then return redis.error_reply('telemetry fanout field count is missing') end
+ local fields = {'*'}
+ local replay = false
+ for i=cursor+1,cursor+count,2 do
+  fields[#fields+1]=ARGV[i]
+  fields[#fields+1]=ARGV[i+1]
+  if ARGV[i] == 'raw_packet_ids' and ARGV[i+1] ~= '[]' then replay = true end
+ end
+ cursor = cursor + count + 1
+ if redis.call('EXISTS',KEYS[entry]) ~= 0 then
+  if replay then redis.call('XADD',KEYS[1],unpack(fields)) end
+ else
+  for i=1,4 do redis.call('XADD',KEYS[i],unpack(fields)) end
+  redis.call('SET',KEYS[entry],'1','EX',604800)
+  copied = copied + 1
+ end
+end
+if copied > 0 then
+ redis.call('XADD',KEYS[5],'MAXLEN','~',ARGV[1],'*','task',ARGV[2])
+end
+return copied
 )lua";
 
+// 每条遥测只解析、规范化与修复 UTF-8 一次，整批一次 EVAL 复制到全部消费者流。
 template <class Redis>
-ruvia::task<void> fanout(const Redis& redis, const std::vector<service::message::StreamMessage>& messages) {
+ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMessage>& messages) {
+    if (messages.empty()) {
+        co_return;
+    }
+    std::vector<std::string> receipts;
+    std::vector<std::vector<message::StreamField>> entries;
+    std::vector<std::string> counts;
+    receipts.reserve(messages.size());
+    entries.reserve(messages.size());
+    counts.reserve(messages.size());
+    std::size_t argumentCount = 0;
     for (const auto& input : messages) {
-        auto parsed = service::message::parsedFrom(input);
+        auto parsed = message::parsedFrom(input);
         contract::normalize(parsed);
-        const auto fields = service::message::parsedFields(parsed);
-        const std::vector<std::string> store{
-            "iot:telemetry:fanout:" + parsed.messageId,
-            consumerStream(Consumer::History),
-            consumerStream(Consumer::Latest),
-            consumerStream(Consumer::Alerts),
-            consumerStream(Consumer::Delivery)
-        };
-        const std::vector<std::string_view> keys(store.begin(), store.end());
-        std::vector<std::string_view> args;
-        for (const auto& field : fields) {
-            args.push_back(field.name);
-            args.push_back(field.value);
-        }
-        const auto reply = co_await redis.eval(kFanoutScript, keys, args);
-        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("telemetry fanout", reply);
+        contract::repairInvalidUtf8(parsed);
+        receipts.push_back(std::string(message::telemetry::kFanoutReceiptPrefix) + parsed.messageId);
+        auto fields = message::parsedFields(parsed);
+        counts.push_back(std::to_string(fields.size() * 2));
+        argumentCount += 1 + fields.size() * 2;
+        entries.push_back(std::move(fields));
+    }
+    const auto wakeStream = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    std::vector<std::string_view> keys{ message::telemetry::kHistoryStream, message::telemetry::kLatestStream, message::telemetry::kAlertsStream, message::telemetry::kDeliveryStream, wakeStream };
+    keys.reserve(keys.size() + receipts.size());
+    for (const auto& receipt : receipts) {
+        keys.push_back(receipt);
+    }
+    const auto wakeCapacity = std::to_string(message::kWorkerWakeCapacity);
+    std::vector<std::string_view> arguments{ wakeCapacity, message::workerStreamTaskName(message::WorkerStreamTask::TelemetryAlerts) };
+    arguments.reserve(2 + argumentCount);
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        arguments.push_back(counts[index]);
+        for (const auto& field : entries[index]) {
+            arguments.push_back(field.name);
+            arguments.push_back(field.value);
         }
     }
-}
-} // namespace service::telemetry
-
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <cstddef>
-#include <exception>
-#include <future>
-#include <iostream>
-#include <map>
-#include <memory>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <vector>
-
-#include <ruvia/core/task.h>
-#include <ruvia/core/timer.h>
-#include <ruvia/web/web_worker.h>
-#include <ruvia/web/db/db.h>
-
-#include "service/features/access/access.service.h"
-#include "service/features/alert/alert.service.h"
-
-namespace service::telemetry {
-
-namespace detail {
-
-inline std::string sanitizeJsonUtf8(std::string_view value) {
-    static constexpr std::array<char, 16> digits{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
-    std::string result;
-    result.reserve(value.size());
-    const auto continuation = [value](std::size_t index) {
-        return index < value.size() && (static_cast<unsigned char>(value[index]) & 0xC0U) == 0x80U;
-    };
-    for (std::size_t index = 0; index < value.size();) {
-        const auto byte = static_cast<unsigned char>(value[index]);
-        if (byte < 0x80) {
-            result.push_back(static_cast<char>(byte));
-            ++index;
-            continue;
-        }
-        std::size_t length = 0;
-        if (byte >= 0xC2 && byte <= 0xDF && continuation(index + 1)) {
-            length = 2;
-        } else if (byte == 0xE0 && index + 2 < value.size() &&
-                   static_cast<unsigned char>(value[index + 1]) >= 0xA0 &&
-                   static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2)) {
-            length = 3;
-        } else if (((byte >= 0xE1 && byte <= 0xEC) || (byte >= 0xEE && byte <= 0xEF)) &&
-                   continuation(index + 1) && continuation(index + 2)) {
-            length = 3;
-        } else if (byte == 0xED && index + 2 < value.size() &&
-                   static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
-                   static_cast<unsigned char>(value[index + 1]) <= 0x9F && continuation(index + 2)) {
-            length = 3;
-        } else if (byte == 0xF0 && index + 3 < value.size() &&
-                   static_cast<unsigned char>(value[index + 1]) >= 0x90 &&
-                   static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2) &&
-                   continuation(index + 3)) {
-            length = 4;
-        } else if (byte >= 0xF1 && byte <= 0xF3 && continuation(index + 1) &&
-                   continuation(index + 2) && continuation(index + 3)) {
-            length = 4;
-        } else if (byte == 0xF4 && index + 3 < value.size() &&
-                   static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
-                   static_cast<unsigned char>(value[index + 1]) <= 0x8F && continuation(index + 2) &&
-                   continuation(index + 3)) {
-            length = 4;
-        }
-        if (length != 0) {
-            result.append(value.substr(index, length));
-            index += length;
-            continue;
-        }
-        result += "\\u00";
-        result.push_back(digits[byte >> 4U]);
-        result.push_back(digits[byte & 0x0FU]);
-        ++index;
+    const auto reply = co_await redis.eval(kFanoutScript, keys, arguments);
+    if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+        message::redis::throwValue("telemetry fanout", reply);
     }
-    return result;
 }
-
-} // namespace detail
 
 class TelemetryService {
   public:
@@ -195,85 +166,44 @@ class TelemetryService {
         co_await fanout(context.redis(), messages);
     }
 
+    // 消费者副本已由 Dispatch 规范化并修复 UTF-8；这里只解码流字段，并对升级前未修复的副本按需修复（合法文本不复制）。
     static ruvia::task<void> apply(ruvia::web_worker_context& context, Consumer consumer, const std::vector<message::StreamMessage>& messages) {
         if (consumer == Consumer::Dispatch) {
             co_await ingest(context, messages);
-            co_return;
-        }
-        if (messages.empty()) {
             co_return;
         }
         std::vector<message::ParsedDeviceMessage> parsedMessages;
         parsedMessages.reserve(messages.size());
         for (const auto& message : messages) {
             auto parsed = message::parsedFrom(message);
-            parsed.valuesJson = detail::sanitizeJsonUtf8(parsed.valuesJson);
+            contract::repairInvalidUtf8(parsed);
+            if (consumer != Consumer::Latest && contract::isSl651EmptyReport(parsed)) {
+                continue;
+            }
             parsedMessages.push_back(std::move(parsed));
         }
-        const auto redis = context.redis();
-        if (consumer == Consumer::History || consumer == Consumer::Delivery) {
-            std::erase_if(parsedMessages, contract::isSl651EmptyReport);
-            if (parsedMessages.empty()) co_return;
+        if (parsedMessages.empty()) {
+            co_return;
         }
+        const auto redis = context.redis();
         switch (consumer) {
-            case Consumer::History: {
-                (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false));
+            case Consumer::History:
+                co_await persist(context, parsedMessages);
                 co_await latest::publishRealtimeChange(redis);
                 break;
-            }
             case Consumer::Latest:
                 co_await latest::update(redis, parsedMessages);
                 break;
             case Consumer::Delivery:
                 co_await service::access::event::publishMany(redis, parsedMessages);
                 break;
-            case Consumer::Alerts: {
-                const auto metadata = co_await service::alert::metadata::activity(context, parsedMessages);
-                if (metadata.offlineRules) {
-                    co_await service::alert::metadata::schedule(redis, parsedMessages);
-                }
-                auto active = metadata.devices;
-                std::vector<std::string> previous;
-                for (std::size_t index = 0; index < parsedMessages.size(); ++index) {
-                    if (contract::isSl651EmptyReport(parsedMessages[index])) {
-                        active[index] = false;
-                        previous.emplace_back("{}");
-                    } else {
-                        previous.push_back(co_await prepareAlert(context, parsedMessages[index]));
-                    }
-                }
-                co_await service::alert::AlertEvaluationService::evaluateTelemetry(context, parsedMessages, previous, active);
-                break;
-            }
             case Consumer::Dispatch:
                 break;
         }
     }
 
   protected:
-    static ruvia::task<std::string> prepareAlert(ruvia::web_worker_context& context, const message::ParsedDeviceMessage& value) {
-        ruvia::db_query state(context.pool());
-        const auto newer = state.binary(state.tuple({ state.excluded(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()), state.excluded(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"message_id">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()) }), ruvia::db_binary_operator::greater,
-            state.tuple({ state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state"), state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"message_id">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state") }));
-        state.insert_into(service::telemetry::persistence::AlertInputStateEntity::table_name(), { "device_id", "observed_at_ms", "message_id", "data", "previous_data" })
-            .values({ state.cast(state.value(value.deviceId), ruvia::db_data_type::uuid), state.cast(state.value(value.observedAtMs), ruvia::db_data_type::big_int),
-                state.cast(state.value(value.messageId), ruvia::db_data_type::uuid), state.cast(state.value(value.valuesJson), ruvia::db_data_type::jsonb),
-                state.cast(state.value("{}"), ruvia::db_data_type::jsonb) })
-            .on_conflict({ .columns_ = { "device_id" }, .update_ = {
-                { "previous_data", state.case_when({ { newer, state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"data">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state") } }, state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"previous_data">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state")) },
-                { "data", state.case_when({ { newer, state.excluded(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"data">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()) } }, state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"data">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state")) },
-                { "observed_at_ms", state.greatest({ state.excluded(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()), state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state") }) },
-                { "message_id", state.case_when({ { newer, state.excluded(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"message_id">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()) } }, state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"message_id">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view(), "alert_input_state")) }
-            } })
-            .returning({ state.cast(state.case_when({ { state.binary(state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"message_id">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal,
-                state.cast(state.value(value.messageId), ruvia::db_data_type::uuid)), state.column(std::tuple_element_t<service::telemetry::persistence::AlertInputStateEntity::column_index<"previous_data">(), service::telemetry::persistence::AlertInputStateEntity::columns_type>::name.view()) } },
-                state.cast(state.value("{}"), ruvia::db_data_type::jsonb)), ruvia::db_data_type::text) });
-        const auto rows = co_await context.db().query(state);
-        co_return std::string(rows.front()[0].value().value_or("{}"));
-    }
-
-    static ruvia::db_query persistenceQuery(std::pmr::memory_resource* resource,
-        const std::vector<message::ParsedDeviceMessage>& messages, const std::vector<bool>& alertActive) {
+    static ruvia::db_query persistenceQuery(std::pmr::memory_resource* resource, const std::vector<message::ParsedDeviceMessage>& messages) {
         std::vector<std::string> rawPayloadArrays;
         rawPayloadArrays.reserve(messages.size());
         for (const auto& message : messages) {
@@ -293,18 +223,10 @@ class TelemetryService {
         Query incoming(resource);
         for (std::size_t index = 0; index < messages.size(); ++index) {
             const auto& parsed = messages[index];
-            incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), Type::big_int), timestamp(incoming, parsed.observedAtMs),
-                incoming.cast(incoming.value(parsed.messageId), Type::uuid), incoming.cast(incoming.value(parsed.deviceId), Type::uuid),
-                incoming.cast(incoming.value(parsed.linkId), Type::uuid), incoming.cast(incoming.value(parsed.connectionId), Type::uuid),
-                incoming.cast(incoming.value(parsed.protocol), Type::text), incoming.cast(incoming.value(parsed.source), Type::text), timestamp(incoming, parsed.occurredAtMs),
-                incoming.cast(incoming.value(parsed.valuesJson), Type::jsonb), incoming.cast(incoming.value(rawPayloadArrays[index]), Type::jsonb),
-                incoming.cast(incoming.value(parsed.storagePolicy), Type::text), incoming.cast(incoming.value(static_cast<bool>(alertActive[index])), Type::boolean) });
+            incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), Type::big_int), timestamp(incoming, parsed.observedAtMs), incoming.cast(incoming.value(parsed.messageId), Type::uuid), incoming.cast(incoming.value(parsed.deviceId), Type::uuid), incoming.cast(incoming.value(parsed.linkId), Type::uuid), incoming.cast(incoming.value(parsed.connectionId), Type::uuid), incoming.cast(incoming.value(parsed.protocol), Type::text), incoming.cast(incoming.value(parsed.source), Type::text), timestamp(incoming, parsed.occurredAtMs), incoming.cast(incoming.value(parsed.valuesJson), Type::jsonb), incoming.cast(incoming.value(rawPayloadArrays[index]), Type::jsonb), incoming.cast(incoming.value(parsed.storagePolicy), Type::text) });
         }
         Query valid(resource);
-        valid.select(valid.star("incoming")).from("incoming")
-            .join(ruvia::db_join_type::inner, service::telemetry::persistence::DeviceEntity::table_name(), valid.binary(
-                valid.binary(valid.column(std::tuple_element_t<service::telemetry::persistence::DeviceEntity::column_index<"id">(), service::telemetry::persistence::DeviceEntity::columns_type>::name.view(), "current_device"), Op::equal, valid.column("device_id", "incoming")), Op::and_value,
-                valid.binary(valid.column(std::tuple_element_t<service::telemetry::persistence::DeviceEntity::column_index<"link_id">(), service::telemetry::persistence::DeviceEntity::columns_type>::name.view(), "current_device"), Op::equal, valid.column("link_id", "incoming"))), "current_device");
+        valid.select(valid.star("incoming")).from("incoming").join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), valid.binary(valid.binary(valid.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "current_device"), Op::equal, valid.column("device_id", "incoming")), Op::and_value, valid.binary(valid.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "current_device"), Op::equal, valid.column("link_id", "incoming"))), "current_device");
         Query requested(resource);
         requested.select(requested.column("device_id")).distinct().from("valid_incoming");
         Query states(resource);
@@ -312,28 +234,9 @@ class TelemetryService {
         states.from(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), "state").join(ruvia::db_join_type::inner, "requested",
             states.binary(states.column(std::tuple_element_t<service::telemetry::persistence::DeviceDataIngestStateEntity::column_index<"device_id">(), service::telemetry::persistence::DeviceDataIngestStateEntity::columns_type>::name.view(), "state"), Op::equal, states.column("device_id", "requested")));
         Query ordered(resource);
-        const ruvia::db_window_options reportOrder{ .partition_by_ = { ordered.column("device_id", "incoming") },
-            .order_by_ = { { ordered.column("report_time", "incoming") }, { ordered.column("id", "incoming") } } };
-        ordered.select({ ordered.star("incoming"), ordered.alias(ordered.over(ordered.call("row_number"), reportOrder), "sequence"),
-                ordered.alias(ordered.column("last_stored_at", "states"), "last_stored"), ordered.alias(ordered.column("last_observed_at", "states"), "baseline_observed_at"),
-                ordered.alias(ordered.column("last_observed_id", "states"), "baseline_observed_id"), ordered.alias(ordered.column("last_data", "states"), "baseline_data") })
-            .from("valid_incoming", "incoming").join(ruvia::db_join_type::inner, "states",
-                ordered.binary(ordered.column("device_id", "incoming"), Op::equal, ordered.column("device_id", "states")));
-        Query lagged(resource);
-        const ruvia::db_window_options lagOrder{ .partition_by_ = { lagged.column("device_id") }, .order_by_ = { { lagged.column("report_time") }, { lagged.column("id") } } };
-        lagged.select(lagged.star("ordered")).from("ordered");
-        for (const auto& [column, alias] : { std::pair{ "report_time", "prior_report_time" }, std::pair{ "id", "prior_id" }, std::pair{ "data", "prior_data" } })
-            lagged.add_select(lagged.alias(lagged.over(lagged.call("lag", { lagged.column(column) }), lagOrder), alias));
-        Query predecessors(resource);
-        const auto baselinePresent = predecessors.unary(ruvia::db_unary_operator::is_not_null, predecessors.column("baseline_observed_at"));
-        const auto baselineOrder = predecessors.tuple({ predecessors.column("baseline_observed_at"), predecessors.column("baseline_observed_id") });
-        const auto stale = predecessors.binary(baselinePresent, Op::and_value, predecessors.binary(
-            predecessors.tuple({ predecessors.column("report_time"), predecessors.column("id") }), Op::less_equal, baselineOrder));
-        const auto prior = predecessors.binary(predecessors.unary(ruvia::db_unary_operator::is_not_null, predecessors.column("prior_report_time")), Op::and_value,
-            predecessors.binary(predecessors.unary(ruvia::db_unary_operator::is_null, predecessors.column("baseline_observed_at")), Op::or_value,
-                predecessors.binary(predecessors.tuple({ predecessors.column("prior_report_time"), predecessors.column("prior_id") }), Op::greater, baselineOrder)));
-        predecessors.select({ predecessors.column("input_sequence"), predecessors.alias(predecessors.case_when({ { stale, emptyJson(predecessors) },
-            { prior, predecessors.column("prior_data") } }, predecessors.coalesce({ predecessors.column("baseline_data"), emptyJson(predecessors) })), "previous_data") }).from("lagged");
+        ordered.select({ ordered.star("incoming"), ordered.alias(ordered.column("last_stored_at", "states"), "last_stored") })
+            .from("valid_incoming", "incoming")
+            .join(ruvia::db_join_type::inner, "states", ordered.binary(ordered.column("device_id", "incoming"), Op::equal, ordered.column("device_id", "states")));
         const auto unpackValue = [](Query& query, ruvia::db_expression value) {
             return query.case_when({ { query.binary(query.binary(query.call("jsonb_typeof", { value }), Op::equal, query.value("object")), Op::and_value,
                 query.binary(value, Op::json_has_key, query.value("value"))), query.binary(value, Op::json_get, query.value("value")) } }, value);
@@ -348,9 +251,9 @@ class TelemetryService {
         timeline.select({ timeline.column("input_sequence"), timeline.column("device_id"), timeline.column("element_id"), timeline.alias(timeline.column("report_time"), "observed_at"),
                 timeline.column("record_id"), timeline.column("point_value"), timeline.alias(timeline.cast(timeline.value(false), Type::boolean), "baseline") }).from("incoming_points");
         Query baseline(resource);
-        baseline.select({ baseline.cast(baseline.null_value(), Type::big_int), baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"element_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"),
-                baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"record_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), unpackValue(baseline, baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest")), baseline.cast(baseline.value(true), Type::boolean) })
-            .from(service::telemetry::persistence::DeviceLatestValueEntity::table_name(), "latest").join(ruvia::db_join_type::inner, "requested", baseline.binary(baseline.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), Op::equal, baseline.column("device_id", "requested")));
+        baseline.select({ baseline.cast(baseline.null_value(), Type::big_int), baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"element_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"record_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), unpackValue(baseline, baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest")), baseline.cast(baseline.value(true), Type::boolean) })
+            .from(service::telemetry::latest::persistence::DeviceLatestValueEntity::table_name(), "latest")
+            .join(ruvia::db_join_type::inner, "requested", baseline.binary(baseline.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::latest::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "latest"), Op::equal, baseline.column("device_id", "requested")));
         timeline.combine(ruvia::db_set_operation::union_all, baseline);
         Query pointLagged(resource);
         const ruvia::db_window_options pointOrder{ .partition_by_ = { pointLagged.column("device_id"), pointLagged.column("element_id") },
@@ -373,9 +276,12 @@ class TelemetryService {
         selectColumns(records, { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex" });
         const auto model = records.binary(records.column("data"), Op::json_get, records.value("model"));
         records.add_select(records.cast(records.binary(model, Op::json_get_text, records.value("id")), Type::uuid)).from("filtered").and_where(records.column("accepted"));
+        using Data = service::telemetry::persistence::DeviceDataEntity;
         Query inserted(resource);
-        inserted.insert_into(service::telemetry::persistence::DeviceDataEntity::table_name(), { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "model_id" })
-            .insert_from(records).on_conflict({ .columns_ = { "id", "report_time" }, .do_nothing_ = true }).returning({ inserted.column(std::tuple_element_t<service::telemetry::persistence::DeviceDataEntity::column_index<"device_id">(), service::telemetry::persistence::DeviceDataEntity::columns_type>::name.view()) });
+        inserted.insert_into(service::telemetry::persistence::DeviceDataEntity::table_name(), { Data::column<"report_time">().name(), Data::column<"id">().name(), Data::column<"device_id">().name(), Data::column<"link_id">().name(), Data::column<"connection_id">().name(), Data::column<"protocol">().name(), Data::column<"source">().name(), Data::column<"occurred_at">().name(), Data::column<"data">().name(), Data::column<"raw_payload_hex">().name(), Data::column<"model_id">().name() })
+            .insert_from(records)
+            .on_conflict({ .columns_ = { std::string(Data::column<"id">().name()), std::string(Data::column<"report_time">().name()) }, .do_nothing_ = true })
+            .returning({ inserted.column(Data::column<"device_id">().name()) });
         Query storage(resource);
         const auto lastStored = storage.aggregate("max", { storage.column("last_stored") });
         const auto lastAccepted = storage.filter(storage.aggregate("max", { storage.column("report_time") }), storage.column("accepted"));
@@ -408,13 +314,9 @@ class TelemetryService {
         Query latestRows(resource);
         selectColumns(latestRows, { "device_id", "element_id", "value", "observed_at", "record_id" });
         latestRows.add_select(latestRows.call("now")).from("latest_elements");
+        using Latest = service::telemetry::latest::persistence::DeviceLatestValueEntity;
         Query latestValues(resource);
-        latestValues.insert_into(service::telemetry::persistence::DeviceLatestValueEntity::table_name(), { "device_id", "element_id", "value", "observed_at", "record_id", "updated_at" }).insert_from(latestRows)
-            .on_conflict({ .columns_ = { "device_id", "element_id" }, .update_ = { { "value", latestValues.excluded(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"value">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()) }, { "observed_at", latestValues.excluded(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()) },
-                { "record_id", latestValues.excluded(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"record_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()) }, { "updated_at", latestValues.call("now") } },
-                .update_where_ = latestValues.binary(latestValues.tuple({ latestValues.excluded(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()), latestValues.excluded(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"record_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()) }), Op::greater,
-                    latestValues.tuple({ latestValues.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"observed_at">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "device_latest_value"), latestValues.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"record_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view(), "device_latest_value") })) })
-            .returning({ latestValues.column(std::tuple_element_t<service::telemetry::persistence::DeviceLatestValueEntity::column_index<"device_id">(), service::telemetry::persistence::DeviceLatestValueEntity::columns_type>::name.view()) });
+        latestValues.insert_into(Latest::table_name(), { Latest::column<"device_id">().name(), Latest::column<"element_id">().name(), Latest::column<"value">().name(), Latest::column<"observed_at">().name(), Latest::column<"record_id">().name(), Latest::column<"updated_at">().name() }).insert_from(latestRows).on_conflict({ .columns_ = { std::string(Latest::column<"device_id">().name()), std::string(Latest::column<"element_id">().name()) }, .update_ = { { std::string(Latest::column<"value">().name()), latestValues.excluded(Latest::column<"value">().name()) }, { std::string(Latest::column<"observed_at">().name()), latestValues.excluded(Latest::column<"observed_at">().name()) }, { std::string(Latest::column<"record_id">().name()), latestValues.excluded(Latest::column<"record_id">().name()) }, { std::string(Latest::column<"updated_at">().name()), latestValues.call("now") } }, .update_where_ = latestValues.binary(latestValues.tuple({ latestValues.excluded(Latest::column<"observed_at">().name()), latestValues.excluded(Latest::column<"record_id">().name()) }), Op::greater, latestValues.tuple({ Latest::column<"observed_at">().expression(latestValues), Latest::column<"record_id">().expression(latestValues) })) }).returning({ latestValues.column(Latest::column<"device_id">().name()) });
         const auto barrier = [&](std::string_view table, std::string_view countName) {
             Query query(resource);
             query.select(query.alias(query.aggregate("count", { query.star() }), countName)).from(table);
@@ -436,33 +338,37 @@ class TelemetryService {
         auto latestBarrier = barrier("latest_values", "latest_count");
         Query persisted(resource);
         const ruvia::db_cte_options materialized{ .materialization_ = ruvia::db_materialization::materialized };
-        persisted.with("incoming", incoming, { .columns_ = { "input_sequence", "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "storage_policy", "needs_previous" } })
-            .with("valid_incoming", valid, materialized).with("requested", requested, materialized).with("states", states, materialized).with("ordered", ordered)
-            .with("lagged", lagged, materialized).with("predecessors", predecessors, materialized).with("incoming_points", incomingPoints, materialized)
-            .with("point_timeline", timeline, materialized).with("point_lagged", pointLagged, materialized).with("point_changes", changes, materialized)
-            .with("filtered", filtered, materialized).with("inserted", inserted).with("storage_summary", storage, materialized).with("new_observed", newObserved, materialized)
-            .with("observed_summary", observed, materialized).with("latest_elements", latestElements, materialized).with("latest_values", latestValues).with("state_updated", stateUpdated)
-            .select({ persisted.cast(persisted.column("input_sequence", "incoming"), Type::text),
-                persisted.cast(persisted.case_when({ { persisted.column("needs_previous", "incoming"), persisted.coalesce({ persisted.column("previous_data", "predecessors"), emptyJson(persisted) }) } }, emptyJson(persisted)), Type::text) })
-            .from("incoming").join(ruvia::db_join_type::left, "predecessors", persisted.binary(persisted.column("input_sequence", "incoming"), Op::equal, persisted.column("input_sequence", "predecessors")))
-            .join(ruvia::db_join_type::cross, updateBarrier, {}, "update_barrier").join(ruvia::db_join_type::cross, latestBarrier, {}, "latest_barrier")
-            .and_where(persisted.binary(persisted.column("updated_count", "update_barrier"), Op::greater_equal, persisted.value(0)))
-            .and_where(persisted.binary(persisted.column("latest_count", "latest_barrier"), Op::greater_equal, persisted.value(0))).add_order_by(persisted.column("input_sequence", "incoming"));
+        persisted.with("incoming", incoming, { .columns_ = { "input_sequence", "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "storage_policy" } })
+            .with("valid_incoming", valid, materialized)
+            .with("requested", requested, materialized)
+            .with("states", states, materialized)
+            .with("ordered", ordered)
+            .with("incoming_points", incomingPoints, materialized)
+            .with("point_timeline", timeline, materialized)
+            .with("point_lagged", pointLagged, materialized)
+            .with("point_changes", changes, materialized)
+            .with("filtered", filtered, materialized)
+            .with("inserted", inserted)
+            .with("storage_summary", storage, materialized)
+            .with("new_observed", newObserved, materialized)
+            .with("observed_summary", observed, materialized)
+            .with("latest_elements", latestElements, materialized)
+            .with("latest_values", latestValues)
+            .with("state_updated", stateUpdated)
+            .select({ persisted.column("updated_count", "update_barrier"), persisted.column("latest_count", "latest_barrier") })
+            .from(updateBarrier, "update_barrier")
+            .join(ruvia::db_join_type::cross, latestBarrier, {}, "latest_barrier");
         return persisted;
     }
 
-    static ruvia::task<std::vector<std::string>>
-    persist(ruvia::web_worker_context& context, const std::vector<message::ParsedDeviceMessage>& messages, const std::vector<bool>& alertActive) {
+    // 写入一批历史：按设备加锁并补齐写入状态后，在一条语句内写 device_data、device_latest_value 与 device_data_ingest_state。
+    static ruvia::task<void> persist(ruvia::web_worker_context& context, const std::vector<message::ParsedDeviceMessage>& messages) {
         if (messages.empty()) {
-            co_return std::vector<std::string>{};
-        }
-        if (messages.size() != alertActive.size()) {
-            throw std::invalid_argument("telemetry alert-active batch size mismatch");
+            co_return;
         }
         using Query = ruvia::db_query;
-        using Op = ruvia::db_binary_operator;
         using Type = ruvia::db_data_type;
-        auto persisted = persistenceQuery(context.pool(), messages, alertActive);
+        auto persisted = persistenceQuery(context.pool(), messages);
         // Acquire per-device locks before taking the statement snapshot. Seeding
         // in a data-modifying CTE is invisible to sibling SELECTs and drops a
         // newly created device's first sample.
@@ -483,24 +389,12 @@ class TelemetryService {
         deviceRows.select(deviceRows.column("device_id")).from("requested");
         Query seed(context.pool());
         seed.with("requested", requestedDevices, { .columns_ = { "device_id" } })
-            .insert_into(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), { "device_id" }).insert_from(deviceRows)
-            .on_conflict({ .columns_ = { "device_id" }, .do_nothing_ = true });
+            .insert_into(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), { service::telemetry::persistence::DeviceDataIngestStateEntity::column<"device_id">().name() })
+            .insert_from(deviceRows)
+            .on_conflict({ .columns_ = { std::string(service::telemetry::persistence::DeviceDataIngestStateEntity::column<"device_id">().name()) }, .do_nothing_ = true });
         (void)co_await transaction.execute(seed);
-        const auto rows = co_await transaction.query(persisted);
+        (void)co_await transaction.query(persisted);
         co_await transaction.commit();
-        std::vector<std::string> previous(messages.size(), "{}");
-        for (const auto& row : rows) {
-            const auto parsedSequence =
-                service::utils::parseInt64(std::optional<std::string_view>{ row[0].value().value_or(std::string_view{}) });
-            if (!parsedSequence || *parsedSequence < 0) {
-                continue;
-            }
-            const auto sequence = static_cast<std::size_t>(*parsedSequence);
-            if (sequence < previous.size() && row[1].value().has_value()) {
-                previous[sequence].assign(row[1].value().value_or(std::string_view{}));
-            }
-        }
-        co_return previous;
     }
 };
 

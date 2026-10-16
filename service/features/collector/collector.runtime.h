@@ -1,10 +1,7 @@
 #pragma once
 
-#include "service/common/uuid.h"
-#include "service/features/packet_log/packet_log.service.h"
-
 #include <algorithm>
-#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +15,7 @@
 #include <memory_resource>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -27,27 +25,39 @@
 #include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
-
-#include "service/middleware/log.h"
-#include "service/features/packet_log/packet_log.transport.h"
-#include "service/common/message.h"
-#include "service/features/collector/collector.service.h"
-#include "service/features/command/command.types.h"
-#include "service/features/telemetry/derived/derived.service.h"
-#include "service/features/collector/engine/engine.runtime.h"
-#include "service/features/collector/modbus/modbus.protocol.h"
+#include <ruvia/web/redis/redis.h>
 #include <ruvia/web/redis/redis_client.h>
-#include "service/features/collector/s7/s7.protocol.h"
-#include "service/features/collector/mc/mc.protocol.h"
-#include "service/features/collector/fins/fins.protocol.h"
+
+#include "service/common/message.h"
+#include "service/common/uuid.h"
+#include "service/features/collector/collector.service.h"
 #include "service/features/collector/dlt645/dlt645.protocol.h"
+#include "service/features/collector/engine/engine.runtime.h"
+#include "service/features/collector/fins/fins.protocol.h"
+#include "service/features/collector/mc/mc.protocol.h"
+#include "service/features/collector/modbus/modbus.protocol.h"
 #include "service/features/collector/mqtt/mqtt.protocol.h"
+#include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
-#include "service/features/messaging/messaging.transport.h"
 #include "service/features/gb28181/gb28181.runtime.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/packet_log/packet_log.service.h"
+#include "service/features/packet_log/packet_log.transport.h"
+#include "service/middleware/log.h"
 
 namespace service::collector {
+
+// 停机步骤失败只记录后继续后续步骤；只能在 catch 块内调用。
+inline void logShutdownFailure(std::string_view step) noexcept {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        LOG_ERROR << "[Collector] shutdown_" << step << "_failed: " << error.what();
+    } catch (...) {
+        LOG_ERROR << "[Collector] shutdown_" << step << "_failed: unknown error";
+    }
+}
 
 class CollectorWorker final {
   public:
@@ -57,7 +67,7 @@ class CollectorWorker final {
           scheduler_(loop_.io_context()),
           redisClient_(std::move(redisClient)),
           redisBlocking_(redisClient_->handle()),
-          redis_(redisClient_->with_options({.timeout_ = std::chrono::seconds(30)})),
+          redis_(redisClient_->with_options({ .timeout_ = std::chrono::seconds(30) })),
           engine_(protocols()),
           tcp_(
               uuidGenerator_,
@@ -68,7 +78,7 @@ class CollectorWorker final {
               [this](ProtocolConnectionInfo info) {
                   enqueueConnected(std::move(info));
               },
-              [this](message::IngressPacket packet) {
+              [this](IngressPacket packet) {
                   enqueueIngress(std::move(packet));
               },
               [this](std::string connectionId, std::string reason) {
@@ -93,7 +103,9 @@ class CollectorWorker final {
           ),
           gb28181_(uuidGenerator_, std::move(gb28181), loop_, redisClient_->with_options({}), workerIndex, workerCount),
           workerIndex_(workerIndex), workerCount_(workerCount),
-          consumer_("collector-" + std::to_string(workerIndex)) {}
+          consumer_("collector-" + std::to_string(workerIndex)),
+          commands_(redis_, uuidGenerator_, workerIndex, collectorGroup(), consumer_, message::deadLetterStream(workerIndex, service::runtime::instanceId())),
+          derived_(redis_, uuidGenerator_) {}
 
     CollectorWorker(const CollectorWorker&) = delete;
     CollectorWorker& operator=(const CollectorWorker&) = delete;
@@ -107,6 +119,7 @@ class CollectorWorker final {
         }
     }
 
+    // 先停止业务任务，再在所属 event_loop 上等待 Redis 客户端关闭；每一步失败都记录后继续后续步骤。
     [[nodiscard]] ruvia::task<void> shutdown() {
         if (shutdownStarted_) {
             co_return;
@@ -123,24 +136,28 @@ class CollectorWorker final {
             scheduler_.cancel(deadline.token);
         }
         targetLeaseDeadlines_.clear();
-        tcp_.stop();
+        try {
+            tcp_.stop();
+        } catch (...) {
+            logShutdownFailure("transport");
+        }
         try {
             co_await gb28181_.shutdown();
         } catch (...) {
+            logShutdownFailure("gb28181");
         }
         scope_.request_stop();
         try {
             co_await scope_.join();
         } catch (...) {
+            logShutdownFailure("task_scope");
         }
         for (const auto& [connectionId, deviceCodes] : routes_) {
             for (const auto& deviceCode : deviceCodes) {
                 try {
                     co_await eraseRoute(deviceCode, connectionId, "local_closed");
-                } catch (const std::exception& error) {
-                    LOG_WARN << "[Collector] shutdown_route_cleanup_failed: " << error.what();
                 } catch (...) {
-                    LOG_WARN << "[Collector] shutdown_route_cleanup_failed: unknown error";
+                    logShutdownFailure("route_cleanup");
                 }
             }
         }
@@ -152,17 +169,24 @@ class CollectorWorker final {
             try {
                 co_await ownership::releaseTarget(redis_, target.first, target.second, targetLeaseOwner(connectionId));
             } catch (...) {
+                logShutdownFailure("target_release");
             }
         }
         try {
             co_await CollectorStateService::eraseWorker(redis_, workerIndex_, workerInstanceId_);
-        } catch (const std::exception& error) {
-            LOG_WARN << "[Collector] shutdown_snapshot_cleanup_failed: " << error.what();
         } catch (...) {
-            LOG_WARN << "[Collector] shutdown_snapshot_cleanup_failed: unknown error";
+            logShutdownFailure("snapshot_cleanup");
         }
-        co_await redisClient_->shutdown();
-        scheduler_.stop();
+        try {
+            co_await redisClient_->shutdown();
+        } catch (...) {
+            logShutdownFailure("redis");
+        }
+        try {
+            scheduler_.stop();
+        } catch (...) {
+            logShutdownFailure("scheduler");
+        }
     }
 
     [[nodiscard]] std::size_t index() const noexcept { return workerIndex_; }
@@ -171,18 +195,6 @@ class CollectorWorker final {
     struct TargetLeaseDeadline {
         DeadlineScheduler::Token token;
         std::chrono::steady_clock::time_point expiresAt;
-    };
-
-    struct PendingCommand {
-        std::string stream;
-        std::string entryId;
-        message::ProtocolTask task;
-    };
-
-    struct BroadcastCommand {
-        std::size_t remaining = 0;
-        bool anySuccess = false;
-        std::string reason;
     };
 
     struct EgressLogContext {
@@ -205,10 +217,16 @@ class CollectorWorker final {
 
     std::map<std::string, EgressLogContext> debugPendingSends_;
 
+    struct ConnectionEvent {
+        bool connected = false;
+        ProtocolConnectionInfo info;
+        std::string reason;
+    };
+
+    // 传输层回调按到达顺序入队，由同一个排空任务逐项交给协议引擎，保证同一连接的字节与连接事件有序。
     struct IngressWork {
-        std::optional<message::IngressPacket> packet;
-        std::optional<message::ConnectionEvent> connectionEvent;
-        std::string connectionId;
+        std::optional<IngressPacket> packet;
+        std::optional<ConnectionEvent> connectionEvent;
     };
 
     static ProtocolSessionFactoryRegistry protocols() {
@@ -227,8 +245,6 @@ class CollectorWorker final {
 
     [[nodiscard]] std::string configGroup() const { return collectorGroup(); }
 
-    [[nodiscard]] std::string ingressGroup() const { return collectorGroup(); }
-
     [[nodiscard]] std::string egressGroup() const { return collectorGroup(); }
 
     [[nodiscard]] std::string linkEventGroup() const { return collectorGroup(); }
@@ -243,8 +259,6 @@ class CollectorWorker final {
 
     [[nodiscard]] std::string controlStream() const { return message::controlStream(workerIndex_, service::runtime::instanceId()); }
 
-    [[nodiscard]] std::string ingressStream() const { return message::ingressStream(workerIndex_, service::runtime::instanceId()); }
-
     [[nodiscard]] std::string parsedStream() const { return message::parsedStream(); }
 
     [[nodiscard]] std::string egressStream() const { return message::egressStream(workerIndex_, service::runtime::instanceId()); }
@@ -253,21 +267,52 @@ class CollectorWorker final {
         return message::linkEventStream(workerIndex_, service::runtime::instanceId());
     }
 
-    [[nodiscard]] std::string commandResultStream() const { return message::commandResultStream(); }
-
     [[nodiscard]] std::string deadLetterStream() const {
         return message::deadLetterStream(workerIndex_, service::runtime::instanceId());
     }
 
+    [[nodiscard]] const LinkDefinition* findLink(std::string_view linkId) const noexcept {
+        const auto current = linkIndexes_.find(linkId);
+        return current == linkIndexes_.end() ? nullptr : &loadedSnapshot_.links[current->second];
+    }
+
+    [[nodiscard]] const DeviceDefinition* findDevice(std::string_view deviceId) const noexcept {
+        const auto current = deviceIndexes_.find(deviceId);
+        return current == deviceIndexes_.end() ? nullptr : &loadedSnapshot_.devices[current->second];
+    }
+
     [[nodiscard]] std::string_view protocolForLink(std::string_view linkId) const noexcept {
-        const auto current = std::find_if(
-            loadedSnapshot_.links.begin(),
-            loadedSnapshot_.links.end(),
-            [linkId](const auto& link) {
-                return link.id == linkId;
+        const auto* link = findLink(linkId);
+        return link ? std::string_view(link->protocol) : std::string_view{};
+    }
+
+    [[nodiscard]] std::string remoteAddress(std::string_view connectionId) const {
+        const auto network = networkConnections_.find(connectionId);
+        return network == networkConnections_.end() ? std::string{} : network->second.remoteAddress;
+    }
+
+    // 快照替换时建立 id→下标索引与调试链路集合，并让派生服务按新快照更新已解析配置。
+    void replaceLoadedSnapshot(RuntimeSnapshot snapshot) {
+        loadedSignature_ = config::signature(snapshot);
+        loadedSnapshot_ = std::move(snapshot);
+        linkIndexes_.clear();
+        deviceIndexes_.clear();
+        debugLinks_.clear();
+        for (std::size_t index = 0; index < loadedSnapshot_.links.size(); ++index) {
+            const auto& link = loadedSnapshot_.links[index];
+            linkIndexes_.insert_or_assign(link.id, index);
+            if (link.debugEnabled) {
+                debugLinks_.insert(link.id);
             }
-        );
-        return current == loadedSnapshot_.links.end() ? std::string_view{} : current->protocol;
+        }
+        for (std::size_t index = 0; index < loadedSnapshot_.devices.size(); ++index) {
+            const auto& device = loadedSnapshot_.devices[index];
+            deviceIndexes_.insert_or_assign(device.id, index);
+            if (device.debugEnabled) {
+                debugLinks_.insert(device.linkId);
+            }
+        }
+        derived_.reload(loadedSnapshot_);
     }
 
     [[nodiscard]] std::string deviceCodesForConnection(std::string_view connectionId) const {
@@ -285,22 +330,12 @@ class CollectorWorker final {
         return result;
     }
 
-    [[nodiscard]] const message::ProtocolTask*
-    taskForCausation(std::string_view causationId) const noexcept {
-        auto current = pendingCommands_.find(causationId);
-        if (current != pendingCommands_.end()) {
-            return &current->second.task;
-        }
-        const auto child = broadcastParents_.find(causationId);
-        if (child == broadcastParents_.end()) {
-            return nullptr;
-        }
-        current = pendingCommands_.find(child->second);
-        return current == pendingCommands_.end() ? nullptr : &current->second.task;
+    [[nodiscard]] const message::ProtocolTask* taskForCausation(std::string_view causationId) const noexcept {
+        return commands_.taskForCausation(causationId);
     }
 
     [[nodiscard]] service::packet_log::Context
-    ingressLogContext(const message::IngressPacket& packet, std::string_view deviceCodes = {}) const noexcept {
+    ingressLogContext(const IngressPacket& packet, std::string_view deviceCodes = {}) const noexcept {
         service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.direction = "RX";
@@ -316,16 +351,15 @@ class CollectorWorker final {
     }
 
     [[nodiscard]] service::packet_log::Context
-    connectionLogContext(const message::ConnectionEvent& event) const noexcept {
+    connectionLogContext(const ProtocolConnectionInfo& info) const noexcept {
         service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.operation = "connection";
-        context.protocol = protocolForLink(event.linkId);
-        context.linkId = event.linkId;
-        context.connectionId = event.connectionId;
-        context.remoteAddress = event.remoteAddress;
-        context.messageId = event.messageId;
-        context.sessionEpoch = event.sessionEpoch;
+        context.protocol = protocolForLink(info.linkId);
+        context.linkId = info.linkId;
+        context.connectionId = info.connectionId;
+        context.remoteAddress = info.remoteAddress;
+        context.sessionEpoch = info.sessionEpoch;
         return context;
     }
 
@@ -440,7 +474,10 @@ class CollectorWorker final {
             }
             try {
                 co_await ownership::releaseTarget(redis_, linkId, targetId, targetLeaseOwner(connectionId));
+            } catch (const std::exception& error) {
+                LOG_WARN << "[Collector] target_release_failed: " << error.what();
             } catch (...) {
+                LOG_WARN << "[Collector] target_release_failed: unknown error";
             }
             claimed = false;
         }
@@ -534,7 +571,6 @@ class CollectorWorker final {
         try {
             co_await gb28181_.initialize();
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
-            co_await message::redis::ensureGroup(redis_, ingressStream(), ingressGroup());
             co_await message::redis::ensureGroup(redis_, egressStream(), egressGroup());
             co_await message::redis::ensureGroup(redis_, linkEventStream(), linkEventGroup());
             co_await message::redis::ensureGroup(redis_, commandStream(true), commandGroup());
@@ -548,7 +584,7 @@ class CollectorWorker final {
             co_await CollectorStateService::eraseLegacyLinkSnapshots(redis_, snapshot);
             engine_.reload(snapshot);
             tcp_.reload(snapshot);
-            loadedSnapshot_ = std::move(snapshot);
+            replaceLoadedSnapshot(std::move(snapshot));
             co_await CollectorStateService::publishWorker(redis_, workerIndex_, workerInstanceId_, loadedConfigVersion_);
             ready->set_value();
             scheduleTargetRenewal();
@@ -556,11 +592,14 @@ class CollectorWorker final {
             nextConfigRecovery_ = std::chrono::steady_clock::now() + std::chrono::seconds(60);
             scheduleTick(std::chrono::milliseconds(0));
         } catch (...) {
+            stopping_ = true;
             try {
                 ready->set_exception(std::current_exception());
+            } catch (const std::exception& error) {
+                LOG_ERROR << "[Collector] startup_failure_unreported: " << error.what();
             } catch (...) {
+                LOG_ERROR << "[Collector] startup_failure_unreported: unknown error";
             }
-            stopping_ = true;
         }
     }
 
@@ -585,7 +624,6 @@ class CollectorWorker final {
         highRecovering_ = true;
         normalRecovering_ = true;
         controlRecovering_ = true;
-        ingressRecovering_ = true;
         egressRecovering_ = true;
         linkEventRecovering_ = true;
         scheduleTick(kFailureDelay);
@@ -596,11 +634,6 @@ class CollectorWorker final {
             bool handled = co_await consumeConfig();
             handled = co_await consumeControl() || handled;
             handled = co_await consumeLinkEvent() || handled;
-            handled = co_await consumeIngress() || handled;
-            handled = co_await consumeCommand(true) || handled;
-            // Raw ingress is always given another chance before normal work so registration and
-            // command responses cannot be starved by polling.
-            handled = co_await consumeIngress() || handled;
             handled = co_await consumeCommand(true) || handled;
             handled = co_await consumeCommand(false) || handled;
             handled = co_await consumeEgress() || handled;
@@ -648,12 +681,30 @@ class CollectorWorker final {
                 nextConfigRecovery_ = now + std::chrono::seconds(60);
             }
             auto snapshot = co_await ownership::retain(redis_, desiredSnapshot_);
-            if (version != loadedConfigVersion_ || config::signature(snapshot) != config::signature(loadedSnapshot_)) {
+            if (version != loadedConfigVersion_ || config::signature(snapshot) != loadedSignature_) {
                 co_await CollectorStateService::eraseLegacyRoutes(redis_, snapshot);
                 co_await CollectorStateService::eraseLegacyLinkSnapshots(redis_, snapshot);
                 const auto plan = engine_.planReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
                 engine_.reloadRetainingSessions(snapshot);
+                std::set<std::string_view> nextLinks;
+                for (const auto& link : snapshot.links) {
+                    nextLinks.insert(link.id);
+                }
+                std::vector<std::string> removedLinks;
+                for (const auto& link : loadedSnapshot_.links) {
+                    if (!nextLinks.contains(link.id)) {
+                        removedLinks.push_back(link.id);
+                    }
+                }
+                nextLinks.clear();
+                // 引擎已同步切换到新快照；在任何 await 之前同步替换 Worker 快照，
+                // 让同时运行的入站排空任务与引擎看到同一代配置。
+                replaceLoadedSnapshot(std::move(snapshot));
+                for (const auto& linkId : removedLinks) {
+                    linkStates_.erase(linkId);
+                    co_await CollectorStateService::eraseLink(redis_, linkId, workerIndex_, workerInstanceId_);
+                }
                 auto sessionRefreshes =
                     engine_.refreshClientSessions(plan.refreshClientSessions);
                 std::erase_if(sessionRefreshes, [this](const auto& refresh) {
@@ -672,19 +723,6 @@ class CollectorWorker final {
                 for (auto& refresh : sessionRefreshes) {
                     co_await applySessionRefresh(std::move(refresh));
                 }
-                for (const auto& link : loadedSnapshot_.links) {
-                    if (std::none_of(
-                            snapshot.links.begin(),
-                            snapshot.links.end(),
-                            [&link](const auto& current) {
-                                return current.id == link.id;
-                            }
-                        )) {
-                        linkStates_.erase(link.id);
-                        co_await CollectorStateService::eraseLink(redis_, link.id, workerIndex_, workerInstanceId_);
-                    }
-                }
-                loadedSnapshot_ = std::move(snapshot);
                 loadedConfigVersion_ = desiredConfigVersion_;
                 co_await CollectorStateService::publishWorker(redis_, workerIndex_, workerInstanceId_, loadedConfigVersion_);
                 changed = true;
@@ -754,7 +792,7 @@ class CollectorWorker final {
                     )
                 };
             };
-            if (task.kind == "discovery") {
+            if (task.kind == "discovery" && service::packet_log::enabled(service::packet_log::Level::Info)) {
                 const auto payload = message::fromHex(task.payload);
                 service::packet_log::write(
                     service::packet_log::Level::Info,
@@ -773,11 +811,10 @@ class CollectorWorker final {
                         {},
                         "discovery_no_connections"
                     );
-                    co_await failUndeliverable(stream, message.id, task.messageId, task, "discovery_no_connections");
+                    co_await failUndeliverable(stream, message.id, task, "discovery_no_connections");
                     continue;
                 }
-                pendingCommands_.insert_or_assign(task.messageId, PendingCommand{ stream, message.id, task });
-                broadcasts_[task.messageId] = BroadcastCommand{ .remaining = connections.size() };
+                commands_.startBroadcast(stream, message.id, task, connections.size());
                 const auto targetCount = "targets=" + std::to_string(connections.size());
                 service::packet_log::write(
                     service::packet_log::Level::Info,
@@ -788,7 +825,7 @@ class CollectorWorker final {
                 );
                 for (const auto& connectionId : connections) {
                     const auto childId = uuidGenerator_.next();
-                    broadcastParents_[childId] = task.messageId;
+                    commands_.addBroadcastTarget(childId, task.messageId);
                     auto context = taskLogContext(task, connectionId);
                     context.causationId = task.messageId;
                     context.messageId = childId;
@@ -802,20 +839,20 @@ class CollectorWorker final {
                 continue;
             }
             if (task.connectionId.empty()) {
-                co_await failUndeliverable(stream, message.id, task.messageId, task, "connection_route_missing");
+                co_await failUndeliverable(stream, message.id, task, "connection_route_missing");
                 continue;
             }
             const auto epoch = connectionEpochs_.find(task.connectionId);
             if (task.sessionEpoch != 0 &&
                 (epoch == connectionEpochs_.end() || epoch->second != task.sessionEpoch)) {
-                co_await failUndeliverable(stream, message.id, task.messageId, task, "stale_session_epoch");
+                co_await failUndeliverable(stream, message.id, task, "stale_session_epoch");
                 continue;
             }
             if (task.kind == "command") {
                 const auto reservation = co_await CollectorCommandService::reserveTransmission(
                     redis_, task, message::utcNowMilliseconds());
                 if (reservation == TransmissionReservation::Expired) {
-                    co_await failUndeliverable(stream, message.id, task.messageId, task, "dispatch_deadline_expired");
+                    co_await failUndeliverable(stream, message.id, task, "dispatch_deadline_expired");
                     continue;
                 }
                 if (reservation == TransmissionReservation::Duplicate) {
@@ -823,7 +860,7 @@ class CollectorWorker final {
                     continue;
                 }
             }
-            pendingCommands_.insert_or_assign(task.messageId, PendingCommand{ stream, message.id, task });
+            commands_.track(stream, message.id, task);
             auto command = makeCommand(task.messageId);
             if (task.kind == "discovery") {
                 service::packet_log::write(
@@ -857,9 +894,14 @@ class CollectorWorker final {
         std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {},
         std::string_view parsedJson = {}, std::string_view replyToPacketId = {},
         std::string_view acquisitionId = {}) {
-        const auto link = std::find_if(loadedSnapshot_.links.begin(), loadedSnapshot_.links.end(),
-            [&](const auto& value) { return value.id == linkId; });
-        if (link == loadedSnapshot_.links.end()) co_return;
+        // 只有链路或其设备开启调试时才做设备归属与存储；其余报文不进入调试路径。
+        if (!debugLinks_.contains(linkId)) {
+            co_return;
+        }
+        const auto* link = findLink(linkId);
+        if (!link) {
+            co_return;
+        }
         const auto connection = networkConnections_.find(connectionId);
         const std::string peerAddress = !address.empty() ? std::string(address) :
             connection == networkConnections_.end() ? std::string{} : connection->second.remoteAddress;
@@ -882,21 +924,23 @@ class CollectorWorker final {
         }
     }
 
-    void enqueueIngress(message::IngressPacket packet) {
+    void enqueueIngress(IngressPacket packet) {
         if (stopping_) {
             return;
         }
-        packet.workerInstanceId = workerInstanceId_;
-        const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-        const auto logContext = ingressLogContext(packet, deviceCodes);
-        service::packet_log::write(service::packet_log::Level::Debug, "RX_BYTES", logContext, packet.payload);
-        if (ingressWork_.size() >= kRawIngressCapacity) {
-            service::packet_log::write(service::packet_log::Level::Error, "RX_DROPPED", logContext, packet.payload, "raw_ingress_backpressure");
+        if (service::packet_log::enabled(service::packet_log::Level::Debug)) {
+            const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+            service::packet_log::write(service::packet_log::Level::Debug, "RX_BYTES", ingressLogContext(packet, deviceCodes), packet.payload);
+        }
+        if (ingressWork_.size() >= kIngressCapacity) {
+            if (service::packet_log::enabled(service::packet_log::Level::Error)) {
+                const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                service::packet_log::write(service::packet_log::Level::Error, "RX_DROPPED", ingressLogContext(packet, deviceCodes), packet.payload, "raw_ingress_backpressure");
+            }
             tcp_.close(packet.connectionId, "raw_ingress_backpressure");
             return;
         }
-        const auto connectionId = packet.connectionId;
-        ingressWork_.push_back({ .packet = std::move(packet), .connectionEvent = std::nullopt, .connectionId = connectionId });
+        ingressWork_.push_back({ .packet = std::move(packet), .connectionEvent = std::nullopt });
         startIngressDrain();
     }
 
@@ -904,20 +948,9 @@ class CollectorWorker final {
         if (stopping_) {
             return;
         }
-        const auto connectionId = info.connectionId;
-        networkConnections_.insert_or_assign(connectionId, info);
-        message::ConnectionEvent event{ .messageId = uuidGenerator_.next(),
-                                        .workerInstanceId = workerInstanceId_,
-                                        .eventType = "connected",
-                                        .linkId = info.linkId,
-                                        .connectionId = info.connectionId,
-                                        .remoteAddress = info.remoteAddress,
-                                        .targetId = info.targetId,
-                                        .reason = {},
-                                        .sessionEpoch = info.sessionEpoch,
-                                        .occurredAtMs = message::utcNowMilliseconds() };
-        service::packet_log::write(service::packet_log::Level::Info, "CONNECTED", connectionLogContext(event));
-        ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = std::move(event), .connectionId = connectionId });
+        networkConnections_.insert_or_assign(info.connectionId, info);
+        service::packet_log::write(service::packet_log::Level::Info, "CONNECTED", connectionLogContext(info));
+        ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = ConnectionEvent{ .connected = true, .info = std::move(info), .reason = {} } });
         startIngressDrain();
     }
 
@@ -929,23 +962,13 @@ class CollectorWorker final {
         if (current == networkConnections_.end()) {
             return;
         }
-        const auto info = current->second;
+        auto info = std::move(current->second);
         networkConnections_.erase(current);
         if (!info.targetId.empty()) {
             releaseTargetLease(info.linkId, info.targetId, connectionId);
         }
-        message::ConnectionEvent event{ .messageId = uuidGenerator_.next(),
-                                        .workerInstanceId = workerInstanceId_,
-                                        .eventType = "disconnected",
-                                        .linkId = info.linkId,
-                                        .connectionId = info.connectionId,
-                                        .remoteAddress = info.remoteAddress,
-                                        .targetId = info.targetId,
-                                        .reason = std::move(reason),
-                                        .sessionEpoch = info.sessionEpoch,
-                                        .occurredAtMs = message::utcNowMilliseconds() };
-        service::packet_log::write(service::packet_log::Level::Warn, "DISCONNECTED", connectionLogContext(event), {}, event.reason);
-        ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = std::move(event), .connectionId = std::move(connectionId) });
+        service::packet_log::write(service::packet_log::Level::Warn, "DISCONNECTED", connectionLogContext(info), {}, reason);
+        ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = ConnectionEvent{ .connected = false, .info = std::move(info), .reason = std::move(reason) } });
         startIngressDrain();
     }
 
@@ -957,227 +980,111 @@ class CollectorWorker final {
         scope_.spawn(drainIngress());
     }
 
+    // 单一排空任务按到达顺序逐项处理，保证同一连接的字节与连接事件顺序；处理失败只影响该连接。
     ruvia::task<void> drainIngress() {
         while (!stopping_ && !ingressWork_.empty()) {
             auto work = std::move(ingressWork_.front());
             ingressWork_.pop_front();
-            try {
-                const auto fields = work.packet
-                    ? message::ingressFields(*work.packet)
-                    : message::connectionEventFields(*work.connectionEvent);
-                (void)co_await message::redis::add(redis_, ingressStream(), fields, kRawIngressCapacity);
-            } catch (const std::exception& error) {
-                LOG_WARN << "[Collector] raw_ingress_publish_failed: " << error.what();
-                if (work.packet) {
-                    const auto deviceCodes = deviceCodesForConnection(work.packet->connectionId);
-                    service::packet_log::write(
-                        service::packet_log::Level::Error,
-                        "RX_PUBLISH_FAILED",
-                        ingressLogContext(*work.packet, deviceCodes),
-                        work.packet->payload,
-                        error.what()
-                    );
-                }
-                tcp_.close(work.connectionId, "raw_ingress_publish_failed");
+            if (work.packet) {
+                co_await consumeIngress(std::move(*work.packet));
+            } else {
+                co_await consumeConnectionEvent(std::move(*work.connectionEvent));
             }
         }
         ingressDraining_ = false;
     }
 
-    ruvia::task<bool> consumeIngress() {
-        if (ingressConsuming_) {
-            co_return false;
-        }
-        ingressConsuming_ = true;
+    ruvia::task<void> consumeConnectionEvent(ConnectionEvent event) {
+        const auto& connectionId = event.info.connectionId;
         try {
-            const auto stream = ingressStream();
-            const auto group = ingressGroup();
-            const auto messages =
-                co_await readAvailable(stream, group, ingressRecovering_, 32);
-            for (const auto& message : messages) {
-                const auto eventType = message.get("event_type");
-                if (eventType == "connected" || eventType == "disconnected") {
-                    message::ConnectionEvent event;
-                    std::string parseError;
-                    try {
-                        event = message::connectionEventFrom(message);
-                    } catch (const std::exception& error) {
-                        parseError = error.what();
-                    }
-                    if (!parseError.empty()) {
-                        co_await deadLetterAndAcknowledge(
-                            message,
-                            "connection_event_invalid",
-                            parseError,
-                            stream,
-                            group
-                        );
-                        continue;
-                    }
-                    if (event.workerInstanceId != workerInstanceId_) {
-                        co_await deadLetterAndAcknowledge(
-                            message,
-                            "stale_worker_instance",
-                            {},
-                            stream,
-                            group
-                        );
-                        continue;
-                    }
-                    if (event.eventType == "connected") {
-                        const auto current = connectionEpochs_.find(event.connectionId);
-                        if (current != connectionEpochs_.end() &&
-                            current->second >= event.sessionEpoch) {
-                            co_await deadLetterAndAcknowledge(
-                                message,
-                                "stale_session_epoch",
-                                {},
-                                stream,
-                                group
-                            );
-                            continue;
-                        } else {
-                            connectionEpochs_[event.connectionId] = event.sessionEpoch;
-                            co_await applyActions(
-                                event.connectionId,
-                                engine_.connected({ .connectionId = event.connectionId, .linkId = event.linkId, .remoteAddress = event.remoteAddress, .targetId = event.targetId, .sessionEpoch = event.sessionEpoch })
-                            );
-                        }
-                    } else {
-                        const auto current = connectionEpochs_.find(event.connectionId);
-                        if (current != connectionEpochs_.end() &&
-                            current->second == event.sessionEpoch) {
-                            co_await applyActions(
-                                event.connectionId,
-                                engine_.disconnected(event.connectionId, event.reason),
-                                true,
-                                event.reason
-                            );
-                        }
-                    }
-                    co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
-                    continue;
+            const auto current = connectionEpochs_.find(connectionId);
+            if (event.connected) {
+                if (current != connectionEpochs_.end() && current->second >= event.info.sessionEpoch) {
+                    service::packet_log::write(service::packet_log::Level::Warn, "RX_REJECTED", connectionLogContext(event.info), {}, "stale_session_epoch");
+                    co_return;
                 }
-                message::IngressPacket packet;
-                std::string parseError;
-                try {
-                    packet = message::ingressFrom(message);
-                } catch (const std::exception& error) {
-                    parseError = error.what();
-                }
-                if (!parseError.empty()) {
-                    service::packet_log::Context logContext;
-                    logContext.workerIndex = workerIndex_;
-                    logContext.direction = "RX";
-                    logContext.operation = "decode_ingress";
-                    logContext.protocol = protocolForLink(message.get("link_id"));
-                    logContext.linkId = message.get("link_id");
-                    logContext.connectionId = message.get("connection_id");
-                    logContext.remoteAddress = message.get("remote_address");
-                    logContext.messageId = message.get("message_id");
-                    const auto raw = message::fromHex(message.get("payload_hex"));
-                    service::packet_log::write(
-                        service::packet_log::Level::Error,
-                        "PARSE_ERROR",
-                        logContext,
-                        raw,
-                        parseError
-                    );
-                    co_await deadLetterAndAcknowledge(message, "raw_ingress_invalid", parseError, stream, group);
-                    continue;
-                }
-                if (packet.workerInstanceId != workerInstanceId_) {
-                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::packet_log::write(
-                        service::packet_log::Level::Warn,
-                        "RX_REJECTED",
-                        ingressLogContext(packet, deviceCodes),
-                        packet.payload,
-                        "stale_worker_instance"
-                    );
-                    co_await deadLetterAndAcknowledge(
-                        message,
-                        "stale_worker_instance",
-                        {},
-                        stream,
-                        group
-                    );
-                    continue;
-                }
-                const auto epoch = connectionEpochs_.find(packet.connectionId);
-                if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch ||
-                    !engine_.contains(packet.connectionId)) {
-                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::packet_log::write(
-                        service::packet_log::Level::Warn,
-                        "RX_REJECTED",
-                        ingressLogContext(packet, deviceCodes),
-                        packet.payload,
-                        "stale_session_epoch"
-                    );
-                    co_await deadLetterAndAcknowledge(
-                        message,
-                        "stale_session_epoch",
-                        {},
-                        stream,
-                        group
-                    );
-                    continue;
-                }
-                try {
-                    auto actions = engine_.consume(packet);
-                    const auto pendingDebug = debugPendingSends_.find(packet.connectionId);
-                    const auto inputAcquisition = pendingDebug == debugPendingSends_.end()
-                        ? uuidGenerator_.next() : pendingDebug->second.acquisitionId;
-                    for (auto& action : actions) {
-                        if (action.kind == ProtocolActionKind::ObserveParsed || action.kind == ProtocolActionKind::PublishParsed) {
-                            if (action.parsed.acquisitionId.empty()) action.parsed.acquisitionId = inputAcquisition;
-                            if (pendingDebug != debugPendingSends_.end() && action.parsed.acquisitionId == pendingDebug->second.acquisitionId)
-                                action.replyToPacketId = pendingDebug->second.messageId;
-                        }
-                    }
-                    // 完整解析帧在 PublishParsed 中记录；同一网络读取不能再记录一遍。
-                    // 非完整帧（包括分片、握手和解析失败）仍保留传输层原文。
-                    const bool completeFrame = std::any_of(actions.begin(), actions.end(), [&](const auto& action) {
-                        return (action.kind == ProtocolActionKind::PublishParsed ||
-                                action.kind == ProtocolActionKind::ObserveParsed) &&
-                            std::find(action.parsed.rawPayloads.begin(), action.parsed.rawPayloads.end(),
-                                      packet.payload) != action.parsed.rawPayloads.end();
-                    });
-                    if (!completeFrame)
-                        co_await captureDebug(packet.linkId, packet.connectionId, packet.remoteAddress,
-                            "RX", packet.payload, packet.occurredAtMs, {}, false, packet.messageId, "received", {}, {}, {}, inputAcquisition);
-                    co_await applyActions(packet.connectionId, std::move(actions));
-                } catch (const std::exception& error) {
-                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::packet_log::write(
-                        service::packet_log::Level::Error,
-                        "PARSE_ERROR",
-                        ingressLogContext(packet, deviceCodes),
-                        packet.payload,
-                        error.what()
-                    );
-                    ingressConsuming_ = false;
-                    throw;
-                } catch (...) {
-                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::packet_log::write(
-                        service::packet_log::Level::Error,
-                        "PARSE_ERROR",
-                        ingressLogContext(packet, deviceCodes),
-                        packet.payload,
-                        "unknown_protocol_exception"
-                    );
-                    ingressConsuming_ = false;
-                    throw;
-                }
-                co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
+                connectionEpochs_[connectionId] = event.info.sessionEpoch;
+                co_await applyActions(connectionId, engine_.connected(event.info));
+            } else if (current != connectionEpochs_.end() && current->second == event.info.sessionEpoch) {
+                co_await applyActions(connectionId, engine_.disconnected(connectionId, event.reason), true, event.reason);
             }
-            ingressConsuming_ = false;
-            co_return !messages.empty();
+        } catch (const std::exception& error) {
+            LOG_ERROR << "[Collector] connection_event_failed: connection_id=" << connectionId << " " << error.what();
+            if (event.connected) {
+                tcp_.close(connectionId, "connection_event_failed");
+            }
         } catch (...) {
-            ingressConsuming_ = false;
-            throw;
+            LOG_ERROR << "[Collector] connection_event_failed: connection_id=" << connectionId << " unknown error";
+            if (event.connected) {
+                tcp_.close(connectionId, "connection_event_failed");
+            }
+        }
+    }
+
+    ruvia::task<void> consumeIngress(IngressPacket packet) {
+        const auto epoch = connectionEpochs_.find(packet.connectionId);
+        if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch ||
+            !engine_.contains(packet.connectionId)) {
+            if (service::packet_log::enabled(service::packet_log::Level::Warn)) {
+                const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                service::packet_log::write(
+                    service::packet_log::Level::Warn,
+                    "RX_REJECTED",
+                    ingressLogContext(packet, deviceCodes),
+                    packet.payload,
+                    "stale_session_epoch"
+                );
+            }
+            co_return;
+        }
+        std::string failure;
+        try {
+            auto actions = engine_.consume(packet);
+            const auto pendingDebug = debugPendingSends_.find(packet.connectionId);
+            const auto inputAcquisition = pendingDebug == debugPendingSends_.end()
+                ? uuidGenerator_.next()
+                : pendingDebug->second.acquisitionId;
+            for (auto& action : actions) {
+                if (action.kind == ProtocolActionKind::ObserveParsed || action.kind == ProtocolActionKind::PublishParsed) {
+                    if (action.parsed.acquisitionId.empty()) {
+                        action.parsed.acquisitionId = inputAcquisition;
+                    }
+                    if (pendingDebug != debugPendingSends_.end() && action.parsed.acquisitionId == pendingDebug->second.acquisitionId) {
+                        action.replyToPacketId = pendingDebug->second.messageId;
+                    }
+                }
+            }
+            // 完整解析帧在 PublishParsed 中记录；同一网络读取不能再记录一遍。
+            // 非完整帧（包括分片、握手和解析失败）仍保留传输层原文。
+            if (debugLinks_.contains(packet.linkId)) {
+                const bool completeFrame = std::any_of(actions.begin(), actions.end(), [&](const auto& action) {
+                    return (action.kind == ProtocolActionKind::PublishParsed ||
+                            action.kind == ProtocolActionKind::ObserveParsed) &&
+                        std::find(action.parsed.rawPayloads.begin(), action.parsed.rawPayloads.end(), packet.payload) != action.parsed.rawPayloads.end();
+                });
+                if (!completeFrame) {
+                    co_await captureDebug(packet.linkId, packet.connectionId, packet.remoteAddress, "RX", packet.payload, packet.occurredAtMs, {}, false, packet.messageId, "received", {}, {}, {}, inputAcquisition);
+                }
+            }
+            co_await applyActions(packet.connectionId, std::move(actions));
+            co_return;
+        } catch (const std::exception& error) {
+            failure = error.what();
+        } catch (...) {
+            failure = "unknown_protocol_exception";
+        }
+        // 协议会话已消费这些字节，不重放；记录后保持连接，需要确认的协议在遥测发布成功前不会确认，
+        // 设备会在同一连接上重发（如 SL651 重传上报）。
+        LOG_ERROR << "[Collector] ingress_processing_failed: connection_id=" << packet.connectionId << " " << failure;
+        if (service::packet_log::enabled(service::packet_log::Level::Error)) {
+            const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+            service::packet_log::write(
+                service::packet_log::Level::Error,
+                "PARSE_ERROR",
+                ingressLogContext(packet, deviceCodes),
+                packet.payload,
+                failure
+            );
         }
     }
 
@@ -1282,7 +1189,9 @@ class CollectorWorker final {
             egressLog.deviceCode = task->deviceCode;
         } else {
             egressLog.operation = "protocol";
-            egressLog.deviceCode = deviceCodesForConnection(packet.connectionId);
+            if (service::packet_log::enabled(service::packet_log::Level::Debug)) {
+                egressLog.deviceCode = deviceCodesForConnection(packet.connectionId);
+            }
         }
         const auto network = networkConnections_.find(packet.connectionId);
         if (network != networkConnections_.end()) {
@@ -1294,8 +1203,13 @@ class CollectorWorker final {
             }
             egressLog.remoteAddress = network->second.remoteAddress;
         }
-        egressLog.debugPayload = engine_.packetForLogging(egressLog.protocol, packet.payload);
-        service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), egressLog.debugPayload);
+        const bool logBytes = service::packet_log::enabled(service::packet_log::Level::Debug);
+        if (logBytes || debugLinks_.contains(egressLog.linkId)) {
+            egressLog.debugPayload = engine_.packetForLogging(egressLog.protocol, packet.payload);
+        }
+        if (logBytes) {
+            service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), egressLog.debugPayload);
+        }
         egressLog.debugTime = message::utcNowMilliseconds();
         egressLog.awaitResponse = engine_.expectsResponse(egressLog.protocol, egressLog.causationId);
         if (egressLog.awaitResponse) debugPendingSends_[packet.connectionId] = egressLog;
@@ -1334,6 +1248,9 @@ class CollectorWorker final {
             if (!success) debugPendingSends_.erase(egressLog.connectionId);
         }
 
+        if (!success && egressLog.deviceId.empty() && egressLog.deviceCode.empty()) {
+            egressLog.deviceCode = deviceCodesForConnection(egressLog.connectionId);
+        }
         service::packet_log::write(
             success ? service::packet_log::Level::Debug
                     : service::packet_log::Level::Error,
@@ -1452,13 +1369,15 @@ class CollectorWorker final {
                         }
                     }
                     if (action.kind != ProtocolActionKind::PublishParsed) break;
-                    service::packet_log::write(
-                        service::packet_log::Level::Debug,
-                        "PARSE_SUCCESS",
-                        parsedLogContext(action.parsed),
-                        {},
-                        action.parsed.source
-                    );
+                    if (service::packet_log::enabled(service::packet_log::Level::Debug)) {
+                        service::packet_log::write(
+                            service::packet_log::Level::Debug,
+                            "PARSE_SUCCESS",
+                            parsedLogContext(action.parsed),
+                            {},
+                            action.parsed.source
+                        );
+                    }
                     if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await message::redis::publishAndWake(
                         redis_,
                         parsedStream(),
@@ -1524,68 +1443,51 @@ class CollectorWorker final {
     }
 
     ruvia::task<void> restoreDerived(const ProtocolAction& action) {
-        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == action.deviceId; });
-        if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return;
-        const auto configuration = ruvia::json_value::parse(device->calculationConfig);
-        if (!configuration || service::common::orderDerivedPoints(*configuration).empty()) co_return;
-        const std::string config = device->calculationConfig;
-        message::ParsedDeviceMessage parsed;
-        parsed.deviceId = device->id;
-        parsed.deviceCode = device->code;
-        parsed.linkId = device->linkId;
-        parsed.modelId = device->modelId;
-        parsed.protocol = device->protocol;
-        parsed.storagePolicy = device->storagePolicy;
-        parsed.connectionId = action.connectionId;
-        co_await expireDerived(std::move(parsed), action.connectionId, config);
+        const auto* device = findDevice(action.deviceId);
+        if (!device) {
+            co_return;
+        }
+        const auto outcome = co_await derived_.expire(*device, action.connectionId, std::nullopt);
+        if (outcome.revision != 0) {
+            scheduleDerivedExpiry(action.deviceId, action.connectionId, outcome.revision, outcome.nextDeadline);
+        }
     }
 
     ruvia::task<bool> calculateDerived(message::ParsedDeviceMessage& parsed, const std::string& connectionId) {
-        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
-        if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return false;
-        const std::string config = device->calculationConfig;
-        const auto result = co_await service::telemetry::derived::DerivedService::append(redis_, config, parsed);
-        scheduleDerivedExpiry(parsed, connectionId, config, result.nextDeadline);
-        co_return result.published;
+        const auto outcome = co_await derived_.append(parsed);
+        if (outcome.revision == 0) {
+            co_return false;
+        }
+        scheduleDerivedExpiry(parsed.deviceId, connectionId, outcome.revision, outcome.nextDeadline);
+        co_return outcome.published;
     }
 
-    void scheduleDerivedExpiry(message::ParsedDeviceMessage parsed, std::string connectionId,
-                               std::string config, std::optional<std::int64_t> at) {
-        parsed.rawPayloads.clear();
-        parsed.rawPacketIds.clear();
-        parsed.valuesJson = "{\"values\":{}}";
-        const auto id = parsed.deviceId;
-        if (const auto existing = derivedDeadlines_.find(id); existing != derivedDeadlines_.end()) {
+    // 到期任务只保存设备、连接与配置版本；派生样本由派生服务按当前快照生成。
+    void scheduleDerivedExpiry(std::string deviceId, std::string connectionId, std::uint64_t revision, std::optional<std::int64_t> at) {
+        if (const auto existing = derivedDeadlines_.find(deviceId); existing != derivedDeadlines_.end()) {
             scheduler_.cancel(existing->second.second);
             derivedDeadlines_.erase(existing);
         }
         if (!at || stopping_) return;
         const auto delay = std::chrono::milliseconds((std::max)(std::int64_t{1}, *at - message::utcNowMilliseconds()));
-        const auto connection = connectionId;
-        const auto token = scheduler_.scheduleAfter(delay, [this, parsed = std::move(parsed), connectionId = std::move(connectionId), config = std::move(config)]() mutable {
-            derivedDeadlines_.erase(parsed.deviceId);
-            if (!stopping_) scope_.spawn(expireDerived(std::move(parsed), std::move(connectionId), std::move(config)));
+        const auto token = scheduler_.scheduleAfter(delay, [this, deviceId, connectionId, revision]() mutable {
+            derivedDeadlines_.erase(deviceId);
+            if (!stopping_) {
+                scope_.spawn(expireDerived(std::move(deviceId), std::move(connectionId), revision));
+            }
         });
-        derivedDeadlines_[id] = {connection, token};
+        derivedDeadlines_.insert_or_assign(std::move(deviceId), std::pair{ std::move(connectionId), token });
     }
 
-    ruvia::task<void> expireDerived(message::ParsedDeviceMessage parsed, std::string connectionId, std::string config) {
+    ruvia::task<void> expireDerived(std::string deviceId, std::string connectionId, std::uint64_t revision) {
         if (stopping_) co_return;
-        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
-        if (device == loadedSnapshot_.devices.end() || device->calculationConfig != config) co_return;
-        parsed.messageId = uuidGenerator_.next();
-        parsed.acquisitionId = parsed.messageId;
-        parsed.causationId = parsed.messageId;
-        parsed.source = "derived";
-        parsed.rawPayloads.clear(); parsed.rawPacketIds.clear();
-        parsed.observedAtMs = parsed.occurredAtMs = message::utcNowMilliseconds();
-        parsed.valuesJson = "{\"values\":{}}";
-        try {
-            const auto result = co_await service::telemetry::derived::DerivedService::append(redis_, config, parsed, true);
-            scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), result.nextDeadline);
-        } catch (const std::exception& error) {
-            LOG_WARN << "[Collector] derived_expiry_failed: " << error.what();
-            scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), message::utcNowMilliseconds() + 1000);
+        const auto* device = findDevice(deviceId);
+        if (!device) {
+            co_return;
+        }
+        const auto outcome = co_await derived_.expire(*device, connectionId, revision);
+        if (outcome.revision != 0) {
+            scheduleDerivedExpiry(std::move(deviceId), std::move(connectionId), outcome.revision, outcome.nextDeadline);
         }
     }
 
@@ -1641,7 +1543,6 @@ class CollectorWorker final {
                 controlStream(),
                 commandStream(true),
                 commandStream(false),
-                ingressStream(),
                 egressStream(),
                 linkEventStream()
             };
@@ -1785,12 +1686,7 @@ class CollectorWorker final {
     }
 
     ruvia::task<void> failPendingForConnection(std::string_view connectionId, std::string_view reason) {
-        std::vector<std::string> commandIds;
-        for (const auto& [commandId, pending] : pendingCommands_) {
-            if (pending.task.connectionId == connectionId) {
-                commandIds.push_back(commandId);
-            }
-        }
+        const auto commandIds = commands_.pendingForConnection(connectionId);
         const auto failureReason = reason.empty()
             ? std::string_view("connection_closed_result_unknown") : reason;
         for (const auto& commandId : commandIds) {
@@ -1887,113 +1783,13 @@ class CollectorWorker final {
     }
 
     ruvia::task<void> finishCommand(std::string_view commandId, bool success, std::string_view reason) {
-        if (commandId.empty()) {
-            co_return;
-        }
-        const auto child = broadcastParents_.find(commandId);
-        if (child != broadcastParents_.end()) {
-            const auto parentId = child->second;
-            broadcastParents_.erase(child);
-            const auto broadcast = broadcasts_.find(parentId);
-            if (broadcast == broadcasts_.end()) {
-                co_return;
-            }
-            service::packet_log::Context childContext;
-            childContext.workerIndex = workerIndex_;
-            childContext.operation = "broadcast";
-            childContext.messageId = commandId;
-            childContext.causationId = parentId;
-            service::packet_log::write(
-                success ? service::packet_log::Level::Debug
-                        : service::packet_log::Level::Warn,
-                success ? "BROADCAST_TARGET_SUCCESS" : "BROADCAST_TARGET_FAILED",
-                childContext,
-                {},
-                reason
-            );
-            broadcast->second.anySuccess = broadcast->second.anySuccess || success;
-            if (!reason.empty()) {
-                broadcast->second.reason = reason;
-            }
-            if (--broadcast->second.remaining != 0) {
-                co_return;
-            }
-            const auto aggregateSuccess = broadcast->second.anySuccess;
-            const auto aggregateReason = broadcast->second.reason.empty()
-                ? std::string("discovery_window_closed")
-                : broadcast->second.reason;
-            broadcasts_.erase(broadcast);
-            service::packet_log::Context aggregateContext;
-            aggregateContext.workerIndex = workerIndex_;
-            aggregateContext.operation = "broadcast";
-            aggregateContext.messageId = parentId;
-            service::packet_log::write(
-                aggregateSuccess ? service::packet_log::Level::Info
-                                 : service::packet_log::Level::Warn,
-                aggregateSuccess ? "BROADCAST_COMPLETED" : "BROADCAST_FAILED",
-                aggregateContext,
-                {},
-                aggregateReason
-            );
-            co_await finishCommand(parentId, aggregateSuccess, aggregateReason);
-            co_return;
-        }
-        const auto current = pendingCommands_.find(commandId);
-        if (current == pendingCommands_.end()) {
-            co_return;
-        }
-        const auto pending = current->second;
-        if (!success &&
-            co_await retryCommand(pending.stream, pending.entryId, pending.task, reason)) {
-            pendingCommands_.erase(std::string(commandId));
-            co_return;
-        }
-        service::packet_log::write(
-            success ? service::packet_log::Level::Info
-                    : service::packet_log::Level::Warn,
-            pending.task.kind == "discovery"
-                ? (success ? "DISCOVERY_RESULT" : "DISCOVERY_FAILED")
-                : (success ? "COMMAND_RESULT" : "COMMAND_FAILED"),
-            taskLogContext(pending.task),
-            {},
-            reason
-        );
-        co_await finalizeCommand(pending.stream, pending.entryId, commandId, pending.task, success, reason);
-        pendingCommands_.erase(std::string(commandId));
+        const auto* task = commands_.taskForCausation(commandId);
+        const auto remote = task ? remoteAddress(task->connectionId) : std::string{};
+        co_await commands_.finish(commandId, success, reason, remote);
     }
 
-    ruvia::task<bool> retryCommand(std::string_view stream, std::string_view entryId, message::ProtocolTask task, std::string_view reason) {
-        if (service::command::retryableFailure(reason) && task.attempt < task.maxAttempts) {
-            ++task.attempt;
-            const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
-                std::string(reason);
-            service::packet_log::write(
-                service::packet_log::Level::Warn,
-                task.kind == "discovery" ? "DISCOVERY_RETRY" : "COMMAND_RETRY",
-                taskLogContext(task),
-                {},
-                retryReason
-            );
-            (void)co_await message::redis::publishAndAcknowledge(
-                redis_,
-                stream,
-                message::protocolTaskFields(task),
-                kCommandStreamCapacity,
-                stream,
-                commandGroup(),
-                consumer_,
-                entryId
-            );
-            co_return true;
-        }
-        co_return false;
-    }
-
-    ruvia::task<void> failUndeliverable(std::string_view stream, std::string_view entryId, std::string_view commandId, const message::ProtocolTask& task, std::string_view reason) {
-        if (co_await retryCommand(stream, entryId, task, reason)) {
-            co_return;
-        }
-        co_await finalizeCommand(stream, entryId, commandId, task, false, reason);
+    ruvia::task<void> failUndeliverable(std::string_view stream, std::string_view entryId, const message::ProtocolTask& task, std::string_view reason) {
+        co_await commands_.failUndeliverable(stream, entryId, task, reason, remoteAddress(task.connectionId));
     }
 
     [[nodiscard]] std::vector<message::StreamField> linkStateFields(const LinkState& state) {
@@ -2058,33 +1854,6 @@ class CollectorWorker final {
         co_return !messages.empty();
     }
 
-    [[nodiscard]] std::vector<message::StreamField>
-    deadLetterFields(std::vector<message::StreamField> fields, std::string_view sourceEntryId, std::string_view reason, std::string_view detail = {}) const {
-        fields.push_back({ "source_entry_id", std::string(sourceEntryId) });
-        fields.push_back({ "failure_reason", std::string(reason) });
-        fields.push_back({ "failure_detail", std::string(detail) });
-        fields.push_back({ "worker_id", std::to_string(workerIndex_) });
-        fields.push_back({ "failed_at_ms", std::to_string(message::utcNowMilliseconds()) });
-        return fields;
-    }
-
-    [[nodiscard]] std::vector<message::StreamField>
-    commandResultFields(std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
-        const auto completedAt = std::to_string(message::utcNowMilliseconds());
-        return { { "message_id", uuidGenerator_.next() },
-                 { "causation_id", std::string(commandId) },
-                 { "command_id", std::string(commandId) },
-                 { "device_id", task.deviceId },
-                 { "device_code", task.deviceCode },
-                 { "protocol", task.protocol },
-                 { "attempt", std::to_string(task.attempt) },
-                 { "success", success ? "1" : "0" },
-                 { "reason", std::string(reason) },
-                 { "worker_id", std::to_string(workerIndex_) },
-                 { "created_at_ms", completedAt },
-                 { "completed_at_ms", completedAt } };
-    }
-
     ruvia::task<void> deadLetterAndAcknowledge(
         const message::StreamMessage& streamMessage,
         std::string_view reason,
@@ -2092,7 +1861,7 @@ class CollectorWorker final {
         std::string_view inputStream,
         std::string_view inputGroup
     ) {
-        auto fields = deadLetterFields(streamMessage.fields, streamMessage.id, reason, detail);
+        auto fields = deadLetterFields(streamMessage.fields, streamMessage.id, reason, detail, workerIndex_);
         const auto outputStream = deadLetterStream();
         (void)co_await message::redis::publishAndAcknowledge(
             redis_,
@@ -2106,63 +1875,15 @@ class CollectorWorker final {
         );
     }
 
-    ruvia::task<void> finalizeCommand(std::string_view inputStream, std::string_view inputEntryId, std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
-        auto resultFields = commandResultFields(commandId, task, success, reason);
-        const auto resultStream = commandResultStream();
-        if (success) {
-            (void)co_await message::redis::publishAndAcknowledge(
-                redis_,
-                resultStream,
-                resultFields,
-                10000,
-                inputStream,
-                commandGroup(),
-                consumer_,
-                inputEntryId,
-                message::redis::StreamWake{ std::nullopt,
-                                            message::WorkerStreamTask::CommandResult }
-            );
-            co_return;
-        }
-
-        service::packet_log::write(
-            service::packet_log::Level::Error,
-            "DEAD_LETTER",
-            taskLogContext(task),
-            {},
-            reason
-        );
-        auto deadFields = deadLetterFields(message::protocolTaskFields(task), inputEntryId, reason);
-        const auto deadStream = deadLetterStream();
-        const std::array publications{
-            message::redis::StreamPublication{ deadStream, deadFields, kDeadLetterCapacity },
-            message::redis::StreamPublication{
-                resultStream,
-                resultFields,
-                10000,
-                message::redis::StreamWake{ std::nullopt,
-                                            message::WorkerStreamTask::CommandResult } }
-        };
-        (void)co_await message::redis::publishAllAndAcknowledge(
-            redis_,
-            publications,
-            inputStream,
-            commandGroup(),
-            consumer_,
-            inputEntryId
-        );
-    }
-
-    static constexpr std::size_t kRawIngressCapacity = 100000;
+    // 入站内存队列上限沿用原入站流容量；超出时关闭该连接，由设备重连。
+    static constexpr std::size_t kIngressCapacity = 100000;
     // Redis retains ownership for 15 seconds. Stop local I/O before that bound,
     // even when a slow Redis command delays renewal on this worker.
     static constexpr auto kTargetLeaseValidity = std::chrono::seconds(12);
     static constexpr auto kFailureDelay = std::chrono::milliseconds(250);
-    static constexpr std::size_t kCommandStreamCapacity = 10000;
     static constexpr std::size_t kCommandConsumeBatch = 16;
     static constexpr std::size_t kEgressStreamCapacity = 10000;
     static constexpr std::size_t kLinkEventStreamCapacity = 1000;
-    static constexpr std::size_t kDeadLetterCapacity = 1000;
 
     service::common::UuidV7Generator uuidGenerator_;
     ruvia::event_loop loop_;
@@ -2180,6 +1901,8 @@ class CollectorWorker final {
     std::size_t workerCount_ = 1;
     std::string workerInstanceId_ = uuidGenerator_.next();
     std::string consumer_;
+    CollectorCommandService commands_;
+    CollectorDerivedService derived_;
     std::map<std::pair<std::string, std::uint64_t>, DeadlineScheduler::Token> protocolDeadlines_;
     std::map<std::string, std::pair<std::string, DeadlineScheduler::Token>> derivedDeadlines_;
     std::map<std::string, std::set<std::string>, std::less<>> routes_;
@@ -2190,9 +1913,6 @@ class CollectorWorker final {
     std::map<ClientTargetKey, std::string> targetLeases_;
     std::map<std::string, TargetLeaseDeadline, std::less<>> targetLeaseDeadlines_;
     DeadlineScheduler::Token targetRenewalToken_ = 0;
-    std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
-    std::map<std::string, BroadcastCommand, std::less<>> broadcasts_;
-    std::map<std::string, std::string, std::less<>> broadcastParents_;
     std::map<std::string, std::vector<message::StreamMessage>, std::less<>> readyMessages_;
     DeadlineScheduler::Token tickToken_ = 0;
     std::string loadedConfigVersion_;
@@ -2201,27 +1921,23 @@ class CollectorWorker final {
     std::chrono::steady_clock::time_point nextConfigRecovery_{};
     RuntimeSnapshot desiredSnapshot_;
     RuntimeSnapshot loadedSnapshot_;
+    std::string loadedSignature_;
+    std::map<std::string, std::size_t, std::less<>> linkIndexes_;
+    std::map<std::string, std::size_t, std::less<>> deviceIndexes_;
+    // 链路本身或其任一设备开启调试的链路。
+    std::set<std::string, std::less<>> debugLinks_;
     bool configRecovering_ = true;
     bool highRecovering_ = true;
     bool normalRecovering_ = true;
     bool controlRecovering_ = true;
-    bool ingressRecovering_ = true;
     bool egressRecovering_ = true;
     bool linkEventRecovering_ = true;
-    bool ingressConsuming_ = false;
     bool egressWritePending_ = false;
     bool ingressDraining_ = false;
     std::deque<IngressWork> ingressWork_;
     bool stopping_ = false;
     bool shutdownStarted_ = false;
 };
-
-} // namespace service::collector
-
-#include <atomic>
-#include <ruvia/web/redis/redis.h>
-
-namespace service::collector {
 
 class CollectorWorkerPool final {
   public:
@@ -2293,12 +2009,14 @@ class CollectorWorkerPool final {
             try {
                 completion.get();
             } catch (...) {
+                logShutdownFailure("worker");
             }
         }
         pool_->stop();
         try {
             pool_->join();
         } catch (...) {
+            logShutdownFailure("event_loop_pool");
         }
         workers_.clear();
         pool_.reset();

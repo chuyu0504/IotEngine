@@ -5,45 +5,54 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <spdlog/async.h>
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
-#include <version>
+
+#include "service/middleware/log.h"
 
 namespace service::packet_log {
 namespace {
 
-struct State final {
-    std::shared_ptr<const Config> config;
+// 进程内唯一的报文日志 sink：一个 spdlog 线程池和一个异步 logger。它只序列化已格式化的
+// 文本行，不持有连接、会话或任何业务状态，因此各 Worker 共用它不会转交 Worker 的工作。
+struct Sink final {
     std::shared_ptr<spdlog::details::thread_pool> pool;
     std::shared_ptr<spdlog::async_logger> logger;
 
-    ~State() {
+    ~Sink() {
         if (logger) {
             try {
                 logger->flush();
+            } catch (const std::exception& error) {
+                LOG_ERROR << "[PacketLog] flush_failed: " << error.what();
             } catch (...) {
-                // Shutdown must still join the worker's logging queue.
+                LOG_ERROR << "[PacketLog] flush_failed: unknown error";
             }
         }
+        // 先释放 logger，再由线程池析构处理剩余队列并回收线程。
         logger.reset();
         pool.reset();
     }
 };
 
-// Only immutable startup settings are visible across workers. Queues, sinks and
-// loggers belong to the calling worker and are destroyed with its thread.
-std::atomic<std::shared_ptr<const Config>> configuration;
-thread_local std::unique_ptr<State> state;
+inline constexpr std::string_view kLoggerName = "iot-engine-packet";
 inline constexpr std::size_t kQueueSize = 65536;
 inline constexpr std::size_t kHexLimitBytes = 64U * 1024U;
 inline constexpr std::uint16_t kRetentionDays = 14;
+// 低流量调试记录最迟在该间隔内落盘；错误记录立即落盘。
+inline constexpr auto kFlushInterval = std::chrono::seconds(1);
+
+std::mutex lifecycle;
+std::atomic<Level> threshold{ Level::Off };
+std::atomic<std::shared_ptr<const Sink>> sink;
 
 [[nodiscard]] spdlog::level::level_enum spdLevel(Level level) noexcept {
     switch (level) {
@@ -134,7 +143,7 @@ void initialize(Config config) {
     }
 
     std::filesystem::create_directories(config.directory);
-    // Thread IDs change across restarts; retention must also cover old basenames.
+    // 历史版本按线程命名日志文件；保留期清理同时覆盖这些旧文件名。
     const auto oldest = std::filesystem::file_time_type::clock::now() - std::chrono::days(kRetentionDays);
     for (const auto& entry : std::filesystem::directory_iterator(config.directory)) {
         const auto name = entry.path().filename().string();
@@ -143,49 +152,67 @@ void initialize(Config config) {
             std::filesystem::remove(entry.path());
         }
     }
-    configuration.store(std::make_shared<const Config>(std::move(config)), std::memory_order_release);
+
+    auto next = std::make_shared<Sink>();
+    next->pool = std::make_shared<spdlog::details::thread_pool>(kQueueSize, 1);
+    auto file = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+        (config.directory / "packet-collector.log").string(),
+        0,
+        0,
+        false,
+        kRetentionDays
+    );
+    next->logger = std::make_shared<spdlog::async_logger>(
+        std::string(kLoggerName),
+        std::move(file),
+        next->pool,
+        spdlog::async_overflow_policy::overrun_oldest
+    );
+    next->logger->set_level(spdLevel(config.level));
+    next->logger->flush_on(spdlog::level::err);
+    next->logger->set_formatter(std::make_unique<spdlog::pattern_formatter>("%Y-%m-%dT%H:%M:%S.%eZ [%l] %v", spdlog::pattern_time_type::utc));
+    {
+        const std::lock_guard guard(lifecycle);
+        // 周期刷新由 spdlog registry 驱动，只作用于已注册的 logger。
+        spdlog::register_logger(next->logger);
+        spdlog::flush_every(kFlushInterval);
+        sink.store(std::move(next), std::memory_order_release);
+        threshold.store(config.level, std::memory_order_release);
+    }
     write(Level::Info, "PACKET_LOG_STARTED", {}, {}, "async_daily_14d_overrun_oldest");
 }
 
 void shutdown() noexcept {
+    std::shared_ptr<const Sink> previous;
     try {
-        configuration.store({}, std::memory_order_release);
-        state.reset();
+        const std::lock_guard guard(lifecycle);
+        threshold.store(Level::Off, std::memory_order_release);
+        previous = sink.exchange({}, std::memory_order_acq_rel);
+        if (previous) {
+            spdlog::flush_every(std::chrono::seconds(0));
+            spdlog::drop(std::string(kLoggerName));
+        }
+    } catch (const std::exception& error) {
+        LOG_ERROR << "[PacketLog] shutdown_failed: " << error.what();
     } catch (...) {
+        LOG_ERROR << "[PacketLog] shutdown_failed: unknown error";
     }
+    // 正在写入的线程仍持有 Sink 时，由最后一个持有者完成刷新与线程回收。
+    previous.reset();
+}
+
+bool enabled(Level level) noexcept {
+    const auto current = threshold.load(std::memory_order_acquire);
+    return level != Level::Off && current != Level::Off && level >= current;
 }
 
 void write(Level level, std::string_view event, const Context& context, std::span<const std::uint8_t> bytes, std::string_view reason) noexcept {
+    if (!enabled(level)) {
+        return;
+    }
     try {
-        const auto config = configuration.load(std::memory_order_acquire);
-        if (!config) {
-            return;
-        }
-        if (!state || state->config != config) {
-            auto next = std::make_unique<State>();
-            next->config = config;
-            next->pool = std::make_shared<spdlog::details::thread_pool>(kQueueSize, 1);
-            const auto suffix = std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-            auto sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
-                (config->directory / ("packet-" + suffix + ".log")).string(),
-                0,
-                0,
-                false,
-                kRetentionDays
-            );
-            next->logger = std::make_shared<spdlog::async_logger>(
-                "iot-engine-packet-" + suffix,
-                std::move(sink),
-                next->pool,
-                spdlog::async_overflow_policy::overrun_oldest
-            );
-            next->logger->set_level(spdLevel(config->level));
-            next->logger->flush_on(spdlog::level::trace);
-            next->logger->set_formatter(std::make_unique<spdlog::pattern_formatter>("%Y-%m-%dT%H:%M:%S.%eZ [%l] %v", spdlog::pattern_time_type::utc));
-            state = std::move(next);
-        }
-        const auto* current = state.get();
-        if (!current || !current->logger || !current->logger->should_log(spdLevel(level))) {
+        const auto current = sink.load(std::memory_order_acquire);
+        if (!current) {
             return;
         }
 
@@ -217,7 +244,10 @@ void write(Level level, std::string_view event, const Context& context, std::spa
             }
         }
         current->logger->log(spdLevel(level), "{}", line);
+    } catch (const std::exception& error) {
+        LOG_ERROR << "[PacketLog] write_failed: " << error.what();
     } catch (...) {
+        LOG_ERROR << "[PacketLog] write_failed: unknown error";
     }
 }
 

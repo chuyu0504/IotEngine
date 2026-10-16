@@ -19,32 +19,33 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <ruvia/core/event_loop_pool.h>
-#include <type_traits>
-#include "tests/redis_reply.fixture.h"
 
-#include "service/middleware/log.h"
-#include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/alert/alert.service.h"
 #include "service/features/collector/collector.protocol.h"
-#include "service/features/edge/edge.service.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
-#include "service/features/collector/scheduling/scheduling.runtime.h"
-#include "service/features/collector/scheduling/scheduling.protocol.h"
 #include "service/features/collector/s7/s7.protocol.h"
+#include "service/features/collector/scheduling/scheduling.protocol.h"
+#include "service/features/collector/scheduling/scheduling.runtime.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
 #include "service/features/command/command.service.h"
-#include "service/features/command/command.types.h"
 #include "service/features/configuration/configuration.service.h"
+#include "service/features/edge/edge.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
+#include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/telemetry/latest/latest.service.h"
+#include "service/middleware/log.h"
+
+#include "tests/redis_reply.fixture.h"
 
 namespace collector = service::collector;
 
@@ -588,7 +589,7 @@ std::vector<std::uint8_t> modbusReadResponseForRequest(std::span<const std::uint
 }
 
 std::vector<collector::ProtocolAction>
-drainInitialModbusPoll(collector::ProtocolEngine& engine, std::vector<collector::ProtocolAction> actions, service::message::IngressPacket& packet, bool tcp) {
+drainInitialModbusPoll(collector::ProtocolEngine& engine, std::vector<collector::ProtocolAction> actions, collector::IngressPacket& packet, bool tcp) {
     while (true) {
         const auto outbound = std::find_if(actions.begin(), actions.end(), [](const auto& action) {
             return action.kind == collector::ProtocolActionKind::Send;
@@ -812,33 +813,20 @@ void testCommandOutcomeDomain() {
         std::string_view lostAck;
         std::string_view readbackFailure;
     };
-    require(service::command::collectorResultState(true, "write_ack_missing") == "UNKNOWN",
-            "a missing write ACK was overridden by a success flag");
+
+    require(service::message::command::collectorResultState(true, "write_ack_missing") == "UNKNOWN", "a missing write ACK was overridden by a success flag");
     constexpr ProtocolFailure failures[]{
         {"FINS", "polling_write_result_unknown", "polling_readback_timeout"},
         {"S7", "write_ack_missing:s7_readback_timeout", "s7_readback_timeout"},
         {"Modbus", "write_ack_missing:modbus_readback_timeout", "modbus_readback_timeout"},
     };
     for (const auto& failure : failures) {
-        require(service::command::collectorResultState(false, failure.lostAck) == "UNKNOWN" &&
-                    !service::command::retryableFailure(failure.lostAck),
-                failure.protocol.data());
-        require(service::command::collectorResultState(false, failure.readbackFailure) == "UNKNOWN" &&
-                    !service::command::retryableFailure(failure.readbackFailure),
-                failure.protocol.data());
+        require(service::message::command::collectorResultState(false, failure.lostAck) == "UNKNOWN" && !service::message::command::retryableFailure(failure.lostAck), failure.protocol.data());
+        require(service::message::command::collectorResultState(false, failure.readbackFailure) == "UNKNOWN" && !service::message::command::retryableFailure(failure.readbackFailure), failure.protocol.data());
     }
-    require(service::command::collectorResultState(false, "s7_readback_mismatch") ==
-                "READBACK_MISMATCH",
-            "a confirmed readback mismatch lost its distinct result state");
-    require(service::command::collectorResultState(false, "engine_device_offline") == "REJECTED" &&
-                service::command::collectorResultState(false, "dispatch_deadline_expired") ==
-                    "REJECTED" && !service::command::retryableFailure("dispatch_deadline_expired") &&
-                service::command::expiredDispatchState(false) == "REJECTED" &&
-                service::command::expiredDispatchState(true) == "UNKNOWN",
-            "definitely unsent and ambiguous command outcomes were conflated");
-    require(service::command::kCommandResultAcceptingStatuses ==
-                std::array<std::string_view, 2>{"DISPATCHING", "AWAITING_RESULT"},
-            "late command results may overwrite a terminal status");
+    require(service::message::command::collectorResultState(false, "s7_readback_mismatch") == "READBACK_MISMATCH", "a confirmed readback mismatch lost its distinct result state");
+    require(service::message::command::collectorResultState(false, "engine_device_offline") == "REJECTED" && service::message::command::collectorResultState(false, "dispatch_deadline_expired") == "REJECTED" && !service::message::command::retryableFailure("dispatch_deadline_expired") && service::message::command::expiredDispatchState(false) == "REJECTED" && service::message::command::expiredDispatchState(true) == "UNKNOWN", "definitely unsent and ambiguous command outcomes were conflated");
+    require(service::message::command::kResultAcceptingStatuses == std::array<std::string_view, 2>{ "DISPATCHING", "AWAITING_RESULT" }, "late command results may overwrite a terminal status");
 }
 
 void testCapabilities() {
@@ -981,7 +969,7 @@ void testStationScopeAndInstanceIdentity() {
     for (const auto* link : { "station-link-a", "station-link-b" }) {
         const auto connection = std::string(link) + "-connection";
         (void)engine.connected({ .connectionId = connection, .linkId = link, .sessionEpoch = 1 });
-        service::message::IngressPacket packet{ .messageId = "frame", .linkId = link, .connectionId = connection, .occurredAtMs = 1000 };
+        collector::IngressPacket packet{ .messageId = "frame", .linkId = link, .connectionId = connection, .occurredAtMs = 1000 };
         packet.payload = slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34 });
         const auto actions = engine.consume(packet);
         const auto& parsed = first(actions, collector::ProtocolActionKind::PublishParsed).parsed;
@@ -1001,9 +989,9 @@ void testStationScopeAndInstanceIdentity() {
     }
     require(rejected, "normalized station address alias was silently accepted");
     require(service::message::commandStream(0, true, "instance-a") != service::message::commandStream(0, true, "instance-b"), "worker 0 aliases across instances");
-    require(service::command::collectorResultState(false, "response_timeout") == "UNKNOWN", "transport timeout was misrepresented as confirmed failure");
-    require(service::command::collectorResultState(false, "device_negative_ack: {\"code\":1}") == "FAILED", "explicit device rejection was not recorded as failure");
-    require(service::command::terminalState("UNKNOWN") && !service::command::terminalState("AWAITING_RESULT"), "command wait completion semantics are incorrect");
+    require(service::message::command::collectorResultState(false, "response_timeout") == "UNKNOWN", "transport timeout was misrepresented as confirmed failure");
+    require(service::message::command::collectorResultState(false, "device_negative_ack: {\"code\":1}") == "FAILED", "explicit device rejection was not recorded as failure");
+    require(service::message::command::terminalState("UNKNOWN") && !service::message::command::terminalState("AWAITING_RESULT"), "command wait completion semantics are incorrect");
 }
 
 void testSl651ObservationReplay() {
@@ -1025,7 +1013,7 @@ void testSl651ObservationReplay() {
         engine.reload(snapshot);
         const auto connection = "replay-" + std::to_string(index);
         (void)engine.connected({.connectionId = connection, .linkId = "replay-link", .sessionEpoch = 1});
-        service::message::IngressPacket packet{.messageId = connection, .linkId = "replay-link", .connectionId = connection, .occurredAtMs = 1789582200000 + 19000};
+        collector::IngressPacket packet{ .messageId = connection, .linkId = "replay-link", .connectionId = connection, .occurredAtMs = 1789582200000 + 19000 };
         packet.payload = collector::sl651::detail::hexBytes(frames[index]);
         const auto actions = engine.consume(packet);
         const auto& publication = first(actions, collector::ProtocolActionKind::PublishParsed);
@@ -1071,11 +1059,11 @@ void testSl651() {
     (void)engine.connected({ .connectionId = "sl-connection", .linkId = "sl-link", .remoteAddress = "127.0.0.1:10001", .sessionEpoch = 1 });
     const auto frame =
         slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34 });
-    service::message::IngressPacket packet{ .messageId = "sl-ingress",
-                                            .linkId = "sl-link",
-                                            .connectionId = "sl-connection",
-                                            .remoteAddress = "127.0.0.1:10001",
-                                            .occurredAtMs = 1000 };
+    collector::IngressPacket packet{ .messageId = "sl-ingress",
+                                     .linkId = "sl-link",
+                                     .connectionId = "sl-connection",
+                                     .remoteAddress = "127.0.0.1:10001",
+                                     .occurredAtMs = 1000 };
     packet.payload.assign(frame.begin(), frame.begin() + 5);
     require(engine.consume(packet).empty(), "partial SL651 header must not emit actions");
     packet.payload.assign(frame.begin() + 5, frame.end());
@@ -1221,10 +1209,10 @@ void testSl651AllEncodingsAndFunctionCodes() {
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     (void)engine.connected({ .connectionId = "sl-function-connection", .linkId = "sl-function-link", .sessionEpoch = 1 });
-    service::message::IngressPacket packet{ .messageId = "sl-function-frame",
-                                            .linkId = "sl-function-link",
-                                            .connectionId = "sl-function-connection",
-                                            .occurredAtMs = 7000 };
+    collector::IngressPacket packet{ .messageId = "sl-function-frame",
+                                     .linkId = "sl-function-link",
+                                     .connectionId = "sl-function-connection",
+                                     .occurredAtMs = 7000 };
     for (std::uint16_t function = 0; function <= 0xFF; ++function) {
         const auto code = collector::sl651::detail::hexByte(static_cast<std::uint8_t>(function));
         packet.payload = slFrame(static_cast<std::uint8_t>(function), { 0, 1, 0x24, 1, 2, 3, 4, 5, 0x39, 0x08, static_cast<std::uint8_t>(function) });
@@ -1251,10 +1239,10 @@ void testSl651MultiPacketImages() {
     (void)engine.connected(
         { .connectionId = "sl-image-connection", .linkId = "sl-image-link", .sessionEpoch = 1 }
     );
-    service::message::IngressPacket packet{ .messageId = "sl-image-frame",
-                                            .linkId = "sl-image-link",
-                                            .connectionId = "sl-image-connection",
-                                            .occurredAtMs = 8000 };
+    collector::IngressPacket packet{ .messageId = "sl-image-frame",
+                                     .linkId = "sl-image-link",
+                                     .connectionId = "sl-image-connection",
+                                     .occurredAtMs = 8000 };
 
     const auto firstFrame = slMultiFrame(0x36, 3, 1, { 0x00, 0x01, 0x24, 0x01, 0x02 });
     const auto secondFrame = slMultiFrame(0x36, 3, 2, { 0x03, 0x04, 0x05, 0xF3, 0xF3, 0xFF });
@@ -1335,7 +1323,7 @@ void testSl651CommunicationModes() {
         collector::ProtocolEngine engine(sessionFactories());
         engine.reload(snapshot);
         (void)engine.connected({.connectionId = "modes", .linkId = "modes", .sessionEpoch = 1});
-        service::message::IngressPacket packet{.messageId = "mode-report", .linkId = "modes", .connectionId = "modes", .occurredAtMs = 1000};
+        collector::IngressPacket packet{ .messageId = "mode-report", .linkId = "modes", .connectionId = "modes", .occurredAtMs = 1000 };
         packet.payload = slFrame(0x32);
         auto actions = engine.consume(packet);
         require(!has(actions, collector::ProtocolActionKind::Send), "SL651 acknowledged before durable publication");
@@ -1482,7 +1470,7 @@ void testSl651FixedPosition() {
     snapshot.devices.push_back(device);
     collector::ProtocolEngine engine(sessionFactories()); engine.reload(snapshot);
     (void)engine.connected({.connectionId = "fixed", .linkId = "fixed", .sessionEpoch = 1});
-    service::message::IngressPacket packet{.messageId = "fixed-report", .linkId = "fixed", .connectionId = "fixed", .occurredAtMs = 1000};
+    collector::IngressPacket packet{ .messageId = "fixed-report", .linkId = "fixed", .connectionId = "fixed", .occurredAtMs = 1000 };
     packet.payload = slFrame(0x32, {0, 1, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34});
     auto actions = engine.consume(packet);
     auto values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
@@ -1528,11 +1516,11 @@ void testModbus() {
     auto connected = engine.connected({ .connectionId = "modbus-connection", .linkId = "modbus-link", .remoteAddress = "127.0.0.1:15002", .targetId = "target-1", .sessionEpoch = 1 });
     require(has(connected, collector::ProtocolActionKind::BindDevice), "Modbus client target was not bound");
     require(has(connected, collector::ProtocolActionKind::Send), "Modbus did not trigger the first poll immediately after binding");
-    service::message::IngressPacket packet{ .messageId = "modbus-ingress",
-                                            .linkId = "modbus-link",
-                                            .connectionId = "modbus-connection",
-                                            .remoteAddress = "127.0.0.1:15002",
-                                            .occurredAtMs = 2000 };
+    collector::IngressPacket packet{ .messageId = "modbus-ingress",
+                                     .linkId = "modbus-link",
+                                     .connectionId = "modbus-connection",
+                                     .remoteAddress = "127.0.0.1:15002",
+                                     .occurredAtMs = 2000 };
     connected = drainInitialModbusPoll(engine, std::move(connected), packet, true);
     const auto pollToken = first(connected, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
 
@@ -1578,10 +1566,7 @@ void testModbus() {
     packet.payload = modbusReadResponse(6);
     actions = engine.consume(packet);
     const auto& lostAckResult = first(actions, collector::ProtocolActionKind::FailCommand);
-    require(lostAckResult.reason == "write_ack_missing" &&
-                service::command::collectorResultState(false, lostAckResult.reason) == "UNKNOWN" &&
-                !service::command::retryableFailure(lostAckResult.reason),
-            "Modbus write with a missing ACK was marked successful or retried despite matching readback");
+    require(lostAckResult.reason == "write_ack_missing" && service::message::command::collectorResultState(false, lostAckResult.reason) == "UNKNOWN" && !service::message::command::retryableFailure(lostAckResult.reason), "Modbus write with a missing ACK was marked successful or retried despite matching readback");
 
     actions = engine.execute("modbus-connection", { .id = "modbus-readback-timeout", .deviceId = "modbus-device", .deviceCode = "MODBUS-1", .kind = "write", .payload = modbusWrite(7), .readbackPayload = modbusRead(8), .expectedReadbackData = { 0x12, 0x34 } });
     packet.payload = modbusWrite(7);
@@ -1589,10 +1574,7 @@ void testModbus() {
     const auto readbackDeadline = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
     actions = engine.deadline("modbus-connection", readbackDeadline);
     const auto& readbackFailure = first(actions, collector::ProtocolActionKind::FailCommand);
-    require(readbackFailure.reason == "modbus_readback_timeout" &&
-                service::command::collectorResultState(false, readbackFailure.reason) == "UNKNOWN" &&
-                !service::command::retryableFailure(readbackFailure.reason),
-            "Modbus readback timeout after a confirmed write ACK was rejected or retried");
+    require(readbackFailure.reason == "modbus_readback_timeout" && service::message::command::collectorResultState(false, readbackFailure.reason) == "UNKNOWN" && !service::message::command::retryableFailure(readbackFailure.reason), "Modbus readback timeout after a confirmed write ACK was rejected or retried");
 
     actions = engine.deadline("modbus-connection", pollToken);
     require(has(actions, collector::ProtocolActionKind::Send), "Modbus periodic poll was not generated by its session");
@@ -1687,10 +1669,10 @@ void testModbusTypesAndPriority() {
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     auto connected = engine.connected({ .connectionId = "priority-connection", .linkId = link.id, .targetId = "priority-target", .sessionEpoch = 1 });
-    service::message::IngressPacket packet{ .messageId = "initial-poll-response",
-                                            .linkId = link.id,
-                                            .connectionId = "priority-connection",
-                                            .occurredAtMs = 4999 };
+    collector::IngressPacket packet{ .messageId = "initial-poll-response",
+                                     .linkId = link.id,
+                                     .connectionId = "priority-connection",
+                                     .occurredAtMs = 4999 };
     (void)drainInitialModbusPoll(engine, std::move(connected), packet, true);
     auto actions = engine.execute("priority-connection", { .id = "active-read", .deviceId = device.id, .deviceCode = device.code, .kind = "read", .payload = modbusRead(10, 1) });
     require(first(actions, collector::ProtocolActionKind::Send).bytes == modbusRead(10, 1), "Modbus active read was not dispatched");
@@ -1790,10 +1772,10 @@ void testModbusAllFunctionCodes(bool tcp) {
 
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
-    service::message::IngressPacket packet{ .messageId = "modbus-matrix-response",
-                                            .linkId = link.id,
-                                            .connectionId = "modbus-matrix-connection",
-                                            .occurredAtMs = 6000 };
+    collector::IngressPacket packet{ .messageId = "modbus-matrix-response",
+                                     .linkId = link.id,
+                                     .connectionId = "modbus-matrix-connection",
+                                     .occurredAtMs = 6000 };
     auto connected = engine.connected({ .connectionId = "modbus-matrix-connection", .linkId = link.id, .targetId = "matrix-target", .sessionEpoch = 1 });
     (void)drainInitialModbusPoll(engine, std::move(connected), packet, tcp);
     std::uint16_t transaction = 100;
@@ -1856,10 +1838,10 @@ void testModbusRtuZeroAddress() {
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     auto connected = engine.connected({ .connectionId = "modbus-rtu-connection", .linkId = link.id, .targetId = "rtu-target", .sessionEpoch = 1 });
-    service::message::IngressPacket packet{ .messageId = "rtu-initial-poll-response",
-                                            .linkId = link.id,
-                                            .connectionId = "modbus-rtu-connection",
-                                            .occurredAtMs = 2999 };
+    collector::IngressPacket packet{ .messageId = "rtu-initial-poll-response",
+                                     .linkId = link.id,
+                                     .connectionId = "modbus-rtu-connection",
+                                     .occurredAtMs = 2999 };
     (void)drainInitialModbusPoll(engine, std::move(connected), packet, false);
     auto actions = engine.execute("modbus-rtu-connection", { .id = "rtu-read", .deviceId = device.id, .deviceCode = device.code, .kind = "read", .payload = modbusRtuRead() });
     require(first(actions, collector::ProtocolActionKind::Send).bytes == modbusRtuRead(), "zero-address Modbus RTU read was mistaken for TCP");
@@ -1905,11 +1887,11 @@ void testModbusDiscoveryAndOffline() {
         engine.execute("discovery-connection", { .id = "discovery-command", .transport = "TCP", .kind = "discovery", .payload = modbusRead(11), .timeout = std::chrono::milliseconds(500) });
     const auto discoveryToken =
         first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
-    service::message::IngressPacket packet{ .messageId = "discovery-response-1",
-                                            .linkId = "modbus-server",
-                                            .connectionId = "discovery-connection",
-                                            .occurredAtMs = 4000,
-                                            .payload = modbusReadResponse(11) };
+    collector::IngressPacket packet{ .messageId = "discovery-response-1",
+                                     .linkId = "modbus-server",
+                                     .connectionId = "discovery-connection",
+                                     .occurredAtMs = 4000,
+                                     .payload = modbusReadResponse(11) };
     actions = engine.consume(packet);
     require(first(actions, collector::ProtocolActionKind::BindDevice).deviceCode == "DISCOVERY1", "Modbus discovery did not register the first response");
     packet.messageId = "discovery-response-2";
@@ -1992,11 +1974,11 @@ void testS7() {
 
     collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
-    service::message::IngressPacket packet{ .messageId = "s7-ingress",
-                                            .linkId = "s7-link",
-                                            .connectionId = "s7-connection",
-                                            .remoteAddress = "127.0.0.1:102",
-                                            .occurredAtMs = 3000 };
+    collector::IngressPacket packet{ .messageId = "s7-ingress",
+                                     .linkId = "s7-link",
+                                     .connectionId = "s7-connection",
+                                     .remoteAddress = "127.0.0.1:102",
+                                     .occurredAtMs = 3000 };
     const auto finishHandshake = [&]() {
         packet.payload = s7CotpConfirm();
         auto handshake = engine.consume(packet);
@@ -2099,10 +2081,7 @@ void testS7() {
     packet.payload = s7ReadResponse(2);
     actions = engine.consume(packet);
     const auto& lostAckResult = first(actions, collector::ProtocolActionKind::FailCommand);
-    require(lostAckResult.reason == "write_ack_missing" &&
-                service::command::collectorResultState(false, lostAckResult.reason) == "UNKNOWN" &&
-                !service::command::retryableFailure(lostAckResult.reason),
-            "S7 write with a missing ACK was marked successful or retried despite matching readback");
+    require(lostAckResult.reason == "write_ack_missing" && service::message::command::collectorResultState(false, lostAckResult.reason) == "UNKNOWN" && !service::message::command::retryableFailure(lostAckResult.reason), "S7 write with a missing ACK was marked successful or retried despite matching readback");
 
     actions = engine.execute("s7-connection", { .id = "s7-readback-timeout", .deviceId = "s7-device", .deviceCode = "S7-1", .kind = "write", .payload = s7WriteRequest(77), .readbackPayload = s7ReadRequest(78), .expectedReadbackData = { 0x12, 0x34 } });
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedCotp, "S7 readback-timeout write did not open a fresh PLC session");
@@ -2112,10 +2091,7 @@ void testS7() {
     const auto readbackDeadline = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
     actions = engine.deadline("s7-connection", readbackDeadline);
     const auto& readbackFailure = first(actions, collector::ProtocolActionKind::FailCommand);
-    require(readbackFailure.reason == "s7_readback_timeout" &&
-                service::command::collectorResultState(false, readbackFailure.reason) == "UNKNOWN" &&
-                !service::command::retryableFailure(readbackFailure.reason),
-            "S7 readback timeout after a confirmed write ACK was rejected or retried");
+    require(readbackFailure.reason == "s7_readback_timeout" && service::message::command::collectorResultState(false, readbackFailure.reason) == "UNKNOWN" && !service::message::command::retryableFailure(readbackFailure.reason), "S7 readback timeout after a confirmed write ACK was rejected or retried");
 
     actions = engine.deadline("s7-connection", pollToken);
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedCotp, "S7 periodic poll did not open a fresh PLC session");
@@ -2160,11 +2136,11 @@ void testS7() {
     collector::ProtocolEngine serverEngine(sessionFactories());
     serverEngine.reload(serverSnapshot);
     (void)serverEngine.connected({ .connectionId = "s7-server-connection", .linkId = "s7-server", .sessionEpoch = 1 });
-    service::message::IngressPacket serverPacket{ .messageId = "s7-registration",
-                                                  .linkId = "s7-server",
-                                                  .connectionId = "s7-server-connection",
-                                                  .occurredAtMs = 4000,
-                                                  .payload = serverDevice.registrationBytes };
+    collector::IngressPacket serverPacket{ .messageId = "s7-registration",
+                                           .linkId = "s7-server",
+                                           .connectionId = "s7-server-connection",
+                                           .occurredAtMs = 4000,
+                                           .payload = serverDevice.registrationBytes };
     actions = serverEngine.consume(serverPacket);
     require(has(actions, collector::ProtocolActionKind::BindDevice), "S7 standalone registration packet did not bind the device");
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedCotp, "S7 registration did not start the PLC session");
@@ -2226,9 +2202,25 @@ void testS7AllDataTypes() {
         const auto decoded = collector::s7::detail::decodeJson(current.bytes, element);
         require(decoded && *decoded == current.expected, "S7 data type matrix failed");
     }
-    const std::string invalidUtf8{ static_cast<char>(0xC0), '"' };
-    require(collector::s7::detail::jsonEscape(invalidUtf8) == "\\u00C0\\\"", "S7 invalid string bytes did not produce valid JSON escapes");
-    require(collector::s7::detail::jsonEscape("中文") == "中文", "S7 valid UTF-8 text was not preserved");
+    // STRING 按 JSON 规范转义：控制字符短转义或 \u00xx，非法 UTF-8 字节 \u00xx 小写，合法 UTF-8 原样保留，NUL 截断。
+    collector::ElementDefinition text;
+    text.dataType = "STRING";
+    const std::vector<std::uint8_t> textBytes{ 'A', 0x01, '\n', 0xC0, '"', '\\', 0xE4, 0xB8, 0xAD, 0x00, 'Z' };
+    const auto escaped = collector::s7::detail::decodeJson(textBytes, text);
+    require(escaped && *escaped == "\"A\\u0001\\n\\u00c0\\\"\\\\中\"", "S7 string did not produce valid JSON escapes");
+}
+
+void testProtocolJsonEscaping() {
+    collector::DeviceDefinition device;
+    device.protocol = "Modbus";
+    device.modbusMode = "TCP";
+    device.slaveId = 1;
+    device.elements.push_back({ .id = "point", .name = std::string("A\x01\tB") + static_cast<char>(0xC0) + "\"", .unit = "\x1f", .dataType = "UINT16", .byteOrder = "BIG_ENDIAN", .registerType = "HOLDING_REGISTER", .address = 0, .quantity = 1 });
+    const std::array<std::uint8_t, 12> request{ 0, 1, 0, 0, 0, 6, 1, 3, 0, 0, 0, 1 };
+    const std::array<std::uint8_t, 11> response{ 0, 1, 0, 0, 0, 5, 1, 3, 2, 0x12, 0x34 };
+    const auto json = collector::modbus::Session::decodeRead(device, request, response);
+    require(ruvia::json_value::parse(json).has_value(), "Modbus values JSON is invalid");
+    require(json.find("\"name\":\"A\\u0001\\tB\\u00c0\\\"\"") != std::string::npos && json.find("\"unit\":\"\\u001f\"") != std::string::npos, "Modbus element text did not keep control characters and invalid UTF-8 as JSON escapes");
 }
 
 void testDeadlineScheduler() {
@@ -2432,7 +2424,6 @@ void testRealtimeProjectionContract() {
     const auto scopedKeys = [](std::size_t worker, std::string_view instance) {
         return std::vector<std::string>{
             service::message::configStream(worker, instance),
-            service::message::ingressStream(worker, instance),
             service::message::egressStream(worker, instance),
             service::message::commandStream(worker, true, instance),
             service::message::commandStream(worker, false, instance),
@@ -2444,12 +2435,12 @@ void testRealtimeProjectionContract() {
             service::message::edge::dispatch::stream(worker, instance),
             service::message::edge::projector_stream::stream(worker, instance),
             service::message::edge::projector_stream::leaseKey(worker, instance),
-            service::message::edge::projector_stream::ownerToken(worker, instance)};
+            service::message::edge::projector_stream::ownerToken(worker, instance)
+        };
     };
     const auto keys = scopedKeys(2, "process-a");
     const std::vector<std::string> expected{
         "iot:channel:config:worker:process-a:2",
-        "iot:channel:packet:raw:worker:process-a:2",
         "iot:channel:socket:egress:worker:process-a:2",
         "iot:channel:command:worker:process-a:2:high",
         "iot:channel:command:worker:process-a:2:normal",
@@ -2457,9 +2448,12 @@ void testRealtimeProjectionContract() {
         "iot:channel:control:worker:process-a:2",
         "iot:channel:dead-letter:worker:process-a:2",
         "iot:service:worker:process-a:2:wake",
-        "process-a:worker:2", "iot:v2:edge:dispatch:process-a:2",
+        "process-a:worker:2",
+        "iot:v2:edge:dispatch:process-a:2",
         "iot:v3:edge:projector:process-a:2",
-        "iot:v3:edge:projector:lease:process-a:2", "process-a:2"};
+        "iot:v3:edge:projector:lease:process-a:2",
+        "process-a:2"
+    };
     require(keys == expected, "explicit process identity changed persisted message keys");
     const auto otherWorker = scopedKeys(3, "process-a");
     const auto otherProcess = scopedKeys(2, "process-b");
@@ -2657,6 +2651,7 @@ void testPacketLog() {
     packetLog::initialize(std::move(config));
     require(!std::filesystem::exists(staleWorkerLog),
             "packet log retention did not remove an old worker basename");
+    require(packetLog::enabled(packetLog::Level::Debug) && packetLog::enabled(packetLog::Level::Error) && !packetLog::enabled(packetLog::Level::Trace) && !packetLog::enabled(packetLog::Level::Off), "packet log level filter does not follow the configured level");
 
     packetLog::Context context;
     context.workerIndex = 2;
@@ -2683,16 +2678,23 @@ void testPacketLog() {
     require(flushed, "low-volume debug log was not flushed before shutdown");
     packetLog::write(packetLog::Level::Warn, "TIMEOUT", context, {}, "modbus_response_timeout");
     packetLog::write(packetLog::Level::Info, "BROADCAST_START", context, {}, "targets=2");
+    std::thread([&context] {
+        packetLog::write(packetLog::Level::Info, "OTHER_WORKER", context);
+    }).join();
     packetLog::shutdown();
+    require(!packetLog::enabled(packetLog::Level::Error), "packet log stayed enabled after shutdown");
 
     std::string content;
+    std::size_t files = 0;
     for (const auto& entry : std::filesystem::directory_iterator(directory)) {
         if (!entry.is_regular_file()) {
             continue;
         }
+        ++files;
         std::ifstream input(entry.path());
         content.append(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
+    require(files == 1 && content.find("event=\"OTHER_WORKER\"") != std::string::npos, "packet log writers on different threads did not share one sink");
     require(content.find("event=\"RX_BYTES\"") != std::string::npos && content.find("hex=\"00 FF 7E 01\"") != std::string::npos, "packet log did not preserve unparsed binary bytes");
     require(content.find("event=\"TIMEOUT\"") != std::string::npos && content.find("event=\"BROADCAST_START\"") != std::string::npos, "packet log did not persist timeout and broadcast events");
     std::filesystem::remove_all(directory, ignored);
@@ -2865,7 +2867,7 @@ void testTcpServerListenersAreWorkerLocal() {
     const auto onConnection1 = [&acceptedWorkers](collector::ProtocolConnectionInfo) {
         acceptedWorkers.push_back(1);
     };
-    const auto noPacket = [](service::message::IngressPacket) {
+    const auto noPacket = [](collector::IngressPacket) {
     };
     const auto noDisconnect = [](std::string, std::string) {
     };
@@ -2951,22 +2953,16 @@ void testTcpClientTargetReconcile() {
     std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
     std::vector<std::string> disconnected;
     service::common::UuidV7Generator tcpUuids;
-    collector::TcpTransport tcp(tcpUuids,
-        io,
-        scheduler,
-        0,
-        1,
-        [&connectedByTarget](collector::ProtocolConnectionInfo info) {
-            connectedByTarget[info.targetId].push_back(std::move(info.connectionId));
-        },
-        [](service::message::IngressPacket) {
-        },
-        [&disconnected](std::string connectionId, std::string) {
-            disconnected.push_back(std::move(connectionId));
-        },
-        [](collector::LinkState) {
-        }
-    );
+    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectedByTarget](collector::ProtocolConnectionInfo info) {
+        connectedByTarget[info.targetId].push_back(std::move(info.connectionId));
+    },
+                                [](collector::IngressPacket) {
+                                },
+                                [&disconnected](std::string connectionId, std::string) {
+                                    disconnected.push_back(std::move(connectionId));
+                                },
+                                [](collector::LinkState) {
+                                });
 
     auto previous = clientReconcileSnapshot();
     previous.links.front().targets.front().port = firstServer.local_endpoint().port();
@@ -3048,7 +3044,7 @@ void testTcpClientTargetsUseConnectionClaim() {
     const auto release = [&targetClaimed](std::string, std::string, std::string) {
         targetClaimed = false;
     };
-    const auto noPacket = [](service::message::IngressPacket) {
+    const auto noPacket = [](collector::IngressPacket) {
     };
     const auto noDisconnect = [](std::string, std::string) {
     };
@@ -3127,36 +3123,30 @@ void testTcpClientLateClaimCompletionAfterStop() {
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
     service::common::UuidV7Generator tcpUuids;
-    collector::TcpTransport tcp(tcpUuids,
-        io,
-        scheduler,
-        0,
-        1,
-        [](collector::ProtocolConnectionInfo) {
-        },
-        [](service::message::IngressPacket) {
-        },
-        [](std::string, std::string) {
-        },
-        [](collector::LinkState) {
-        },
-        [&claims, &leaseOwners](std::string, std::string, std::string token, std::function<void(bool)> complete) {
-            const auto generation = token;
-            claims.emplace_back(
-                std::move(token),
-                [&leaseOwners, generation, complete = std::move(complete)](bool claimed) mutable {
-                    if (claimed) {
-                        leaseOwners.insert(generation);
-                    }
-                    complete(claimed);
-                }
-            );
-        },
-        [&released, &leaseOwners](std::string, std::string, std::string token) {
-            released.push_back(std::move(token));
-            leaseOwners.erase(released.back());
-        }
-    );
+    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
+    },
+                                [](collector::IngressPacket) {
+                                },
+                                [](std::string, std::string) {
+                                },
+                                [](collector::LinkState) {
+                                },
+                                [&claims, &leaseOwners](std::string, std::string, std::string token, std::function<void(bool)> complete) {
+                                    const auto generation = token;
+                                    claims.emplace_back(
+                                        std::move(token),
+                                        [&leaseOwners, generation, complete = std::move(complete)](bool claimed) mutable {
+                                            if (claimed) {
+                                                leaseOwners.insert(generation);
+                                            }
+                                            complete(claimed);
+                                        }
+                                    );
+                                },
+                                [&released, &leaseOwners](std::string, std::string, std::string token) {
+                                    released.push_back(std::move(token));
+                                    leaseOwners.erase(released.back());
+                                });
 
     tcp.reload(snapshot);
     require(claims.size() == 1 && !claims.front().first.empty(), "TCP target claim was not pending before the physical connection");
@@ -3212,34 +3202,28 @@ void testTcpClientRevokePendingConnect() {
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
     service::common::UuidV7Generator tcpUuids;
-    collector::TcpTransport tcp(tcpUuids,
-        io,
-        scheduler,
-        0,
-        1,
-        [](collector::ProtocolConnectionInfo) {
-        },
-        [](service::message::IngressPacket) {
-        },
-        [](std::string, std::string) {
-        },
-        [](collector::LinkState) {
-        },
-        [&claimedToken, &completeClaim, &leaseOwners](std::string, std::string, std::string token, std::function<void(bool)> complete) {
-            claimedToken = std::move(token);
-            const auto generation = claimedToken;
-            completeClaim = [complete = std::move(complete), &leaseOwners, generation](bool claimed) mutable {
-                if (claimed) {
-                    leaseOwners.insert(generation);
-                }
-                complete(claimed);
-            };
-        },
-        [&released, &leaseOwners](std::string, std::string, std::string token) {
-            released.push_back(std::move(token));
-            leaseOwners.erase(released.back());
-        }
-    );
+    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
+    },
+                                [](collector::IngressPacket) {
+                                },
+                                [](std::string, std::string) {
+                                },
+                                [](collector::LinkState) {
+                                },
+                                [&claimedToken, &completeClaim, &leaseOwners](std::string, std::string, std::string token, std::function<void(bool)> complete) {
+                                    claimedToken = std::move(token);
+                                    const auto generation = claimedToken;
+                                    completeClaim = [complete = std::move(complete), &leaseOwners, generation](bool claimed) mutable {
+                                        if (claimed) {
+                                            leaseOwners.insert(generation);
+                                        }
+                                        complete(claimed);
+                                    };
+                                },
+                                [&released, &leaseOwners](std::string, std::string, std::string token) {
+                                    released.push_back(std::move(token));
+                                    leaseOwners.erase(released.back());
+                                });
 
     tcp.reload(snapshot);
     require(!claimedToken.empty() && completeClaim, "TCP target claim did not produce a generation before connect");
@@ -3267,21 +3251,15 @@ void testTcpCloseDuringPendingWrite() {
     std::string connectionId;
     int writeCompletions = 0;
     service::common::UuidV7Generator tcpUuids;
-    collector::TcpTransport tcp(tcpUuids,
-        io,
-        scheduler,
-        0,
-        1,
-        [&connectionId](collector::ProtocolConnectionInfo info) {
-            connectionId = std::move(info.connectionId);
-        },
-        [](service::message::IngressPacket) {
-        },
-        [](std::string, std::string) {
-        },
-        [](collector::LinkState) {
-        }
-    );
+    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectionId](collector::ProtocolConnectionInfo info) {
+        connectionId = std::move(info.connectionId);
+    },
+                                [](collector::IngressPacket) {
+                                },
+                                [](std::string, std::string) {
+                                },
+                                [](collector::LinkState) {
+                                });
 
     auto snapshot = clientReconcileSnapshot();
     snapshot.links.front().targets.resize(1);
@@ -3674,6 +3652,7 @@ int main() {
         run("modbus discovery and registration", testModbusDiscoveryAndOffline);
         run("s7", testS7);
         run("s7 data types", testS7AllDataTypes);
+        run("protocol JSON escaping", testProtocolJsonEscaping);
         run("deadline scheduler", testDeadlineScheduler);
         run("runtime writable contract", testRuntimeWritableContract);
         run("atomic stream finalization contract", testAtomicStreamFinalizationContract);

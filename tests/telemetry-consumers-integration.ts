@@ -55,6 +55,10 @@ try {
         values: { [point]: { name: 'temperature', unit: 'C', value: 42 } },
     });
     const fields = [
+        'acquisition_id',
+        event,
+        'raw_packet_ids',
+        '[]',
         'message_id',
         event,
         'causation_id',
@@ -140,9 +144,11 @@ try {
     await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
         VALUES(${slDevice},${slDevice},${slLink},${slModel},'{"device_code":"0001000102"}'::jsonb,${admin})`;
     const raw = '7E7E010001000102FFFA320031020025260914142500F1F1000100010249F0F02609141425392300000587371B000125272B0000000001FFB028000000000303CF39';
-    async function publishSlReport(payload: string, sampleTime: string, receivedTime: string) {
+    // The collector derives one acquisition ID per SL651 report and reuses it for retransmissions.
+    async function publishSlReport(acquisition: string, payload: string, sampleTime: string, receivedTime: string) {
         const report = [...fields];
         const replace = (key: string, value: string) => { report[report.indexOf(key) + 1] = value; };
+        replace('acquisition_id', acquisition);
         replace('message_id', id());
         replace('causation_id', id());
         replace('connection_id', id());
@@ -155,17 +161,19 @@ try {
         replace('raw_payload_hex', JSON.stringify([payload]));
         await publishFixtureEvent(redis, stream, report, 'telemetry');
     }
-    await publishSlReport(raw, now, now);
+    const slReport = id();
+    await publishSlReport(slReport, raw, now, now);
     await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length === 1,
         'SL651 initial report did not persist');
     const stored = (await db`SELECT id FROM device_data WHERE device_id=${slDevice}`)[0].id;
-    await Promise.all([5000, 10000].map(offset => publishSlReport(raw, now, String(Number(now) + offset))));
+    assert.equal(stored, slReport, 'history identity must be the collector acquisition ID');
+    await Promise.all([5000, 10000].map(offset => publishSlReport(slReport, raw, now, String(Number(now) + offset))));
     // Simulate receipt expiration: durable uniqueness must also survive Redis receipt loss.
     await Bun.sleep(500);
     await redis.send('DEL', [`iot:telemetry:fanout:${stored}`]);
-    await publishSlReport(raw, now, String(Number(now) + 15000));
+    await publishSlReport(slReport, raw, now, String(Number(now) + 15000));
     // A later sample acts as a processing barrier and must remain a separate record.
-    await publishSlReport(raw, String(Number(now) + 60000), String(Number(now) + 60000));
+    await publishSlReport(id(), raw, String(Number(now) + 60000), String(Number(now) + 60000));
     await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length >= 2,
         'SL651 next sample was incorrectly deduplicated');
     await Bun.sleep(500);
@@ -173,16 +181,19 @@ try {
     console.log('PASS SL651 retransmission, reconnect, receipt loss and distinct sample persistence');
 
     const source = await Bun.file('service/features/telemetry/telemetry.service.h').text();
-    const lua = source.match(/R"lua\(([\s\S]*?)\)lua"/)![1];
-    const keys = Array.from({ length: 5 }, (_, i) => `test:fanout:${event}:${i}`);
+    const lua = source.match(/kFanoutScript = R"lua\(([\s\S]*?)\)lua"/)![1];
+    // KEYS: history, latest, alerts, delivery, shared wake, receipt; ARGV: wake capacity, wake task, then <count> <fields...> per entry.
+    const keys = Array.from({ length: 6 }, (_, i) => `test:fanout:${event}:${i}`);
+    const fanout = () => redis.send('EVAL', [lua, '6', ...keys, '100000', 'telemetry-alerts', String(fields.length), ...fields]);
     try {
-        await redis.send('SET', [keys[3], 'wrong-type']);
-        await assert.rejects(redis.send('EVAL', [lua, '5', ...keys, ...fields]));
-        assert.equal(await redis.send('EXISTS', [keys[0], keys[1], keys[2], keys[4]]), 0);
-        await redis.send('DEL', [keys[3]]);
-        assert.equal(await redis.send('EVAL', [lua, '5', ...keys, ...fields]), 1);
-        assert.equal(await redis.send('EVAL', [lua, '5', ...keys, ...fields]), 0);
-        for (const key of keys.slice(1)) assert.equal(await redis.send('XLEN', [key]), 1);
+        await redis.send('SET', [keys[2], 'wrong-type']);
+        await assert.rejects(fanout());
+        assert.equal(await redis.send('EXISTS', [keys[0], keys[1], keys[3], keys[4], keys[5]]), 0);
+        await redis.send('DEL', [keys[2]]);
+        assert.equal(await fanout(), 1);
+        assert.equal(await fanout(), 0);
+        for (const key of keys.slice(0, 4)) assert.equal(await redis.send('XLEN', [key]), 1);
+        assert.equal(await redis.send('XLEN', [keys[4]]), 1);
     } finally {
         await redis.send('DEL', keys);
     }
