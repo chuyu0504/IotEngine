@@ -21,6 +21,8 @@
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/middleware/log.h"
 
+#include "tests/port_reservation.fixture.h"
+
 namespace {
 
 void require(bool condition, std::string_view message) {
@@ -38,31 +40,10 @@ bool waitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
     return predicate();
 }
 
-// ZLMediaKit binds RTC UDP on a random port and then TCP on the same number,
-// which can already be taken; give it a port free for both protocols.
+// ZLMediaKit binds RTC UDP and then TCP on the same number; give it a port free
+// for both protocols outside the ephemeral range.
 std::uint16_t reserveRtcPort() {
-    asio::io_context context;
-    for (int attempt = 0; attempt < 32; ++attempt) {
-        std::error_code error;
-        asio::ip::udp::socket udp(context);
-        udp.open(asio::ip::udp::v4(), error);
-        if (!error) {
-            udp.bind(asio::ip::udp::endpoint(asio::ip::address_v4::any(), 0), error);
-        }
-        if (error) {
-            continue;
-        }
-        const auto port = udp.local_endpoint().port();
-        asio::ip::tcp::acceptor tcp(context);
-        tcp.open(asio::ip::tcp::v4(), error);
-        if (!error) {
-            tcp.bind(asio::ip::tcp::endpoint(asio::ip::address_v4::any(), port), error);
-        }
-        if (!error) {
-            return port;
-        }
-    }
-    throw std::runtime_error("could not reserve a shared TCP/UDP RTC port");
+    return test::reservePort(asio::ip::address_v4::any(), true);
 }
 
 using service::gb28181::MediaConfig;

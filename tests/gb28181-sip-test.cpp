@@ -28,6 +28,8 @@
 #include "service/features/gb28181/sip/sip.protocol.h"
 #include "service/features/gb28181/sip/sip.transport.h"
 
+#include "tests/port_reservation.fixture.h"
+
 namespace {
 
 using service::gb28181::MediaConfig;
@@ -48,48 +50,13 @@ void require(bool condition, std::string_view message) {
     }
 }
 
+// SIP binds UDP and TCP on the same number.
 std::uint16_t reserveLocalPort() {
-    asio::io_context context;
-    std::error_code lastError;
-    std::uint16_t lastPort = 0;
-    // Let UDP choose a permitted port first; sequential TCP ephemeral ports can
-    // all fall inside the same Windows UDP exclusion range.
-    for (int attempt = 0; attempt < 32; ++attempt) {
-        asio::ip::udp::socket udpReservation(context);
-        udpReservation.open(asio::ip::udp::v4(), lastError);
-        if (lastError) continue;
-        udpReservation.bind(asio::ip::udp::endpoint(asio::ip::address_v4::loopback(), 0), lastError);
-        if (lastError) continue;
-        lastPort = udpReservation.local_endpoint(lastError).port();
-        if (lastError) continue;
-        asio::ip::tcp::acceptor tcpReservation(context);
-        tcpReservation.open(asio::ip::tcp::v4(), lastError);
-        if (lastError) continue;
-        tcpReservation.bind(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), lastPort), lastError);
-        if (lastError) continue;
-        return lastPort;
-    }
-    throw std::runtime_error("could not reserve a shared TCP/UDP loopback port; last port=" +
-                             std::to_string(lastPort) + ", error=" + lastError.message());
+    return test::reservePort(asio::ip::address_v4::loopback(), true);
 }
 
 std::uint16_t reserveLocalUdpPort(const asio::ip::address& address) {
-    asio::io_context context;
-    asio::ip::udp::socket reservation(context);
-    std::error_code error;
-    reservation.open(address.is_v6() ? asio::ip::udp::v6() : asio::ip::udp::v4(), error);
-    if (error) {
-        throw std::runtime_error("could not open UDP loopback reservation socket: " + error.message());
-    }
-    reservation.bind(asio::ip::udp::endpoint(address, 0), error);
-    if (error) {
-        throw std::runtime_error("could not reserve UDP loopback port: " + error.message());
-    }
-    const auto port = reservation.local_endpoint(error).port();
-    if (error) {
-        throw std::runtime_error("could not read UDP loopback reservation port: " + error.message());
-    }
-    return port;
+    return test::reservePort(address, false);
 }
 
 std::string sipOptions(std::uint16_t clientPort, std::string_view transport) {
@@ -1467,8 +1434,7 @@ int main() {
             require(!ipv6Packet.empty(), "GB28181 IPv6 UDP catalog datagram was not delivered");
             const auto ipv6Catalog = SipMessage::parse(ipv6Packet);
             require(ipv6Catalog.has_value(), "GB28181 IPv6 UDP catalog datagram could not be parsed");
-            require(ipv6Catalog->method == "MESSAGE" && xmlValue(ipv6Catalog->body, "CmdType") == "Catalog",
-                    "GB28181 IPv6 UDP datagram is not a catalog query");
+            require(ipv6Catalog->method == "MESSAGE" && xmlValue(ipv6Catalog->body, "CmdType") == "Catalog", "GB28181 IPv6 UDP datagram is not a catalog query");
             ipv6Server->stop();
         }
 
