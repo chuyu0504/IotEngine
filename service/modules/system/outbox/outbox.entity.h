@@ -6,7 +6,7 @@
 
 #include <ruvia/web/db/db_entity.h>
 
-namespace service::system {
+namespace service::system::entities {
 
 RUVIA_DB_ENTITY(OutboxEventEntity, "outbox_event",
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -36,4 +36,4 @@ RUVIA_DB_ENTITY(OutboxEventEntity, "outbox_event",
     RUVIA_DB_COLUMN(dead_lettered_at, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}))
 
-} // namespace service::system
+} // namespace service::system::entities

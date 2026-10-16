@@ -19,7 +19,7 @@
 
 #include "service/common/uuid.h"
 
-namespace service::edge {
+namespace service::edge_node {
 
 inline constexpr auto kDefaultDtu = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultLogs = RUVIA_DEFAULT(false){};
@@ -157,11 +157,11 @@ RUVIA_MODEL(EdgeNodeResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_RE
 
 RUVIA_MODEL(EdgePageResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, EdgePageDto));
 
-} // namespace service::edge
+} // namespace service::edge_node
 
 // Edge debug WebSocket protocol: request envelope, per-connection state and
 // typed event dispatch. No I/O; the session loop lives in the service.
-namespace service::edge::debug {
+namespace service::edge_node::debug {
 
 class EventError final : public std::runtime_error {
   public:
@@ -262,7 +262,7 @@ struct Operation final {
 };
 
 // Typed event table of one connection. `Context` is the per-invocation event
-// context (service::edge::debug::EventContext in production); `Invoker` is the
+// context (service::edge_node::debug::EventContext in production); `Invoker` is the
 // service adapter that decodes the body and runs the handler.
 template <typename Context>
 class EventRegistry final {
@@ -317,4 +317,4 @@ class EventRegistry final {
     bool sealed_{};
 };
 
-} // namespace service::edge::debug
+} // namespace service::edge_node::debug

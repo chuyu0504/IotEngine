@@ -42,7 +42,7 @@ class Gb28181Controller final {
         channels.push_back({ "snapshot", { std::string(service::message::live::topic::kGb28181) },
             [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                 // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+                co_await service::middleware::requirePermission(request, "iot:gb28181:query");
                 auto result = co_await gb28181Service().devices(request);
                 co_return service::middleware::modelJson(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
             },

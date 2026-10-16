@@ -1,4 +1,3 @@
-#include "service/middleware/api_upload.h"
 #include "service/middleware/validation.h"
 #include "service/features/edge/edge.config.h"
 #include <algorithm>
@@ -515,7 +514,7 @@ auto makeApplicationStart(ruvia::application& app, ApplicationComponents& compon
                                 initializeServiceWorker(worker, [owner, index, uploadDirectory, worker](ruvia::web_worker_context& context) -> ruvia::task<void> {
                                     context.worker_state<ruvia::web_worker_handle>() = worker;
                                     context.worker_state<service::ServiceWorkerTopology>().index = index;
-                                    service::channel::UploadedFile::recoverAbandoned(uploadDirectory);
+                                    (void)co_await service::edge_node::EdgeService::recoverFirmwareUploads(context, uploadDirectory);
                                     (void)co_await service::configuration::ConfigurationService::project(context);
                                 });
                             },
@@ -602,6 +601,13 @@ void configureServer(
         .use_worker_state<service::edge::SessionDispatcher>()
         .use_worker_state<service::utils::ChangeFeed>()
         .use_worker_state<service::edge::gateway::FirmwareCleanupSignal>()
+        .use_worker_state<service::device::DeviceCommandPort>([] {
+            return service::device::DeviceCommandPort{
+                &service::command::CommandService::statuses<service::middleware::RequestContext>,
+                &service::command::CommandService::fillOperations<service::middleware::RequestContext>,
+            };
+        })
+        .use_worker_state<service::middleware::AuthPort>(&service::auth::AuthController::port)
         .database(ruvia::db_registration_config{
             .config_ = std::move(components.database),
         })

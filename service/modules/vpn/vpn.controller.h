@@ -106,8 +106,8 @@ class VpnController final {
             service::common::fail(10002, "此接口需要 text/event-stream", 406);
         }
         service::middleware::RequestContext request(c, userId);
-        co_await service::auth::AuthService::requirePermission(request, userId, "iot:vpn:enroll");
-        co_await service::auth::AuthService::requirePermission(request, userId, "iot:edge:query");
+        co_await service::middleware::requirePermission(request, "iot:vpn:enroll");
+        co_await service::middleware::requirePermission(request, "iot:edge:query");
         const auto connectionId = co_await vpnService().openDesktopSession(request, peerId);
         ruvia::task_scope leases(c.worker(), ruvia::task_scope_options{.resource_ = c.pool()});
         std::exception_ptr failure;
@@ -132,9 +132,9 @@ class VpnController final {
         };
         auto scope = std::make_shared<Scope>();
         auto snapshot = [&peerId, scope](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:query");
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:enroll");
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
+            co_await service::middleware::requirePermission(request, "iot:vpn:query");
+            co_await service::middleware::requirePermission(request, "iot:vpn:enroll");
+            co_await service::middleware::requirePermission(request, "iot:edge:query");
             auto config = co_await vpnService().desktopPeerConfig(request, peerId);
             scope->networkId = co_await vpnService().desktopPeerNetworkId(request, peerId);
             scope->edgeNodeIds.clear();

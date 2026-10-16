@@ -53,7 +53,7 @@ class DeviceController final {
 
   private:
     ruvia::task<DeviceCommandStatusesResponse> queryCommandStatuses(service::middleware::RequestContext& request, std::string_view ids) {
-        co_return service::common::ok<DeviceCommandStatusesResponse>(request, co_await deviceService().commandStatuses(request, ids));
+        co_return service::common::ok<DeviceCommandStatusesResponse>(request, co_await deviceCommandPort(request).statuses(request, ids));
     }
 
     ruvia::task<DeviceDebugPacketsResponse> queryDebugPackets(service::middleware::RequestContext& request, std::string_view deviceId) {
@@ -86,7 +86,7 @@ class DeviceController final {
         }));
         // 分组树的设备计数随设备增删、换组变化；设备主题只来自配置写入，不含遥测。
         channels.push_back({ "groups", { std::string(topic::kDeviceGroup), std::string(topic::kDevice) }, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device-group:query");
+                                co_await service::middleware::requirePermission(request, "iot:device-group:query");
                                 co_return service::middleware::modelJson(service::common::ok<DeviceGroupListResponse>(request, co_await deviceService().listGroups(request)));
                             },
                              {} });
@@ -98,7 +98,7 @@ class DeviceController final {
         if (const auto& debugDeviceId = events.get<"debugDeviceId">()) {
             debugId = std::string(debugDeviceId->view());
             auto snapshot = [this, deviceId = debugId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:edit");
+                co_await service::middleware::requirePermission(request, "iot:device:edit");
                 co_return service::middleware::modelJson(co_await queryDebugPackets(request, deviceId));
             };
             auto update = [snapshot, deviceId = debugId](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
@@ -134,7 +134,7 @@ class DeviceController final {
             },
             [&c, debugId]() -> ruvia::task<void> {
                 if (!debugId.empty()) {
-                    co_await service::debug_idle::touch(c.redis(), "device", debugId);
+                    co_await DeviceService::touchDebug(c.redis(), debugId);
                 }
                 co_return;
             }
@@ -191,13 +191,13 @@ class DeviceController final {
     static service::middleware::LiveChannel deviceRows(std::string event, std::vector<std::string> topics, Read read) {
         auto visible = std::make_shared<service::middleware::LiveCollection>();
         auto snapshot = [visible, read](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:query");
+            co_await service::middleware::requirePermission(request, "iot:device:query");
             auto page = co_await read(request, nullptr);
             visible->assign(rows(page));
             co_return service::middleware::modelJson(service::common::ok<Response>(request, std::move(page)));
         };
         auto update = [visible, read, snapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:query");
+            co_await service::middleware::requirePermission(request, "iot:device:query");
             const auto requested = co_await changedDevices(request, changes);
             if (!requested) {
                 co_return co_await snapshot(request);

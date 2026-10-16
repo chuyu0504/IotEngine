@@ -21,12 +21,12 @@ class EventProbe final {
     RUVIA_POST("/", probe);
 
     RUVIA_ROUTES_END
-    void registerEvents(service::edge::debug::EventRegistry<service::edge::debug::EventContext>& registry) {
-        registry.add("echo.read", this, &service::edge::debug::invokeEvent<EventProbe, &EventProbe::echo, EchoBody>);
+    void registerEvents(service::edge_node::debug::EventRegistry<service::edge_node::debug::EventContext>& registry) {
+        registry.add("echo.read", this, &service::edge_node::debug::invokeEvent<EventProbe, &EventProbe::echo, EchoBody>);
     }
 
   private:
-    ruvia::task<service::edge::debug::EventResult> echo(service::edge::debug::EventContext& c, const EchoBody& body) {
+    ruvia::task<service::edge_node::debug::EventResult> echo(service::edge_node::debug::EventContext& c, const EchoBody& body) {
         require(c.connection.worker().is_current(), "event migrated to another worker");
         require(c.arena() != c.connection.pool(), "debug invocation reused the connection allocation arena");
         require(c.request.event == "echo.read", "event identity changed");
@@ -36,19 +36,19 @@ class EventProbe final {
         service::middleware::RequestContext nextRequest(c.connection, "another-actor");
         require(nextRequest.worker_state<std::unique_ptr<service::common::UuidV7Generator>>().get() == &workerGenerator, "request scope replaced worker UUID state");
         require(firstId < nextRequest.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), "UUID order was reset between request scopes");
-        co_return service::edge::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
+        co_return service::edge_node::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
     }
 
     ruvia::task<ruvia::http_response> probe(ruvia::context& c) {
         const auto wire = co_await c.req().text();
-        auto request = service::edge::debug::Request::parse(wire);
-        service::edge::debug::SessionIdentity identity{
+        auto request = service::edge_node::debug::Request::parse(wire);
+        service::edge_node::debug::SessionIdentity identity{
             c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
         };
-        service::edge::debug::ConnectionResources resources;
+        service::edge_node::debug::ConnectionResources resources;
         std::any state;
-        service::edge::debug::EventContext context(c, identity, request, c.get_stop_token(), resources, state);
-        service::edge::debug::EventRegistry<service::edge::debug::EventContext> registry;
+        service::edge_node::debug::EventContext context(c, identity, request, c.get_stop_token(), resources, state);
+        service::edge_node::debug::EventRegistry<service::edge_node::debug::EventContext> registry;
         registerEvents(registry);
         bool duplicate = false;
         try {
@@ -77,16 +77,16 @@ int main() {
     try {
         const auto id = uuidGenerator.next();
         const auto wire = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"typed\"}}";
-        const auto parsed = service::edge::debug::Request::parse(wire);
+        const auto parsed = service::edge_node::debug::Request::parse(wire);
         require(parsed.id == id && parsed.data == "{\"value\":\"typed\"}", "request ownership failed");
         const auto lexical = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"d\\u0061ta\":{\"value\":[1e3,{\"x\":\"a\\\"},b\"}]}}";
-        require(service::edge::debug::Request::parse(lexical).data == "{\"value\":[1e3,{\"x\":\"a\\\"},b\"}]}", "raw JSON or escaped field name changed");
+        require(service::edge_node::debug::Request::parse(lexical).data == "{\"value\":[1e3,{\"x\":\"a\\\"},b\"}]}", "raw JSON or escaped field name changed");
         for (const auto extra : { ",\"id\":\"other\"}", ",\"method\":\"GET\"}", ",\"unknown\":null}" }) {
             auto malformed = wire.substr(0, wire.size() - 1) + extra;
             bool rejected = false;
             try {
-                (void)service::edge::debug::Request::parse(malformed);
-            } catch (const service::edge::debug::EventError&) {
+                (void)service::edge_node::debug::Request::parse(malformed);
+            } catch (const service::edge_node::debug::EventError&) {
                 rejected = true;
             }
             require(rejected, "duplicate or unknown envelope field accepted");
@@ -96,8 +96,8 @@ int main() {
         for (const auto bad : { "{}", "[]", "{\"id\":\"1\",\"event\":\"echo.read\",\"data\":{}}" }) {
             bool rejected = false;
             try {
-                (void)service::edge::debug::Request::parse(bad);
-            } catch (const service::edge::debug::EventError&) {
+                (void)service::edge_node::debug::Request::parse(bad);
+            } catch (const service::edge_node::debug::EventError&) {
                 rejected = true;
             }
             require(rejected, "invalid request accepted");

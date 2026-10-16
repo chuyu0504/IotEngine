@@ -30,10 +30,10 @@ class ModelMigrationRoutes final {
     RUVIA_POST("/rule", rule, ruvia::json_body<service::alert::RuleInput>);
     RUVIA_POST("/template", accept, ruvia::json_body<service::alert::TemplateInput>);
     RUVIA_POST("/batch", accept, ruvia::json_body<service::alert::AlertBatchBody>);
-    RUVIA_POST("/key", accept, ruvia::json_body<service::access::CreateAccessKeyBody>);
-    RUVIA_PUT("/key", updateKey, ruvia::json_body<service::access::UpdateAccessKeyBody>);
-    RUVIA_POST("/webhook", webhook, ruvia::json_body<service::access::CreateWebhookBody>);
-    RUVIA_PUT("/webhook", updateWebhook, ruvia::json_body<service::access::UpdateWebhookBody>);
+    RUVIA_POST("/key", accept, ruvia::json_body<service::open_access::CreateAccessKeyBody>);
+    RUVIA_PUT("/key", updateKey, ruvia::json_body<service::open_access::UpdateAccessKeyBody>);
+    RUVIA_POST("/webhook", webhook, ruvia::json_body<service::open_access::CreateWebhookBody>);
+    RUVIA_PUT("/webhook", updateWebhook, ruvia::json_body<service::open_access::UpdateWebhookBody>);
     RUVIA_POST("/vpn", vpn, ruvia::json_body<service::vpn::VpnDesktopSelectionBody>);
     RUVIA_POST("/link", accept, service::middleware::ValidationErrorCodeMiddleware<10001, "name", 15002, "too_small">, ruvia::json_body<service::link::SaveLinkBody>);
     RUVIA_ROUTES_END
@@ -71,24 +71,24 @@ class ModelMigrationRoutes final {
         co_return c.text(body.get<"severity">()->view());
     }
     ruvia::task<ruvia::http_response> updateKey(ruvia::context& c) {
-        const auto& body = c.req().validated<service::access::UpdateAccessKeyBody>();
+        const auto& body = c.req().validated<service::open_access::UpdateAccessKeyBody>();
         if (!body.is_present<"remark">()) co_return c.text("unchanged");
         if (body.is_null<"remark">()) co_return c.text("cleared");
         const auto& remark = body.get<"remark">();
         co_return c.text(remark ? remark->view() : "cleared");
     }
     ruvia::task<ruvia::http_response> webhook(ruvia::context& c) {
-        const auto& body = c.req().validated<service::access::CreateWebhookBody>();
+        const auto& body = c.req().validated<service::open_access::CreateWebhookBody>();
         if (body.get<"timeoutSeconds">()->value_ != 5 || body.get<"skipTlsVerify">()->value_) throw std::runtime_error("webhook defaults changed");
         const auto& headers = body.get<"headers">();
-        const bool validHeaders = !headers || service::access::isWebhookHeaders(*headers);
+        const bool validHeaders = !headers || service::open_access::isWebhookHeaders(*headers);
         if (!validHeaders) service::common::fail(19002, "非法 Header", 400);
         co_return c.text("accepted");
     }
     ruvia::task<ruvia::http_response> updateWebhook(ruvia::context& c) {
-        const auto& body = c.req().validated<service::access::UpdateWebhookBody>();
+        const auto& body = c.req().validated<service::open_access::UpdateWebhookBody>();
         const auto& headers = body.get<"headers">();
-        const bool validHeaders = !headers || service::access::isWebhookHeaders(*headers);
+        const bool validHeaders = !headers || service::open_access::isWebhookHeaders(*headers);
         if (!validHeaders) service::common::fail(19002, "非法 Header", 400);
         co_return c.text("accepted");
     }

@@ -578,6 +578,11 @@ export interface ProtocolImportResult {
     }[];
 }
 
+export interface ExpressionValidateRequest {
+    expression: string;
+    variables: string[];
+}
+
 export interface ExpressionTestRequest {
     expression: string;
     inputs: { alias: string; value: number }[];

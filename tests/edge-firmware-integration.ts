@@ -68,6 +68,7 @@ async function upload(buffer: Buffer, name: string) {
     });
     assert.equal(response.status, 200, await response.text());
 }
+const planted: string[] = [];
 try {
     await until(async () => (await fetch(apiBase + '/internal/health/ready')).status === 200, 'Workers not ready');
     await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${identity},'approved')`;
@@ -147,7 +148,8 @@ try {
     const old = new Date(Date.now() - 7200000);
     const orphan = path.join(directory, `${crypto.randomUUID()}.bin`), fresh = path.join(directory, `${crypto.randomUUID()}.bin`);
     const unrelated = path.join(directory, 'retain.bin'), uploading = path.join(directory, `${crypto.randomUUID()}.upload`);
-    for (const file of [orphan, fresh, unrelated, uploading]) await writeFile(file, 'fixture');
+    planted.push(orphan, fresh, unrelated, uploading);
+    for (const file of planted) await writeFile(file, 'fixture');
     for (const file of [orphan, unrelated, uploading, recentRecord.storage_path, activeRecord.storage_path]) await utimes(file, old, old);
     // 截止时间按事件重算，不周期扫描。直接改库/改 mtime 不产生事件，这里按
     // edge-firmware/schedule-cleanup RPC 契约通知每个 Worker（等同上传或任务终态事件）。
@@ -170,6 +172,8 @@ try {
     console.log('PASS firmware: hash reuse, concurrent dedup, legacy token download, WS resume, missing-file recovery, one-hour retention, active/recent task and upload protection');
 } finally {
     socket?.close();
+    // 夹具目录与其他固件测试共享；上传恢复只在启动认领后执行一次，不会再替本测试清理遗留文件。
+    for (const file of planted) await unlink(file).catch((error) => { if (error.code !== 'ENOENT') throw error; });
     await redis.send('DEL', [`iot:edge:auth:${identity}`]);
     redis.close(); await db.close();
 }

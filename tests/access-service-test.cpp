@@ -1,9 +1,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory_resource>
 #include <stdexcept>
 #include <string>
-#include <regex>
+
+#include "service/modules/open_access/open_access.service.h"
 
 namespace {
 
@@ -61,10 +63,22 @@ void requireStrictPresentFieldTypes(std::string_view source) {
     }
 }
 
-void requireCanonicalBooleanPointValues(std::string_view source) {
-    require(std::regex_search(source.begin(), source.end(), std::regex(R"pattern(normalizedValues\.call\("jsonb_typeof",\s*\{\s*normalizedPointValue\s*\}\))pattern")) &&
-                std::regex_search(source.begin(), source.end(), std::regex(R"pattern(items\.call\("to_jsonb",\s*\{\s*itemPointNumber\s*\}\))pattern")),
-            "public device data does not canonicalize BOOL points to 0/1");
+void requirePublicHistoryQueryShape() {
+    const auto query = service::open_access::AccessService::publicHistoryQuery(
+        std::pmr::new_delete_resource(), "00000000-0000-0000-0000-000000000001",
+        "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", 20, 40, 3);
+    const auto statement = query.compile(ruvia::db_driver::postgresql,
+                                         std::pmr::new_delete_resource(),
+                                         ruvia::db_parameter_mode::literal);
+    const std::string sql(statement.sql());
+    for (const auto* fragment : {"device_data", "jsonb_typeof", "to_jsonb", "jsonb_set",
+                                 "'JPEG'", "'points'", "'device'", "'totalPages'",
+                                 "iot_utc_timestamp", "deleted_at"}) {
+        require(sql.find(fragment) != std::string::npos,
+                "public device history SQL lost BOOL 0/1 canonicalization or /api output shape");
+    }
+    require(sql.find("LIMIT 20") != std::string::npos && sql.find("OFFSET 40") != std::string::npos,
+            "public device history SQL lost pagination");
 }
 
 void requireAccessQueriesUseOrm(std::string_view source) {
@@ -101,7 +115,7 @@ int main() {
                 "access service still depends on request schema");
         require(types.find("RUVIA_CUSTOM(\"Webhook 地址必须是有效的 HTTP(S) URL\", isWebhookUrl)") != std::string::npos,
                 "webhook input does not validate its URL before business execution");
-        requireCanonicalBooleanPointValues(source);
+        requirePublicHistoryQueryShape();
         requireAccessQueriesUseOrm(featureSource);
         std::cout << "access service tests passed\n";
         return 0;

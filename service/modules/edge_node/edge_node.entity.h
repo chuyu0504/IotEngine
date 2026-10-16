@@ -3,10 +3,16 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
 
-namespace service::edge {
+namespace service::edge_node::entities {
+
+// 固件上传暂存目录恢复的 Redis 认领键（SET NX）：每个进程实例只由认领的 Service Worker 恢复一次。
+inline std::string firmwareUploadRecoveryKey(std::string_view instanceId) {
+    return "iot:edge:firmware:upload-recovery:" + std::string(instanceId);
+}
 
 RUVIA_DB_ENTITY(
     EdgeDtuEntity, "edge_dtu",
@@ -50,7 +56,9 @@ RUVIA_DB_ENTITY(
     RUVIA_DB_COLUMN(created_at, std::pmr::string,
                     ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
     RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-                    ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}));
+                    ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
+    RUVIA_DB_COLUMN(network_config_version, std::int32_t,
+                    ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"0"}}));
 
 RUVIA_DB_ENTITY(
     EdgeNodeGroupEntity, "edge_node_group",
@@ -154,75 +162,5 @@ RUVIA_DB_ENTITY(
     RUVIA_DB_COLUMN(completed_at, std::pmr::string,
                     ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz,
                                            .nullable_ = true}));
-
-} // namespace service::edge
-
-namespace service::edge_node::entities {
-
-RUVIA_DB_ENTITY(VpnPeerEntity, "vpn_peer",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(network_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(peer_type, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16}),
-    RUVIA_DB_COLUMN(edge_node_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(user_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 100}),
-    RUVIA_DB_COLUMN(public_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(assigned_ipv4, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::inet}),
-    RUVIA_DB_COLUMN(allowed_routes, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'[]'::jsonb"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'active'::character varying"}}),
-    RUVIA_DB_COLUMN(config_revision, std::int64_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::big_int, .default_expression_ = ruvia::fixed_string{"1"}}),
-    RUVIA_DB_COLUMN(last_handshake_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(revoked_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(client_private_key, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 44, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(client_managed, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}))
-
-RUVIA_DB_ENTITY(VpnRouteEntity, "vpn_route",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(network_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(lan_interface, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32}),
-    RUVIA_DB_COLUMN(target_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 18}),
-    RUVIA_DB_COLUMN(virtual_cidr, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 18}),
-    RUVIA_DB_COLUMN(mode, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'nat'::character varying"}}),
-    RUVIA_DB_COLUMN(nat_mode, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'masquerade'::character varying"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 16, .default_expression_ = ruvia::fixed_string{"'active'::character varying"}}),
-    RUVIA_DB_COLUMN(enabled, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"true"}}),
-    RUVIA_DB_COLUMN(last_error, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .default_expression_ = ruvia::fixed_string{"''::text"}}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
 
 } // namespace service::edge_node::entities

@@ -1,6 +1,10 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+
 #include <ruvia/web/controller.h>
+#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
@@ -19,7 +23,33 @@ class AuthController final {
     RUVIA_GET("/me", me, service::middleware::AuthMiddleware);
     RUVIA_ROUTES_END
 
+  public:
+    // 由应用入口注入 service::middleware::AuthPort。
+    static service::middleware::AuthPort port() {
+        return service::middleware::AuthPort{
+            &verifyAccessToken,
+            &AuthService::requirePermission<service::middleware::RequestContext>,
+            &currentUserSnapshot,
+        };
+    }
+
   private:
+    static service::middleware::AccessTokenCheck verifyAccessToken(ruvia::context& c, std::string_view token) {
+        try {
+            return { service::middleware::AccessTokenState::valid, AuthTokenService::verifyAccessToken(c, token).userId };
+        } catch (const JwtExpiredError&) {
+            return { service::middleware::AccessTokenState::expired, {} };
+        } catch (...) {
+            return { service::middleware::AccessTokenState::invalid, {} };
+        }
+    }
+
+    static ruvia::task<std::string> currentUserSnapshot(service::middleware::RequestContext& request) {
+        const auto response = service::common::ok<CurrentUserResponse>(request, co_await authService().current(request, request.userId));
+        const auto encoded = ruvia::to_json(response);
+        co_return std::string(encoded.data(), encoded.size());
+    }
+
     ruvia::task<ruvia::http_response> login(ruvia::context& c) {
 
         co_return c.json(service::common::ok<LoginResponse>(

@@ -14,15 +14,13 @@
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/validation.h"
-#include "service/modules/command/command.service.h"
-#include "service/modules/device/device.types.h"
 #include "service/modules/open_access/open_access.types.h"
 #include "service/modules/open_access/open_access.service.h"
 #include "service/utils/change_feed.h"
 #include "service/utils/json.h"
 #include "service/utils/text.h"
 
-namespace service::access {
+namespace service::open_access {
 
 inline ruvia::http_response jsonData(ruvia::context& c, std::string_view data, std::string_view message = "ok") {
     std::pmr::string body(c.allocator<char>());
@@ -365,26 +363,13 @@ class AccessController final {
 
     ruvia::task<ruvia::http_response> command(ruvia::context& c) {
         const auto session = co_await accessService().authenticate(c, kScopeCommand);
-        const auto parsedBody = co_await c.req().json_if<service::device::DeviceCommandBody>();
+        const auto parsedBody = co_await c.req().json_if<PublicCommandBody>();
         if (!parsedBody) {
             throw ruvia::http_error({ .status_ = ruvia::http_status::unsupported_media_type,
                 .code_ = "unsupported_media_type", .message_ = "request body must be application/json" });
         }
-        const auto& body = *parsedBody;
-        const auto id =
-            body.get<"deviceId">() ? std::string(body.get<"deviceId">()->view()) : std::string{};
-        service::common::requireUuid(19002, id, "设备 ID 无效");
-        if (!session.allowsDevice(id)) {
-            service::common::fail(19011, "AccessKey 无权控制该设备", 403);
-        }
-        auto result = co_await service::command::commandService().createExternal(
-            c,
-            id,
-            body,
-            session.id
-        );
-        co_await accessService().audit(c, "command", session, id);
-        co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(c, std::move(result)));
+        auto result = co_await accessService().publicCommand(c, session, *parsedBody);
+        co_return c.json(service::common::ok<PublicCommandResponse>(c, std::move(result)));
     }
 
     ruvia::task<void> alerts(ruvia::context& c) {
@@ -411,4 +396,4 @@ class AccessController final {
     }
 };
 
-} // namespace service::access
+} // namespace service::open_access

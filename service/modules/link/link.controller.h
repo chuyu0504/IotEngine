@@ -61,7 +61,7 @@ class LinkController final {
         service::middleware::RequestContext access(c, service::middleware::requireAuth(c).userId);
         auto visible = std::make_shared<service::middleware::LiveCollection>(true);
         auto linksSnapshot = [&c, visible](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:query");
+            co_await service::middleware::requirePermission(request, "iot:link:query");
             auto page = co_await queryPage(c, request);
             if (const auto& list = page.get<"list">()) {
                 visible->assign(rows(*list));
@@ -72,7 +72,7 @@ class LinkController final {
         };
         // 边缘链路仅在有设备使用时列出，设备增删改换链路会改变其可见性。
         auto linksUpdate = [&c, visible, linksSnapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:query");
+            co_await service::middleware::requirePermission(request, "iot:link:query");
             service::utils::ChangeSet::Ids requested;
             std::vector<std::string> devices;
             for (const auto& [name, ids] : changes.topics) {
@@ -107,7 +107,7 @@ class LinkController final {
             debugId = std::string(value->view());
             auto snapshot = [this, &c, &debugAuthorized, linkId = debugId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                 debugAuthorized = false;
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:edit");
+                co_await service::middleware::requirePermission(request, "iot:link:edit");
                 const auto payload = service::middleware::modelJson(co_await queryDebugPackets(c, request, linkId));
                 debugAuthorized = true;
                 co_return payload;
@@ -130,7 +130,7 @@ class LinkController final {
             },
             [&c, &debugAuthorized, debugId]() -> ruvia::task<void> {
                 if (!debugId.empty() && debugAuthorized) {
-                    (void)co_await c.redis().expire(service::debug_idle::leaseKey("link", debugId), std::chrono::duration_cast<std::chrono::seconds>(service::debug_idle::kIdle));
+                    co_await linkService().extendDebugLease(c, debugId);
                 }
                 co_return;
             }

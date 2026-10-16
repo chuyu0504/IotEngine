@@ -3,10 +3,12 @@
 #include "service/common/mqtt_report.h"
 #include "service/modules/link/link.types.h"
 
+#include "service/common/http.h"
 #include "service/common/uuid.h"
 
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -101,6 +103,48 @@ RUVIA_MODEL(DeviceShareTargetDto, RUVIA_OPTIONAL_FIELD_NAME("subject_type", subj
 // ===== 设备写侧 Body =====
 
 RUVIA_MODEL(DevicePacketBody, RUVIA_OPTIONAL_FIELD(mode, ruvia::string), RUVIA_OPTIONAL_FIELD(content, ruvia::string));
+
+// 心跳/注册包内容校验
+inline void validatePacket(const std::optional<DevicePacketBody>& packet) {
+    if (!packet) {
+        return;
+    }
+    const std::string_view mode =
+        packet->template get<"mode">() ? packet->template get<"mode">()->view() : std::string_view("OFF");
+    if (mode != "OFF" && mode != "HEX" && mode != "ASCII") {
+        service::common::fail(18002, "设备参数无效", 400);
+    }
+    if (mode == "OFF") {
+        return;
+    }
+    const std::string_view content =
+        packet->template get<"content">() ? packet->template get<"content">()->view() : std::string_view{};
+    if (content.empty()) {
+        service::common::fail(18002, "设备参数无效", 400);
+    }
+    if (mode == "ASCII" && content.size() > 256) {
+        service::common::fail(18002, "注册包或心跳包不能超过 256 字节", 400);
+    }
+    if (mode == "HEX") {
+        std::string stripped;
+        for (const char ch : content) {
+            if (!std::isspace(static_cast<unsigned char>(ch))) {
+                stripped.push_back(ch);
+            }
+        }
+        if (stripped.empty() || stripped.size() % 2 != 0) {
+            service::common::fail(18002, "设备参数无效", 400);
+        }
+        if (stripped.size() / 2 > 256) {
+            service::common::fail(18002, "注册包或心跳包不能超过 256 字节", 400);
+        }
+        for (const char ch : stripped) {
+            if (!std::isxdigit(static_cast<unsigned char>(ch))) {
+                service::common::fail(18002, "设备参数无效", 400);
+            }
+        }
+    }
+}
 
 RUVIA_MODEL(CreateDeviceBody, RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "设备名称长度必须在 1 - 100 之间"), RUVIA_MAX(100, "设备名称长度必须在 1 - 100 之间")), RUVIA_REQUIRED_FIELD_NAME("device_code", deviceCode, ruvia::string, RUVIA_MIN(1, "设备编码长度必须在 1 - 100 之间"), RUVIA_MAX(100, "设备编码长度必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::string, RUVIA_CUSTOM("链路必须是 UUID", service::common::isOptionalUuidField)), RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::string), RUVIA_REQUIRED_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::string, RUVIA_CUSTOM("链路和设备类型必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::string, RUVIA_CUSTOM("设备分组必须是 UUID", service::common::isOptionalUuidField)), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("设备参数无效", "enabled", "disabled")), RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::int64, RUVIA_MIN(1, "设备参数无效"), RUVIA_MAX(86400, "设备参数无效")), RUVIA_OPTIONAL_FIELD_NAME("remote_control", remoteControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("modbus_mode", modbusMode, ruvia::string, RUVIA_ONE_OF("设备参数无效", "TCP", "RTU")), RUVIA_OPTIONAL_FIELD_NAME("slave_id", slaveId, ruvia::int64, RUVIA_MIN(1, "设备参数无效"), RUVIA_MAX(247, "设备参数无效")), RUVIA_OPTIONAL_FIELD(timezone, ruvia::string, RUVIA_CUSTOM("设备参数无效", isDeviceTimezone)), RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketBody), RUVIA_OPTIONAL_FIELD(registration, DevicePacketBody), RUVIA_OPTIONAL_FIELD(parameters, ruvia::json_object), RUVIA_OPTIONAL_FIELD(remark, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("edge_connection", edgeConnection, service::link::SaveLinkBody));
 

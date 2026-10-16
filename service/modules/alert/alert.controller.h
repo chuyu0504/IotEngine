@@ -70,7 +70,7 @@ class AlertController final {
 
         auto records = std::make_shared<RecordsState>();
         auto recordsSnapshot = [&c, records](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+            co_await service::middleware::requirePermission(request, "iot:alert:query");
             auto page = co_await alertService().recordPage(request, c.req().validated<AlertListQuery>());
             std::vector<service::middleware::LiveCollection::Row> rows;
             records->visible.clear();
@@ -82,7 +82,7 @@ class AlertController final {
             co_return service::middleware::dataJson(page.json);
         };
         auto recordsUpdate = [&c, records, recordsSnapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+            co_await service::middleware::requirePermission(request, "iot:alert:query");
             std::vector<std::string> recordIds;
             std::vector<std::string> ruleIds;
             std::vector<std::string> deviceIds;
@@ -115,7 +115,7 @@ class AlertController final {
         // 记录行显示规则名与设备名，规则、设备变化只刷新本页引用它们的记录。
         channels.push_back({ "records", { std::string(topic::kAlert), std::string(topic::kAlertRule), std::string(topic::kDevice) }, recordsSnapshot, recordsUpdate });
         channels.push_back({ "stats", { std::string(topic::kAlert) }, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+                                co_await service::middleware::requirePermission(request, "iot:alert:query");
                                 co_return service::middleware::dataJson(co_await alertService().stats(request));
                             },
                              {} });

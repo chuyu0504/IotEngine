@@ -1,6 +1,12 @@
 #pragma once
 
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/utils/json.h"
 
 #include <ruvia/web/validation.h>
 
@@ -10,6 +16,28 @@ inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
 inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(10){};
 
 inline constexpr std::string_view kSuperAdminRoleCode{"superadmin"};
+
+// 校验权限编码并编码为 sys_role.permissions 的 JSON 数组；缺失时为空数组。
+inline std::string permissionsJson(const std::optional<ruvia::array<ruvia::string>>& permissions) {
+    if (!permissions) {
+        return "[]";
+    }
+    std::string result{ "[" };
+    for (const auto& permission : *permissions) {
+        const auto value = permission.view();
+        if (value.empty() || value.size() > 128) {
+            service::common::fail(13005, "权限编码不能为空且不能超过 128 个字符", 400);
+        }
+        if (value.find(',') != std::string_view::npos) {
+            service::common::fail(13005, "权限编码不能包含逗号", 400);
+        }
+        if (result.size() > 1) {
+            result += ',';
+        }
+        result += service::utils::jsonQuoted(value);
+    }
+    return result + "]";
+}
 
 RUVIA_MODEL(CreateRoleBody,
     RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(2, "角色名称长度需在 2 - 128 之间"), RUVIA_MAX(128, "角色名称长度需在 2 - 128 之间")),

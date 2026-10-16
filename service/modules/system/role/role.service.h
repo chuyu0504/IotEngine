@@ -16,7 +16,6 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/role/role.types.h"
 #include "service/modules/system/user/user.entity.h"
-#include "service/utils/json.h"
 
 namespace service::role {
 
@@ -33,18 +32,18 @@ class RoleService {
     ruvia::task<RolePageDataDto> list(Context& c, std::int64_t page, std::int64_t pageSize, std::optional<std::string> keyword, std::optional<std::string> status) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
-        auto where = RoleEntity::column<"deleted_at">().is_null();
+        auto where = entities::RoleEntity::column<"deleted_at">().is_null();
         if (keyword && !keyword->empty()) {
             const auto pattern = "%" + *keyword + "%";
-            where = std::move(where) && (RoleEntity::column<"name">().ilike(pattern) || RoleEntity::column<"code">().ilike(pattern));
+            where = std::move(where) && (entities::RoleEntity::column<"name">().ilike(pattern) || entities::RoleEntity::column<"code">().ilike(pattern));
         }
         if (status && (*status == "enabled" || *status == "disabled")) {
-            where = std::move(where) && RoleEntity::column<"status">() == *status;
+            where = std::move(where) && entities::RoleEntity::column<"status">() == *status;
         }
         ruvia::db_find_options countOptions;
         countOptions.where_ = std::move(where);
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().template get_repository<RoleEntity>().count(countOptions)
+            co_await c.db().template get_repository<entities::RoleEntity>().count(countOptions)
         );
         auto query = roleSelect(c);
         query.where(countOptions.where_)
@@ -72,10 +71,10 @@ class RoleService {
     ruvia::task<ruvia::boxed_array<RoleOptionDto>> options(Context& c) {
         ruvia::db_find_options options;
 
-        options.where_ = RoleEntity::column<"status">() == "enabled" &&
-            RoleEntity::column<"deleted_at">().is_null();
+        options.where_ = entities::RoleEntity::column<"status">() == "enabled" &&
+            entities::RoleEntity::column<"deleted_at">().is_null();
         options.order_ = { { "id" } };
-        const auto rows = co_await c.db().template get_repository<RoleEntity>().find(options);
+        const auto rows = co_await c.db().template get_repository<entities::RoleEntity>().find(options);
         ruvia::boxed_array<RoleOptionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
             auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
@@ -97,7 +96,7 @@ class RoleService {
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::string permissions = permissionsJson(body.get<"permissions">());
         const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        RoleEntity role(c.pool());
+        entities::RoleEntity role(c.pool());
         role.set<"id">(id);
         role.set<"name">(name);
         role.set<"code">(code);
@@ -108,15 +107,15 @@ class RoleService {
         } else {
             role.set<"description">(description);
         }
-        (void)co_await c.db().template get_repository<RoleEntity>().insert(role);
+        (void)co_await c.db().template get_repository<entities::RoleEntity>().insert(role);
     }
 
     template <typename Context>
     ruvia::task<void> update(Context& c, std::string_view id, const UpdateRoleBody& body) {
         ruvia::db_find_options existingOptions;
 
-        existingOptions.where_ = db::activeId<RoleEntity>(id);
-        const auto existing = co_await c.db().template get_repository<RoleEntity>().find_one(existingOptions);
+        existingOptions.where_ = db::activeId<entities::RoleEntity>(id);
+        const auto existing = co_await c.db().template get_repository<entities::RoleEntity>().find_one(existingOptions);
         if (!existing) {
             service::common::fail(13001, "角色不存在", 404);
         }
@@ -154,15 +153,15 @@ class RoleService {
             co_return;
         }
         changes.push_back({ "updated_at", query.call("now") });
-        (void)co_await c.db().template get_repository<RoleEntity>().update(RoleEntity::column<"id">() == id, changes);
+        (void)co_await c.db().template get_repository<entities::RoleEntity>().update(entities::RoleEntity::column<"id">() == id, changes);
     }
 
     template <typename Context>
     ruvia::task<void> remove(Context& c, std::string_view id) {
         ruvia::db_find_options options;
 
-        options.where_ = db::activeId<RoleEntity>(id);
-        const auto role = co_await c.db().template get_repository<RoleEntity>().find_one(options);
+        options.where_ = db::activeId<entities::RoleEntity>(id);
+        const auto role = co_await c.db().template get_repository<entities::RoleEntity>().find_one(options);
         if (!role) {
             service::common::fail(13001, "角色不存在", 404);
         }
@@ -170,31 +169,31 @@ class RoleService {
             service::common::fail(13003, "内置超级管理员角色不能删除", 400);
         }
         ruvia::db_query expressions(c.pool());
-        auto assigned = c.db().template get_repository<service::user::UserRoleEntity>().create_query_builder("ur");
-        assigned.template join<service::user::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(expressions.column("id", "u"), ruvia::db_binary_operator::equal, expressions.column("user_id", "ur")))
-            .where(service::user::UserRoleEntity::column<"role_id">() == id)
-            .and_where(expressions.unary(ruvia::db_unary_operator::is_null, expressions.column("deleted_at", "u")));
+        auto assigned = c.db().template get_repository<service::user::entities::UserRoleEntity>().create_query_builder("ur");
+        assigned.template join<service::user::entities::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(service::user::entities::UserEntity::column<"id">().expression(expressions, "u"), ruvia::db_binary_operator::equal, service::user::entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur")))
+            .where(service::user::entities::UserRoleEntity::column<"role_id">() == id)
+            .and_where(expressions.unary(ruvia::db_unary_operator::is_null, service::user::entities::UserEntity::column<"deleted_at">().expression(expressions, "u")));
         if (co_await assigned.get_exists()) {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
         const ruvia::db_assignment deletionChanges[]{
             { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
         };
-        (void)co_await c.db().template get_repository<RoleEntity>().update(
-            RoleEntity::column<"id">() == id, deletionChanges
+        (void)co_await c.db().template get_repository<entities::RoleEntity>().update(
+            entities::RoleEntity::column<"id">() == id, deletionChanges
         );
     }
 
   private:
     template <typename Context>
-    static ruvia::db_query_builder<RoleEntity, ruvia::db_handle> roleSelect(Context& c) {
+    static ruvia::db_query_builder<entities::RoleEntity, ruvia::db_handle> roleSelect(Context& c) {
         ruvia::db_query expressions(c.pool());
-        auto roles = c.db().template get_repository<RoleEntity>().create_query_builder("role");
-        roles.select({ { "id" }, { "name" }, { "code" }, { "description", expressions.coalesce({ expressions.column("description", "role"), expressions.value("") }) }, { "status" }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "role") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "role") }) } });
+        auto roles = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
+        roles.select({ { "id" }, { "name" }, { "code" }, { "description", expressions.coalesce({ entities::RoleEntity::column<"description">().expression(expressions, "role"), expressions.value("") }) }, { "status" }, { "created_at", expressions.call("iot_utc_timestamp", { entities::RoleEntity::column<"created_at">().expression(expressions, "role") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { entities::RoleEntity::column<"updated_at">().expression(expressions, "role") }) } });
         return roles;
     }
 
-    static void fillBase(RoleItemDto& item, const RoleEntity& row) {
+    static void fillBase(RoleItemDto& item, const entities::RoleEntity& row) {
         item.set<"id">(row.template get<"id">());
         item.set<"name">(row.template get<"name">());
         item.set<"code">(row.template get<"code">());
@@ -204,37 +203,15 @@ class RoleService {
         item.set<"updatedAt">(row.template get<"updated_at">());
     }
 
-    static std::string
-    permissionsJson(const std::optional<ruvia::array<ruvia::string>>& permissions) {
-        if (!permissions) {
-            return "[]";
-        }
-        std::string result{ "[" };
-        for (const auto& permission : *permissions) {
-            const auto value = permission.view();
-            if (value.empty() || value.size() > 128) {
-                service::common::fail(13005, "权限编码不能为空且不能超过 128 个字符", 400);
-            }
-            if (value.find(',') != std::string_view::npos) {
-                service::common::fail(13005, "权限编码不能包含逗号", 400);
-            }
-            if (result.size() > 1) {
-                result += ',';
-            }
-            result += service::utils::jsonQuoted(value);
-        }
-        return result + "]";
-    }
-
     template <typename Context>
     ruvia::task<ruvia::array<ruvia::string>> loadPermissions(Context& c, std::string_view id) {
         ruvia::db_query expressions(c.pool());
-        auto query = c.db().template get_repository<RoleEntity>().create_query_builder("role");
+        auto query = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
         query.select({ { "permission", expressions.column("permission", "values") } })
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { expressions.column("permissions", "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
-            .where(RoleEntity::column<"id">() == id)
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
+            .where(entities::RoleEntity::column<"id">() == id)
             .order_by(expressions.column("permission", "values"));
-        const auto rows = co_await query.template get_many<RolePermission>();
+        const auto rows = co_await query.template get_many<entities::RolePermission>();
         ruvia::array<ruvia::string> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
             result.emplace_back(row.template get<"permission">(), ruvia::model_options{ .resource_ = c.arena() });
@@ -245,11 +222,11 @@ class RoleService {
     template <typename Context>
     ruvia::task<void> ensureCodeAvailable(Context& c, const std::string& code, std::optional<std::string> excludedId) {
         ruvia::db_find_options options;
-        options.where_ = RoleEntity::column<"code">() == code;
+        options.where_ = entities::RoleEntity::column<"code">() == code;
         if (excludedId) {
-            options.where_ = std::move(options.where_) && RoleEntity::column<"id">() != *excludedId;
+            options.where_ = std::move(options.where_) && entities::RoleEntity::column<"id">() != *excludedId;
         }
-        if (co_await c.db().template get_repository<RoleEntity>().exists(options)) {
+        if (co_await c.db().template get_repository<entities::RoleEntity>().exists(options)) {
             service::common::fail(13002, "角色编码已存在", 409);
         }
     }

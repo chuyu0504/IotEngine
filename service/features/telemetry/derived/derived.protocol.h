@@ -8,6 +8,8 @@
 #include <string>
 
 #include "service/common/derived_point.h"
+#include "service/utils/expression.h"
+#include "service/utils/json.h"
 
 namespace service::telemetry::derived {
 

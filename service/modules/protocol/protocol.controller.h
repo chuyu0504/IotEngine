@@ -25,6 +25,7 @@ class ProtocolController final {
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"iot:protocol:add">, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<CreateProtocolBody>);
     RUVIA_POST("/:id/points", createDlt645Point, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::path_model<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16004>, ruvia::json_body<CreateDlt645PointBody>);
     RUVIA_POST("/test-expression", testExpression, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::json_body<ExpressionTestBody>);
+    RUVIA_POST("/validate-expression", validateExpression, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::json_body<ExpressionValidateBody>);
     RUVIA_POST("/preview-mqtt", previewMqtt, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::json_body<MqttPreviewBody>);
     RUVIA_PUT("/:id", update, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::path_model<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<UpdateProtocolBody>);
     RUVIA_DELETE("/:id", remove, service::middleware::PermissionMiddleware<"iot:protocol:delete">, ruvia::path_model<ProtocolIdParams>);
@@ -68,6 +69,11 @@ class ProtocolController final {
     ruvia::task<ruvia::http_response> testExpression(ruvia::context& c) {
         const auto result = ProtocolService::testExpression(c.req().validated<ExpressionTestBody>());
         co_return c.json(service::common::ok<ExpressionTestResponse>(c, result));
+    }
+
+    ruvia::task<ruvia::http_response> validateExpression(ruvia::context& c) {
+        ProtocolService::validateExpression(c.req().validated<ExpressionValidateBody>());
+        co_return c.json(service::common::operation(c, "校验通过"));
     }
 
     ruvia::task<ruvia::http_response> previewMqtt(ruvia::context& c) {

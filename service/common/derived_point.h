@@ -5,16 +5,16 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ruvia/web/model.h>
-
-#include "service/common/uuid.h"
-#include "service/utils/expression.h"
-#include "service/utils/json.h"
+#include <ruvia/web/model_object.h>
 
 namespace service::common {
 
+// 派生点配置契约：结构解码与依赖排序，不含字段业务校验（由写入方 protocol 模块负责）。
 struct DerivedPoint {
     struct UnitRule {
         std::string condition;
@@ -59,152 +59,101 @@ RUVIA_MODEL(DerivedPointConfig,
     RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::int64),
     RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value));
 
-// Shared configuration contract; no runtime state or I/O.
+enum class DerivedPointErrorCode {
+    malformed,          // derivedPoints 不是派生点对象数组
+    duplicateId,        // 派生点标识重复
+    physicalIdConflict, // 派生点标识与采集点重复
+    unknownInput,       // 输入既不是派生点也不是采集点（含非上行点）
+    cycle,              // 派生点之间存在循环依赖
+};
+
+class DerivedPointError final : public std::runtime_error {
+  public:
+    DerivedPointError(DerivedPointErrorCode code, std::string pointId)
+        : std::runtime_error(describe(code, pointId)), code_(code), pointId_(std::move(pointId)) {}
+
+    DerivedPointErrorCode code() const noexcept {
+        return code_;
+    }
+
+    // 出错的派生点标识；malformed 时为空。
+    const std::string& pointId() const noexcept {
+        return pointId_;
+    }
+
+  private:
+    static std::string describe(DerivedPointErrorCode code, std::string_view pointId) {
+        std::string_view reason;
+        switch (code) {
+            case DerivedPointErrorCode::malformed:
+                reason = "malformed derived points";
+                break;
+            case DerivedPointErrorCode::duplicateId:
+                reason = "duplicate derived point id";
+                break;
+            case DerivedPointErrorCode::physicalIdConflict:
+                reason = "derived point id conflicts with a collected point";
+                break;
+            case DerivedPointErrorCode::unknownInput:
+                reason = "derived point input is not an uplink point";
+                break;
+            case DerivedPointErrorCode::cycle:
+                reason = "derived point dependency cycle";
+                break;
+        }
+        return pointId.empty() ? std::string(reason) : std::string(reason) + ": " + std::string(pointId);
+    }
+
+    DerivedPointErrorCode code_;
+    std::string pointId_;
+};
+
 inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::json_value& config) {
     const auto raw = config.get<ruvia::json_value>("derivedPoints");
     if (!raw) {
         return {};
     }
-    if (!raw->is_array()) {
-        throw std::invalid_argument("derivedPoints 必须是数组");
+    const auto decoded = raw->get<ruvia::array<DerivedPointConfig>>();
+    if (!decoded) {
+        throw DerivedPointError(DerivedPointErrorCode::malformed, {});
     }
+    const auto text = [](const std::optional<ruvia::string>& value, std::string_view fallback = {}) {
+        return value ? std::string(value->view()) : std::string(fallback);
+    };
     std::vector<DerivedPoint> points;
-    const auto text = [](const auto& value, std::string_view key, std::size_t maximum, bool required = true) {
-        if (!value && required) {
-            throw std::invalid_argument("派生点字段无效: " + std::string(key));
+    points.reserve(decoded->size());
+    for (const auto& item : *decoded) {
+        DerivedPoint point;
+        point.id = text(item.get<"id">());
+        point.name = text(item.get<"name">());
+        point.unit = text(item.get<"unit">());
+        point.unitMode = text(item.get<"unitMode">(), "fixed");
+        point.kind = text(item.get<"kind">());
+        point.valueType = text(item.get<"valueType">());
+        point.expression = text(item.get<"expression">());
+        // sourceAlias 只对窗口计算有意义，公式派生点不携带。
+        if (point.kind != "expression") {
+            point.sourceAlias = text(item.get<"sourceAlias">());
         }
-        if (!value) {
-            return std::string{};
-        }
-        if (value->view().size() > maximum || (required && value->view().empty())) {
-            throw std::invalid_argument("派生点字段无效: " + std::string(key));
-        }
-        return std::string(value->view());
-    };
-    const auto integer = [](const std::optional<ruvia::int64>& value, bool present, std::string_view key, std::int64_t fallback, std::int64_t minimum) {
-        if (!present) {
-            return fallback;
-        }
-        if (!value || value->value_ < minimum || value->value_ > 86400) {
-            throw std::invalid_argument("派生点时间参数无效: " + std::string(key));
-        }
-        return value->value_;
-    };
-    std::set<std::string> ids;
-    if (!raw->for_each_element([&](const ruvia::json_value& item) {
-            if (!item.is_object() || points.size() == 32) {
-                throw std::invalid_argument("派生点最多 32 个");
-            }
-            const auto parsed = item.get<DerivedPointConfig>();
-            if (!parsed) {
-                throw std::invalid_argument("派生点字段无效");
-            }
-            if (parsed->is_present<"unit">() && !parsed->get<"unit">()) {
-                throw std::invalid_argument("派生点字段无效: unit");
-            }
-            if (parsed->is_present<"unitMode">() && !parsed->get<"unitMode">()) {
-                throw std::invalid_argument("派生点字段无效: unitMode");
-            }
-            if (parsed->is_present<"expression">() && !parsed->get<"expression">()) {
-                throw std::invalid_argument("派生点字段无效: expression");
-            }
-            if (parsed->is_present<"sourceAlias">() && !parsed->get<"sourceAlias">()) {
-                throw std::invalid_argument("派生点字段无效: sourceAlias");
-            }
-            if (parsed->is_present<"visible">() && !parsed->get<"visible">()) {
-                throw std::invalid_argument("visible 必须是布尔值");
-            }
-            DerivedPoint point;
-            point.id = text(parsed->get<"id">(), "id", 36);
-            if (!isUuid(point.id) || !ids.insert(point.id).second) {
-                throw std::invalid_argument("派生点标识无效或重复");
-            }
-            point.name = text(parsed->get<"name">(), "name", 100);
-            point.unit = text(parsed->get<"unit">(), "unit", 32, false);
-            if (parsed->is_present<"unitMode">()) {
-                point.unitMode = text(parsed->get<"unitMode">(), "unitMode", 16);
-            }
-            if (point.unitMode != "fixed" && point.unitMode != "conditional") {
-                throw std::invalid_argument("单位模式无效");
-            }
-            point.kind = text(parsed->get<"kind">(), "kind", 16);
-            point.valueType = text(parsed->get<"valueType">(), "valueType", 8);
-            if (point.valueType != "number" && point.valueType != "boolean") {
-                throw std::invalid_argument("派生点结果类型无效");
-            }
-            if (point.kind != "expression" && point.kind != "average" && point.kind != "minimum" && point.kind != "maximum") {
-                throw std::invalid_argument("派生点计算类型无效");
-            }
-            point.expression = text(parsed->get<"expression">(), "expression", 512, point.kind == "expression");
-            point.windowSeconds = integer(parsed->get<"windowSeconds">(), parsed->is_present<"windowSeconds">(), "windowSeconds", 0, 1);
-            point.maxAgeSeconds = integer(parsed->get<"maxAgeSeconds">(), parsed->is_present<"maxAgeSeconds">(), "maxAgeSeconds", 300, 1);
-            if (const auto& visible = parsed->get<"visible">()) {
-                point.visible = static_cast<bool>(*visible);
-            }
-            if (point.kind != "expression" && (!point.windowSeconds || point.valueType != "number")) {
-                throw std::invalid_argument("窗口派生点需要时间窗口和数值结果类型");
-            }
-            const auto& inputs = parsed->get<"inputs">();
-            std::set<std::string> names;
-            if (!inputs || inputs->empty()) {
-                throw std::invalid_argument("派生点必须绑定输入点");
-            }
-            if (inputs->size() > 16) {
-                throw std::invalid_argument("派生点输入绑定无效");
-            }
+        point.windowSeconds = item.get<"windowSeconds">().value_or(ruvia::int64{ 0 }).value_;
+        point.maxAgeSeconds = item.get<"maxAgeSeconds">().value_or(ruvia::int64{ 300 }).value_;
+        point.visible = static_cast<bool>(item.get<"visible">().value_or(ruvia::bool_value{ true }));
+        if (const auto& inputs = item.get<"inputs">()) {
             for (const auto& input : *inputs) {
-                const auto alias = text(input.get<"alias">(), "alias", 32);
-                const auto id = text(input.get<"pointId">(), "pointId", 36);
-                const utils::Expression variable(alias);
-                if (variable.variables() != std::vector<std::string>{ alias } || !isUuid(id) || !names.insert(alias).second) {
-                    throw std::invalid_argument("派生点输入绑定无效");
-                }
-                point.inputs.emplace_back(alias, id);
+                point.inputs.emplace_back(text(input.get<"alias">()), text(input.get<"pointId">()));
             }
-            if (point.kind == "expression") {
-                const utils::Expression expression(point.expression);
-                for (const auto& name : expression.variables()) {
-                    if (!names.contains(name)) {
-                        throw std::invalid_argument("公式包含未绑定变量: " + name);
-                    }
-                }
-            } else {
-                point.sourceAlias = text(parsed->get<"sourceAlias">(), "sourceAlias", 32);
-                if (!names.contains(point.sourceAlias)) {
-                    throw std::invalid_argument("窗口计算的输入点未绑定");
-                }
+        }
+        if (const auto& rules = item.get<"unitRules">()) {
+            for (const auto& rule : *rules) {
+                point.unitRules.push_back({ text(rule.get<"condition">()), text(rule.get<"unit">()) });
             }
-            if (parsed->is_present<"unitRules">()) {
-                const auto& rules = parsed->get<"unitRules">();
-                if (!rules) {
-                    throw std::invalid_argument("单位条件必须是数组");
-                }
-                if (rules->size() > 8) {
-                    throw std::invalid_argument("单位条件最多 8 条");
-                }
-                for (const auto& rule : *rules) {
-                    auto condition = text(rule.get<"condition">(), "condition", 512);
-                    auto unit = text(rule.get<"unit">(), "unit", 32, false);
-                    const utils::Expression expression(condition);
-                    for (const auto& name : expression.variables()) {
-                        if (!names.contains(name)) {
-                            throw std::invalid_argument("单位条件包含未绑定变量: " + name);
-                        }
-                    }
-                    point.unitRules.push_back({ std::move(condition), std::move(unit) });
-                }
-            }
-            if ((point.unitMode == "conditional") != !point.unitRules.empty()) {
-                throw std::invalid_argument("条件单位必须设置规则，固定单位不得保留条件");
-            }
-            points.push_back(std::move(point));
-            return true;
-        })) {
-        throw std::invalid_argument("derivedPoints 必须是数组");
+        }
+        points.push_back(std::move(point));
     }
     return points;
 }
 
+// 按依赖拓扑排序：输入为派生点时先计算其依赖；采集点取 registers/areas/points 及 SL651 上行要素。
 inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& config) {
     auto points = decodeDerivedPoints(config);
     std::set<std::string> physical;
@@ -235,18 +184,21 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& con
     std::map<std::string, std::size_t> index;
     for (std::size_t i = 0; i < points.size(); ++i) {
         if (physical.contains(points[i].id)) {
-            throw std::invalid_argument("派生点标识不能与采集点重复");
+            throw DerivedPointError(DerivedPointErrorCode::physicalIdConflict, points[i].id);
         }
-        index.emplace(points[i].id, i);
+        if (!index.emplace(points[i].id, i).second) {
+            throw DerivedPointError(DerivedPointErrorCode::duplicateId, points[i].id);
+        }
     }
     std::vector<DerivedPoint> ordered;
+    ordered.reserve(points.size());
     std::vector<unsigned> visited(points.size());
     const auto visit = [&](auto&& self, std::size_t i) -> void {
         if (visited[i] == 2) {
             return;
         }
         if (visited[i] == 1) {
-            throw std::invalid_argument("派生点存在循环依赖");
+            throw DerivedPointError(DerivedPointErrorCode::cycle, points[i].id);
         }
         visited[i] = 1;
         for (const auto& [alias, id] : points[i].inputs) {
@@ -254,7 +206,7 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& con
             if (found != index.end()) {
                 self(self, found->second);
             } else if (!physical.contains(id)) {
-                throw std::invalid_argument("派生点引用的采集点不存在或不是上行点");
+                throw DerivedPointError(DerivedPointErrorCode::unknownInput, points[i].id);
             }
         }
         visited[i] = 2;
@@ -263,13 +215,7 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& con
     for (std::size_t i = 0; i < points.size(); ++i) {
         visit(visit, i);
     }
-    if (const auto visibility = config.get<ruvia::json_value>("pointVisibility")) {
-        if (!visibility->is_object() || !visibility->for_each_field([&](std::string_view id, const ruvia::json_value& raw) {
-                return isUuid(id) && (raw.view() == "true" || raw.view() == "false");
-            })) {
-            throw std::invalid_argument("点位显示设置必须是标识到布尔值的映射");
-        }
-    }
     return ordered;
 }
+
 } // namespace service::common

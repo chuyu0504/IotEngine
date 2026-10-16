@@ -77,27 +77,13 @@ inline void appendJsonEscaped(std::string& output, std::string_view value) {
         }
         ++index;
         switch (ch) {
-            case '"':
-                output += "\\\"";
-                break;
-            case '\\':
-                output += "\\\\";
-                break;
-            case '\b':
-                output += "\\b";
-                break;
-            case '\f':
-                output += "\\f";
-                break;
-            case '\n':
-                output += "\\n";
-                break;
-            case '\r':
-                output += "\\r";
-                break;
-            case '\t':
-                output += "\\t";
-                break;
+            case '"': output += "\\\""; break;
+            case '\\': output += "\\\\"; break;
+            case '\b': output += "\\b"; break;
+            case '\f': output += "\\f"; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
             default:
                 if (ch < 0x20) {
                     appendJsonUnicodeEscape(output, ch);
