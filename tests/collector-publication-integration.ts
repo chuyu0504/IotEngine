@@ -98,6 +98,19 @@ try {
     const device = (await db`SELECT id FROM device WHERE name=${tag}`)[0].id;
     await jsonRequest('PUT',`/v1/device/${device}/debug`,{enabled:true});
     await jsonRequest('PUT',`/v1/link/${link}/debug`,{enabled:true});
+    // Debug switches reach the Collector through the outbox and a new runtime
+    // snapshot. A station report is sent once, so capture starts only after
+    // every Collector Worker applied a snapshot with both switches on.
+    await until(async () => {
+        const version = await redis.get('iot:config:runtime:active-version');
+        if (!version) return false;
+        const snapshot = `iot:config:runtime:${version}`;
+        if (await redis.send('HGET', [`${snapshot}:device:${device}`, 'debug_enabled']) !== '1' ||
+            await redis.send('HGET', [`${snapshot}:link:${link}`, 'debug_enabled']) !== '1') return false;
+        const collectors = await redis.send('KEYS', ['iot:runtime:collector:*']) as string[];
+        const applied = await Promise.all(collectors.map(key => redis.send('HGET', [key, 'version'])));
+        return collectors.length > 0 && applied.every(value => value === version);
+    }, 'collectors did not apply the debug switches');
     await until(async () => {
         const candidate = net.createConnection({host:'127.0.0.1',port});
         const connected = await new Promise<boolean>((resolve) => {
