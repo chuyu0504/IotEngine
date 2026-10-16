@@ -24,7 +24,7 @@ const wait = (milliseconds: number) => Bun.sleep(milliseconds);
 interface LinkItem { id: string; name: string; debug_enabled: boolean; endpoint?: { targets?: { name: string }[] } }
 interface LinkSnapshot { code: number; data?: { list?: LinkItem[] } }
 interface SnapshotStream { next(): Promise<LinkSnapshot>; close(): Promise<void> }
-interface PausedStream { readLatest(name: string): Promise<{ snapshot: LinkSnapshot; bytes: number }>; close(): void }
+interface PausedStream { readLatest(latest: (item: LinkItem) => boolean): Promise<{ snapshot: LinkSnapshot; bytes: number }>; close(): void }
 const frame = (text: string): { value: LinkSnapshot | undefined; rest: string } | undefined => {
     const separator = text.includes('\r\n\r\n') ? '\r\n\r\n' : '\n\n';
     const index = text.indexOf(separator);
@@ -82,7 +82,7 @@ async function rawPaused(port: number, path: string): Promise<PausedStream> {
     // Node decodes HTTP chunks; pausing the bounded response buffer propagates
     // to the socket instead of storing an unbounded application backlog.
     return {
-        async readLatest(name: string) {
+        async readLatest(latest: (item: LinkItem) => boolean) {
             let pending = '';
             let bytes = 0;
             const decoder = new TextDecoder();
@@ -96,7 +96,7 @@ async function rawPaused(port: number, path: string): Promise<PausedStream> {
                         const parsed = frame(pending);
                         if (!parsed) break;
                         pending = parsed.rest;
-                        if (parsed.value?.data?.list?.some((item) => item.name === name)) return { snapshot: parsed.value, bytes };
+                        if (parsed.value?.data?.list?.some(latest)) return { snapshot: parsed.value, bytes };
                     }
                 }
                 throw new Error('SSE ended before the latest complete snapshot');
@@ -165,10 +165,10 @@ try {
     await api(ports[1], 'PUT', `/v1/link/${linkId}/debug`, { enabled: true });
     // Kernel capacity varies; require a complete latest snapshot after resuming.
     await wait(Number(Bun.env.LIVE_QUERY_SLOW_PAUSE_MS ?? 1500));
-    const { snapshot: rawSnapshot, bytes } = await raw.readLatest(latestName);
-    const latest = linkView(rawSnapshot);
-    assert.equal(latest.debug_enabled, true);
-    assert.equal(latest.endpoint.targets.length, targetCount);
+    // Each change re-queries committed state, so an earlier event may already
+    // carry the rename; the latest state has both the rename and debug enabled.
+    const { snapshot: rawSnapshot, bytes } = await raw.readLatest((item) => item.name === latestName && item.debug_enabled);
+    assert.equal(linkView(rawSnapshot)?.endpoint?.targets?.length, targetCount, 'latest snapshot must be complete');
     assert(bytes > 4 * 1024 * 1024, `paused snapshot stream produced only ${bytes} bytes`);
     console.log('PASS paused raw TCP receiver recovered latest large snapshot');
 } finally {
