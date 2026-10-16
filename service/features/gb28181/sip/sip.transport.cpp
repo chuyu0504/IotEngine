@@ -19,12 +19,14 @@
 #include <utility>
 #include <vector>
 
-#include "service/middleware/log.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
+#include "service/middleware/log.h"
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
 #endif
+
+namespace service::gb28181::sip {
 
 namespace {
 
@@ -131,13 +133,6 @@ std::string peerToString(const SipServer::SipPeer& peer) {
     return host + ":" + std::to_string(peer.port);
 }
 
-std::string sipUriHost(std::string_view host) {
-    if (host.find(':') != std::string_view::npos && !host.starts_with('[')) {
-        return "[" + std::string(host) + "]";
-    }
-    return std::string(host);
-}
-
 const char* transportName(SipServer::SipTransport transport) {
     return transport == SipServer::SipTransport::Tcp ? "TCP" : "UDP";
 }
@@ -154,7 +149,7 @@ bool samePeer(const SipServer::SipPeer& expected, const SipServer::SipPeer& actu
     return true;
 }
 
-bool registeredRemoteMatches(const DeviceRegistry& deviceRegistry, const std::string& deviceId, const SipServer::SipPeer& remote) {
+bool registeredRemoteMatches(const device::DeviceRegistry& deviceRegistry, const std::string& deviceId, const SipServer::SipPeer& remote) {
     if (deviceId.empty()) {
         return false;
     }
@@ -265,7 +260,7 @@ std::optional<RemoteEndpoint> parseRemoteEndpoint(const std::string& remoteAddre
     return RemoteEndpoint{ std::move(host), static_cast<uint16_t>(*port) };
 }
 
-std::string routeUnavailableReason(const std::optional<DeviceRouteSnapshot>& route) {
+std::string routeUnavailableReason(const std::optional<device::DeviceRouteSnapshot>& route) {
     if (!route.has_value()) {
         return "device_not_registered";
     }
@@ -430,12 +425,12 @@ void enablePortReuse(Socket& socket, std::error_code& error) {
 
 } // namespace
 
-SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver, ZlmSdk::OwnerIndex owner)
+SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, device::DeviceRegistry& deviceRegistry, std::shared_ptr<media::ZlmSdk> zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver, media::ZlmSdk::OwnerIndex owner)
     : uuidGenerator_(uuidGenerator),
       sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
       deviceRegistry_(deviceRegistry),
-      zlmSdk_(zlmSdk),
+      zlmSdk_(std::move(zlmSdk)),
       viewerCountObserver_(std::move(viewerCountObserver)),
       owner_(owner),
       ioLoop_(std::move(ioLoop)) {}
@@ -1111,25 +1106,28 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
         }
     }
 
-    const auto host = sipUriHost(remote.address);
-    const auto port = remote.port;
     const auto publicHost = sipConfig_.publicIp.empty() || sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP" ? sipConfig_.host : sipConfig_.publicIp;
     const auto branch = "z9hG4bK-" + makeToken("ack");
-    const auto transport = transportName(remote.transport);
 
-    std::ostringstream ack;
-    ack << "ACK sip:" << session->channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
-        << "Via: SIP/2.0/" << transport << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-        << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << session->fromTag << "\r\n"
-        << "To: " << to << "\r\n"
-        << "Call-ID: " << callId << "\r\n"
-        << "CSeq: " << cseq->number << " ACK\r\n"
-        << "Contact: <sip:" << sipConfig_.id << "@" << sipUriHost(publicHost) << ":" << sipConfig_.port << ">\r\n"
-        << "Max-Forwards: 70\r\n"
-        << "User-Agent: gb28181-platform-cpp\r\n"
-        << "Content-Length: 0\r\n\r\n";
+    const SipRequestHead ack{
+        .method = "ACK",
+        .targetUser = session->channelId,
+        .targetHost = remote.address,
+        .targetPort = remote.port,
+        .transport = transportName(remote.transport),
+        .platformId = sipConfig_.id,
+        .platformHost = publicHost,
+        .platformPort = sipConfig_.port,
+        .domain = sipConfig_.domain,
+        .branch = branch,
+        .fromTag = session->fromTag,
+        .echoedTo = to,
+        .callId = callId,
+        .cseq = cseq->number,
+        .contact = true,
+    };
 
-    sendRequest(ack.str(), remote);
+    sendRequest(ack.serialize({}), remote);
     LOG_DEBUG << "[GB28181][Invite] ACK sent, session=" << session->sessionId
               << ", device=" << session->deviceId
               << ", channel=" << session->channelId
@@ -1309,10 +1307,10 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
             sendResponse(message, remote, 403, "Forbidden");
             return;
         }
-        std::vector<Channel> channels;
+        std::vector<device::Channel> channels;
         std::size_t onlineCount = 0;
         for (auto item : root.child("DeviceList").children("Item")) {
-            Channel channel;
+            device::Channel channel;
             channel.id = xmlText(item, "DeviceID");
             channel.name = xmlText(item, "Name");
             channel.manufacturer = xmlText(item, "Manufacturer");
@@ -1391,20 +1389,24 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
     const auto tag = makeToken("tag");
     const auto callId = makeToken("catalog") + "@" + sipConfig_.domain;
 
-    std::ostringstream request;
-    request << "MESSAGE sip:" << deviceId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
-            << "To: <sip:" << deviceId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << sn << " MESSAGE\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: Application/MANSCDP+xml\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
+    const SipRequestHead request{
+        .method = "MESSAGE",
+        .targetUser = deviceId,
+        .targetHost = endpoint->host,
+        .targetPort = endpoint->port,
+        .transport = transportName(remote->transport),
+        .platformId = sipConfig_.id,
+        .platformHost = publicHost,
+        .platformPort = sipConfig_.port,
+        .domain = sipConfig_.domain,
+        .branch = branch,
+        .fromTag = tag,
+        .callId = callId,
+        .cseq = sn,
+        .contentType = "Application/MANSCDP+xml",
+    };
 
-    sendRequest(request.str(), *remote);
+    sendRequest(request.serialize(bodyText), *remote);
     LOG_DEBUG << "[GB28181][Catalog] Query sent, device=" << deviceId
               << ", sn=" << sn
               << ", call_id=" << callId
@@ -1470,20 +1472,24 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
     const auto tag = makeToken("tag");
     const auto callId = makeToken("ptz") + "@" + sipConfig_.domain;
 
-    std::ostringstream request;
-    request << "MESSAGE sip:" << channelId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
-            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << sn << " MESSAGE\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: Application/MANSCDP+xml\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
+    const SipRequestHead request{
+        .method = "MESSAGE",
+        .targetUser = channelId,
+        .targetHost = endpoint->host,
+        .targetPort = endpoint->port,
+        .transport = transportName(remote->transport),
+        .platformId = sipConfig_.id,
+        .platformHost = publicHost,
+        .platformPort = sipConfig_.port,
+        .domain = sipConfig_.domain,
+        .branch = branch,
+        .fromTag = tag,
+        .callId = callId,
+        .cseq = sn,
+        .contentType = "Application/MANSCDP+xml",
+    };
 
-    sendRequest(request.str(), *remote);
+    sendRequest(request.serialize(bodyText), *remote);
     LOG_DEBUG << "[GB28181][PTZ] Control sent, device=" << deviceId
               << ", channel=" << channelId
               << ", action=" << action
@@ -1559,20 +1565,24 @@ bool SipServer::sendPtzPreciseControl(
     const auto tag = makeToken("tag");
     const auto callId = makeToken("ptz-precise") + "@" + sipConfig_.domain;
 
-    std::ostringstream request;
-    request << "MESSAGE sip:" << channelId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
-            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << sn << " MESSAGE\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: Application/MANSCDP+xml\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
+    const SipRequestHead request{
+        .method = "MESSAGE",
+        .targetUser = channelId,
+        .targetHost = endpoint->host,
+        .targetPort = endpoint->port,
+        .transport = transportName(remote->transport),
+        .platformId = sipConfig_.id,
+        .platformHost = publicHost,
+        .platformPort = sipConfig_.port,
+        .domain = sipConfig_.domain,
+        .branch = branch,
+        .fromTag = tag,
+        .callId = callId,
+        .cseq = sn,
+        .contentType = "Application/MANSCDP+xml",
+    };
 
-    sendRequest(request.str(), *remote);
+    sendRequest(request.serialize(bodyText), *remote);
     LOG_DEBUG << "[GB28181][PTZ] Precise control sent, device=" << deviceId
               << ", channel=" << channelId
               << ", pan=" << pan
@@ -1592,7 +1602,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
     // that owns its listening socket.  The marker is thread-local and the
     // whole method runs on ioLoop_, so SDK callbacks can route back without
     // hashing or handing the session to another worker.
-    ZlmSdk::OwnerScope sdkOwner(owner_);
+    media::ZlmSdk::OwnerScope sdkOwner(owner_);
     LOG_DEBUG << "[GB28181][Preview] Start requested, device=" << deviceId
               << ", channel=" << channelId;
 
@@ -1687,7 +1697,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
     LOG_DEBUG << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
               << ", channel=" << channelId
               << ", ssrc=" << ssrc;
-    const auto rtpServer = zlmSdk_.openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next());
+    const auto rtpServer = zlmSdk_->openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next());
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Preview] Start failed, device=" << deviceId
                  << ", channel=" << channelId
@@ -1713,20 +1723,25 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
          << "y=" << ssrc << "\r\n";
 
     const auto bodyText = body.str();
-    std::ostringstream request;
-    request << "INVITE sip:" << channelId << "@" << sipUriHost(endpoint->host) << ":" << endpoint->port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << fromTag << "\r\n"
-            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
-            << "Call-ID: " << callId << "\r\n"
-            << "CSeq: " << cseq << " INVITE\r\n"
-            << "Contact: <sip:" << sipConfig_.id << "@" << sipUriHost(publicHost) << ":" << sipConfig_.port << ">\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "Subject: " << channelId << ":" << ssrc << "," << sipConfig_.id << ":0\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Type: application/sdp\r\n"
-            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
-            << bodyText;
+    const auto subject = channelId + ":" + ssrc + "," + sipConfig_.id + ":0";
+    const SipRequestHead invite{
+        .method = "INVITE",
+        .targetUser = channelId,
+        .targetHost = endpoint->host,
+        .targetPort = endpoint->port,
+        .transport = transportName(remote->transport),
+        .platformId = sipConfig_.id,
+        .platformHost = publicHost,
+        .platformPort = sipConfig_.port,
+        .domain = sipConfig_.domain,
+        .branch = branch,
+        .fromTag = fromTag,
+        .callId = callId,
+        .cseq = cseq,
+        .contact = true,
+        .subject = subject,
+        .contentType = "application/sdp",
+    };
 
     PreviewSession session;
     session.sessionId = sessionId;
@@ -1756,7 +1771,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
               << ", call_id=" << callId
               << ", cseq=" << cseq;
 
-    sendRequest(request.str(), *remote);
+    sendRequest(invite.serialize(bodyText), *remote);
     LOG_DEBUG << "[GB28181][Preview] INVITE sent, device=" << deviceId
               << ", channel=" << channelId
               << ", viewer_session=" << viewerId
@@ -1803,7 +1818,7 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
 
 std::optional<SipPreviewStopResult>
 SipServer::stopPreview(const std::string& sessionId) {
-    ZlmSdk::OwnerScope sdkOwner(owner_);
+    media::ZlmSdk::OwnerScope sdkOwner(owner_);
     LOG_DEBUG << "[GB28181][Preview] Stop requested, session=" << sessionId;
 
     PreviewSession session;
@@ -1884,22 +1899,26 @@ SipServer::stopPreview(const std::string& sessionId) {
         const auto cseq = cseq_.fetch_add(1);
         const auto publicHost = sipConfig_.publicIp.empty() || sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP" ? sipConfig_.host : sipConfig_.publicIp;
         const auto branch = "z9hG4bK-" + makeToken("bye");
-        const auto host = sipUriHost(session.remote.address);
-        const auto port = session.remote.port;
 
-        std::ostringstream bye;
-        bye << "BYE sip:" << session.channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
-            << "Via: SIP/2.0/" << transportName(session.remote.transport) << " " << sipUriHost(publicHost) << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << session.fromTag << "\r\n"
-            << "To: <sip:" << session.channelId << "@" << sipConfig_.domain << ">;tag=" << session.toTag << "\r\n"
-            << "Call-ID: " << session.callId << "\r\n"
-            << "CSeq: " << cseq << " BYE\r\n"
-            << "Contact: <sip:" << sipConfig_.id << "@" << sipUriHost(publicHost) << ":" << sipConfig_.port << ">\r\n"
-            << "Max-Forwards: 70\r\n"
-            << "User-Agent: gb28181-platform-cpp\r\n"
-            << "Content-Length: 0\r\n\r\n";
+        const SipRequestHead bye{
+            .method = "BYE",
+            .targetUser = session.channelId,
+            .targetHost = session.remote.address,
+            .targetPort = session.remote.port,
+            .transport = transportName(session.remote.transport),
+            .platformId = sipConfig_.id,
+            .platformHost = publicHost,
+            .platformPort = sipConfig_.port,
+            .domain = sipConfig_.domain,
+            .branch = branch,
+            .fromTag = session.fromTag,
+            .toTag = session.toTag,
+            .callId = session.callId,
+            .cseq = cseq,
+            .contact = true,
+        };
 
-        sendRequest(bye.str(), session.remote);
+        sendRequest(bye.serialize({}), session.remote);
         byeSent = true;
         LOG_DEBUG << "[GB28181][Preview] BYE sent, session=" << streamSessionId
                   << ", stream_id=" << session.streamId
@@ -1912,29 +1931,28 @@ SipServer::stopPreview(const std::string& sessionId) {
                 sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP"
             ? sipConfig_.host
             : sipConfig_.publicIp;
-        std::ostringstream cancel;
-        cancel << "CANCEL sip:" << session.channelId << "@"
-               << sipUriHost(session.remote.address) << ":" << session.remote.port
-               << " SIP/2.0\r\n"
-               << "Via: SIP/2.0/" << transportName(session.remote.transport) << " "
-               << sipUriHost(publicHost) << ":" << sipConfig_.port
-               << ";branch=" << session.branch << "\r\n"
-               << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain
-               << ">;tag=" << session.fromTag << "\r\n"
-               << "To: <sip:" << session.channelId << "@" << sipConfig_.domain
-               << ">\r\n"
-               << "Call-ID: " << session.callId << "\r\n"
-               << "CSeq: " << session.inviteCseq << " CANCEL\r\n"
-               << "Max-Forwards: 70\r\n"
-               << "User-Agent: gb28181-platform-cpp\r\n"
-               << "Content-Length: 0\r\n\r\n";
-        sendRequest(cancel.str(), session.remote);
+        const SipRequestHead cancel{
+            .method = "CANCEL",
+            .targetUser = session.channelId,
+            .targetHost = session.remote.address,
+            .targetPort = session.remote.port,
+            .transport = transportName(session.remote.transport),
+            .platformId = sipConfig_.id,
+            .platformHost = publicHost,
+            .platformPort = sipConfig_.port,
+            .domain = sipConfig_.domain,
+            .branch = session.branch,
+            .fromTag = session.fromTag,
+            .callId = session.callId,
+            .cseq = session.inviteCseq,
+        };
+        sendRequest(cancel.serialize({}), session.remote);
         LOG_DEBUG << "[GB28181][Preview] CANCEL sent for pending session, session="
                   << streamSessionId << ", stream_id=" << session.streamId
                   << ", call_id=" << session.callId;
     }
 
-    const bool rtpServerClosed = zlmSdk_.closeRtpServer(session.streamId);
+    const bool rtpServerClosed = zlmSdk_->closeRtpServer(session.streamId);
     notifyStreamClosed(session.streamId);
     LOG_DEBUG << "[GB28181][Preview] RTP server close finished, session=" << streamSessionId
               << ", stream_id=" << session.streamId
@@ -2420,3 +2438,5 @@ void SipServer::invalidateDeviceInLoop(const std::string& deviceId, std::string 
              << ", reason=" << (reason.empty() ? "unspecified" : reason)
              << ", transport_closed=" << closeTransport;
 }
+
+} // namespace service::gb28181::sip

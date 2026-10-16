@@ -5,15 +5,16 @@
 
 #include <ruvia/web/model.h>
 
+namespace service::gb28181::media {
+
 struct StreamStatus {
     std::string app;
     std::string stream;
     std::string schema;
-    bool online{false};
-    int readerCount{0};
+    bool online{ false };
+    int readerCount{ 0 };
 
-    static std::string identity(const std::string& app, const std::string& stream,
-                                const std::string& schema) {
+    static std::string identity(const std::string& app, const std::string& stream, const std::string& schema) {
         return app + ":" + schema + ":" + stream;
     }
 };
@@ -30,15 +31,11 @@ struct PlayUrls {
 
 struct OpenRtpServerResult {
     std::string streamId;
-    uint16_t port{0};
+    uint16_t port{ 0 };
     PlayUrls playUrls;
 };
 
-RUVIA_MODEL(WebRtcResponseModel,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(type, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(sdp, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(msg, ruvia::string));
+RUVIA_MODEL(WebRtcResponseModel, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(type, ruvia::string), RUVIA_OPTIONAL_FIELD(sdp, ruvia::string), RUVIA_OPTIONAL_FIELD(msg, ruvia::string));
 
 struct MediaServerPorts {
     std::uint16_t http{ 0 };
@@ -65,3 +62,12 @@ struct MediaCapabilities {
     bool tls{ false };
     bool recording{ false };
 };
+
+// Media health published by the Collector that holds the SDK handle.
+struct MediaStatus {
+    bool started{ false };
+    MediaServerPorts ports;
+    MediaCapabilities capabilities;
+};
+
+} // namespace service::gb28181::media

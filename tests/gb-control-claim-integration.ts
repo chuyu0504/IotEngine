@@ -6,16 +6,15 @@ const redis = new Bun.RedisClient(redisUrl);
 const prefix = `iot:test:gb-control:${crypto.randomUUID()}`;
 const keys = [`${prefix}:owner`, `${prefix}:claim`, `${prefix}:cancel`];
 const source = await Bun.file('service/features/gb28181/gb28181.service.h').text();
-const start = source.indexOf('claimControlExecution(');
-assert(start >= 0);
-const lua = source.slice(start).match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
-assert(lua, 'missing production control claim Lua');
+function script(name: string) {
+    const lua = source.match(new RegExp(`\\b${name}\\s*=\\s*R"lua\\(([\\s\\S]*?)\\)lua"`))?.[1];
+    assert(lua, `missing production Lua constant: ${name}`);
+    return lua;
+}
+const lua = script('kClaimControlExecutionScript');
 const claim = async (token: string, deadline: string) =>
     Number(await redis.send('EVAL', [lua, '3', ...keys, token, deadline]));
-const publishStart = source.indexOf('publishControlCommand(');
-assert(publishStart >= 0);
-const publishLua = source.slice(publishStart).match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
-assert(publishLua, 'missing production control publish Lua');
+const publishLua = script('kPublishControlCommandScript');
 const stream = `${prefix}:commands`;
 const publish = async (token: string) => Number(await redis.send('EVAL', [
     publishLua, '2', stream, keys[0], token,

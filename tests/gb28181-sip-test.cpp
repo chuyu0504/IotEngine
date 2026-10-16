@@ -30,6 +30,18 @@
 
 namespace {
 
+using service::gb28181::MediaConfig;
+using service::gb28181::SipConfig;
+using service::gb28181::device::Channel;
+using service::gb28181::device::Device;
+using service::gb28181::device::DeviceChange;
+using service::gb28181::device::DeviceRegistry;
+using service::gb28181::media::ZlmSdk;
+using service::gb28181::sip::SipMessage;
+using service::gb28181::sip::SipRequestHead;
+using service::gb28181::sip::SipServer;
+using service::gb28181::sip::SipUnsupportedRequestGuard;
+
 void require(bool condition, std::string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
@@ -378,7 +390,7 @@ void verifySipRegistrationGeneration(
     );
 }
 
-void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, ZlmSdk& zlm, const ruvia::event_loop& loop, asio::io_context& clientContext) {
+void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, const std::shared_ptr<ZlmSdk>& zlm, const ruvia::event_loop& loop, asio::io_context& clientContext) {
     server->stop();
     server.reset();
 
@@ -424,7 +436,7 @@ void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std:
     require(!registered->online, "device did not expire after keepalive timeout");
 }
 
-void verifyDualUdpWorkerOwnership(const SipConfig& baseSip, const MediaConfig& media, ZlmSdk& zlm) {
+void verifyDualUdpWorkerOwnership(const SipConfig& baseSip, const MediaConfig& media, const std::shared_ptr<ZlmSdk>& zlm) {
     ruvia::event_loop_pool dualPool(
         ruvia::event_loop_pool_options{ .loop_count_ = 2, .queue_capacity_ = 128 }
     );
@@ -705,6 +717,300 @@ std::string inviteOkWithCSeqMethod(const SipMessage& invite, std::string_view cs
         "Content-Length: 0\r\n\r\n";
 }
 
+// Expected bytes are the actual output of the string concatenation that
+// eb3a676 used for each outgoing request; serialize() must not change them.
+void verifySipRequestHeadBytes() {
+    constexpr std::string_view platformId{ "34020000002000000001" };
+    constexpr std::string_view domain{ "3402000000" };
+    constexpr std::string_view channelId{ "34020000001320000001" };
+    const SipRequestHead ack{
+        .method = "ACK",
+        .targetUser = channelId,
+        .targetHost = "192.168.1.64",
+        .targetPort = 5061,
+        .transport = "UDP",
+        .platformId = platformId,
+        .platformHost = "203.0.113.7",
+        .platformPort = 5060,
+        .domain = domain,
+        .branch = "z9hG4bK-ack-1",
+        .fromTag = "from-1",
+        .echoedTo = "<sip:34020000001320000001@3402000000>;tag=device-tag",
+        .callId = "invite-1@3402000000",
+        .cseq = 7,
+        .contact = true,
+    };
+    require(ack.serialize({}) == "ACK sip:34020000001320000001@192.168.1.64:5061 SIP/2.0\r\n"
+                                 "Via: SIP/2.0/UDP 203.0.113.7:5060;branch=z9hG4bK-ack-1\r\n"
+                                 "From: <sip:34020000002000000001@3402000000>;tag=from-1\r\n"
+                                 "To: <sip:34020000001320000001@3402000000>;tag=device-tag\r\n"
+                                 "Call-ID: invite-1@3402000000\r\n"
+                                 "CSeq: 7 ACK\r\n"
+                                 "Contact: <sip:34020000002000000001@203.0.113.7:5060>\r\n"
+                                 "Max-Forwards: 70\r\n"
+                                 "User-Agent: gb28181-platform-cpp\r\n"
+                                 "Content-Length: 0\r\n"
+                                 "\r\n",
+            "ACK bytes changed");
+
+    const std::string catalogBody =
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Query>\r\n"
+        "<CmdType>Catalog</CmdType>\r\n"
+        "<SN>11</SN>\r\n"
+        "<DeviceID>34020000001110000001</DeviceID>\r\n"
+        "</Query>\r\n";
+    const SipRequestHead catalog{
+        .method = "MESSAGE",
+        .targetUser = "34020000001110000001",
+        .targetHost = "192.168.1.64",
+        .targetPort = 5061,
+        .transport = "UDP",
+        .platformId = platformId,
+        .platformHost = "203.0.113.7",
+        .platformPort = 5060,
+        .domain = domain,
+        .branch = "z9hG4bK-branch-1",
+        .fromTag = "tag-1",
+        .callId = "catalog-1@3402000000",
+        .cseq = 11,
+        .contentType = "Application/MANSCDP+xml",
+    };
+    require(catalog.serialize(catalogBody) == "MESSAGE sip:34020000001110000001@192.168.1.64:5061 SIP/2.0\r\n"
+                                              "Via: SIP/2.0/UDP 203.0.113.7:5060;branch=z9hG4bK-branch-1\r\n"
+                                              "From: <sip:34020000002000000001@3402000000>;tag=tag-1\r\n"
+                                              "To: <sip:34020000001110000001@3402000000>\r\n"
+                                              "Call-ID: catalog-1@3402000000\r\n"
+                                              "CSeq: 11 MESSAGE\r\n"
+                                              "Max-Forwards: 70\r\n"
+                                              "User-Agent: gb28181-platform-cpp\r\n"
+                                              "Content-Type: Application/MANSCDP+xml\r\n"
+                                              "Content-Length: 144\r\n"
+                                              "\r\n"
+                                              "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+                                              "<Query>\r\n"
+                                              "<CmdType>Catalog</CmdType>\r\n"
+                                              "<SN>11</SN>\r\n"
+                                              "<DeviceID>34020000001110000001</DeviceID>\r\n"
+                                              "</Query>\r\n",
+            "Catalog MESSAGE bytes changed");
+
+    const std::string ptzBody =
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Control>\r\n"
+        "<CmdType>DeviceControl</CmdType>\r\n"
+        "<SN>12</SN>\r\n"
+        "<DeviceID>34020000001320000001</DeviceID>\r\n"
+        "<PTZCmd>A50F010800FA00B7</PTZCmd>\r\n"
+        "<Info>\r\n"
+        "<ControlPriority>5</ControlPriority>\r\n"
+        "</Info>\r\n"
+        "</Control>\r\n";
+    const SipRequestHead ptz{
+        .method = "MESSAGE",
+        .targetUser = channelId,
+        .targetHost = "fd00::64",
+        .targetPort = 5062,
+        .transport = "TCP",
+        .platformId = platformId,
+        .platformHost = "fd00::1",
+        .platformPort = 15060,
+        .domain = domain,
+        .branch = "z9hG4bK-ptz-1",
+        .fromTag = "tag-2",
+        .callId = "ptz-1@3402000000",
+        .cseq = 12,
+        .contentType = "Application/MANSCDP+xml",
+    };
+    require(ptz.serialize(ptzBody) == "MESSAGE sip:34020000001320000001@[fd00::64]:5062 SIP/2.0\r\n"
+                                      "Via: SIP/2.0/TCP [fd00::1]:15060;branch=z9hG4bK-ptz-1\r\n"
+                                      "From: <sip:34020000002000000001@3402000000>;tag=tag-2\r\n"
+                                      "To: <sip:34020000001320000001@3402000000>\r\n"
+                                      "Call-ID: ptz-1@3402000000\r\n"
+                                      "CSeq: 12 MESSAGE\r\n"
+                                      "Max-Forwards: 70\r\n"
+                                      "User-Agent: gb28181-platform-cpp\r\n"
+                                      "Content-Type: Application/MANSCDP+xml\r\n"
+                                      "Content-Length: 244\r\n"
+                                      "\r\n"
+                                      "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+                                      "<Control>\r\n"
+                                      "<CmdType>DeviceControl</CmdType>\r\n"
+                                      "<SN>12</SN>\r\n"
+                                      "<DeviceID>34020000001320000001</DeviceID>\r\n"
+                                      "<PTZCmd>A50F010800FA00B7</PTZCmd>\r\n"
+                                      "<Info>\r\n"
+                                      "<ControlPriority>5</ControlPriority>\r\n"
+                                      "</Info>\r\n"
+                                      "</Control>\r\n",
+            "PTZ MESSAGE bytes changed");
+
+    const std::string preciseBody =
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Control>\r\n"
+        "<CmdType>DeviceControl</CmdType>\r\n"
+        "<SN>13</SN>\r\n"
+        "<DeviceID>34020000001320000001</DeviceID>\r\n"
+        "<PTZPreciseCtrl>\r\n"
+        "<Pan>90.5</Pan>\r\n"
+        "<Tilt>10</Tilt>\r\n"
+        "<Zoom>2</Zoom>\r\n"
+        "</PTZPreciseCtrl>\r\n"
+        "</Control>\r\n";
+    const SipRequestHead precise{
+        .method = "MESSAGE",
+        .targetUser = channelId,
+        .targetHost = "192.168.1.64",
+        .targetPort = 5061,
+        .transport = "UDP",
+        .platformId = platformId,
+        .platformHost = "10.0.0.1",
+        .platformPort = 5060,
+        .domain = domain,
+        .branch = "z9hG4bK-ptz-precise-1",
+        .fromTag = "tag-3",
+        .callId = "ptz-precise-1@3402000000",
+        .cseq = 13,
+        .contentType = "Application/MANSCDP+xml",
+    };
+    require(precise.serialize(preciseBody) == "MESSAGE sip:34020000001320000001@192.168.1.64:5061 SIP/2.0\r\n"
+                                              "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-ptz-precise-1\r\n"
+                                              "From: <sip:34020000002000000001@3402000000>;tag=tag-3\r\n"
+                                              "To: <sip:34020000001320000001@3402000000>\r\n"
+                                              "Call-ID: ptz-precise-1@3402000000\r\n"
+                                              "CSeq: 13 MESSAGE\r\n"
+                                              "Max-Forwards: 70\r\n"
+                                              "User-Agent: gb28181-platform-cpp\r\n"
+                                              "Content-Type: Application/MANSCDP+xml\r\n"
+                                              "Content-Length: 241\r\n"
+                                              "\r\n"
+                                              "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+                                              "<Control>\r\n"
+                                              "<CmdType>DeviceControl</CmdType>\r\n"
+                                              "<SN>13</SN>\r\n"
+                                              "<DeviceID>34020000001320000001</DeviceID>\r\n"
+                                              "<PTZPreciseCtrl>\r\n"
+                                              "<Pan>90.5</Pan>\r\n"
+                                              "<Tilt>10</Tilt>\r\n"
+                                              "<Zoom>2</Zoom>\r\n"
+                                              "</PTZPreciseCtrl>\r\n"
+                                              "</Control>\r\n",
+            "PTZ precise MESSAGE bytes changed");
+
+    const std::string inviteBody =
+        "v=0\r\n"
+        "o=34020000001320000001 0 0 IN IP4 203.0.113.7\r\n"
+        "s=Play\r\n"
+        "c=IN IP4 203.0.113.7\r\n"
+        "t=0 0\r\n"
+        "m=video 30000 TCP/RTP/AVP 96\r\n"
+        "a=recvonly\r\n"
+        "a=setup:passive\r\n"
+        "a=connection:new\r\n"
+        "a=rtpmap:96 PS/90000\r\n"
+        "y=0100000001\r\n";
+    const SipRequestHead invite{
+        .method = "INVITE",
+        .targetUser = channelId,
+        .targetHost = "fd00::64",
+        .targetPort = 5062,
+        .transport = "TCP",
+        .platformId = platformId,
+        .platformHost = "fd00::1",
+        .platformPort = 15060,
+        .domain = domain,
+        .branch = "z9hG4bK-invite-1",
+        .fromTag = "from-2",
+        .callId = "invite-2@3402000000",
+        .cseq = 21,
+        .contact = true,
+        .subject = "34020000001320000001:0100000001,34020000002000000001:0",
+        .contentType = "application/sdp",
+    };
+    require(invite.serialize(inviteBody) == "INVITE sip:34020000001320000001@[fd00::64]:5062 SIP/2.0\r\n"
+                                            "Via: SIP/2.0/TCP [fd00::1]:15060;branch=z9hG4bK-invite-1\r\n"
+                                            "From: <sip:34020000002000000001@3402000000>;tag=from-2\r\n"
+                                            "To: <sip:34020000001320000001@3402000000>\r\n"
+                                            "Call-ID: invite-2@3402000000\r\n"
+                                            "CSeq: 21 INVITE\r\n"
+                                            "Contact: <sip:34020000002000000001@[fd00::1]:15060>\r\n"
+                                            "Max-Forwards: 70\r\n"
+                                            "Subject: 34020000001320000001:0100000001,34020000002000000001:0\r\n"
+                                            "User-Agent: gb28181-platform-cpp\r\n"
+                                            "Content-Type: application/sdp\r\n"
+                                            "Content-Length: 202\r\n"
+                                            "\r\n"
+                                            "v=0\r\n"
+                                            "o=34020000001320000001 0 0 IN IP4 203.0.113.7\r\n"
+                                            "s=Play\r\n"
+                                            "c=IN IP4 203.0.113.7\r\n"
+                                            "t=0 0\r\n"
+                                            "m=video 30000 TCP/RTP/AVP 96\r\n"
+                                            "a=recvonly\r\n"
+                                            "a=setup:passive\r\n"
+                                            "a=connection:new\r\n"
+                                            "a=rtpmap:96 PS/90000\r\n"
+                                            "y=0100000001\r\n",
+            "INVITE bytes changed");
+
+    const SipRequestHead bye{
+        .method = "BYE",
+        .targetUser = channelId,
+        .targetHost = "192.168.1.64",
+        .targetPort = 5061,
+        .transport = "UDP",
+        .platformId = platformId,
+        .platformHost = "203.0.113.7",
+        .platformPort = 5060,
+        .domain = domain,
+        .branch = "z9hG4bK-bye-1",
+        .fromTag = "from-1",
+        .toTag = "device-tag",
+        .callId = "invite-1@3402000000",
+        .cseq = 22,
+        .contact = true,
+    };
+    require(bye.serialize({}) == "BYE sip:34020000001320000001@192.168.1.64:5061 SIP/2.0\r\n"
+                                 "Via: SIP/2.0/UDP 203.0.113.7:5060;branch=z9hG4bK-bye-1\r\n"
+                                 "From: <sip:34020000002000000001@3402000000>;tag=from-1\r\n"
+                                 "To: <sip:34020000001320000001@3402000000>;tag=device-tag\r\n"
+                                 "Call-ID: invite-1@3402000000\r\n"
+                                 "CSeq: 22 BYE\r\n"
+                                 "Contact: <sip:34020000002000000001@203.0.113.7:5060>\r\n"
+                                 "Max-Forwards: 70\r\n"
+                                 "User-Agent: gb28181-platform-cpp\r\n"
+                                 "Content-Length: 0\r\n"
+                                 "\r\n",
+            "BYE bytes changed");
+
+    const SipRequestHead cancel{
+        .method = "CANCEL",
+        .targetUser = channelId,
+        .targetHost = "fd00::64",
+        .targetPort = 5062,
+        .transport = "TCP",
+        .platformId = platformId,
+        .platformHost = "fd00::1",
+        .platformPort = 15060,
+        .domain = domain,
+        .branch = "z9hG4bK-invite-1",
+        .fromTag = "from-2",
+        .callId = "invite-2@3402000000",
+        .cseq = 21,
+    };
+    require(cancel.serialize({}) == "CANCEL sip:34020000001320000001@[fd00::64]:5062 SIP/2.0\r\n"
+                                    "Via: SIP/2.0/TCP [fd00::1]:15060;branch=z9hG4bK-invite-1\r\n"
+                                    "From: <sip:34020000002000000001@3402000000>;tag=from-2\r\n"
+                                    "To: <sip:34020000001320000001@3402000000>\r\n"
+                                    "Call-ID: invite-2@3402000000\r\n"
+                                    "CSeq: 21 CANCEL\r\n"
+                                    "Max-Forwards: 70\r\n"
+                                    "User-Agent: gb28181-platform-cpp\r\n"
+                                    "Content-Length: 0\r\n"
+                                    "\r\n",
+            "CANCEL bytes changed");
+}
+
 } // namespace
 
 int main() {
@@ -714,7 +1020,7 @@ int main() {
     );
     std::shared_ptr<SipServer> server;
     std::unique_ptr<DeviceRegistry> devices;
-    std::unique_ptr<ZlmSdk> zlm;
+    std::shared_ptr<ZlmSdk> zlm;
     std::vector<std::pair<std::string, unsigned int>> viewerCounts;
     std::mutex viewerCountsMutex;
     std::condition_variable viewerCountsChanged;
@@ -750,6 +1056,7 @@ int main() {
                 "SIP parser accepted a truncated declared body");
         require(!SipMessage::parse("SIP/2.0 200x OK\r\nContent-Length: 0\r\n\r\n").has_value(), "SIP parser accepted a non-decimal response status");
         require(!SipMessage::parse("REGISTER sip:platform@example.test HTTP/1.1\r\nContent-Length: 0\r\n\r\n").has_value(), "SIP parser accepted a request with a non-SIP protocol version");
+        verifySipRequestHeadBytes();
         std::vector<DeviceChange> changes;
         DeviceRegistry observed(
             [&changes](const Device&, DeviceChange change) {
@@ -803,19 +1110,21 @@ int main() {
         media.httpPort = 0;
         media.rtspPort = 0;
         media.rtmpPort = 0;
-        media.rtcPort = 0;
+        // ZLMediaKit binds RTC UDP on a random port and then TCP on the same
+        // number, which can already be taken; use a port free for both.
+        media.rtcPort = reserveLocalPort();
         media.srtPort = 0;
         media.rtpPortRangeStart = 0;
         media.rtpPortRangeEnd = 0;
         devices = std::make_unique<DeviceRegistry>();
-        zlm = std::make_unique<ZlmSdk>(media);
+        zlm = std::make_shared<ZlmSdk>(media);
         zlm->start();
         server = std::make_shared<SipServer>(
             uuidGenerator,
             sip,
             media,
             *devices,
-            *zlm,
+            zlm,
             loop,
             [&viewerCounts, &viewerCountsMutex, &viewerCountsChanged](const std::string& stream, unsigned int count) {
                 std::lock_guard lock(viewerCountsMutex);
@@ -1133,7 +1442,7 @@ int main() {
                 ipv6Sip,
                 media,
                 ipv6Devices,
-                *zlm,
+                zlm,
                 loop
             );
             ipv6Server->start();
@@ -1163,8 +1472,8 @@ int main() {
             ipv6Server->stop();
         }
 
-        verifyDualUdpWorkerOwnership(sip, media, *zlm);
-        verifyKeepaliveExpiry(uuidGenerator, server, sip, media, *devices, *zlm, loop, clientContext);
+        verifyDualUdpWorkerOwnership(sip, media, zlm);
+        verifyKeepaliveExpiry(uuidGenerator, server, sip, media, *devices, zlm, loop, clientContext);
         zlm->stop();
         require(service::common::canonicalUtcTimestamp("2026-07-29 08:40:45+00") == "2026-07-29T08:40:45Z", "offset timestamp was not normalized");
         require(service::common::canonicalUtcTimestamp("2026-07-29T08:40:45", 480) == "2026-07-29T00:40:45Z", "GB28181 local timestamp was not normalized with device timezone");

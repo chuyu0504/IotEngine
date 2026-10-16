@@ -10,6 +10,8 @@
 
 #include "service/features/gb28181/device/device.types.h"
 
+namespace service::gb28181::device {
+
 class DeviceRegistry {
   public:
     using Observer = std::function<void(const Device&, DeviceChange)>;
@@ -36,3 +38,5 @@ class DeviceRegistry {
     Observer observer_;
     std::uint64_t nextSessionGeneration_{ 1 };
 };
+
+} // namespace service::gb28181::device

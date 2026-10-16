@@ -5,6 +5,8 @@
 
 #include "service/features/gb28181/media/media.types.h"
 
+namespace service::gb28181::sip {
+
 struct SipPreviewStartResult {
     std::string sessionId;
     std::string deviceId;
@@ -12,7 +14,7 @@ struct SipPreviewStartResult {
     std::string streamId;
     std::string ssrc;
     uint16_t rtpPort{ 0 };
-    PlayUrls playUrls;
+    media::PlayUrls playUrls;
     unsigned int leaseTimeoutSeconds{ 0 };
 };
 
@@ -22,3 +24,5 @@ struct SipPreviewStopResult {
     bool byeSent{ false };
     bool rtpServerClosed{ false };
 };
+
+} // namespace service::gb28181::sip

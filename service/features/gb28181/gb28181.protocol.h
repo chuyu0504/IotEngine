@@ -1,18 +1,19 @@
 #pragma once
 
-#include <cmath>
-#include <set>
-#include <utility>
 #include <algorithm>
-#include <stdexcept>
-#include <vector>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
 #include <optional>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <ruvia/web/model.h>
 #include <ruvia/web/model_json.h>
@@ -20,10 +21,10 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
+#include "service/common/uuid.h"
 #include "service/features/gb28181/device/device.types.h"
 #include "service/features/gb28181/media/media.types.h"
 #include "service/features/gb28181/sip/sip.types.h"
-#include "service/common/uuid.h"
 #include "service/utils/json.h"
 
 namespace service::gb28181::control_protocol {
@@ -36,7 +37,13 @@ inline constexpr std::string_view kProjection{ "iot:gb28181:projection" };
 inline constexpr std::string_view kProjectionGroup{ "iot-engine:gb28181-projector" };
 inline constexpr std::string_view kControlPrefix{ "iot:gb28181:control:worker:" };
 inline constexpr std::string_view kControlGroup{ "iot-engine:gb28181-control" };
-inline constexpr std::string_view kConfigKey{ "iot:state:gb28181:config" };
+inline constexpr std::string_view kReceiptPrefix{ "iot:gb28181:projection-receipt:worker:" };
+// Sorted set of owned aggregates scored by their Redis owner lease expiry in
+// Redis milliseconds.  Members are `device:<id>` or `stream:<app:schema:stream>`.
+inline constexpr std::string_view kOwnerDeadlines{ "iot:gb28181:owner-deadlines" };
+inline constexpr std::string_view kOwnerDeadlineSeedPrefix{ "iot:gb28181:owner-deadlines:seed:" };
+inline constexpr std::string_view kDeviceDeadlineKind{ "device" };
+inline constexpr std::string_view kStreamDeadlineKind{ "stream" };
 
 // New control entries always carry request_id, owner_key, owner_token,
 // operation, payload, reply_stream, result_key, deadline_ms and cancel_key.
@@ -49,6 +56,41 @@ inline std::string control(
 ) {
     return std::string(kControlPrefix) + std::string(instance) + ":" +
         std::to_string(workerIndex);
+}
+
+// Projection receipts are directed to the Collector Worker that published the
+// projection.  The stream is scoped to that worker's process incarnation.
+inline std::string projectionReceipts(
+    std::size_t workerIndex,
+    std::string_view instance
+) {
+    return std::string(kReceiptPrefix) + std::string(instance) + ":" +
+        std::to_string(workerIndex);
+}
+
+inline std::string ownerDeadlineSeed(std::string_view instance) {
+    return std::string(kOwnerDeadlineSeedPrefix) + std::string(instance);
+}
+
+inline std::string ownerDeadlineMember(std::string_view kind, std::string_view aggregateId) {
+    return std::string(kind) + ":" + std::string(aggregateId);
+}
+
+struct OwnerDeadlineMember final {
+    std::string_view kind;
+    std::string_view aggregateId;
+};
+
+inline std::optional<OwnerDeadlineMember> parseOwnerDeadlineMember(std::string_view member) {
+    const auto separator = member.find(':');
+    if (separator == std::string_view::npos || separator + 1 == member.size()) {
+        return std::nullopt;
+    }
+    const auto kind = member.substr(0, separator);
+    if (kind != kDeviceDeadlineKind && kind != kStreamDeadlineKind) {
+        return std::nullopt;
+    }
+    return OwnerDeadlineMember{ kind, member.substr(separator + 1) };
 }
 
 inline std::string reply(std::string_view requestId) {
@@ -204,27 +246,34 @@ inline bool validProjectionStreamId(std::string_view value) {
 
 namespace service::gb28181::projection_protocol {
 
-inline std::string projectionChangeName(DeviceChange change) {
-    switch (change) {
-        case DeviceChange::Status:
-            return "status";
-        case DeviceChange::Catalog:
-            return "catalog";
-        case DeviceChange::DeviceName:
-            return "device_name";
-        case DeviceChange::ChannelName:
-            return "channel_name";
+inline constexpr std::array<std::pair<device::DeviceChange, std::string_view>, 4> kDeviceChangeNames{ {
+    { device::DeviceChange::Status, "status" },
+    { device::DeviceChange::Catalog, "catalog" },
+    { device::DeviceChange::DeviceName, "device_name" },
+    { device::DeviceChange::ChannelName, "channel_name" },
+} };
+
+// A coalesced projection lists its change kinds separated by commas.
+inline std::string projectionChangeNames(device::DeviceChangeSet changes) {
+    std::string names;
+    for (const auto& [change, name] : kDeviceChangeNames) {
+        if (changes.contains(change)) {
+            if (!names.empty()) {
+                names.push_back(',');
+            }
+            names.append(name);
+        }
     }
-    return "status";
+    return names;
 }
 
 inline std::vector<service::message::StreamField>
-deviceProjectionFields(const Device& device, DeviceChange change, std::size_t owner, std::string_view ownerToken) {
+deviceProjectionFields(const device::Device& device, device::DeviceChangeSet changes, std::size_t owner, std::string_view ownerToken) {
     using service::message::StreamField;
     std::vector<StreamField> fields{
         { "event_type", "gb28181.device" },
         { "schema_version", "1" },
-        { "change", projectionChangeName(change) },
+        { "change", projectionChangeNames(changes) },
         { "aggregate_id", device.id },
         { "device_id", device.id },
         { "name", device.name },
@@ -254,12 +303,12 @@ deviceProjectionFields(const Device& device, DeviceChange change, std::size_t ow
 }
 
 inline std::vector<service::message::StreamField>
-streamProjectionFields(const StreamStatus& stream, std::size_t owner, std::string_view ownerToken) {
+streamProjectionFields(const media::StreamStatus& stream, std::size_t owner, std::string_view ownerToken) {
     using service::message::StreamField;
     return {
         { "event_type", "gb28181.stream" },
         { "schema_version", "1" },
-        { "aggregate_id", StreamStatus::identity(stream.app, stream.stream, stream.schema) },
+        { "aggregate_id", media::StreamStatus::identity(stream.app, stream.stream, stream.schema) },
         { "app", stream.app },
         { "stream", stream.stream },
         { "schema", stream.schema },
@@ -284,20 +333,39 @@ inline bool projectionBoolean(std::string_view value) {
     return value == "t" || value == "true" || value == "1";
 }
 
-inline std::optional<DeviceChange> projectionDeviceChange(std::string_view value) {
-    if (value == "status") {
-        return DeviceChange::Status;
+// Every comma-separated name must be a known change; empty names are malformed.
+inline std::optional<device::DeviceChangeSet> projectionDeviceChanges(std::string_view value) {
+    device::DeviceChangeSet changes;
+    for (;;) {
+        const auto separator = value.find(',');
+        const auto name = value.substr(0, separator);
+        const auto found = std::ranges::find(kDeviceChangeNames, name, &std::pair<device::DeviceChange, std::string_view>::second);
+        if (found == kDeviceChangeNames.end()) {
+            return std::nullopt;
+        }
+        changes.add(found->first);
+        if (separator == std::string_view::npos) {
+            return changes;
+        }
+        value.remove_prefix(separator + 1);
     }
-    if (value == "catalog") {
-        return DeviceChange::Catalog;
+}
+
+// Inverse of media::StreamStatus::identity; app and schema never contain ':'.
+inline std::optional<media::StreamStatus> streamFromIdentity(std::string_view identity) {
+    const auto first = identity.find(':');
+    if (first == std::string_view::npos || first == 0) {
+        return std::nullopt;
     }
-    if (value == "device_name") {
-        return DeviceChange::DeviceName;
+    const auto second = identity.find(':', first + 1);
+    if (second == std::string_view::npos || second == first + 1 || second + 1 == identity.size()) {
+        return std::nullopt;
     }
-    if (value == "channel_name") {
-        return DeviceChange::ChannelName;
-    }
-    return std::nullopt;
+    media::StreamStatus stream;
+    stream.app = std::string(identity.substr(0, first));
+    stream.schema = std::string(identity.substr(first + 1, second - first - 1));
+    stream.stream = std::string(identity.substr(second + 1));
+    return stream;
 }
 
 inline std::size_t projectionCount(std::string_view value, std::string_view field) {
@@ -308,12 +376,12 @@ inline std::size_t projectionCount(std::string_view value, std::string_view fiel
     return static_cast<std::size_t>(*parsed);
 }
 
-inline Device deviceFromProjection(const service::message::StreamMessage& message) {
+inline device::Device deviceFromProjection(const service::message::StreamMessage& message) {
     if (message.get("schema_version") != "1" ||
         message.get("event_type") != "gb28181.device") {
         throw std::runtime_error("unsupported GB28181 device projection");
     }
-    Device device;
+    device::Device device;
     device.id = std::string(message.get("device_id"));
     if (device.id.empty()) {
         throw std::runtime_error("GB28181 device projection has no id");
@@ -339,7 +407,7 @@ inline Device deviceFromProjection(const service::message::StreamMessage& messag
     device.channels.reserve(channelCount);
     for (std::size_t index = 0; index < channelCount; ++index) {
         const auto prefix = "channel." + std::to_string(index) + ".";
-        Channel channel;
+        device::Channel channel;
         channel.id = std::string(message.get(prefix + "id"));
         channel.name = std::string(message.get(prefix + "name"));
         channel.customName = std::string(message.get(prefix + "custom_name"));
@@ -358,12 +426,12 @@ inline Device deviceFromProjection(const service::message::StreamMessage& messag
     return device;
 }
 
-inline StreamStatus streamFromProjection(const service::message::StreamMessage& message) {
+inline media::StreamStatus streamFromProjection(const service::message::StreamMessage& message) {
     if (message.get("schema_version") != "1" ||
         message.get("event_type") != "gb28181.stream") {
         throw std::runtime_error("unsupported GB28181 stream projection");
     }
-    StreamStatus stream;
+    media::StreamStatus stream;
     stream.app = std::string(message.get("app"));
     stream.stream = std::string(message.get("stream"));
     stream.schema = std::string(message.get("schema"));
@@ -443,8 +511,8 @@ inline std::pair<std::string, std::string> splitRemoteAddress(std::string_view a
 
 namespace service::gb28181::control_protocol {
 
-inline service::message::gb28181::MediaPorts mediaPortsJson(std::pmr::memory_resource* resource, const MediaServerPorts& ports) {
-    service::message::gb28181::MediaPorts result(ruvia::model_options{.resource_ = resource});
+inline service::message::gb28181::MediaPorts mediaPortsJson(std::pmr::memory_resource* resource, const media::MediaServerPorts& ports) {
+    service::message::gb28181::MediaPorts result(ruvia::model_options{ .resource_ = resource });
     result.set<"http">(ports.http)
         .set<"https">(ports.https)
         .set<"rtsp">(ports.rtsp)
@@ -458,9 +526,9 @@ inline service::message::gb28181::MediaPorts mediaPortsJson(std::pmr::memory_res
 
 inline service::message::gb28181::MediaCapabilities mediaCapabilitiesJson(
     std::pmr::memory_resource* resource,
-    const MediaCapabilities& capabilities
+    const media::MediaCapabilities& capabilities
 ) {
-    service::message::gb28181::MediaCapabilities result(ruvia::model_options{.resource_ = resource});
+    service::message::gb28181::MediaCapabilities result(ruvia::model_options{ .resource_ = resource });
     result.set<"faac">(capabilities.faac)
         .set<"ffmpeg">(capabilities.ffmpeg)
         .set<"hls">(capabilities.hls)
@@ -476,8 +544,8 @@ inline service::message::gb28181::MediaCapabilities mediaCapabilitiesJson(
     return result;
 }
 
-inline service::message::gb28181::Channel channelJson(std::pmr::memory_resource* resource, const Channel& channel) {
-    service::message::gb28181::Channel result(ruvia::model_options{.resource_ = resource});
+inline service::message::gb28181::Channel channelJson(std::pmr::memory_resource* resource, const device::Channel& channel) {
+    service::message::gb28181::Channel result(ruvia::model_options{ .resource_ = resource });
     result.set<"id">(channel.id)
         .set<"name">(channel.displayName())
         .set<"reportedName">(channel.name)
@@ -489,7 +557,7 @@ inline service::message::gb28181::Channel channelJson(std::pmr::memory_resource*
     return result;
 }
 
-inline service::message::gb28181::Device deviceJson(std::pmr::memory_resource* resource, const Device& device) {
+inline service::message::gb28181::Device deviceJson(std::pmr::memory_resource* resource, const device::Device& device) {
     const auto [remoteIp, remotePort] = control_protocol::splitRemoteAddress(device.remoteAddress);
     ruvia::boxed_array<service::message::gb28181::Channel> channels(
         ruvia::model_options{ .resource_ = resource }
@@ -498,7 +566,7 @@ inline service::message::gb28181::Device deviceJson(std::pmr::memory_resource* r
         channels.emplace(channelJson(resource, channel));
     }
 
-    service::message::gb28181::Device result(ruvia::model_options{.resource_ = resource});
+    service::message::gb28181::Device result(ruvia::model_options{ .resource_ = resource });
     result.set<"id">(device.id)
         .set<"name">(device.displayName())
         .set<"reportedName">(device.name)
@@ -545,7 +613,7 @@ inline std::string jsonRecording(bool recording) {
     return successJson<service::message::gb28181::ActionResponse>(std::move(action), nullptr);
 }
 
-inline std::string jsonPreviewStart(const SipPreviewStartResult& value) {
+inline std::string jsonPreviewStart(const sip::SipPreviewStartResult& value) {
     service::message::gb28181::PlayUrls urls;
     urls.set<"httpFlv">(value.playUrls.httpFlv)
         .set<"wsFlv">(value.playUrls.wsFlv)
@@ -567,7 +635,7 @@ inline std::string jsonPreviewStart(const SipPreviewStartResult& value) {
     return successJson<service::message::gb28181::PreviewStartResponse>(std::move(preview), nullptr);
 }
 
-inline std::string jsonPreviewStop(const SipPreviewStopResult& value) {
+inline std::string jsonPreviewStop(const sip::SipPreviewStopResult& value) {
     service::message::gb28181::PreviewStop preview;
     preview.set<"stopped">(true)
         .set<"sessionId">(value.sessionId)

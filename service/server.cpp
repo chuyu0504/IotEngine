@@ -130,59 +130,6 @@ service::packet_log::Config packetLogConfig(const ruvia::env& env, const std::fi
     return config;
 }
 
-bool envFlag(const ruvia::env& env, std::string_view name, bool fallback = false) {
-    const auto value = env.get(name);
-    if (!value) {
-        return fallback;
-    }
-    std::string normalized(*value);
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
-}
-
-AppConfig gb28181Config(const ruvia::env& env) {
-    AppConfig config;
-    config.enabled = envFlag(env, "GB28181_ENABLED");
-    config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
-    config.sip.id = std::string(env.get("GB28181_SIP_ID").value_or(""));
-    config.sip.host = std::string(env.get("GB28181_SIP_HOST").value_or("0.0.0.0"));
-    config.sip.publicIp = std::string(env.get("GB28181_SIP_PUBLIC_IP").value_or(""));
-    config.sip.port = env.get<std::uint16_t>("GB28181_SIP_PORT").value_or(5060);
-    config.sip.password = std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
-    config.sip.transport = std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
-    config.sip.registrationTimeoutSeconds = env.get<int>("GB28181_REGISTRATION_TIMEOUT_SECONDS").value_or(180);
-    config.sip.inviteTimeoutSeconds = env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
-    config.sip.viewerLeaseTimeoutSeconds = env.get<int>("GB28181_VIEWER_LEASE_TIMEOUT_SECONDS").value_or(90);
-    config.sip.nonceTtlSeconds = env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
-    config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
-    config.media.zlmPublicBaseUrl = std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
-    config.media.rtpPublicIp = std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
-    config.media.playTokenSecret = std::string(env.get("GB28181_MEDIA_TOKEN_SECRET").value_or(""));
-    config.media.playTokenTtlSeconds = env.get<int>("GB28181_MEDIA_TOKEN_TTL_SECONDS").value_or(300);
-    config.media.corsOrigin = std::string(env.get("GB28181_MEDIA_CORS_ORIGIN").value_or(""));
-    config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(1);
-    config.media.logLevel = env.get<int>("ZLM_LOG_LEVEL").value_or(2);
-    config.media.httpPort = env.get<std::uint16_t>("ZLM_HTTP_PORT").value_or(8080);
-    config.media.httpsPort = env.get<std::uint16_t>("ZLM_HTTPS_PORT").value_or(8443);
-    config.media.rtspPort = env.get<std::uint16_t>("ZLM_RTSP_PORT").value_or(8554);
-    config.media.rtspsPort = env.get<std::uint16_t>("ZLM_RTSPS_PORT").value_or(8322);
-    config.media.rtmpPort = env.get<std::uint16_t>("ZLM_RTMP_PORT").value_or(1935);
-    config.media.rtmpsPort = env.get<std::uint16_t>("ZLM_RTMPS_PORT").value_or(1936);
-    config.media.rtcPort = env.get<std::uint16_t>("ZLM_RTC_PORT").value_or(8000);
-    config.media.srtPort = env.get<std::uint16_t>("ZLM_SRT_PORT").value_or(9000);
-    config.media.rtpPortRangeStart = env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
-    config.media.rtpPortRangeEnd = env.get<std::uint16_t>("GB28181_RTP_PORT_END").value_or(30500);
-    config.media.tlsEnabled = envFlag(env, "ZLM_TLS_ENABLED");
-    config.media.tlsPemPath = std::string(env.get("ZLM_TLS_PEM_PATH").value_or(""));
-    config.media.tlsPassword = std::string(env.get("ZLM_TLS_PASSWORD").value_or(""));
-    config.media.recordingEnabled = envFlag(env, "GB28181_RECORDING_ENABLED");
-    config.media.recordRoot = std::string(env.get("GB28181_RECORD_ROOT").value_or(""));
-    config.media.recordMaxSegmentSeconds = env.get<std::uint32_t>("GB28181_RECORD_MAX_SEGMENT_SECONDS").value_or(3600);
-    return config;
-}
-
 struct CommandLineOptions {
     bool migrateOnly{};
 };
@@ -250,7 +197,7 @@ struct WorkerBudget {
 
 WorkerBudget workerBudget(
     const ruvia::env& env,
-    const AppConfig& gb28181
+    const service::gb28181::Config& gb28181
 ) {
     const auto cpu = std::max(2U, std::thread::hardware_concurrency());
     const auto mediaWorkers = static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
@@ -311,7 +258,7 @@ struct ServiceWorkerComponents {
 };
 
 struct ApplicationComponents {
-    AppConfig gb28181;
+    service::gb28181::Config gb28181;
     ruvia::db_config database;
     ruvia::redis_config serviceRedis;
     ruvia::redis_config collectorRedis;
@@ -347,7 +294,7 @@ void registerRpcHandlers(
 
 ApplicationComponents createComponents(
     const ruvia::env& env,
-    const AppConfig& gb28181,
+    const service::gb28181::Config& gb28181,
     const WorkerBudget& budget,
     ruvia::db_config database,
     ruvia::redis_config serviceRedis
@@ -357,6 +304,9 @@ ApplicationComponents createComponents(
     components.database = std::move(database);
     components.serviceRedis = std::move(serviceRedis);
     components.collectorRedis = components.serviceRedis;
+    // A GB28181 Collector Worker blocks on its control and projection receipt
+    // streams next to the Collector's own work stream.
+    components.collectorRedis.blocking_pool_size_per_worker_ = gb28181.enabled ? 3 : 1;
     // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
     // The tasks retain separate consumer groups and use the ordinary pool to drain.
     components.serviceRedis.blocking_pool_size_per_worker_ = 4;
@@ -530,12 +480,12 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
                         r->stop();
                     } });
     if (workerComponents.gbProjection) {
-        componentLifecycle.add({ .name = "gb28181-projector", .start = [r = workerComponents.gbProjection, worker, index, count] {
-                           (void)r->start(worker, index, count);
-                       },
-                        .stop = [r = workerComponents.gbProjection] {
-                            r->stop();
-                        } });
+        componentLifecycle.add({ .name = "gb28181-projector", .start = [r = workerComponents.gbProjection, worker, index] {
+                                    r->start(worker, index);
+                                },
+                                 .stop = [r = workerComponents.gbProjection] {
+                                     r->stop();
+                                 } });
     }
 }
 
@@ -568,12 +518,12 @@ auto makeApplicationStart(ruvia::application& app, ApplicationComponents& compon
         }
         if (components.gb28181.enabled) {
             supervisor.add({ .name = "gb28181-sdk", .dependencies = preparation, .start = [] {
-                                if (!sdkSupervisor().started()) {
+                                if (!service::gb28181::media::sdkSupervisor().started()) {
                                     throw std::runtime_error("ZLMediaKit SDK is not ready");
                                 }
                             },
                              .stop = [] {
-                                 sdkSupervisor().stop();
+                                 service::gb28181::media::sdkSupervisor().stop();
                              } });
             preparation.push_back("gb28181-sdk");
         }
@@ -687,7 +637,7 @@ int main(int argc, char* argv[]) {
         validateEdgeConfiguration(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::packet_log::initialize(packetLogConfig(app.env(), runtime));
-        auto gb28181 = gb28181Config(app.env());
+        auto gb28181 = service::gb28181::Config::fromEnv(app.env());
 
         auto db = migrateDatabase(app.env());
         if (commandLine.migrateOnly) {
@@ -698,16 +648,16 @@ int main(int argc, char* argv[]) {
         if (gb28181.enabled) {
             // Start the SDK before registering the worker-local HTTP origin so
             // port-zero configuration uses the actual bound SDK listener port.
-            sdkSupervisor().configure(gb28181.media);
-            sdkSupervisor().start();
+            service::gb28181::media::sdkSupervisor().configure(gb28181.media);
+            service::gb28181::media::sdkSupervisor().start();
             app.get_http_client({ .alias_ = "gb-media", .config_ = {
-                                                      .scheme_ = ruvia::http_scheme::http,
-                                                      .host_ = "127.0.0.1",
-                                                      .port_ = sdkSupervisor().ports().http,
-                                                      .connection_count_ = 64,
-                                                      .request_timeout_ = std::nullopt,
-                                                      .max_response_bytes_ = 2U * 1024U * 1024U,
-                                                  } });
+                                                            .scheme_ = ruvia::http_scheme::http,
+                                                            .host_ = "127.0.0.1",
+                                                            .port_ = service::gb28181::media::sdkSupervisor().ports().http,
+                                                            .connection_count_ = 64,
+                                                            .request_timeout_ = std::nullopt,
+                                                            .max_response_bytes_ = 2U * 1024U * 1024U,
+                                                        } });
         }
         const auto budget = workerBudget(app.env(), gb28181);
         std::cout << "worker budget: cpu=" << budget.cpu
@@ -723,11 +673,11 @@ int main(int argc, char* argv[]) {
             std::move(serviceRedis)
         );
         configureServer(app, components, budget);
-        sdkSupervisor().stop();
+        service::gb28181::media::sdkSupervisor().stop();
         service::packet_log::shutdown();
         return 0;
     } catch (...) {
-        sdkSupervisor().stop();
+        service::gb28181::media::sdkSupervisor().stop();
         service::packet_log::shutdown();
         std::cerr << "server failed: " << ruvia::exception_text(std::current_exception()) << '\n';
         return 1;
