@@ -152,6 +152,19 @@ class Reconciler final {
                         );
                         nextRecoverySweep = std::chrono::steady_clock::now() +
                             kPendingRecoveryInterval;
+                        if (batches.empty()) {
+                            // A wake may coincide with pending recovery. An empty
+                            // pending set must still drain newly published work.
+                            recovering = false;
+                            batches = co_await service::message::redis::readGroupMany(
+                                redis,
+                                streams,
+                                kGroup,
+                                consumer,
+                                ">",
+                                kBatchSize
+                            );
+                        }
                     } else {
                         batches = co_await service::message::redis::readGroupMany(
                             redis,

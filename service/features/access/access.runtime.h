@@ -178,6 +178,19 @@ class DeliveryRuntime final {
                         );
                         nextRecoverySweep = std::chrono::steady_clock::now() +
                             kPendingRecoveryInterval;
+                        if (batches.empty()) {
+                            // A wake may coincide with pending recovery. An empty
+                            // pending set must still drain newly published work.
+                            recovering = false;
+                            batches = co_await message::redis::readGroupMany(
+                                redis,
+                                streams,
+                                kGroup,
+                                consumer,
+                                ">",
+                                kBatchSize
+                            );
+                        }
                     } else {
                         batches = co_await message::redis::readGroupMany(
                             redis,
@@ -222,9 +235,6 @@ class DeliveryRuntime final {
                 if (readFailed) {
                     (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
                     continue;
-                }
-                if (recovering && batches.empty()) {
-                    recovering = false;
                 }
                 if (batches.empty()) {
                     co_await service::messaging::workerStreamMultiplexer().wait(
