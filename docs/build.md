@@ -55,6 +55,7 @@ Linux CI 安装该工具并运行真实 Redis 回归；缺少工具的环境会�
 
 每个 fixture 在该服务器上重建自己的 `iot_architecture_<fixture>` 数据库，独占一个 Redis 库号（1–15）与从
 `IOT_ENGINE_INTEGRATION_PORT_BASE`（默认 25100）起的十个本机端口，结束后删除数据库并清空 Redis 库；
+端口块须避开本机临时端口范围（Linux 默认 32768–60999），否则出站连接占用端口会使 fixture 启动失败。
 进程配置、日志与测试状态位于构建目录的 `integration/<fixture>/`。只允许本机地址，禁止指向生产服务。
 缺少变量时用例以返回码 77 明确跳过。并行的 fixture 各自运行带连接池的 `iot-engine`，PostgreSQL 的
 `max_connections` 需提高到 500（默认 100 会报 `too many clients`）。本地使用官方镜像：

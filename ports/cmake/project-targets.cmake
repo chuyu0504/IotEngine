@@ -60,7 +60,8 @@ set(IOT_ENGINE_INTEGRATION_PORT_BASE 25100 CACHE STRING
 # iot_engine_add_integration_fixture(<name> [MANAGED] [GB28181] [SEED_UPLOADS]
 #     [INSTANCES <n>] [SETTINGS <KEY=VALUE>...])
 #   MANAGED       each test starts and stops iot-engine itself; tests serialize
-#   GB28181       enable the SIP and media runtime on the block's last port
+#   GB28181       enable the SIP and media runtime; SIP uses the block's last port,
+#                 WebRTC the one before it
 #   SEED_UPLOADS  place abandoned upload files before the first start
 #   INSTANCES     independent iot-engine processes on consecutive ports
 #   SETTINGS      .env overrides for every instance
