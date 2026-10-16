@@ -41,12 +41,12 @@ async function waitForExpired(key: string) {
 
 try {
     const runtimePath = 'service/features/edge/projection/projection.runtime.h';
-    const entityPath = 'service/features/edge/edge.entity.h';
+    const publishPath = 'service/features/edge/edge.service.h';
     const redisPath = 'service/utils/redis.h';
     const claimRecovery = await sourceScript(runtimePath, 'kClaimLeaseScript =');
     const fencedAck = await sourceScript(runtimePath, 'kAcknowledgeFencedScript =');
     const eraseDead = await sourceScript(runtimePath, 'kEraseDeadStreamScript =');
-    const fencedPublish = await sourceScript(entityPath, 'kFencedPublishScript =');
+    const fencedPublish = await sourceScript(publishPath, 'kFencedPublishScript =');
 
     assert(!fencedPublish.includes("local arguments = {'MAXLEN'"));
     for (const consumerRuntime of [

@@ -12,8 +12,9 @@ namespace pb = service::edge::pb;
 using service::edge::protocol::TelemetryValues;
 
 void require(bool condition, std::string_view message) {
-    if (!condition)
+    if (!condition) {
         throw std::runtime_error(std::string(message));
+    }
 }
 
 // BOOL readings are projected as 0/1 like every other numeric point.
@@ -43,8 +44,7 @@ void testTelemetryDataType() {
 void testPacketBytes() {
     const auto hex = service::edge::protocol::packetBytes("HEX", "0a FF", "heartbeat_payload");
     require(hex.size() == 2 && hex[0] == 0x0a && hex[1] == 0xff, "HEX heartbeat payload decoded incorrectly");
-    require(service::edge::protocol::packetBytes("OFF", "AA", "heartbeat_payload").empty(),
-            "OFF heartbeat payload must be empty");
+    require(service::edge::protocol::packetBytes("OFF", "AA", "heartbeat_payload").empty(), "OFF heartbeat payload must be empty");
     const auto ascii = service::edge::protocol::packetBytes("ASCII", "ok", "heartbeat_payload");
     require(ascii.size() == 2 && ascii[0] == 'o', "ASCII heartbeat payload decoded incorrectly");
 }

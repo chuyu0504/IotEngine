@@ -562,6 +562,7 @@ foreach(test_name
         edge-session-integration
         edge-telemetry-upload-integration
         edge-terminal-integration
+        edge-vpn-integration
         entity-schema-audit
         firmware-http-integration
         gb-control-claim-integration

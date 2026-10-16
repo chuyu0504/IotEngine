@@ -449,27 +449,45 @@ class VpnService final {
         co_await validateAllowedRoutes(c, networkId, allowedRoutes);
         const auto id = reusableEdgePeerId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
                                                    : reusableEdgePeerId;
+        const bool edge = peerType == "edge";
         const auto status = publicKey.empty() ? "pending" : "active";
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
         // Address allocation here and route mapping in the VPN feature both take
         // lock::kVpnAddressAllocation. The feature maps routes in its own transaction
         // on this Worker, so no transaction of this request may hold the lock while
-        // the sync-edge-routes reply is awaited.
-        if (!reusableEdgePeerId.empty()) {
-            // The revoked row already exists: map first, so a mapping failure leaves it revoked.
-            co_await syncEdgeRoutes(c, id, networkId, edgeNodeId);
-        }
-        auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
+        // the sync-edge-routes reply is awaited. An edge peer is mapped while its row
+        // is revoked: neither Hub reconciliation nor an edge capability report installs
+        // a revoked peer's key, so a failed mapping never exposes a half-created peer.
+        // A new edge peer is therefore first committed revoked, reserving its address.
         if (reusableEdgePeerId.empty()) {
             using Peer = service::vpn::entities::VpnPeerEntity;
+            auto transaction = co_await c.db().begin_transaction();
+            co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
             const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
             const auto assignedText = detail::hostText(*assigned);
             ruvia::db_query insert(c.pool());
-            insert.insert_into(Peer::table_name(), { std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"network_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"edge_node_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"user_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"name">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"public_key">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"assigned_ipv4">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"allowed_routes">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view() })
-                .values({ insert.cast(insert.value(id), ruvia::db_data_type::uuid), insert.cast(insert.value(networkId), ruvia::db_data_type::uuid), insert.value(peerType), insert.cast(insert.null_if(insert.cast(insert.value(edgeNodeId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.cast(insert.null_if(insert.cast(insert.value(userId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.value(name), insert.value(publicKey), insert.cast(insert.value(assignedText), ruvia::db_data_type::inet), insert.cast(insert.value(allowedRoutesJson), ruvia::db_data_type::jsonb), insert.value(status) });
+            insert.insert_into(Peer::table_name(), { std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"network_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"edge_node_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"user_id">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"name">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"public_key">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"assigned_ipv4">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"allowed_routes">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view(), std::tuple_element_t<Peer::column_index<"revoked_at">(), Peer::columns_type>::name.view() })
+                .values({ insert.cast(insert.value(id), ruvia::db_data_type::uuid), insert.cast(insert.value(networkId), ruvia::db_data_type::uuid), insert.value(peerType), insert.cast(insert.null_if(insert.cast(insert.value(edgeNodeId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.cast(insert.null_if(insert.cast(insert.value(userId), ruvia::db_data_type::text), insert.cast(insert.value(""), ruvia::db_data_type::text)), ruvia::db_data_type::uuid), insert.value(name), insert.value(publicKey), insert.cast(insert.value(assignedText), ruvia::db_data_type::inet), insert.cast(insert.value(allowedRoutesJson), ruvia::db_data_type::jsonb), insert.value(edge ? "revoked" : status), edge ? insert.call("now") : insert.null_value() });
             (void)co_await transaction.execute(insert);
-        } else {
+            co_await transaction.commit();
+        }
+        if (edge) {
+            std::exception_ptr failure;
+            try {
+                co_await syncEdgeRoutes(c, id, networkId, edgeNodeId);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            if (failure) {
+                // Creation is all-or-nothing for the caller: drop the unmapped new
+                // peer. A reused row simply stays revoked.
+                if (reusableEdgePeerId.empty()) {
+                    co_await discardEdgePeer(c, id);
+                }
+                std::rethrow_exception(failure);
+            }
+            auto transaction = co_await c.db().begin_transaction();
+            co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
             ruvia::db_query reactivation(c.pool());
             reactivation
                 .update(service::vpn::entities::VpnPeerEntity::table_name())
@@ -485,22 +503,10 @@ class VpnService final {
                 .returning({ reactivation.column(std::tuple_element_t<service::vpn::entities::VpnPeerEntity::column_index<"id">(), service::vpn::entities::VpnPeerEntity::columns_type>::name.view()) });
             const auto reactivated = co_await transaction.query(reactivation);
             if (reactivated.empty()) {
+                // A concurrent request for the same EdgeNode reactivated this row first.
                 service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
             }
-        }
-        co_await transaction.commit();
-        if (peerType == "edge" && reusableEdgePeerId.empty()) {
-            std::exception_ptr failure;
-            try {
-                co_await syncEdgeRoutes(c, id, networkId, edgeNodeId);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            if (failure) {
-                // Creation is all-or-nothing for the caller: drop the unmapped peer.
-                co_await discardEdgePeer(c, id);
-                std::rethrow_exception(failure);
-            }
+            co_await transaction.commit();
         }
         co_await audit(c, c.userId, reusableEdgePeerId.empty() ? "vpn.peer.create" : "vpn.peer.reactivate", "vpn_peer", id, "success", "{}");
         if (peerType == "edge") {
@@ -1055,7 +1061,9 @@ ruvia::task<void> VpnService::discardEdgePeer(Context& c, std::string_view id) {
     ruvia::db_query removal(c.pool());
     removal.delete_from(Peer::table_name())
         .where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"id">(), Peer::columns_type>::name.view()), Op::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid)))
-        .and_where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view()), Op::equal, removal.value("edge")));
+        .and_where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"peer_type">(), Peer::columns_type>::name.view()), Op::equal, removal.value("edge")))
+        // A concurrent request may have reactivated the row meanwhile; keep it then.
+        .and_where(removal.binary(removal.column(std::tuple_element_t<Peer::column_index<"status">(), Peer::columns_type>::name.view()), Op::equal, removal.value("revoked")));
     (void)co_await transaction.execute(removal);
     co_await transaction.commit();
 }

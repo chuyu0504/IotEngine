@@ -1227,8 +1227,8 @@ namespace service::message::edge::firmware {
 // reply body is empty.
 inline constexpr std::string_view kRpcComponent{ "edge-firmware" };
 // Senders: modules/edge_node after a firmware upload or EdgeNode deletion
-// finishes (service::rpc::call), and the Edge projector after a firmware
-// edge_task transitions to succeeded/failed (appended without waiting).
+// finishes (service::rpc::call). The Edge projector runs on the same Worker as
+// the driver and wakes it in memory (gateway::FirmwareCleanupSignal) instead.
 inline constexpr std::string_view kScheduleCleanupOperation{ "schedule-cleanup" };
 
 } // namespace service::message::edge::firmware
@@ -1534,8 +1534,10 @@ RUVIA_MODEL(EdgeRouteSync,
     RUVIA_REQUIRED_FIELD(actorId, ruvia::string));
 
 // Edge projection -> VPN feature notifications. The Edge projector appends them
-// to its own Worker's RPC request stream and does not wait for the reply; the
-// VPN handler logs failures itself because nobody reads the stored reply.
+// to its own Worker's RPC request stream after committing the source change and
+// does not wait for the reply. A failed append leaves the projector entry
+// unacknowledged; its retry sends the event again, so handlers are idempotent.
+// The VPN handler logs failures itself because nobody reads the stored reply.
 inline constexpr std::string_view kEdgeCapabilityOperation{"edge-capability"};
 inline constexpr std::string_view kEdgeConfigResultOperation{"edge-config-result"};
 
@@ -1547,7 +1549,8 @@ RUVIA_MODEL(EdgeCapability,
     RUVIA_REQUIRED_FIELD(publicKey, ruvia::string));
 
 // A VPN config task reached a terminal state on the Edge side. edge_task has
-// already been transitioned by the Edge projector; the VPN feature projects the
+// already been transitioned by the Edge projector (a retried projection resends
+// the event for the persisted terminal state); the VPN feature projects the
 // result onto vpn_route when configVersion still equals vpn_peer.config_revision.
 RUVIA_MODEL(EdgeConfigResult,
     RUVIA_REQUIRED_FIELD(peerId, ruvia::string),

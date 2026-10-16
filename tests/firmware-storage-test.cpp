@@ -336,6 +336,26 @@ void testNextDeadline() {
     require(delay && *delay == std::chrono::milliseconds::zero(), "overdue orphan is not due immediately");
 }
 
+// The projector records a terminal firmware task on its Worker's signal; the
+// request must survive until the driver consumes it, whether or not the driver
+// was bound (sleeping) when it arrived.
+void testCleanupSignal() {
+    service::edge::gateway::FirmwareCleanupSignal signal;
+    signal.request();
+    require(signal.pending(), "request before the driver binds was dropped");
+    int wakes = 0;
+    signal.bind([&wakes] {
+        ++wakes;
+    });
+    require(signal.consume() && !signal.pending() && !signal.consume(), "request was not consumed exactly once");
+    signal.request();
+    signal.request();
+    require(wakes == 2 && signal.consume() && !signal.consume(), "bound driver was not woken or requests did not coalesce");
+    signal.bind({});
+    signal.request();
+    require(wakes == 2 && signal.pending(), "unbound driver was woken or the request was lost");
+}
+
 } // namespace
 
 int main() {
@@ -347,7 +367,8 @@ int main() {
         testClaimedCleanup();
         testRemovalBatch();
         testNextDeadline();
-        std::cout << "Firmware chunks, cleanup claim, deletion order, batch and deadline passed\n";
+        testCleanupSignal();
+        std::cout << "Firmware chunks, cleanup claim, deletion order, batch, deadline and wakeup passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

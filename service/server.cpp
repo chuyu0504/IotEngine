@@ -657,6 +657,7 @@ void configureServer(
                 return service::edge::config::PlatformIdentity{platformId};
             })
         .use_worker_state<service::edge::SessionDispatcher>()
+        .use_worker_state<service::edge::gateway::FirmwareCleanupSignal>()
         .database(ruvia::db_registration_config{
             .config_ = std::move(components.database),
         })

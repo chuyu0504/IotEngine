@@ -950,14 +950,11 @@ class FirmwareCleanupRuntime final {
 
     // RPC service::message::edge::firmware::kRpcComponent handler, executed on
     // this Worker: records the event and wakes the driver to recompute.
-    ruvia::task<std::string> executeOperation(ruvia::web_worker_context&, std::string_view operation, std::string_view payload, ruvia::stop_token) {
+    ruvia::task<std::string> executeOperation(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token) {
         if (operation != service::message::edge::firmware::kScheduleCleanupOperation || !payload.empty()) {
             service::common::fail(10002, "Invalid firmware cleanup request", 400);
         }
-        rescheduleRequested_ = true;
-        if (wake_) {
-            wake_->request_stop();
-        }
+        context.worker_state<FirmwareCleanupSignal>().request();
         co_return std::string{};
     }
 
@@ -968,14 +965,19 @@ class FirmwareCleanupRuntime final {
 
     ruvia::task<void> run(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
         const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
+        auto& signal = context.worker_state<FirmwareCleanupSignal>();
+        signal.bind([this] {
+            if (wake_) {
+                wake_->request_stop();
+            }
+        });
         ready->set_value();
         try {
             std::optional<std::chrono::steady_clock::time_point> due;
             bool recompute = true;
             while (!stop.stop_requested()) {
-                if (recompute || rescheduleRequested_) {
+                if (signal.consume() || recompute) {
                     recompute = false;
-                    rescheduleRequested_ = false;
                     bool scheduled = false;
                     try {
                         const auto delay = co_await GatewayService::nextFirmwareCleanupDelay(context, directory_);
@@ -989,7 +991,7 @@ class FirmwareCleanupRuntime final {
                         (void)co_await ruvia::sleep_for(context.worker(), kRetry, stop);
                         continue;
                     }
-                    if (rescheduleRequested_) {
+                    if (signal.pending()) {
                         continue;
                     }
                 }
@@ -1001,7 +1003,7 @@ class FirmwareCleanupRuntime final {
                 if (stop.stop_requested()) {
                     break;
                 }
-                if (rescheduleRequested_ || !due || std::chrono::steady_clock::now() < *due) {
+                if (signal.pending() || !due || std::chrono::steady_clock::now() < *due) {
                     continue;
                 }
                 recompute = true;
@@ -1023,6 +1025,7 @@ class FirmwareCleanupRuntime final {
         } catch (...) {
             LOG_ERROR << "firmware cleanup stopped: unknown error";
         }
+        signal.bind({});
         wake_.reset();
         done->set_value();
     }
@@ -1031,7 +1034,6 @@ class FirmwareCleanupRuntime final {
     std::unique_ptr<ruvia::stop_source> stop_;
     std::future<void> stopped_;
     std::unique_ptr<ruvia::stop_source> wake_;
-    bool rescheduleRequested_{};
 };
 
 } // namespace service::edge::gateway

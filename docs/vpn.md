@@ -6,7 +6,7 @@ WireGuard 接口（`VPN_HUB_INTERFACE`）和 nftables 表 `inet iot_vpn` 都属�
 
 - 只有 `service/features/vpn/vpn.runtime.h` 中的 `VpnHubRuntime` 会调用 `wireguard::controller()` 和 `firewall::apply()`。`VpnHubRuntime` 每个 Service Worker 一个实例。`vpn.service.h` 只访问数据库和 Redis，不引用 transport。
 - `wireguard::controller()` 是 `thread_local` 对象。netlink socket 每次调用时打开，Worker 之间不共享任何内核句柄或可变对象。
-- 模块（`modules/vpn`）不直接触碰内核。它通过 RPC 组件 `vpn` 请求修改：`reconcile`、`wireguard-remove-peer`、`sync-edge-routes`、`queue-edge-config`。Edge 投影通过 `edge-capability` 和 `edge-config-result` 发出通知。操作名和载荷定义在 `common/message.h` 的 `service::message::vpn` 段。
+- 模块（`modules/vpn`）不直接触碰内核。它通过 RPC 组件 `vpn` 请求修改：`reconcile`、`wireguard-remove-peer`、`sync-edge-routes`、`queue-edge-config`。Edge 投影提交自身变更后，通过 `edge-capability` 和 `edge-config-result` 发出通知。追加通知失败时投影条目不确认，重试会按已持久化的状态再次发送（`edge-config-result` 取已终态的 `edge_task`），所以两个处理器都是幂等的。操作名和载荷定义在 `common/message.h` 的 `service::message::vpn` 段。
 
 ## 如何串行
 
@@ -14,6 +14,7 @@ WireGuard 接口（`VPN_HUB_INTERFACE`）和 nftables 表 `inet iot_vpn` 都属�
 - 完整对账在 `kVpnReconciliation` 之后还会持有 `lock::kVpnAddressAllocation`，直到内核状态写完为止。这样可以保证地址被回收后，旧密钥不会被重新装回接口。
 - 锁顺序固定为 `kVpnReconciliation → kVpnAddressAllocation`，二者都在 `vpn-coordination` 连接上获取。每个 Peer 的配置锁（`hashtextextended(peerId, kVpnEdgeConfigSeed)`，在 `vpn-edge-config` 连接上）和 `kVpnDefaultNetwork`（在默认连接上）都不会反向等待前两把锁。
 - 模块侧的地址分配和路由映射同样取 `kVpnAddressAllocation`，但必须先提交自己的事务，再等待 `sync-edge-routes` 的 RPC 回执。RPC 在调用方所在的同一个 Worker 上执行，如果持锁等待会自锁。
+- 创建 Edge Peer 时先以 `revoked` 状态提交新行（占用地址），映射路由后再在新事务中重新激活；复用已撤销的行时同样先映射再激活。对账和 `edge-capability` 都不会装入 `revoked` Peer 的密钥，所以映射失败时 Hub 上不会出现半创建的 Peer；新行随后被删除（仅当仍为 `revoked`）。
 
 ## 执行粒度与调度
 
