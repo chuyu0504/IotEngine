@@ -290,13 +290,38 @@ export namespace Edge {
     export interface LogLevelDto {
         level: LogSetting;
     }
+    /** The terminal view `useTerminalSession` drives; the page owns the xterm instance. */
+    export interface TerminalScreen {
+        size(): { columns: number; rows: number };
+        /** A new session starts: clear the screen and accept input again. */
+        reset(): void;
+        /** Renders output; `written` runs once the bytes are on screen. */
+        write(bytes: Uint8Array, written: () => void): void;
+        /** The session accepts input. */
+        ready(): void;
+        /** The session ended; stop accepting input. */
+        closed(): void;
+    }
 }
+/** HTTP query caches; write mutations invalidate them on success. */
 export const edgeQueryKeys = {
     all: ['edge'] as const,
-    detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
-    logs: (id?: string, query?: Edge.LogsQuery) =>
-        [...edgeQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
+    selection: () => [...edgeQueryKeys.all, 'selection'] as const,
+    configuration: (id?: string) => [...edgeQueryKeys.all, 'configuration', id ?? ''] as const,
     groups: () => [...edgeQueryKeys.all, 'groups'] as const,
+    vpnNetworks: () => [...edgeQueryKeys.all, 'vpn-networks'] as const,
+};
+/** Static PLMN table; outside `edgeQueryKeys.all` so node writes never refetch it. */
+export const plmnNamesQueryKey = ['plmn-names'] as const;
+/** SSE caches; only pushed events update them, so mutations never invalidate them. */
+export const edgeLiveQueryKeys = {
+    all: ['edge-live'] as const,
+    inventory: () => [...edgeLiveQueryKeys.all, 'inventory'] as const,
+    detail: (id?: string) => [...edgeLiveQueryKeys.all, 'detail', id ?? ''] as const,
+    logs: (id?: string, query?: Edge.LogsQuery) =>
+        [...edgeLiveQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
+    vpn: (id?: string) => [...edgeLiveQueryKeys.all, 'vpn', id ?? ''] as const,
+    dtu: (id?: string) => [...edgeLiveQueryKeys.all, 'dtu', id ?? ''] as const,
 };
 
 export namespace EdgeVpn {
@@ -362,18 +387,4 @@ export namespace EdgeVpn {
         peers: Peer[];
         routes: Route[];
     }
-}
-export const edgeVpnQueryKeys = {
-    all: ['edge-vpn'] as const,
-    node: (nodeId?: string) => [...edgeVpnQueryKeys.all, nodeId ?? ''] as const,
-};
-
-export interface DebugRequestOptions {
-    signal?: AbortSignal;
-    timeout?: number;
-    anonymous?: boolean;
-}
-export interface DebugSubscriptionObserver {
-    next: (data: unknown) => void;
-    error: (error: Error) => void;
 }

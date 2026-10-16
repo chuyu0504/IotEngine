@@ -170,7 +170,8 @@ export const saveDeviceSchema = z
     });
 export const saveDeviceGroupSchema = z.object({
     name: z.string().trim().min(1, '分组名称不能为空').max(100, '分组名称最多100个字符'),
-    parent_id: z.uuid({ error: '请选择有效上级分组' }).nullish(),
+    // 空字符串表示顶级分组（后端不接受 null）。
+    parent_id: z.union([z.uuid({ error: '请选择有效上级分组' }), z.literal('')]).optional(),
     status: statusSchema.default('enabled'),
     sort_order: z.coerce.number().int().min(0).default(0),
     remark: z.string().optional(),

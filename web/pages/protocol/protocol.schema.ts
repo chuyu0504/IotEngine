@@ -1,8 +1,14 @@
 import { z } from 'zod';
 import { formatJson, type JsonValue as MqttJson, parseJson } from '@/utils/json';
-import type { Modbus, MqttConfig, MqttPoint, MqttTemplateDraft } from './protocol.types';
+import {
+    type Modbus,
+    type MqttConfig,
+    type MqttPoint,
+    type MqttTemplateDraft,
+    PROTOCOL_TYPES,
+} from './protocol.types';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
-export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT']);
+export const protocolTypeSchema = z.enum(PROTOCOL_TYPES);
 
 const mqttTopicSchema = z
     .string()
@@ -809,99 +815,6 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
     return draft;
 }
 
-// 与服务端 Expression 使用相同语法和复杂度上限；仅解析，不执行用户输入。
-export function validatePointExpression(text: string, aliases: readonly string[]): void {
-    let position = 0;
-    let nodes = 0;
-    function fail(message: string): never {
-        throw new Error(`${message}（第 ${position + 1} 个字符）`);
-    }
-    if (!text.trim()) fail('请输入公式');
-    if (text.length > 512) fail('公式不能超过 512 个字符');
-    const space = () => {
-        while (position < text.length && /[ \t\r\n]/.test(text[position])) position++;
-    };
-    const take = (token: string) => {
-        space();
-        if (!text.startsWith(token, position)) return false;
-        position += token.length;
-        return true;
-    };
-    const add = () => {
-        if (++nodes > 128) fail('公式过于复杂');
-    };
-    const functions: Record<string, number> = { if: 3, min: 2, max: 2, abs: 1, sqrt: 1, round: 1 };
-    const operators: [string, number][] = [
-        ['||', 0],
-        ['&&', 1],
-        ['==', 2],
-        ['!=', 2],
-        ['<=', 3],
-        ['>=', 3],
-        ['<', 3],
-        ['>', 3],
-        ['+', 4],
-        ['-', 4],
-        ['*', 5],
-        ['/', 5],
-        ['%', 5],
-    ];
-    function atom(depth: number): void {
-        if (depth > 24) fail('公式嵌套过深');
-        if (take('(')) {
-            parse(0, depth + 1);
-            if (!take(')')) fail('缺少右括号');
-            return;
-        }
-        for (const operator of ['!', '-', '+']) {
-            if (take(operator)) {
-                atom(depth + 1);
-                add();
-                return;
-            }
-        }
-        space();
-        const name = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(text.slice(position))?.[0];
-        if (name) {
-            position += name.length;
-            if (name !== 'true' && name !== 'false') {
-                if (take('(')) {
-                    if (!Object.hasOwn(functions, name)) fail(`不支持函数 ${name}`);
-                    let count = 1;
-                    parse(0, depth + 1);
-                    while (take(',')) {
-                        if (++count > 3) fail('函数参数过多');
-                        parse(0, depth + 1);
-                    }
-                    if (!take(')')) fail('缺少右括号');
-                    if (count !== functions[name]) fail(`${name} 需要 ${functions[name]} 个参数`);
-                } else if (!aliases.includes(name)) fail(`未绑定变量 ${name}`);
-            }
-            add();
-            return;
-        }
-        const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(text.slice(position))?.[0];
-        if (!number || !Number.isFinite(Number(number))) fail('需要有效数值、变量或子表达式');
-        if (Number(number) === 0 && /[1-9]/.test(number.split(/[eE]/)[0])) fail('数值超出范围');
-        position += number.length;
-        add();
-    }
-    function parse(minimum: number, depth: number): void {
-        atom(depth);
-        for (;;) {
-            space();
-            const operator = operators.find(([token]) => text.startsWith(token, position));
-            if (!operator || operator[1] < minimum) return;
-            position += operator[0].length;
-            parse(operator[1] + 1, depth + 1);
-            add();
-        }
-    }
-    parse(0, 0);
-    space();
-    if (position !== text.length) fail('存在多余字符或缺少运算符');
-}
-
 export const derivedPointSchema = z
     .object({
         id: z.uuid(),
@@ -938,23 +851,10 @@ export const derivedPointSchema = z
         visible: z.boolean(),
     })
     .superRefine((point, context) => {
-        const validate = (expression: string, path: (string | number)[]) => {
-            try {
-                validatePointExpression(
-                    expression,
-                    point.inputs.map((input) => input.alias)
-                );
-            } catch (error) {
-                context.addIssue({ code: 'custom', path, message: (error as Error).message });
-            }
-        };
         if (new Set(point.inputs.map((input) => input.alias)).size !== point.inputs.length)
             context.addIssue({ code: 'custom', path: ['inputs'], message: '输入变量名不能重复' });
-        if (point.kind === 'expression') validate(point.expression ?? '', ['expression']);
-        if (point.unitMode === 'conditional')
-            point.unitRules?.forEach((rule, index) => {
-                validate(rule.condition, ['unitRules', index, 'condition']);
-            });
+        if (point.kind === 'expression' && !point.expression?.trim())
+            context.addIssue({ code: 'custom', path: ['expression'], message: '请输入公式' });
         if (
             point.kind !== 'expression' &&
             (!point.windowSeconds ||

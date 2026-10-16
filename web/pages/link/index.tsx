@@ -50,7 +50,6 @@ function LinkDebug({
     return (
         <PacketDebugPanel
             scope="link"
-            idleKey={`link:${item.id}`}
             protocol={item.protocol}
             title={`链路调试 · ${item.name}`}
             enabled={item.debug_enabled === true}
@@ -60,7 +59,6 @@ function LinkDebug({
             error={packets.error}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
-            onDisable={() => toggle.mutate(false)}
             onOpen={onOpen}
             onClose={onClose}
         />

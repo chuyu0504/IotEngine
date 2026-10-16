@@ -6,11 +6,7 @@ import {
     getS7DeviceTypeFormValues,
     numberOrDefault,
 } from '../web/pages/protocol/protocol.service';
-import {
-    derivedPointSchema,
-    protocolCreateSchema,
-    validatePointExpression,
-} from '../web/pages/protocol/protocol.schema';
+import { derivedPointSchema, protocolCreateSchema } from '../web/pages/protocol/protocol.schema';
 
 test('读取上报缺省为五分钟，显式间隔与命令快速读取保持不变', () => {
     expect(defaultConfig().readInterval).toBe(300);
@@ -28,74 +24,41 @@ test('读取上报缺省为五分钟，显式间隔与命令快速读取保持�
     }
 });
 
-test('公式校验接受运行时支持的语法', () => {
-    for (const expression of [
-        'x',
-        'if(x > 10, x * 2, 0)',
-        'min(x, max(y, 0))',
-        'abs(-x) + sqrt(y) + round(.5)',
-        '!(x == 0) && (y != 1 || true)',
-        '1.2e-3 + +x % 2',
-    ]) {
-        expect(() => validatePointExpression(expression, ['x', 'y'])).not.toThrow();
-    }
-});
-
-test('公式校验拒绝语法错误、未知变量函数及复杂度越界', () => {
-    for (const expression of [
-        '',
-        'x +',
-        '(x + 1',
-        'x 2',
-        'x = 2',
-        'x ** 2',
-        'if(x, 1)',
-        'min(x)',
-        'sqrt(x, y)',
-        'sin(x)',
-        'constructor(x)',
-        'missing + x',
-        '1e999',
-        'NaN',
-        'x; alert(1)',
-        '('.repeat(26) + 'x' + ')'.repeat(26),
-        Array(66).fill('x').join('+'),
-        'x'.repeat(513),
-    ]) {
-        expect(() => validatePointExpression(expression, ['x', 'y'])).toThrow();
-    }
-});
-
-test('派生值将公式和单位条件错误定位到字段，修改绑定后重新校验', () => {
+test('派生值结构校验把缺失公式、重复变量、窗口输入和单位条件定位到字段', () => {
     const point = {
         id: '00000000-0000-4000-8000-000000000001',
         name: '压力',
         kind: 'expression',
         valueType: 'number',
         unitMode: 'conditional',
-        expression: 'x +',
-        unitRules: [{ condition: 'unknown > 1', unit: 'MPa' }],
+        expression: 'x / 1000',
+        unitRules: [{ condition: 'x > 1000', unit: 'MPa' }],
         inputs: [{ alias: 'x', pointId: '00000000-0000-4000-8000-000000000002' }],
         maxAgeSeconds: 300,
         visible: false,
     };
-    const invalid = derivedPointSchema.safeParse(point);
-    expect(invalid.success).toBe(false);
-    if (!invalid.success)
-        expect(invalid.error.issues.map((issue) => issue.path)).toEqual([
-            ['expression'],
-            ['unitRules', 0, 'condition'],
-        ]);
-    const valid = {
-        ...point,
-        expression: 'x / 1000',
-        unitRules: [{ condition: 'x > 1000', unit: 'MPa' }],
+    expect(derivedPointSchema.safeParse(point).success).toBe(true);
+    const issuePaths = (value: unknown) => {
+        const result = derivedPointSchema.safeParse(value);
+        return result.success ? [] : result.error.issues.map((issue) => issue.path);
     };
-    expect(derivedPointSchema.safeParse(valid).success).toBe(true);
+    expect(issuePaths({ ...point, expression: ' ' })).toEqual([['expression']]);
     expect(
-        derivedPointSchema.safeParse({ ...valid, inputs: [{ ...point.inputs[0], alias: 'y' }] })
-            .success
-    ).toBe(false);
+        issuePaths({ ...point, inputs: [point.inputs[0], { ...point.inputs[0] }] })
+    ).toEqual([['inputs']]);
+    expect(issuePaths({ ...point, unitRules: [] })).toEqual([['unitRules']]);
+    expect(
+        issuePaths({ ...point, kind: 'average', expression: undefined, windowSeconds: 60 })
+    ).toEqual([['sourceAlias']]);
+    expect(
+        issuePaths({
+            ...point,
+            kind: 'average',
+            expression: undefined,
+            windowSeconds: 60,
+            sourceAlias: 'x',
+        })
+    ).toEqual([]);
 });
 
 test('S7 protocol schema rejects malformed area fields', () => {

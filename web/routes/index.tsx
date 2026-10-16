@@ -1,6 +1,9 @@
 import { Button, Result, Spin } from 'antd';
 import { lazy, type ReactElement, Suspense } from 'react';
 import { createHashRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
+import { usePermission } from '@/hooks/use_permission';
+import { useGb28181Health } from '@/pages/gb28181/gb28181.service';
+import { useCurrentUser, useLogout } from '@/pages/login/login.service';
 import { useAuthStore } from '@/store/auth_store';
 import { DEFAULT_MANAGEMENT_PATH, managementPages, type ManagementPageId } from './navigation';
 
@@ -80,6 +83,22 @@ function AuthGuard() {
     return <Outlet />;
 }
 
+/** 应用入口装配布局所需的会话、退出与功能开关，布局本身不依赖页面 Service。 */
+function AdminShell() {
+    const { data: user, isLoading } = useCurrentUser();
+    const logout = useLogout();
+    const canQueryGb28181 = usePermission('iot:gb28181:query');
+    const { data: gb28181Health } = useGb28181Health({ enabled: canQueryGb28181 });
+    return (
+        <AdminLayout
+            user={user}
+            userLoading={isLoading}
+            features={{ gb28181: gb28181Health?.enabled === true }}
+            onLogout={() => logout.mutate()}
+        />
+    );
+}
+
 const router = createHashRouter([
     {
         path: '/login',
@@ -92,7 +111,7 @@ const router = createHashRouter([
         children: [
             {
                 path: '/',
-                element: <AdminLayout />,
+                element: <AdminShell />,
                 children: [
                     { index: true, element: <Navigate to={DEFAULT_MANAGEMENT_PATH} replace /> },
                     ...managementPages.map((page) => ({

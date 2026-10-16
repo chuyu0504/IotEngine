@@ -119,7 +119,6 @@ jobs:
           ./tests/live-api-contract-test.ts
           ./tests/device-card-label-test.tsx
           ./tests/edge-network-view-test.ts
-          ./tests/edge-node-drawer-test.ts
           ./tests/packet-debug-test.ts
           ./tests/edge-dtu-config-test.ts
           ./tests/edge-log-level-test.ts

@@ -21,11 +21,14 @@ import { useDebounceFn } from '@/hooks/use_debounce_fn';
 import { usePermissions } from '@/hooks/use_permission';
 import { validateForm } from '@/utils/validation';
 import { useUserOptions } from '../user/user.service';
+import type { User } from '../user/user.types';
 import { createDeptSchema, updateDeptSchema } from './dept.schema';
 import { useDeptDelete, useDeptList, useDeptOptions, useDeptSave } from './dept.service';
 import type { Dept } from './dept.types';
 
 const { Search } = Input;
+const EMPTY_DEPARTMENTS: Dept.Option[] = [];
+const EMPTY_USERS: User.Option[] = [];
 type DeptFormValues = Dept.CreateDto & {
     id?: string;
 };
@@ -56,8 +59,8 @@ export function SystemDeptPage() {
         { enabled: canQuery }
     );
     const { data: departmentData } = useDeptOptions({ enabled: canQuery || canAdd || canEdit });
-    const departments = departmentData ?? [];
-    const { data: users = [] } = useUserOptions({ enabled: canAdd || canEdit });
+    const departments = departmentData ?? EMPTY_DEPARTMENTS;
+    const { data: users = EMPTY_USERS } = useUserOptions({ enabled: canAdd || canEdit });
     const save = useDeptSave();
     const remove = useDeptDelete();
     const parentOptions = useMemo(

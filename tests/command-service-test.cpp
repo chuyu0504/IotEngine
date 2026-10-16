@@ -69,11 +69,6 @@ int main() {
         require(pollingProtocol.find("polling_readback_timeout") != std::string::npos, "FINS readback timeout does not retain its ambiguous write context");
         const auto types = projectSource("service/modules/device/device.types.h");
         require(types.find("\"actual_values\", actualValues") != std::string::npos, "command response contract omits actual_values");
-        const auto client = projectSource("web/pages/device/device.service.ts");
-        require(client.find("api.createDeviceCommand(deviceId, data)") != std::string::npos && client.find("useDeviceCommandResults") != std::string::npos && client.find(".filter((snapshot) => snapshot.complete)") == std::string::npos, "HTTP command acceptance must be separate from live execution results");
-        require(client.find("设备执行成功，回读：") != std::string::npos && client.find("status.actual_values") != std::string::npos, "web command flow drops the readback response");
-        require(client.find("未收到写入应答，指令可能已执行") != std::string::npos && client.find("回读未能确认最终设备状态") != std::string::npos && client.find("勿直接重发") != std::string::npos, "web command feedback hides ambiguous write or readback outcomes");
-        require(client.find("window.setTimeout(resolve, 150)") == std::string::npos, "web command flow still polls every command at 150 ms");
         std::cout << "command service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

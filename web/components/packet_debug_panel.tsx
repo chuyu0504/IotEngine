@@ -7,30 +7,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition } from '@/types/packet_debug';
 import { formatDebugTerminal } from '@/utils/packet_debug';
 
-const DEBUG_IDLE_MS = 5 * 60 * 1000;
-const debugIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function disarmDebugIdleOff(key: string) {
-    const previous = debugIdleTimers.get(key);
-    if (!previous) return;
-    clearTimeout(previous);
-    debugIdleTimers.delete(key);
-}
-
-function armDebugIdleOff(key: string, turnOff: () => void) {
-    disarmDebugIdleOff(key);
-    debugIdleTimers.set(
-        key,
-        setTimeout(() => {
-            debugIdleTimers.delete(key);
-            turnOff();
-        }, DEBUG_IDLE_MS)
-    );
-}
-
 interface Props {
     scope: 'device' | 'link';
-    idleKey: string;
     protocol: string;
     title: string;
     buttonClassName?: string;
@@ -41,29 +19,15 @@ interface Props {
     error?: Error | null;
     acquisitions?: DebugAcquisition[];
     onToggle: () => void;
-    onDisable: () => void;
     onOpen: () => void;
     onClose: () => void;
 }
 export function PacketDebugPanel(props: Props) {
     const active = props.enabled;
     const toggleTitle = props.enabled ? '关闭调试' : '开启调试';
-    const onDisableRef = useRef(props.onDisable);
-    onDisableRef.current = props.onDisable;
     useEffect(() => {
         if (props.open && !props.enabled) props.onClose();
     }, [props.open, props.enabled, props.onClose]);
-    useEffect(() => {
-        if (!props.enabled) {
-            disarmDebugIdleOff(props.idleKey);
-            return;
-        }
-        if (props.open) {
-            disarmDebugIdleOff(props.idleKey);
-            return;
-        }
-        armDebugIdleOff(props.idleKey, () => onDisableRef.current());
-    }, [props.enabled, props.open, props.idleKey]);
     return (
         <>
             <Space size={2}>
@@ -143,7 +107,11 @@ export function PacketDebugPanel(props: Props) {
                     <Alert
                         type={props.enabled ? 'info' : 'warning'}
                         showIcon
-                        title={props.enabled ? '调试开关已开启，需手动关闭' : '调试已关闭'}
+                        title={
+                            props.enabled
+                                ? '调试开关已开启，空闲 5 分钟后服务端自动关闭'
+                                : '调试已关闭'
+                        }
                     />
                     {props.error && (
                         <Alert

@@ -10,7 +10,15 @@ const roleQueryKeys = {
     list: (params?: Role.Query) => [...roleKeys.lists(), params] as const,
 };
 
-export const getRoleOptions = getOptions;
+export function useRoleOptions(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: roleQueryKeys.options(),
+        queryFn: ({ signal }) => getOptions(signal),
+        staleTime: 5 * 60 * 1000,
+        enabled: options?.enabled ?? true,
+        refetchOnWindowFocus: false,
+    });
+}
 export function useRoleList(
     params?: Role.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Role.Item>>, 'queryKey' | 'queryFn'>
@@ -19,7 +27,6 @@ export function useRoleList(
         queryKey: roleQueryKeys.list(params),
         queryFn: ({ signal }) => getList(params, signal),
         ...options,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -36,13 +43,13 @@ export function useRoleSave() {
         toUpdatePayload: ({ id: _id, ...data }) => data,
         createMessage: '保存成功',
         updateMessage: '保存成功',
-        invalidateKeys: [roleQueryKeys.all, ['roles', 'options']],
+        invalidateKeys: [roleQueryKeys.all],
     });
 }
 export function useRoleDelete() {
     return useMutationWithMessage({
         mutationFn: remove,
         successMessage: '删除成功',
-        invalidateKeys: [roleQueryKeys.all, ['roles', 'options']],
+        invalidateKeys: [roleQueryKeys.all],
     });
 }

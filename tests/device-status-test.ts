@@ -14,24 +14,38 @@ const device = (values: Partial<Device.Overview>): Device.Overview =>
     }) as Device.Overview;
 
 describe('device online state', () => {
-    const now = Date.parse('2026-08-13T12:00:00.000Z');
+    test('follows the server-computed runtime state', () => {
+        expect(isDeviceOnline(device({ runtimeState: 'online' }))).toBeTrue();
+        expect(
+            isDeviceOnline(device({ runtimeState: 'offline', runtimeReason: 'data_stale' }))
+        ).toBeFalse();
+    });
 
-    test('uses the latest valid data time', () => {
+    test('ignores client clocks and stale report times when the server says online', () => {
         expect(
             isDeviceOnline(
-                device({ reportTime: '2026-08-13T11:59:31.000Z', online_timeout: 30 }),
-                now
+                device({
+                    runtimeState: 'online',
+                    reportTime: '2000-01-01T00:00:00.000Z',
+                    online_timeout: 1,
+                })
             )
         ).toBeTrue();
     });
 
+    test('treats a device without runtime state as offline', () => {
+        expect(isDeviceOnline(device({}))).toBeFalse();
+    });
+
     test('does not treat a connected TCP link as online without data', () => {
         expect(
-            isDeviceOnline(device({ connected: true, connectionState: 'connected' }), now)
+            isDeviceOnline(
+                device({ connected: true, connectionState: 'connected', runtimeState: 'offline' })
+            )
         ).toBeFalse();
     });
 
-    test('does not treat an edge connection as online after data becomes stale', () => {
+    test('does not treat an edge connection as online after the server marks data stale', () => {
         expect(
             isDeviceOnline(
                 device({
@@ -39,10 +53,9 @@ describe('device online state', () => {
                     edge_node_id: 'edge-1',
                     edge_transport: 'tcp',
                     edgeStatus: { state: 'connected' },
-                    reportTime: '2026-08-13T11:54:59.000Z',
-                    online_timeout: 300,
-                }),
-                now
+                    runtimeState: 'offline',
+                    runtimeReason: 'data_stale',
+                })
             )
         ).toBeFalse();
     });

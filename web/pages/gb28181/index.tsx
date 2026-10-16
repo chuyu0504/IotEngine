@@ -22,9 +22,9 @@ import {
     Card,
     Descriptions,
     Divider,
+    Form,
     Input,
     InputNumber,
-    Modal,
     Popover,
     Result,
     Select,
@@ -42,21 +42,17 @@ import mpegts from 'mpegts.js';
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Endpoint, Events } from 'zlmrtc-client';
+import { FormModal } from '@/components/form_modal';
 import { PageContainer } from '@/components/page_container';
 import { usePermission } from '@/hooks/use_permission';
 import type { AdaptiveFlvPlayer } from '@/lib/flv_player/adaptive_flv_player';
 import { createAdaptiveFlvPlayer } from '@/lib/flv_player/adaptive_flv_player';
 import {
     buildPlaybackCandidates,
-    renewPreview,
-    sendPtz,
-    sendPtzPosition,
-    stopPreviewOnExit,
+    usePreviewLease,
     useGb28181CatalogQuery,
     useGb28181Devices,
     useGb28181Health,
-    useGb28181PreviewStart,
-    useGb28181PreviewStop,
     useGb28181Recording,
     useGb28181RecordingStart,
     useGb28181RecordingStop,
@@ -969,6 +965,7 @@ export function SessionDetailsCard({
 }
 
 const { Title } = Typography;
+const EMPTY_DEVICES: GB28181.Device[] = [];
 type RenameTarget =
     | {
           kind: 'device';
@@ -989,13 +986,11 @@ export function Gb28181Page() {
     const [keyword, setKeyword] = useState('');
     const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
     const [selectedChannelId, setSelectedChannelId] = useState<string>();
-    const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
+    const lease = usePreviewLease();
+    const activeSession = lease.session;
     const [ptzSpeed, setPtzSpeed] = useState(80);
     const [renameTarget, setRenameTarget] = useState<RenameTarget>();
     const [renameValue, setRenameValue] = useState('');
-    const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
-    const ptzSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
-    const ptzSpeedRef = useRef(ptzSpeed);
     const healthQuery = useGb28181Health({ enabled: canQuery });
     const devicesQuery = useGb28181Devices({
         enabled: canQuery && healthQuery.data?.enabled === true,
@@ -1003,54 +998,9 @@ export function Gb28181Page() {
     const catalogMutation = useGb28181CatalogQuery();
     const renameDeviceMutation = useGb28181RenameDevice();
     const renameChannelMutation = useGb28181RenameChannel();
-    const previewStartMutation = useGb28181PreviewStart();
-    const previewStopMutation = useGb28181PreviewStop();
     const recordingStartMutation = useGb28181RecordingStart();
     const recordingStopMutation = useGb28181RecordingStop();
-    const devices = devicesQuery.data?.items ?? [];
-    useEffect(() => {
-        ptzSpeedRef.current = ptzSpeed;
-    }, [ptzSpeed]);
-    const releaseActiveSession = useCallback(() => {
-        const session = activeSessionRef.current;
-        if (!session) return;
-        const ptzSession = ptzSessionRef.current;
-        ptzSessionRef.current = null;
-        if (ptzSession) {
-            void sendPtz({
-                deviceId: ptzSession.device_id,
-                channelId: ptzSession.channel_id,
-                action: 'stop',
-                speed: ptzSpeedRef.current,
-            }).catch(() => undefined);
-        }
-        activeSessionRef.current = null;
-        stopPreviewOnExit(session.session_id);
-    }, []);
-    useEffect(() => {
-        activeSessionRef.current = activeSession;
-    }, [activeSession]);
-    useEffect(() => {
-        if (!activeSession) return;
-        const leaseSeconds = Math.max(3, activeSession.lease_timeout_seconds || 90);
-        const heartbeat = window.setInterval(
-            () => {
-                void renewPreview({ sessionId: activeSession.session_id }).catch(() => undefined);
-            },
-            Math.max(1000, Math.floor((leaseSeconds * 1000) / 3))
-        );
-        return () => window.clearInterval(heartbeat);
-    }, [activeSession]);
-    useEffect(() => {
-        const handlePageHide = () => releaseActiveSession();
-        window.addEventListener('pagehide', handlePageHide);
-        window.addEventListener('beforeunload', handlePageHide);
-        return () => {
-            window.removeEventListener('pagehide', handlePageHide);
-            window.removeEventListener('beforeunload', handlePageHide);
-            releaseActiveSession();
-        };
-    }, [releaseActiveSession]);
+    const devices = devicesQuery.data?.items ?? EMPTY_DEVICES;
     const filteredDevices = useMemo(() => {
         const text = keyword.trim().toLowerCase();
         if (!text) return devices;
@@ -1188,53 +1138,22 @@ export function Gb28181Page() {
     const handleStartPreview = () => {
         const target = currentTarget();
         if (!target) return;
-        previewStartMutation.mutate(target, {
-            onSuccess: (result) => {
-                const previousSession = activeSessionRef.current;
-                if (previousSession && previousSession.session_id !== result.session_id) {
-                    stopPreviewOnExit(previousSession.session_id);
-                }
-                activeSessionRef.current = result;
-                setActiveSession(result);
-            },
-        });
+        lease.start(target);
     };
     const handleStopSession = () => {
         if (!activeSession) {
             message.warning('当前没有活动会话');
             return;
         }
-        previewStopMutation.mutate(
-            { sessionId: activeSession.session_id },
-            {
-                onSuccess: () => {
-                    activeSessionRef.current = null;
-                    setActiveSession(null);
-                },
-            }
-        );
+        lease.stop();
     };
     const handlePtz = async (action: GB28181.PtzAction) => {
-        const session =
-            action === 'stop'
-                ? (ptzSessionRef.current ?? activeSessionRef.current)
-                : activeSessionRef.current;
-        if (action === 'stop') {
-            ptzSessionRef.current = null;
-        } else {
-            ptzSessionRef.current = session;
-        }
-        if (!session) {
-            if (action !== 'stop') message.warning('请先开始实时预览');
+        if (action !== 'stop' && !activeSession) {
+            message.warning('请先开始实时预览');
             return;
         }
         try {
-            await sendPtz({
-                deviceId: session.device_id,
-                channelId: session.channel_id,
-                action,
-                speed: ptzSpeed,
-            });
+            await lease.ptz(action, ptzSpeed);
         } catch (error) {
             if (action !== 'stop') {
                 message.error(error instanceof Error ? error.message : '云台指令发送失败');
@@ -1245,17 +1164,12 @@ export function Gb28181Page() {
     const handlePtzPosition = async (
         position: Pick<GB28181.PtzPositionPayload, 'pan' | 'tilt' | 'zoom'>
     ) => {
-        const session = activeSessionRef.current;
-        if (!session) {
+        if (!activeSession) {
             message.warning('请先开始实时预览');
             return;
         }
         try {
-            await sendPtzPosition({
-                deviceId: session.device_id,
-                channelId: session.channel_id,
-                ...position,
-            });
+            await lease.ptzPosition(position);
             message.success('云台绝对定位指令已发送');
         } catch (error) {
             message.error(error instanceof Error ? error.message : '云台绝对定位指令发送失败');
@@ -1395,7 +1309,7 @@ export function Gb28181Page() {
                                     type="primary"
                                     icon={<PlayCircleOutlined />}
                                     disabled={!canControl}
-                                    loading={previewStartMutation.isPending}
+                                    loading={lease.starting}
                                     onClick={handleStartPreview}
                                 >
                                     开始预览
@@ -1404,7 +1318,7 @@ export function Gb28181Page() {
                                     danger
                                     icon={<PauseCircleOutlined />}
                                     disabled={!activeSession || !canControl}
-                                    loading={previewStopMutation.isPending}
+                                    loading={lease.stopping}
                                     onClick={handleStopSession}
                                 >
                                     停止
@@ -1470,7 +1384,7 @@ export function Gb28181Page() {
                     />
                 </div>
             </div>
-            <Modal
+            <FormModal
                 title={renameTarget?.kind === 'device' ? '编辑摄像头名称' : '编辑通道名称'}
                 open={Boolean(renameTarget)}
                 okText="保存"
@@ -1478,20 +1392,26 @@ export function Gb28181Page() {
                 confirmLoading={renameDeviceMutation.isPending || renameChannelMutation.isPending}
                 onOk={submitRename}
                 onCancel={() => setRenameTarget(undefined)}
+                destroyOnHidden
             >
-                <Space direction="vertical" className="w-full">
-                    <Input
-                        autoFocus
-                        maxLength={255}
-                        showCount
-                        value={renameValue}
-                        placeholder="请输入名称"
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        onPressEnter={submitRename}
-                    />
-                    <Text type="secondary">设备上报名称：{renameTarget?.reportedName || '--'}</Text>
-                </Space>
-            </Modal>
+                <Form layout="vertical" onFinish={submitRename}>
+                    <Form.Item
+                        label="名称"
+                        required
+                        extra={`设备上报名称：${renameTarget?.reportedName || '--'}`}
+                    >
+                        <Input
+                            autoFocus
+                            maxLength={255}
+                            showCount
+                            value={renameValue}
+                            placeholder="请输入名称"
+                            onChange={(event) => setRenameValue(event.target.value)}
+                            onPressEnter={submitRename}
+                        />
+                    </Form.Item>
+                </Form>
+            </FormModal>
         </PageContainer>
     );
 }

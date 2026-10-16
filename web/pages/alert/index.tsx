@@ -27,13 +27,19 @@ import { useDebounceFn } from '@/hooks/use_debounce_fn';
 import { usePermission } from '@/hooks/use_permission';
 import { formatDateTime } from '@/utils/date_time';
 import { createUuid } from '@/utils/uuid';
-import { useDeviceConfigurationList } from '../device/device.service';
+import { useDeviceConfigurationList, useDeviceOptions } from '../device/device.service';
 import {
     protocolPointOptions,
     useProtocolConfigDetail,
     useProtocolConfigOptions,
 } from '../protocol/protocol.service';
-import type { Modbus, Protocol, S7, SL651 } from '../protocol/protocol.types';
+import {
+    type Modbus,
+    PROTOCOL_TYPES,
+    type Protocol,
+    type S7,
+    type SL651,
+} from '../protocol/protocol.types';
 import {
     useAlertAcknowledge,
     useAlertApplyTemplate,
@@ -48,7 +54,6 @@ import {
     useAlertTemplateList,
     useAlertTemplateLoader,
     useAlertTemplateSave,
-    useDeviceOptions,
 } from './alert.service';
 import type { Alert } from './alert.types';
 
@@ -270,12 +275,47 @@ export function ConditionEditor({
     );
 }
 
-const PROTOCOL_TYPE_OPTIONS = [
-    { label: 'SL651', value: 'SL651' },
-    { label: 'Modbus', value: 'Modbus' },
-    { label: 'S7', value: 'S7' },
-    { label: 'MQTT', value: 'MQTT' },
-];
+/** 告警按遥测要素求值，与协议无关，所有协议类型均可配置。 */
+const PROTOCOL_TYPE_OPTIONS = PROTOCOL_TYPES.map((value) => ({ label: value, value }));
+const EMPTY_ELEMENT_OPTIONS: ElementOption[] = [];
+
+/** 从协议配置中提取可用于告警条件的要素。 */
+function protocolElementOptions(item: Protocol.Item, type: string): ElementOption[] {
+    if (type === 'SL651') {
+        const config = item.config as SL651.Config;
+        return (config.funcs ?? []).flatMap((f) =>
+            (f.elements ?? []).map((e) => {
+                const option: ElementOption = { value: e.id, label: e.name };
+                if (e.encode === 'DICT' && e.dictConfig) {
+                    option.dictMapType = e.dictConfig.mapType;
+                    option.dictItems = e.dictConfig.items.map((d) => ({
+                        key: d.key,
+                        label: d.label,
+                        value: d.value,
+                    }));
+                }
+                return option;
+            })
+        );
+    }
+    if (type === 'Modbus') {
+        const config = item.config as Modbus.Config;
+        return (config.registers ?? []).map((r) => {
+            const option: ElementOption = { value: r.id, label: r.name };
+            if (r.dictConfig?.items?.length) {
+                option.dictMapType = 'VALUE';
+                option.dictItems = r.dictConfig.items.map((d) => ({ key: d.key, label: d.label }));
+            }
+            return option;
+        });
+    }
+    if (type === 'S7') {
+        const config = item.config as S7.Config;
+        return (config.areas ?? []).map((area) => ({ value: area.id, label: area.name }));
+    }
+    return protocolPointOptions(item);
+}
+
 interface AlertRuleFormValues {
     id?: string;
     name: string;
@@ -337,76 +377,16 @@ export function AlertRuleFormModal({
         { enabled: open && Boolean(protocolConfigId) }
     );
     // 从协议配置中提取要素选项
-    const elementOptions = useMemo(() => {
-        if (!protocolConfig?.config) return [];
-        const type = selectedDevice?.protocol_type || protocolConfig.protocol;
-        if (type === 'SL651') {
-            const config = protocolConfig.config as SL651.Config;
-            return (config.funcs ?? []).flatMap((f) =>
-                (f.elements ?? []).map((e) => {
-                    const dataKey = e.id;
-                    const opt: {
-                        value: string;
-                        label: string;
-                        dictMapType?: 'VALUE' | 'BIT';
-                        dictItems?: {
-                            key: string;
-                            label: string;
-                            value?: string;
-                        }[];
-                    } = {
-                        value: dataKey,
-                        label: e.name,
-                    };
-                    if (e.encode === 'DICT' && e.dictConfig) {
-                        opt.dictMapType = e.dictConfig.mapType;
-                        opt.dictItems = e.dictConfig.items.map((d) => ({
-                            key: d.key,
-                            label: d.label,
-                            value: d.value,
-                        }));
-                    }
-                    return opt;
-                })
-            );
-        }
-        if (type === 'Modbus') {
-            const config = protocolConfig.config as Modbus.Config;
-            return (config.registers ?? []).map((r) => {
-                const dataKey = r.id;
-                const opt: {
-                    value: string;
-                    label: string;
-                    dictMapType?: 'VALUE' | 'BIT';
-                    dictItems?: {
-                        key: string;
-                        label: string;
-                        value?: string;
-                    }[];
-                } = {
-                    value: dataKey,
-                    label: r.name,
-                };
-                if (r.dictConfig?.items?.length) {
-                    opt.dictMapType = 'VALUE';
-                    opt.dictItems = r.dictConfig.items.map((d) => ({
-                        key: d.key,
-                        label: d.label,
-                    }));
-                }
-                return opt;
-            });
-        }
-        if (type === 'S7') {
-            const config = protocolConfig.config as S7.Config;
-            return (config.areas ?? []).map((area) => ({
-                value: area.id,
-                label: area.name,
-            }));
-        }
-        if (type === 'MQTT') return protocolPointOptions(protocolConfig);
-        return [];
-    }, [protocolConfig, selectedDevice?.protocol_type]);
+    const elementOptions = useMemo(
+        () =>
+            protocolConfig?.config
+                ? protocolElementOptions(
+                      protocolConfig,
+                      selectedDevice?.protocol_type || protocolConfig.protocol
+                  )
+                : EMPTY_ELEMENT_OPTIONS,
+        [protocolConfig, selectedDevice?.protocol_type]
+    );
     useEffect(() => {
         if (open) {
             if (editing) {
@@ -625,15 +605,6 @@ interface TemplateFormValues {
     recovery_wait_seconds: number;
     protocol_config_id?: string;
 }
-type AlertTemplateFormModalEditableCondition = Alert.Condition & {
-    _key: string;
-};
-const AlertTemplateFormModalEditableConditionValue = (
-    condition: Alert.Condition
-): AlertTemplateFormModalEditableCondition => ({
-    ...condition,
-    _key: createUuid(),
-});
 interface AlertTemplateFormModalProps {
     open: boolean;
     editing: Alert.TemplateItem | null;
@@ -648,12 +619,6 @@ interface AlertTemplateFormModalProps {
     >;
     onClose: () => void;
 }
-const AlertTemplateFormModalPROTOCOL_TYPE_OPTIONS = [
-    { label: 'SL651', value: 'SL651' },
-    { label: 'Modbus', value: 'Modbus' },
-    { label: 'S7', value: 'S7' },
-    { label: 'MQTT', value: 'MQTT' },
-];
 export function AlertTemplateFormModal({
     open,
     editing,
@@ -662,7 +627,7 @@ export function AlertTemplateFormModal({
     onClose,
 }: AlertTemplateFormModalProps) {
     const [form] = Form.useForm<TemplateFormValues>();
-    const [conditions, setConditions] = useState<AlertTemplateFormModalEditableCondition[]>([]);
+    const [conditions, setConditions] = useState<EditableCondition[]>([]);
     const [protocolType, setProtocolType] = useState<Protocol.Type | ''>('');
     // 根据协议类型获取配置选项列表
     const { data: configOptionsData } = useProtocolConfigOptions(protocolType as Protocol.Type, {
@@ -677,76 +642,13 @@ export function AlertTemplateFormModal({
         { enabled: open && !!selectedConfigId }
     );
     // 从协议配置中提取要素选项
-    const elementOptions = useMemo(() => {
-        if (!protocolConfig?.config) return [];
-        const type = protocolType || protocolConfig.protocol;
-        if (type === 'SL651') {
-            const config = protocolConfig.config as SL651.Config;
-            return (config.funcs ?? []).flatMap((f) =>
-                (f.elements ?? []).map((e) => {
-                    const dataKey = e.id;
-                    const opt: {
-                        value: string;
-                        label: string;
-                        dictMapType?: 'VALUE' | 'BIT';
-                        dictItems?: {
-                            key: string;
-                            label: string;
-                            value?: string;
-                        }[];
-                    } = {
-                        value: dataKey,
-                        label: e.name,
-                    };
-                    if (e.encode === 'DICT' && e.dictConfig) {
-                        opt.dictMapType = e.dictConfig.mapType;
-                        opt.dictItems = e.dictConfig.items.map((d) => ({
-                            key: d.key,
-                            label: d.label,
-                            value: d.value,
-                        }));
-                    }
-                    return opt;
-                })
-            );
-        }
-        if (type === 'Modbus') {
-            const config = protocolConfig.config as Modbus.Config;
-            return (config.registers ?? []).map((r) => {
-                const dataKey = r.id;
-                const opt: {
-                    value: string;
-                    label: string;
-                    dictMapType?: 'VALUE' | 'BIT';
-                    dictItems?: {
-                        key: string;
-                        label: string;
-                        value?: string;
-                    }[];
-                } = {
-                    value: dataKey,
-                    label: r.name,
-                };
-                if (r.dictConfig?.items?.length) {
-                    opt.dictMapType = 'VALUE';
-                    opt.dictItems = r.dictConfig.items.map((d) => ({
-                        key: d.key,
-                        label: d.label,
-                    }));
-                }
-                return opt;
-            });
-        }
-        if (type === 'S7') {
-            const config = protocolConfig.config as S7.Config;
-            return (config.areas ?? []).map((area) => ({
-                value: area.id,
-                label: area.name,
-            }));
-        }
-        if (type === 'MQTT') return protocolPointOptions(protocolConfig);
-        return [];
-    }, [protocolConfig, protocolType]);
+    const elementOptions = useMemo(
+        () =>
+            protocolConfig?.config
+                ? protocolElementOptions(protocolConfig, protocolType || protocolConfig.protocol)
+                : EMPTY_ELEMENT_OPTIONS,
+        [protocolConfig, protocolType]
+    );
     useEffect(() => {
         if (open) {
             if (editing && editingDetail) {
@@ -772,11 +674,7 @@ export function AlertTemplateFormModal({
                     recovery_wait_seconds: editingDetail.recovery_wait_seconds,
                     protocol_config_id: editingDetail.protocol_config_id || undefined,
                 });
-                setConditions(
-                    (editingDetail.conditions || []).map(
-                        AlertTemplateFormModalEditableConditionValue
-                    )
-                );
+                setConditions((editingDetail.conditions || []).map(editableCondition));
             } else {
                 form.resetFields();
                 form.setFieldsValue({
@@ -794,7 +692,7 @@ export function AlertTemplateFormModal({
     const addCondition = () => {
         setConditions((prev) => [
             ...prev,
-            AlertTemplateFormModalEditableConditionValue({
+            editableCondition({
                 type: 'threshold',
                 elementKey: '',
                 operator: '>',
@@ -870,7 +768,7 @@ export function AlertTemplateFormModal({
                             }}
                             allowClear
                             placeholder="选择协议"
-                            options={AlertTemplateFormModalPROTOCOL_TYPE_OPTIONS}
+                            options={PROTOCOL_TYPE_OPTIONS}
                         />
                     </Form.Item>
                 </div>
@@ -1378,32 +1276,44 @@ function ApplyTemplateModal({
     loading: boolean;
 }) {
     const { data: deviceOptionsData } = useDeviceOptions({ enabled: open });
-    const deviceOptions = deviceOptionsData ?? [];
+    const deviceOptions = useMemo(
+        () => (deviceOptionsData ?? []).map((d) => ({ label: d.name, value: d.id })),
+        [deviceOptionsData]
+    );
     return (
-        <Modal
+        <FormModal
             open={open}
             title={`应用模板「${templateName}」`}
             onCancel={onCancel}
             onOk={onOk}
             confirmLoading={loading}
             okButtonProps={{ disabled: selectedDeviceIds.length === 0 }}
+            destroyOnHidden
         >
-            <div className="mb-2">选择目标设备：</div>
-            <Select
-                mode="multiple"
-                value={selectedDeviceIds}
-                onChange={onDeviceIdsChange}
-                options={deviceOptions.map((d) => ({ label: d.name, value: d.id }))}
-                showSearch
-                optionFilterProp="label"
-                placeholder="搜索并选择设备"
-                className="w-full"
-                maxTagCount="responsive"
-            />
-            {selectedDeviceIds.length > 0 && (
-                <div className="mt-2 text-gray-500">已选择 {selectedDeviceIds.length} 个设备</div>
-            )}
-        </Modal>
+            <Form layout="vertical">
+                <Form.Item
+                    label="目标设备"
+                    required
+                    extra={
+                        selectedDeviceIds.length > 0
+                            ? `已选择 ${selectedDeviceIds.length} 个设备`
+                            : undefined
+                    }
+                >
+                    <Select
+                        mode="multiple"
+                        value={selectedDeviceIds}
+                        onChange={onDeviceIdsChange}
+                        options={deviceOptions}
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="搜索并选择设备"
+                        className="w-full"
+                        maxTagCount="responsive"
+                    />
+                </Form.Item>
+            </Form>
+        </FormModal>
     );
 }
 // ==================== 主页面 ====================

@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test';
-import { edgeDebugConnection } from '../web/pages/edge_node/edge_node.api';
-import { openTerminal, writeTerminal, closeTerminal, acknowledgeTerminalOutput } from '../web/pages/edge_node/edge_node.service';
+import { acknowledgeTerminalOutput, closeTerminal, edgeDebugConnection, openTerminal, writeTerminal } from '../web/pages/edge_node/edge_node.api';
 
 test('terminal control and output use the dedicated debug connection', async () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');

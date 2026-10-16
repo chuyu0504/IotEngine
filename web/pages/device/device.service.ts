@@ -1,7 +1,7 @@
-import { keepPreviousData, type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/use_mutation';
 import { useSnapshotQuery } from '@/hooks/use_snapshot_query';
-import { parseDateTime } from '@/utils/date_time';
 import { createQueryKeys } from '@/utils/query';
 import { retainNewerRecords } from '@/utils/versioned_records';
 import * as api from './device.api';
@@ -13,16 +13,16 @@ export const getDeviceCardElements = (device: Device.Overview) => {
         (element) => element.visible !== false && (!ids || (element.id && ids.has(element.id)))
     );
 };
-export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
-    if (!device.reportTime) return false;
-    const reportTime = parseDateTime(device.reportTime);
-    if (!reportTime || Number.isNaN(reportTime.getTime())) return false;
-    return now - reportTime.getTime() <= (device.online_timeout || 300) * 1000;
-};
+/** 在线状态由服务端遥测运行投影计算，上报与到期离线均经实时推送更新。 */
+export const isDeviceOnline = (device: Pick<Device.Overview, 'runtimeState'>) =>
+    device.runtimeState === 'online';
 
+/** 实时推送维护的快照缓存；写入后由服务端推送更新，不做失效。 */
 const deviceKeys = createQueryKeys('devices');
 const deviceRealtimeSnapshotKey = [...deviceKeys.all, 'realtime'] as const;
 const groupKeys = createQueryKeys('device-groups');
+/** HTTP 按需查询缓存；写入成功后失效。 */
+const deviceQueryKeys = createQueryKeys('device-queries');
 const shareKeys = {
     all: ['device-shares'] as const,
     list: (kind: 'device' | 'group', id: string) => ['device-shares', kind, id, 'list'] as const,
@@ -51,20 +51,38 @@ export function useDeviceList(options?: {
         queryFn: () => api.getDeviceList(options?.debugDeviceId, options?.commandIds),
         placeholderData: keepPreviousData,
         enabled: options?.enabled ?? true,
-        refetchOnWindowFocus: false,
-        staleTime: 5000,
     });
 }
 export function useDeviceConfigurationList(options?: { enabled?: boolean }) {
     return useQuery({
-        queryKey: [...deviceKeys.all, 'configuration-list'],
+        queryKey: [...deviceQueryKeys.all, 'configuration-list'],
         queryFn: ({ signal }) => api.queryDeviceList(signal),
         enabled: options?.enabled ?? true,
         staleTime: 0,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     });
+}
+export function useDeviceOptions(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: deviceQueryKeys.options(),
+        queryFn: ({ signal }) => api.getDeviceOptions(signal),
+        enabled: options?.enabled ?? true,
+        refetchOnWindowFocus: false,
+    });
+}
+/** 按需加载设备详情（如下发要素），每次调用都向服务端取最新数据并合并并发请求。 */
+export function useDeviceDetailLoader() {
+    const client = useQueryClient();
+    return useCallback(
+        (id: string) =>
+            client.fetchQuery({
+                queryKey: deviceQueryKeys.detail(id),
+                queryFn: ({ signal }) => api.getDeviceDetail(id, signal),
+                staleTime: 0,
+            }),
+        [client]
+    );
 }
 export function useDeviceRealtimeSnapshot(options?: {
     enabled?: boolean;
@@ -76,8 +94,6 @@ export function useDeviceRealtimeSnapshot(options?: {
         queryFn: () => api.getDeviceRealtimeSnapshot(options?.debugDeviceId, options?.commandIds),
         placeholderData: keepPreviousData,
         enabled: options?.enabled ?? true,
-        refetchOnWindowFocus: false,
-        staleTime: 1000,
     });
 }
 export function useDeviceHistory(
@@ -86,10 +102,9 @@ export function useDeviceHistory(
     enabled = true
 ) {
     return useQuery({
-        queryKey: [...deviceKeys.all, 'history', deviceId ?? '', query],
+        queryKey: [...deviceQueryKeys.all, 'history', deviceId ?? '', query],
         queryFn: ({ signal }) => api.getDeviceHistory(deviceId as string, query, signal),
         enabled: Boolean(deviceId) && enabled,
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -106,14 +121,14 @@ export function useDeviceSave() {
         toUpdatePayload: ({ id: _id, ...data }) => data,
         createMessage: '创建成功',
         updateMessage: '更新成功',
-        invalidateKeys: [deviceKeys.all, groupKeys.all],
+        invalidateKeys: [deviceQueryKeys.all],
     });
 }
 export function useDeviceDelete() {
     return useMutationWithMessage({
         mutationFn: api.removeDevice,
         successMessage: '删除成功',
-        invalidateKeys: [deviceKeys.all, groupKeys.all],
+        invalidateKeys: [deviceQueryKeys.all],
     });
 }
 export function useDeviceCommand() {
@@ -179,7 +194,6 @@ export function useDeviceShares(
         queryKey: shareKeys.list('device', deviceId ?? ''),
         queryFn: ({ signal }) => api.getDeviceShares(deviceId as string, signal),
         enabled: !!deviceId && (options?.enabled ?? true),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -193,7 +207,6 @@ export function useDeviceShareTargets(
         queryKey: shareKeys.targets('device', deviceId ?? ''),
         queryFn: ({ signal }) => api.getDeviceShareTargets(deviceId as string, signal),
         enabled: !!deviceId && (options?.enabled ?? true),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -202,7 +215,7 @@ export function useReplaceDeviceShares() {
         mutationFn: ({ deviceId, data }: { deviceId: string; data: Device.ReplaceSharesDto }) =>
             api.replaceDeviceShares(deviceId, data),
         successMessage: '设备分享已更新',
-        invalidateKeys: [shareKeys.all, deviceKeys.all],
+        invalidateKeys: [shareKeys.all, deviceQueryKeys.all],
     });
 }
 export function useDeviceGroupShares(
@@ -215,7 +228,6 @@ export function useDeviceGroupShares(
         queryKey: shareKeys.list('group', groupId ?? ''),
         queryFn: ({ signal }) => api.getDeviceGroupShares(groupId as string, signal),
         enabled: !!groupId && (options?.enabled ?? true),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -229,7 +241,6 @@ export function useDeviceGroupShareTargets(
         queryKey: shareKeys.targets('group', groupId ?? ''),
         queryFn: ({ signal }) => api.getDeviceGroupShareTargets(groupId as string, signal),
         enabled: !!groupId && (options?.enabled ?? true),
-        refetchInterval: false,
         refetchOnWindowFocus: false,
     });
 }
@@ -238,11 +249,11 @@ export function useReplaceDeviceGroupShares() {
         mutationFn: ({ groupId, data }: { groupId: string; data: Device.ReplaceSharesDto }) =>
             api.replaceDeviceGroupShares(groupId, data),
         successMessage: '设备分组分享已更新',
-        invalidateKeys: [shareKeys.all, deviceKeys.all, groupKeys.all],
+        invalidateKeys: [shareKeys.all, deviceQueryKeys.all],
     });
 }
 export function useDeviceGroupTreeWithCount(
-    options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>,
+    options?: { enabled?: boolean },
     debugDeviceId?: string,
     commandIds?: string[]
 ) {
@@ -251,7 +262,7 @@ export function useDeviceGroupTreeWithCount(
         queryFn: () =>
             api.getDeviceGroupsWithCount(debugDeviceId, commandIds).map(buildDeviceGroupTree),
         placeholderData: keepPreviousData,
-        ...options,
+        enabled: options?.enabled ?? true,
     });
 }
 export function useDeviceGroupSave() {
@@ -267,17 +278,16 @@ export function useDeviceGroupSave() {
         toUpdatePayload: ({ id: _id, ...data }) => data,
         createMessage: '创建成功',
         updateMessage: '更新成功',
-        invalidateKeys: [groupKeys.all],
+        invalidateKeys: [deviceQueryKeys.all],
     });
 }
 export function useDeviceGroupDelete() {
     return useMutationWithMessage({
         mutationFn: api.removeDeviceGroup,
         successMessage: '删除成功',
-        invalidateKeys: [groupKeys.all],
+        invalidateKeys: [deviceQueryKeys.all],
     });
 }
-export { getDeviceDetail, getDeviceOptions } from './device.api';
 
 export function useDeviceDebug(id: string, open: boolean, commandIds?: string[]) {
     const packets = useSnapshotQuery({
@@ -289,7 +299,7 @@ export function useDeviceDebug(id: string, open: boolean, commandIds?: string[])
     const toggle = useMutationWithMessage({
         mutationFn: (enabled: boolean) => saveDebugSwitch(id, enabled),
         successMessage: '调试设置已保存',
-        invalidateKeys: [deviceKeys.all],
+        invalidateKeys: [deviceQueryKeys.all],
     });
     return { packets, toggle };
 }

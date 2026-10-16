@@ -49,10 +49,8 @@ ruvia::task<std::pair<std::string, std::string>> readConnection(
     const auto route = service::message::collector::connectionKey(device);
     const std::string_view keys[]{runtime, route};
     const std::string_view args[]{service::message::collector::kLinkOwnerPrefix};
-    const auto reply = co_await redis.eval(service::device::entities::DeviceConnectionState::readScript,
-                                         keys, args);
-    require(reply.kind() == ruvia::redis_value::kind_type::array && reply.array().size() == 2,
-            "connection state reply contract changed");
+    const auto reply = co_await redis.eval(service::device::entities::kDeviceConnectionStateScript, keys, args);
+    require(reply.kind() == ruvia::redis_value::kind_type::array && reply.array().size() == 4, "connection state reply contract changed");
     require(reply.array()[0].kind() == ruvia::redis_value::kind_type::string &&
                 reply.array()[1].kind() == ruvia::redis_value::kind_type::string,
             "connection state fields are not strings");
@@ -79,6 +77,13 @@ ruvia::task<void> verifyReadLease(const ruvia::redis_handle& redis, const ruvia:
     auto state = co_await readConnection(redis, device);
     require(state.first.empty() && state.second == "1700000000123",
             "legacy permanent connection made an expired device connected or lost its report");
+    (void)co_await command(redis, { "HSET", runtime, "state", "offline", "state_reason", "data_stale" });
+    {
+        const std::string_view keys[]{ runtime, route };
+        const std::string_view args[]{ service::message::collector::kLinkOwnerPrefix };
+        const auto reply = co_await redis.eval(service::device::entities::kDeviceConnectionStateScript, keys, args);
+        require(reply.kind() == ruvia::redis_value::kind_type::array && reply.array().size() == 4 && reply.array()[2].string() == "offline" && reply.array()[3].string() == "data_stale", "connection state omitted the server-computed runtime state");
+    }
     co_await seedRoute(redis, device, "remote-connection");
     const auto before = integer(co_await command(redis, {"PTTL", route}));
     state = co_await readConnection(redis, device);

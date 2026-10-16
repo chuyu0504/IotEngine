@@ -5,7 +5,6 @@ import {
     CodeOutlined,
     DeleteOutlined,
     DownloadOutlined,
-    DownOutlined,
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
@@ -23,7 +22,6 @@ import {
     Button,
     Descriptions,
     Drawer,
-    Dropdown,
     Empty,
     Flex,
     Form,
@@ -31,31 +29,29 @@ import {
     InputNumber,
     Modal,
     Popconfirm,
-    Popover,
     Progress,
     Result,
     Select,
     Skeleton,
     Space,
-    Spin,
     Switch,
     Table,
     Tabs,
     Tag,
     Tooltip,
-    Tree,
     TreeSelect,
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { DataNode, TreeProps } from 'antd/es/tree';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/form_modal';
+import type { GroupFormValues } from '@/components/group_form_modal';
+import { GroupTreePanel } from '@/components/group_tree_panel';
 import { LiveQueryError } from '@/components/live_query_error';
+import { VirtualGrid } from '@/components/virtual_grid';
 import { usePermissions } from '@/hooks/use_permission';
 import {
     dtuTraceHex,
-    getWindowsClientDownloadUrl,
     useDtuChannels,
     useDtuDelete,
     useDtuSave,
@@ -67,6 +63,7 @@ import {
     useEdgeVpnPeerRevoke,
     useEdgeVpnPeerSync,
     useEdgeVpnRouteUpdate,
+    windowsClientDownloadUrl,
 } from './edge_node.service';
 import type { Edge, EdgeVpn } from './edge_node.types';
 import '@xterm/xterm/css/xterm.css';
@@ -86,20 +83,11 @@ import {
     networkSchema,
     nodeNameSchema,
     serialSettingsSchema,
-    terminalEventsSchema,
 } from './edge_node.schema';
 import {
-    acknowledgeTerminalOutput,
     buildEdgeNodeGroupView,
-    closeTerminal,
-    getEdgeDetail,
-    getTerminalEvents,
-    keepTerminalAlive,
-    mobileOperatorName,
     normalizeReportedNetwork,
-    openTerminal,
     physicalNetworkInterfaces,
-    resizeTerminal,
     serialPayloadHex,
     useAssignEdgeNodeGroup,
     useConfigureEdgeNetwork,
@@ -109,328 +97,26 @@ import {
     useEdgeInventory,
     useEdgeLogs,
     useEnrollmentMutation,
+    useFetchEdgeConfiguration,
     useFirmwareUpgradeMutation,
+    useMobileOperatorName,
     useRenameEdgeNode,
     useSerialDebug,
     useSetEdgeLogLevel,
-    writeTerminal,
+    useTerminalSession,
 } from './edge_node.service';
 
-interface Props {
-    open: boolean;
-    editing: Edge.GroupTreeItem | null;
-    parentId: string | null;
-    treeData: Edge.GroupTreeItem[];
-    loading: boolean;
-    onCancel: () => void;
-    onFinish: (
-        values: Edge.GroupSaveDto & {
-            id?: string;
-        }
-    ) => void;
-}
-function groupOptions(
-    nodes: Edge.GroupTreeItem[],
-    excludeId?: string
-): {
-    value: string;
-    title: string;
-    children?: ReturnType<typeof groupOptions>;
-}[] {
-    return nodes
-        .filter((node) => node.id !== excludeId)
-        .map((node) => ({
-            value: node.id,
-            title: node.name,
-            children: node.children?.length ? groupOptions(node.children, excludeId) : undefined,
-        }));
-}
-export function EdgeNodeGroupFormModal({
-    open,
-    editing,
-    parentId,
-    treeData,
-    loading,
-    onCancel,
-    onFinish,
-}: Props) {
-    const [form] = Form.useForm<
-        Edge.GroupSaveDto & {
-            id?: string;
-        }
-    >();
-    useEffect(() => {
-        if (!open) return;
-        if (editing) {
-            form.setFieldsValue({
-                id: editing.id,
-                name: editing.name,
-                parentId: editing.parentId || undefined,
-                sortOrder: editing.sortOrder,
-                status: editing.status,
-                remark: editing.remark,
-            });
-            return;
-        }
-        form.resetFields();
-        form.setFieldsValue({
-            parentId: parentId || undefined,
-            sortOrder: 0,
-            status: 'enabled',
-            remark: '',
-        });
-    }, [editing, form, open, parentId]);
-    const treeDataForSelect = useMemo(
-        () => groupOptions(treeData, editing?.id),
-        [editing?.id, treeData]
-    );
-    return (
-        <FormModal
-            open={open}
-            title={editing ? '编辑边缘节点分组' : '新建边缘节点分组'}
-            okText="确定"
-            cancelText="取消"
-            confirmLoading={loading}
-            onCancel={onCancel}
-            onOk={() => form.submit()}
-            destroyOnClose
-        >
-            <Form form={form} layout="vertical" onFinish={onFinish} className="mt-4">
-                <Form.Item name="id" hidden>
-                    <Input />
-                </Form.Item>
-                <Form.Item
-                    label="分组名称"
-                    name="name"
-                    rules={[{ required: true, message: '请输入分组名称' }]}
-                >
-                    <Input placeholder="请输入分组名称" maxLength={100} />
-                </Form.Item>
-                <Form.Item label="上级分组" name="parentId">
-                    <TreeSelect
-                        allowClear
-                        treeData={treeDataForSelect}
-                        placeholder="不选则为顶级分组"
-                        treeDefaultExpandAll
-                    />
-                </Form.Item>
-                <Form.Item label="排序" name="sortOrder">
-                    <InputNumber className="!w-full" min={0} placeholder="数值越小越靠前" />
-                </Form.Item>
-                <Form.Item
-                    label="状态"
-                    name="status"
-                    rules={[{ required: true, message: '请选择状态' }]}
-                >
-                    <Select
-                        options={[
-                            { value: 'enabled', label: '启用' },
-                            { value: 'disabled', label: '禁用' },
-                        ]}
-                    />
-                </Form.Item>
-                <Form.Item label="备注" name="remark">
-                    <Input.TextArea rows={2} maxLength={500} placeholder="可选备注" />
-                </Form.Item>
-            </Form>
-        </FormModal>
-    );
-}
-
-interface EdgeNodeGroupPanelProps {
-    selectedGroupId: string | null;
-    onSelect: (groupId: string | null) => void;
-    canManageGroup: boolean;
-    ungroupedCount: number;
-    nodes: Edge.Node[];
-}
-type TreeKey = string | number;
-export function EdgeNodeGroupPanel({
-    selectedGroupId,
-    onSelect,
-    canManageGroup,
-    ungroupedCount,
-    nodes,
-}: EdgeNodeGroupPanelProps) {
-    const { modal } = App.useApp();
-    const [popoverOpen, setPopoverOpen] = useState(false);
-    const [formOpen, setFormOpen] = useState(false);
-    const [editingGroup, setEditingGroup] = useState<Edge.GroupTreeItem | null>(null);
-    const [parentId, setParentId] = useState<string | null>(null);
-    const { data: groups = [], isLoading } = useEdgeGroupTree();
-    const save = useEdgeGroupSave();
-    const remove = useEdgeGroupDelete();
-    const groupIndex = useMemo(() => {
-        const index = new Map<string, Edge.GroupTreeItem>();
-        const walk = (items: Edge.GroupTreeItem[]) => {
-            for (const item of items) {
-                index.set(item.id, item);
-                if (item.children?.length) walk(item.children);
-            }
-        };
-        walk(groups);
-        return index;
-    }, [groups]);
-    const treeData = useMemo<DataNode[]>(() => {
-        const counts = new Map<string, number>();
-        for (const node of nodes) counts.set(node.groupId, (counts.get(node.groupId) ?? 0) + 1);
-        const convert = (items: Edge.GroupTreeItem[]): DataNode[] =>
-            items.map((item) => ({
-                key: item.id,
-                title: `${item.name} (${counts.get(item.id) ?? 0})${item.status === 'disabled' ? ' · 已停用' : ''}`,
-                children: item.children?.length ? convert(item.children) : undefined,
-            }));
-        return [
-            { key: 'all', title: '全部节点', isLeaf: true },
-            ...(ungroupedCount > 0
-                ? [{ key: 'ungrouped', title: `未分组 (${ungroupedCount})`, isLeaf: true }]
-                : []),
-            ...convert(groups),
-        ];
-    }, [groups, ungroupedCount, nodes]);
-    const selectedLabel = useMemo(() => {
-        if (selectedGroupId === null) return '全部节点';
-        if (selectedGroupId === 'ungrouped') return '未分组';
-        return groupIndex.get(selectedGroupId)?.name ?? '全部节点';
-    }, [groupIndex, selectedGroupId]);
-    const selectedKeys: TreeKey[] = [selectedGroupId ?? 'all'];
-    const onTreeSelect: TreeProps['onSelect'] = (keys) => {
-        if (!keys.length) return;
-        const key = String(keys[0]);
-        onSelect(key === 'all' ? null : key);
-        setPopoverOpen(false);
-    };
-    const openCreate = (nextParentId: string | null) => {
-        setEditingGroup(null);
-        setParentId(nextParentId);
-        setFormOpen(true);
-    };
-    const openEdit = (id: string) => {
-        const group = groupIndex.get(id);
-        if (!group) return;
-        setEditingGroup(group);
-        setParentId(null);
-        setFormOpen(true);
-    };
-    const confirmDelete = (id: string) => {
-        const group = groupIndex.get(id);
-        if (!group) return;
-        modal.confirm({
-            title: `确认删除分组「${group.name}」？`,
-            content: '请先移出该分组的子分组和边缘节点。',
-            okText: '确定删除',
-            okButtonProps: { danger: true },
-            onOk: () => remove.mutateAsync(id),
-        });
-    };
-    const content = (
-        <div className="w-72 max-w-[calc(100vw-32px)]">
-            {isLoading ? (
-                <div className="py-6 text-center">
-                    <Spin size="small" />
-                </div>
-            ) : (
-                <div className="max-h-[min(68vh,560px)] overflow-y-auto pr-1">
-                    <Tree
-                        blockNode
-                        defaultExpandAll
-                        treeData={treeData}
-                        selectedKeys={selectedKeys}
-                        onSelect={onTreeSelect}
-                        titleRender={(node) => {
-                            const key = String(node.key);
-                            if (!canManageGroup || key === 'all' || key === 'ungrouped')
-                                return <span>{node.title as string}</span>;
-                            return (
-                                <Dropdown
-                                    trigger={['contextMenu']}
-                                    menu={{
-                                        items: [
-                                            {
-                                                key: 'add',
-                                                label: '新增子分组',
-                                                icon: <PlusOutlined />,
-                                            },
-                                            {
-                                                key: 'edit',
-                                                label: '编辑',
-                                                icon: <EditOutlined />,
-                                            },
-                                            {
-                                                key: 'delete',
-                                                label: '删除',
-                                                icon: <DeleteOutlined />,
-                                                danger: true,
-                                            },
-                                        ],
-                                        onClick: ({ key: action }) => {
-                                            if (action === 'add') openCreate(key);
-                                            else if (action === 'edit') openEdit(key);
-                                            else confirmDelete(key);
-                                        },
-                                    }}
-                                >
-                                    <span className="block whitespace-normal break-words pr-2">
-                                        {node.title as string}
-                                    </span>
-                                </Dropdown>
-                            );
-                        }}
-                    />
-                </div>
-            )}
-            {canManageGroup && (
-                <Button
-                    type="text"
-                    size="small"
-                    block
-                    icon={<PlusOutlined />}
-                    className="mt-1 !text-gray-500"
-                    onClick={() => openCreate(null)}
-                >
-                    新建分组
-                </Button>
-            )}
-        </div>
-    );
-    return (
-        <>
-            <Popover
-                content={content}
-                trigger="click"
-                open={popoverOpen}
-                onOpenChange={setPopoverOpen}
-                placement="bottomLeft"
-            >
-                <Button icon={<ApartmentOutlined />}>
-                    <Space size={4}>
-                        {selectedLabel}
-                        <DownOutlined className="!text-[10px] text-gray-400" />
-                    </Space>
-                </Button>
-            </Popover>
-            <EdgeNodeGroupFormModal
-                open={formOpen}
-                editing={editingGroup}
-                parentId={parentId}
-                treeData={groups}
-                loading={save.isPending}
-                onCancel={() => {
-                    setFormOpen(false);
-                    setEditingGroup(null);
-                }}
-                onFinish={(values) =>
-                    save.mutate(values, {
-                        onSuccess: () => {
-                            setFormOpen(false);
-                            setEditingGroup(null);
-                        },
-                    })
-                }
-            />
-        </>
-    );
-}
+const EMPTY_GROUPS: Edge.GroupTreeItem[] = [];
+const EMPTY_NODES: Edge.Node[] = [];
+const getNodeKey = (node: Edge.Node) => node.id;
+const toGroupFormValues = (group: Edge.GroupTreeItem): GroupFormValues => ({
+    id: group.id,
+    name: group.name,
+    parentId: group.parentId || undefined,
+    sortOrder: group.sortOrder,
+    status: group.status,
+    remark: group.remark,
+});
 
 const statusLabels: Record<
     string,
@@ -729,6 +415,8 @@ type NetworkDraftItem = Edge.NetworkConfig & {
     up?: boolean;
 };
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
+/** Keeps one column on narrow screens and up to four on wide ones, like the former grid. */
+const EDGE_CARD_MIN_WIDTH = 280;
 const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;
 const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;
 function groupSelectOptions(groups: Edge.GroupTreeItem[]): {
@@ -845,7 +533,10 @@ function trafficPair(traffic: Edge.TcpTraffic | undefined, period: 'daily' | 'mo
         ? `${format(traffic?.dailyUploadBytes)}|${format(traffic?.dailyDownloadBytes)}`
         : `${format(traffic?.monthlyUploadBytes)}|${format(traffic?.monthlyDownloadBytes)}`;
 }
-function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
+function buildNodeCardItems(
+    node: Edge.Node,
+    operatorName: (value: string) => string
+): DeviceCardItem[] {
     const config = node.status.config;
     const outbox = node.status.outbox;
     const mobile = node.mobile;
@@ -853,7 +544,7 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
         { key: 'openwrt', label: 'OpenWrt', children: node.openwrtRelease || '-' },
-        { key: 'operator', label: '运营商', children: mobileOperatorName(mobile.operator) || '-' },
+        { key: 'operator', label: '运营商', children: operatorName(mobile.operator) || '-' },
         { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
         {
             key: 'mobileSignal',
@@ -1193,37 +884,15 @@ function TerminalModal({
     open: boolean;
     onClose: () => void;
 }) {
-    const [state, setState] = useState('正在连接…');
-    const [connectionEnded, setConnectionEnded] = useState(false);
-    const [connectionAttempt, setConnectionAttempt] = useState(0);
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
+    const [screen, setScreen] = useState<Edge.TerminalScreen | null>(null);
+    const session = useTerminalSession(nodeId, screen);
+    const { input, resize } = session;
     useEffect(() => {
-        void connectionAttempt;
         const host = terminalHostRef.current;
         if (!open || !nodeId || !host) return;
-        const targetNodeId = nodeId;
-        setConnectionEnded(false);
-        setState('正在启动终端…');
         let disposed = false;
-        let ended = false;
-        let ready = false;
-        let sessionId: string | undefined;
-        let release: (() => void) | undefined;
-        let heartbeat: ReturnType<typeof setInterval> | undefined;
         let fitFrame: number | undefined;
-        let inputTimer: ReturnType<typeof setTimeout> | undefined;
-        let lastSize = '';
-        let resizing = false;
-        let pendingSize: { columns: number; rows: number } | undefined;
-        let lastOutputSequence = 0;
-        let pendingCloseReason: string | undefined;
-        let sending = false;
-        let rendering = false;
-        let inputBytes = 0;
-        let outputBytes = 0;
-        const inputQueue: Uint8Array[] = [];
-        const outputQueue: { bytes: Uint8Array; sequence: number }[] = [];
-        const encoder = new TextEncoder();
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
@@ -1252,196 +921,55 @@ function TerminalModal({
         } catch {
             // The default renderer remains available without WebGL.
         }
-        const openingTimeout = setTimeout(() => finish('终端启动超时'), 15000);
-        function finish(reason: string) {
-            if (ended) return;
-            ended = true;
-            ready = false;
-            release?.();
-            release = undefined;
-            clearTimeout(openingTimeout);
-            if (heartbeat !== undefined) clearInterval(heartbeat);
-            if (inputTimer !== undefined) clearTimeout(inputTimer);
-            inputQueue.length = 0;
-            outputQueue.length = 0;
-            inputBytes = 0;
-            outputBytes = 0;
-            terminal.options.disableStdin = true;
-            if (sessionId) void closeTerminal(targetNodeId, sessionId).catch(() => undefined);
-            if (!disposed) {
-                setState(reason);
-                setConnectionEnded(true);
-            }
-        }
-        function fail(error: unknown) {
-            finish(error instanceof Error ? error.message : '终端通信失败');
-        }
-        async function flushResize() {
-            if (resizing || !ready || !sessionId || ended) return;
-            resizing = true;
-            try {
-                while (!ended && pendingSize) {
-                    const size = pendingSize;
-                    pendingSize = undefined;
-                    await resizeTerminal(targetNodeId, sessionId, size.columns, size.rows);
-                }
-            } catch (error) {
-                fail(error);
-            } finally {
-                resizing = false;
-            }
-        }
-        function scheduleFit() {
-            if (disposed || ended || fitFrame !== undefined) return;
+        const scheduleFit = () => {
+            if (disposed || fitFrame !== undefined) return;
             fitFrame = window.requestAnimationFrame(() => {
                 fitFrame = undefined;
-                if (!host?.clientWidth || !host.clientHeight) return;
+                if (!host.clientWidth || !host.clientHeight) return;
                 fitAddon.fit();
-                const size = `${terminal.cols}:${terminal.rows}`;
-                if (ready && sessionId && lastSize !== size) {
-                    lastSize = size;
-                    pendingSize = { columns: terminal.cols, rows: terminal.rows };
-                    void flushResize();
-                }
+                resize(terminal.cols, terminal.rows);
             });
-        }
-        async function flushInput() {
-            inputTimer = undefined;
-            if (sending || !ready || !sessionId || ended) return;
-            sending = true;
-            try {
-                while (!ended && inputQueue.length > 0) {
-                    const next = inputQueue[0];
-                    const chunk = next.slice(0, 16384);
-                    if (chunk.length === next.length) inputQueue.shift();
-                    else inputQueue[0] = next.slice(chunk.length);
-                    inputBytes -= chunk.length;
-                    await writeTerminal(targetNodeId, sessionId, chunk);
-                }
-            } catch (error) {
-                fail(error);
-            } finally {
-                sending = false;
-            }
-        }
-        function renderOutput() {
-            if (disposed || ended || rendering) return;
-            if (outputQueue.length === 0) {
-                if (pendingCloseReason !== undefined) finish(pendingCloseReason);
-                return;
-            }
-            const item = outputQueue.shift();
-            if (!item || !sessionId) return;
-            rendering = true;
-            terminal.write(item.bytes, () => {
-                if (disposed || ended || !sessionId) {
-                    rendering = false;
-                    return;
-                }
-                outputBytes -= item.bytes.length;
-                const confirmation =
-                    item.sequence > 0
-                        ? acknowledgeTerminalOutput(targetNodeId, sessionId, item.sequence)
-                        : Promise.resolve();
-                void confirmation
-                    .then(() => {
-                        rendering = false;
-                        renderOutput();
-                    })
-                    .catch(fail);
-            });
-        }
+        };
         const resizeObserver = new ResizeObserver(scheduleFit);
         resizeObserver.observe(host);
         const focus = () => {
-            if (disposed || ended || document.visibilityState !== 'visible') return;
+            if (disposed || document.visibilityState !== 'visible') return;
             scheduleFit();
             terminal.focus();
         };
         window.addEventListener('focus', focus);
         document.addEventListener('visibilitychange', focus);
         scheduleFit();
-        const input = terminal.onData((data) => {
-            if (ended) return;
-            const bytes = encoder.encode(data);
-            if (inputBytes + bytes.length > 256 * 1024) {
-                finish('终端输入队列已满，连接已关闭，请重新连接');
-                return;
-            }
-            inputQueue.push(bytes);
-            inputBytes += bytes.length;
-            if (inputTimer === undefined) inputTimer = setTimeout(() => void flushInput(), 8);
+        const typed = terminal.onData(input);
+        setScreen({
+            size: () => ({ columns: terminal.cols, rows: terminal.rows }),
+            reset: () => {
+                terminal.reset();
+                terminal.options.disableStdin = false;
+            },
+            write: (bytes, written) => {
+                if (!disposed) terminal.write(bytes, written);
+            },
+            ready: () => {
+                if (disposed) return;
+                terminal.focus();
+                scheduleFit();
+            },
+            closed: () => {
+                if (!disposed) terminal.options.disableStdin = true;
+            },
         });
-        void openTerminal(nodeId, terminal.cols, terminal.rows)
-            .then(({ id }) => {
-                if (disposed || ended) {
-                    void closeTerminal(nodeId, id).catch(() => undefined);
-                    return;
-                }
-                sessionId = id;
-                release = getTerminalEvents(nodeId, id).subscribe({
-                    next: (value) => {
-                        if (disposed || ended) return;
-                        try {
-                            for (const event of terminalEventsSchema.parse(value).events) {
-                                if (event.kind === 'ready') {
-                                    ready = true;
-                                    clearTimeout(openingTimeout);
-                                    setState('已连接');
-                                    terminal.focus();
-                                    scheduleFit();
-                                    void flushInput();
-                                } else if (event.kind === 'close') {
-                                    ready = false;
-                                    terminal.options.disableStdin = true;
-                                    inputQueue.length = 0;
-                                    inputBytes = 0;
-                                    pendingCloseReason = event.reason || '终端已关闭';
-                                    renderOutput();
-                                    break;
-                                } else {
-                                    const bytes = Uint8Array.from(
-                                        atob(event.content),
-                                        (character) => character.charCodeAt(0)
-                                    );
-                                    if (
-                                        bytes.length > 16384 ||
-                                        (event.sequence > 0 &&
-                                            event.sequence !== lastOutputSequence + 1)
-                                    )
-                                        throw new Error('终端数据顺序无效，请重新连接');
-                                    if (event.sequence > 0) lastOutputSequence = event.sequence;
-                                    if (outputBytes + bytes.length > 1024 * 1024)
-                                        throw new Error(
-                                            '终端输出超过处理能力，连接已关闭，请重新连接'
-                                        );
-                                    outputQueue.push({ bytes, sequence: event.sequence });
-                                    outputBytes += bytes.length;
-                                    renderOutput();
-                                }
-                            }
-                        } catch (error) {
-                            fail(error);
-                        }
-                    },
-                    error: fail,
-                });
-                heartbeat = setInterval(() => {
-                    if (!ended && !resizing) void keepTerminalAlive(nodeId, id).catch(fail);
-                }, 20000);
-            })
-            .catch(fail);
         return () => {
             disposed = true;
-            finish('终端已关闭');
+            setScreen(null);
             if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
             resizeObserver.disconnect();
             window.removeEventListener('focus', focus);
             document.removeEventListener('visibilitychange', focus);
-            input.dispose();
+            typed.dispose();
             terminal.dispose();
         };
-    }, [nodeId, open, connectionAttempt]);
+    }, [nodeId, open, input, resize]);
     return (
         <Modal
             open={open}
@@ -1451,12 +979,9 @@ function TerminalModal({
             width="min(960px, 94vw)"
             title={
                 <Space>
-                    <span>{`Web 终端 · ${state}`}</span>
-                    {connectionEnded && (
-                        <Button
-                            size="small"
-                            onClick={() => setConnectionAttempt((value) => value + 1)}
-                        >
+                    <span>{`Web 终端 · ${session.state}`}</span>
+                    {session.ended && (
+                        <Button size="small" onClick={session.reconnect}>
                             重新连接
                         </Button>
                     )}
@@ -1538,11 +1063,33 @@ export function EdgeNodePage() {
         refetch,
         error: inventoryError,
     } = useEdgeInventory(canQuery, eventScope);
-    const { data: edgeGroups = [] } = useEdgeGroupTree();
+    const { data: edgeGroups = EMPTY_GROUPS, isLoading: groupsLoading } = useEdgeGroupTree();
+    const groupSave = useEdgeGroupSave();
+    const groupDelete = useEdgeGroupDelete();
     const groupView = useMemo(
-        () => buildEdgeNodeGroupView(edgeGroups, data ?? [], selectedGroupId, keyword, status),
+        () =>
+            buildEdgeNodeGroupView(
+                edgeGroups,
+                data ?? EMPTY_NODES,
+                selectedGroupId,
+                keyword,
+                status
+            ),
         [edgeGroups, data, selectedGroupId, keyword, status]
     );
+    const nodeCountByGroup = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const node of data ?? EMPTY_NODES)
+            counts.set(node.groupId, (counts.get(node.groupId) ?? 0) + 1);
+        return counts;
+    }, [data]);
+    const groupTitle = useCallback(
+        (group: Edge.GroupTreeItem) =>
+            `${group.name} (${nodeCountByGroup.get(group.id) ?? 0})${group.status === 'disabled' ? ' · 已停用' : ''}`,
+        [nodeCountByGroup]
+    );
+    const operatorName = useMobileOperatorName();
+    const fetchConfiguration = useFetchEdgeConfiguration();
     const nodes = groupView.filtered;
     const scrollScope = `${selectedGroupId ?? 'all'}:${keyword}:${status ?? 'all'}`;
     useEffect(() => {
@@ -1617,7 +1164,7 @@ export function EdgeNodePage() {
         });
     };
     const showNetworkManager = async (node: Edge.Node) => {
-        const current = node.networks && node.interfaces ? node : await getEdgeDetail(node.id);
+        const current = node.networks && node.interfaces ? node : await fetchConfiguration(node.id);
         setNetworkDraft(
             (current.networks ?? []).map((item) =>
                 networkDraftFromReported(item, current.interfaces ?? [])
@@ -1979,104 +1526,109 @@ export function EdgeNodePage() {
         { title: '详情', dataIndex: 'detail', render: (value) => value || '-' },
     ];
     const renderNodeCards = (items: Edge.Node[]) => (
-        <div className="mt-4">
-            <div className={EDGE_CARD_GRID_CLASS}>
-                {items.map((node) => {
-                    const status = node.status;
-                    const nodeTitle = node.name || node.hostname || '未命名节点';
-                    return (
-                        <div key={node.id} className="flex flex-col">
-                            <DeviceCard
-                                onClick={() => showDetail(node)}
-                                ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
-                                title={
-                                    <div className="flex w-full min-w-0 flex-col gap-0.5">
-                                        <Flex
-                                            justify="space-between"
-                                            align="start"
-                                            gap={10}
-                                            className="w-full min-w-0"
-                                        >
-                                            <Tooltip title={nodeTitle}>
-                                                <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
-                                                    {nodeTitle}
-                                                </span>
-                                            </Tooltip>
-                                            <span className="flex shrink-0 items-center gap-1 [&_.ant-tag]:!m-0">
-                                                {statusTag(node.enrollmentStatus)}
-                                                <Tag
-                                                    color={status.online ? 'success' : 'default'}
-                                                    className="!mr-0 shrink-0 !rounded-md !px-2"
-                                                >
-                                                    {status.online ? '在线' : '离线'}
-                                                </Tag>
+        <VirtualGrid
+            items={items}
+            getItemKey={getNodeKey}
+            minItemWidth={EDGE_CARD_MIN_WIDTH}
+            maxColumns={4}
+            estimateSize={420}
+            className="mt-4"
+        >
+            {(node) => {
+                const status = node.status;
+                const nodeTitle = node.name || node.hostname || '未命名节点';
+                return (
+                    <div key={node.id} className="flex flex-col">
+                        <DeviceCard
+                            onClick={() => showDetail(node)}
+                            ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
+                            title={
+                                <div className="flex w-full min-w-0 flex-col gap-0.5">
+                                    <Flex
+                                        justify="space-between"
+                                        align="start"
+                                        gap={10}
+                                        className="w-full min-w-0"
+                                    >
+                                        <Tooltip title={nodeTitle}>
+                                            <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
+                                                {nodeTitle}
                                             </span>
-                                        </Flex>
-                                        <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs font-normal leading-4 text-slate-400">
-                                            <Tooltip title={node.imei}>
-                                                <span className="min-w-0 truncate text-left">
-                                                    IMEI：{node.imei}
-                                                </span>
-                                            </Tooltip>
-                                            <span className="shrink-0 truncate">
-                                                上报：{formatDateTime(status.lastSeenAt)}
+                                        </Tooltip>
+                                        <span className="flex shrink-0 items-center gap-1 [&_.ant-tag]:!m-0">
+                                            {statusTag(node.enrollmentStatus)}
+                                            <Tag
+                                                color={status.online ? 'success' : 'default'}
+                                                className="!mr-0 shrink-0 !rounded-md !px-2"
+                                            >
+                                                {status.online ? '在线' : '离线'}
+                                            </Tag>
+                                        </span>
+                                    </Flex>
+                                    <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs font-normal leading-4 text-slate-400">
+                                        <Tooltip title={node.imei}>
+                                            <span className="min-w-0 truncate text-left">
+                                                IMEI：{node.imei}
                                             </span>
-                                        </div>
+                                        </Tooltip>
+                                        <span className="shrink-0 truncate">
+                                            上报：{formatDateTime(status.lastSeenAt)}
+                                        </span>
                                     </div>
-                                }
-                                subtitle={
-                                    <span className="flex min-w-0 items-center gap-1">
-                                        <Tag color="blue" className="!mr-0 !rounded-md">
-                                            {node.model || '未知型号'}
-                                        </Tag>
-                                        <Tag color="purple" className="!mr-0 !rounded-md">
-                                            {node.softwareVersion || '未知版本'}
-                                        </Tag>
-                                    </span>
-                                }
-                                items={buildNodeCardItems(node)}
-                                column={2}
-                                extra={
-                                    <div className="flex w-full flex-col gap-1.5">
-                                        <Progress
-                                            className={
-                                                node.firmware.state === 'accepted' ||
-                                                node.firmware.state === 'running'
-                                                    ? undefined
-                                                    : 'invisible'
-                                            }
-                                            percent={
-                                                node.firmware.state === 'accepted' ||
-                                                node.firmware.state === 'running'
-                                                    ? node.firmware.progressPercent
-                                                    : 0
-                                            }
-                                            size="small"
-                                            status="active"
-                                            format={() =>
-                                                node.firmware.state === 'accepted' ||
-                                                node.firmware.state === 'running'
-                                                    ? `${formatBytes(node.firmware.downloadedBytes)} / ${formatBytes(node.firmware.totalBytes)}`
-                                                    : '\u00a0'
-                                            }
-                                        />
-                                        <Flex
-                                            align="center"
-                                            justify="center"
-                                            gap={6}
-                                            className="w-full text-slate-500"
-                                        >
-                                            <EyeOutlined />
-                                            <span>查看详情</span>
-                                        </Flex>
-                                    </div>
-                                }
-                            />
-                        </div>
-                    );
-                })}
-            </div>
-        </div>
+                                </div>
+                            }
+                            subtitle={
+                                <span className="flex min-w-0 items-center gap-1">
+                                    <Tag color="blue" className="!mr-0 !rounded-md">
+                                        {node.model || '未知型号'}
+                                    </Tag>
+                                    <Tag color="purple" className="!mr-0 !rounded-md">
+                                        {node.softwareVersion || '未知版本'}
+                                    </Tag>
+                                </span>
+                            }
+                            items={buildNodeCardItems(node, operatorName)}
+                            column={2}
+                            extra={
+                                <div className="flex w-full flex-col gap-1.5">
+                                    <Progress
+                                        className={
+                                            node.firmware.state === 'accepted' ||
+                                            node.firmware.state === 'running'
+                                                ? undefined
+                                                : 'invisible'
+                                        }
+                                        percent={
+                                            node.firmware.state === 'accepted' ||
+                                            node.firmware.state === 'running'
+                                                ? node.firmware.progressPercent
+                                                : 0
+                                        }
+                                        size="small"
+                                        status="active"
+                                        format={() =>
+                                            node.firmware.state === 'accepted' ||
+                                            node.firmware.state === 'running'
+                                                ? `${formatBytes(node.firmware.downloadedBytes)} / ${formatBytes(node.firmware.totalBytes)}`
+                                                : '\u00a0'
+                                        }
+                                    />
+                                    <Flex
+                                        align="center"
+                                        justify="center"
+                                        gap={6}
+                                        className="w-full text-slate-500"
+                                    >
+                                        <EyeOutlined />
+                                        <span>查看详情</span>
+                                    </Flex>
+                                </div>
+                            }
+                        />
+                    </div>
+                );
+            }}
+        </VirtualGrid>
     );
     const renderSectionStats = (
         items: Edge.Node[],
@@ -2152,17 +1704,29 @@ export function EdgeNodePage() {
                     <Space wrap>
                         <Button
                             icon={<DownloadOutlined />}
-                            href={getWindowsClientDownloadUrl()}
+                            href={windowsClientDownloadUrl}
                             download
                         >
                             下载 Windows 客户端
                         </Button>
-                        <EdgeNodeGroupPanel
+                        <GroupTreePanel
+                            groups={edgeGroups}
+                            loading={groupsLoading}
                             selectedGroupId={selectedGroupId}
-                            canManageGroup={canEdit}
                             onSelect={setSelectedGroupId}
+                            allLabel="全部节点"
                             ungroupedCount={groupView.ungroupedCount}
-                            nodes={data ?? []}
+                            groupTitle={groupTitle}
+                            canManage={canEdit}
+                            formNoun="边缘节点分组"
+                            remarkMaxLength={500}
+                            deleteHint="请先移出该分组的子分组和边缘节点。"
+                            saving={groupSave.isPending}
+                            toFormValues={toGroupFormValues}
+                            onSave={(values, onSaved) =>
+                                groupSave.mutate(values, { onSuccess: onSaved })
+                            }
+                            onDelete={(group) => groupDelete.mutateAsync(group.id)}
                         />
                         <Input.Search
                             allowClear
@@ -2570,8 +2134,7 @@ export function EdgeNodePage() {
                                                     </span>
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="运营商">
-                                                    {mobileOperatorName(detail.mobile.operator) ||
-                                                        '-'}
+                                                    {operatorName(detail.mobile.operator) || '-'}
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="信号">
                                                     {detail.mobile.available
@@ -3337,20 +2900,7 @@ function DtuPanel({ node, scope }: { node: Edge.Node; scope: Edge.EventScope }) 
     ];
     return (
         <div className="flex min-h-0 flex-col gap-3">
-            {query.error && (
-                <Alert
-                    type="error"
-                    title={query.error.message}
-                    action={<Button onClick={() => void query.refetch()}>重试查询</Button>}
-                />
-            )}
-            {query.streamError && (
-                <Alert
-                    type="warning"
-                    title="实时状态连接已断开"
-                    action={<Button onClick={query.retryStream}>重连</Button>}
-                />
-            )}
+            <LiveQueryError error={query.error} retry={query.refetch} loading={query.isFetching} />
             {query.data && !query.data.supported && (
                 <Alert type="warning" title="当前固件未声明 DTU 能力，请升级支持透传的固件" />
             )}

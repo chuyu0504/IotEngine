@@ -1,5 +1,6 @@
 import { Tooltip } from 'antd';
 import { memo, type ReactNode, useMemo } from 'react';
+import { getGroupKey, normalizeGroupName, UNGROUPED_GROUP_KEY } from '@/utils/group_key';
 
 export interface DeviceCardItem {
     key: string | number;
@@ -26,12 +27,11 @@ interface DeviceCardProps {
     ariaLabel?: string;
 }
 
-const UNGROUPED_GROUP_KEY = '__ungrouped__';
 const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
     const sections = new Map<string, DeviceCardSection>();
     for (const item of items) {
-        const group = item.group?.trim();
-        const key = group || UNGROUPED_GROUP_KEY;
+        const group = normalizeGroupName(item.group);
+        const key = getGroupKey(group);
         const current = sections.get(key);
         if (current) current.items.push(item);
         else sections.set(key, { key, label: group || '未分组', items: [item] });

@@ -2,7 +2,6 @@ import {
     ApartmentOutlined,
     CopyOutlined,
     DeleteOutlined,
-    DownOutlined,
     EditOutlined,
     HistoryOutlined,
     PlusOutlined,
@@ -11,7 +10,6 @@ import {
     ShareAltOutlined,
 } from '@ant-design/icons';
 import { replaceEqualDeep } from '@tanstack/react-query';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import {
     Alert,
     App,
@@ -22,7 +20,6 @@ import {
     DatePicker,
     Divider,
     Drawer,
-    Dropdown,
     Empty,
     Flex,
     Form,
@@ -37,31 +34,31 @@ import {
     Select,
     Skeleton,
     Space,
-    Spin,
     Switch,
     Table,
     Tag,
     Tooltip,
-    Tree,
-    TreeSelect,
     Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { DataNode, TreeProps } from 'antd/es/tree';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
-import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
+import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from 'react';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DeviceCardItem } from '@/components/device_card';
 import DeviceCard from '@/components/device_card';
 import { JsonEditor } from '@/components/json_editor';
 import { FormModal } from '@/components/form_modal';
+import type { GroupFormValues } from '@/components/group_form_modal';
+import { type GroupTreeAction, GroupTreePanel } from '@/components/group_tree_panel';
 import { PacketDebugPanel } from '@/components/packet_debug_panel';
 import { PageContainer } from '@/components/page_container';
+import { VirtualGrid } from '@/components/virtual_grid';
 import { usePermissions } from '@/hooks/use_permission';
 import { useAuthStore } from '@/store/auth_store';
 import { formatDateTime } from '@/utils/date_time';
 import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/edge_node.service';
+import type { Edge } from '../edge_node/edge_node.types';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
@@ -72,7 +69,7 @@ import {
 } from './device.schema';
 import {
     getDeviceCardElements,
-    getDeviceDetail,
+    useDeviceDetailLoader,
     isDeviceOnline,
     summarizeDeviceCommandResult,
     useDeviceCommand,
@@ -113,6 +110,8 @@ interface CommandPopoverProps {
     pending: boolean;
     onSubmit: (deviceId: string, data: Device.Command) => void;
     device: Device.Overview;
+    /** 服务端推送的实时在线状态；`device` 为打开弹窗时加载的详情快照。 */
+    online: boolean;
     func: Device.CommandOperation;
     onClose: () => void;
 }
@@ -197,7 +196,14 @@ export const validateValue = (element: CommandElement): string | null => {
         ? null
         : `「${element.name}」请输入有效数字`;
 };
-const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPopoverProps) => {
+const CommandPopover = ({
+    device,
+    online,
+    func,
+    onClose,
+    pending,
+    onSubmit,
+}: CommandPopoverProps) => {
     const { message } = App.useApp();
     const isSl651CompleteCommand = device.protocol_type === 'SL651';
     const isMqttCommand = device.protocol_type === 'MQTT';
@@ -214,10 +220,10 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
             : []
     );
     const checkOnline = useCallback(() => {
-        if (isDeviceOnline(device)) return true;
+        if (online) return true;
         message.warning('设备离线');
         return false;
-    }, [device, message]);
+    }, [online, message]);
     const handleSend = useCallback(() => {
         const selected = elements.filter((element) =>
             isMqttCommand
@@ -385,6 +391,7 @@ export type DeviceFormValues = Omit<Device.CreateDto, 'parameters'> & {
         id?: string;
         edge_protocol?: Link.Protocol;
     };
+const EMPTY_EDGE_NODES: Edge.Node[] = [];
 interface Props {
     open: boolean;
     editing: Device.Overview | null;
@@ -412,7 +419,7 @@ export function DeviceFormModal({
     const edgeProtocol = Form.useWatch('edge_protocol', form);
     const edgeTransport = Form.useWatch('edge_transport', form);
     const edgeMode = Form.useWatch('edge_mode', form);
-    const { data: nodes = [], isLoading: loadingNodes } = useEdgeSelectionList(
+    const { data: nodes = EMPTY_EDGE_NODES, isLoading: loadingNodes } = useEdgeSelectionList(
         open && source === 'edge'
     );
     const clearChannel = () =>
@@ -1034,348 +1041,74 @@ export function DeviceFormModal({
     );
 }
 
-interface DeviceGroupFormModalProps {
-    open: boolean;
-    editing: DeviceGroup.TreeItem | null;
-    parentId: string | null;
-    treeData: DeviceGroup.TreeItem[];
-    loading: boolean;
-    onCancel: () => void;
-    onFinish: (
-        values: DeviceGroup.CreateDto & {
-            id?: string;
-        }
-    ) => void;
-}
-function convertTreeForSelect(
-    nodes: DeviceGroup.TreeItem[],
-    excludeId?: string
-): {
-    value: string;
-    title: string;
-    children?: ReturnType<typeof convertTreeForSelect>;
-}[] {
-    return nodes
-        .filter((n) => n.id !== excludeId)
-        .map((n) => ({
-            value: n.id,
-            title: n.name,
-            children: n.children ? convertTreeForSelect(n.children, excludeId) : undefined,
-        }));
-}
-const DeviceGroupFormModal = ({
-    open,
-    editing,
-    parentId,
-    treeData,
-    loading,
-    onCancel,
-    onFinish,
-}: DeviceGroupFormModalProps) => {
-    const [form] = Form.useForm();
-    useEffect(() => {
-        if (open) {
-            if (editing) {
-                form.setFieldsValue({
-                    id: editing.id,
-                    name: editing.name,
-                    parent_id: editing.parent_id || undefined,
-                    sort_order: editing.sort_order,
-                    status: editing.status,
-                    remark: editing.remark,
-                });
-            } else {
-                form.resetFields();
-                form.setFieldsValue({
-                    status: 'enabled',
-                    sort_order: 0,
-                    parent_id: parentId || undefined,
-                });
-            }
-        }
-    }, [open, editing, parentId, form]);
-    const treeSelectData = useMemo(
-        () => convertTreeForSelect(treeData, editing?.id),
-        [treeData, editing?.id]
-    );
-    return (
-        <FormModal
-            open={open}
-            title={editing ? '编辑分组' : '新建分组'}
-            okText="确定"
-            cancelText="取消"
-            confirmLoading={loading}
-            onCancel={onCancel}
-            onOk={() => form.submit()}
-            destroyOnClose
-        >
-            <Form form={form} layout="vertical" onFinish={onFinish} className="mt-4">
-                <Form.Item name="id" hidden>
-                    <Input />
-                </Form.Item>
-                <Form.Item
-                    label="分组名称"
-                    name="name"
-                    rules={[{ required: true, message: '请输入分组名称' }]}
-                >
-                    <Input placeholder="请输入分组名称" maxLength={100} />
-                </Form.Item>
-                <Form.Item label="上级分组" name="parent_id">
-                    <TreeSelect
-                        allowClear
-                        treeData={treeSelectData}
-                        placeholder="不选则为顶级分组"
-                        treeDefaultExpandAll
-                        fieldNames={{ label: 'title', value: 'value' }}
-                    />
-                </Form.Item>
-                <Form.Item label="排序" name="sort_order">
-                    <InputNumber className="!w-full" placeholder="数值越小越靠前" min={0} />
-                </Form.Item>
-                <Form.Item
-                    label="状态"
-                    name="status"
-                    rules={[{ required: true, message: '请选择状态' }]}
-                >
-                    <Select>
-                        <Select.Option value="enabled">启用</Select.Option>
-                        <Select.Option value="disabled">禁用</Select.Option>
-                    </Select>
-                </Form.Item>
-                <Form.Item label="备注" name="remark">
-                    <Input.TextArea rows={2} placeholder="可选备注" />
-                </Form.Item>
-            </Form>
-        </FormModal>
-    );
-};
-
+const deviceGroupTitle = (group: DeviceGroup.TreeItem) =>
+    `${group.name} (${group.deviceCount ?? 0})`;
+const deviceGroupFormValues = (group: DeviceGroup.TreeItem): GroupFormValues => ({
+    id: group.id,
+    name: group.name,
+    parentId: group.parent_id || undefined,
+    sortOrder: group.sort_order,
+    status: group.status,
+    remark: group.remark,
+});
 interface DeviceGroupPanelProps {
-    commandIds: string[];
-    debugDeviceId?: string;
+    groups: DeviceGroup.TreeItem[];
+    loading: boolean;
     selectedGroupId: string | null;
     onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
     ungroupedCount: number;
     onShare: (group: DeviceGroup.TreeItem) => void;
 }
-type TreeKey = string | number;
 const DeviceGroupPanel = ({
-    commandIds,
-    debugDeviceId,
+    groups,
+    loading,
     selectedGroupId,
     onSelect,
     canManageGroup,
     ungroupedCount,
     onShare,
 }: DeviceGroupPanelProps) => {
-    const { modal } = App.useApp();
-    const [popoverOpen, setPopoverOpen] = useState(false);
-    const [formModalVisible, setFormModalVisible] = useState(false);
-    const [editingGroup, setEditingGroup] = useState<DeviceGroup.TreeItem | null>(null);
-    const [parentIdForCreate, setParentIdForCreate] = useState<string | null>(null);
-    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount(
-        {
-            refetchOnWindowFocus: false,
-        },
-        debugDeviceId,
-        commandIds
-    );
     const saveMutation = useDeviceGroupSave();
     const deleteMutation = useDeviceGroupDelete();
-    const groupIndex = useMemo(() => {
-        const index = new Map<string, DeviceGroup.TreeItem>();
-        const walk = (nodes: DeviceGroup.TreeItem[]) => {
-            for (const node of nodes) {
-                index.set(node.id, node);
-                if (node.children?.length) {
-                    walk(node.children);
-                }
-            }
-        };
-        walk(treeData);
-        return index;
-    }, [treeData]);
-    const antTreeData = useMemo(() => {
-        const convert = (nodes: DeviceGroup.TreeItem[]): DataNode[] =>
-            nodes.map((node) => ({
-                key: node.id,
-                title: `${node.name} (${node.deviceCount ?? 0})`,
-                children: node.children?.length ? convert(node.children) : undefined,
-            }));
-        return [
-            { key: 'all', title: '全部设备', isLeaf: true } as DataNode,
-            ...(ungroupedCount > 0
+    const shareActions = useCallback(
+        (group: DeviceGroup.TreeItem): GroupTreeAction[] =>
+            group.can_share
                 ? [
                       {
-                          key: 'ungrouped',
-                          title: `未分组 (${ungroupedCount})`,
-                          isLeaf: true,
-                      } as DataNode,
+                          key: 'share',
+                          label: '分享分组',
+                          icon: <ShareAltOutlined />,
+                          onClick: () => onShare(group),
+                      },
                   ]
-                : []),
-            ...convert(treeData),
-        ];
-    }, [treeData, ungroupedCount]);
-    const selectedKeys = useMemo<TreeKey[]>(() => {
-        if (selectedGroupId === null) return ['all'];
-        if (selectedGroupId === 'ungrouped') return ['ungrouped'];
-        return [selectedGroupId];
-    }, [selectedGroupId]);
-    // 当前选中的分组名称（用于按钮显示）
-    const selectedLabel = useMemo(() => {
-        if (selectedGroupId === null) return '全部设备';
-        if (selectedGroupId === 'ungrouped') return '未分组';
-        return groupIndex.get(selectedGroupId)?.name ?? '全部设备';
-    }, [groupIndex, selectedGroupId]);
-    const handleSelect: TreeProps['onSelect'] = (keys) => {
-        if (!keys.length) return;
-        const key = keys[0];
-        if (key === 'all') onSelect(null);
-        else if (key === 'ungrouped') onSelect('ungrouped');
-        else onSelect(String(key));
-        setPopoverOpen(false);
-    };
-    const handleAddChild = (parentId: string) => {
-        setEditingGroup(null);
-        setParentIdForCreate(parentId);
-        setFormModalVisible(true);
-    };
-    const handleEdit = (id: string) => {
-        const group = groupIndex.get(id);
-        if (group) {
-            setEditingGroup(group);
-            setParentIdForCreate(null);
-            setFormModalVisible(true);
-        }
-    };
-    const handleDelete = (id: string) => {
-        const group = groupIndex.get(id);
-        if (!group) return;
-        modal.confirm({
-            title: `确认删除分组「${group.name}」？`,
-            content: '删除后该分组下的子分组和设备不会被删除，但需要先移除或转移。',
-            okText: '确定删除',
-            okButtonProps: { danger: true },
-            onOk: () => deleteMutation.mutate(id),
-        });
-    };
-    const contextMenuItems = (nodeKey: TreeKey) => {
-        if (nodeKey === 'all' || nodeKey === 'ungrouped') return [];
-        const items = [];
-        const group = groupIndex.get(String(nodeKey));
-        if (group?.can_share) {
-            items.push({ key: 'share', label: '分享分组', icon: <ShareAltOutlined /> });
-        }
-        if (canManageGroup) {
-            items.push(
-                { key: 'addChild', label: '新增子分组', icon: <PlusOutlined /> },
-                { key: 'edit', label: '编辑', icon: <EditOutlined /> },
-                { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true }
-            );
-        }
-        return items;
-    };
-    const treeContent = (
-        <div className="w-72 max-w-[calc(100vw-32px)]">
-            {isLoading ? (
-                <div className="py-6 text-center">
-                    <Spin size="small" />
-                </div>
-            ) : (
-                <div className="max-h-[min(68vh,560px)] overflow-y-auto pr-1">
-                    <Tree
-                        treeData={antTreeData}
-                        selectedKeys={selectedKeys}
-                        onSelect={handleSelect}
-                        defaultExpandAll
-                        blockNode
-                        titleRender={(node) => {
-                            const items = contextMenuItems(node.key as TreeKey);
-                            const title = (
-                                <span className="block whitespace-normal break-words pr-2">
-                                    {node.title as string}
-                                </span>
-                            );
-                            if (!items.length) return title;
-                            return (
-                                <Dropdown
-                                    menu={{
-                                        items,
-                                        onClick: ({ key }) => {
-                                            const id = String(node.key);
-                                            if (key === 'share') {
-                                                const group = groupIndex.get(id);
-                                                if (group) onShare(group);
-                                            } else if (key === 'addChild') handleAddChild(id);
-                                            else if (key === 'edit') handleEdit(id);
-                                            else if (key === 'delete') handleDelete(id);
-                                        },
-                                    }}
-                                    trigger={['contextMenu']}
-                                >
-                                    {title}
-                                </Dropdown>
-                            );
-                        }}
-                    />
-                </div>
-            )}
-            {canManageGroup && (
-                <Button
-                    type="text"
-                    size="small"
-                    block
-                    icon={<PlusOutlined />}
-                    className="mt-1 !text-gray-500"
-                    onClick={() => {
-                        setEditingGroup(null);
-                        setParentIdForCreate(null);
-                        setFormModalVisible(true);
-                    }}
-                >
-                    新建分组
-                </Button>
-            )}
-        </div>
+                : [],
+        [onShare]
     );
     return (
-        <>
-            <Popover
-                content={treeContent}
-                trigger="click"
-                open={popoverOpen}
-                onOpenChange={setPopoverOpen}
-                placement="bottomLeft"
-            >
-                <Button icon={<ApartmentOutlined />}>
-                    <Space size={4}>
-                        {selectedLabel}
-                        <DownOutlined className="!text-[10px] text-gray-400" />
-                    </Space>
-                </Button>
-            </Popover>
-
-            <DeviceGroupFormModal
-                open={formModalVisible}
-                editing={editingGroup}
-                parentId={parentIdForCreate}
-                treeData={treeData}
-                loading={saveMutation.isPending}
-                onCancel={() => {
-                    setFormModalVisible(false);
-                    setEditingGroup(null);
-                }}
-                onFinish={(values) =>
-                    saveMutation.mutate(values, {
-                        onSuccess: () => {
-                            setFormModalVisible(false);
-                            setEditingGroup(null);
-                        },
-                    })
-                }
-            />
-        </>
+        <GroupTreePanel
+            groups={groups}
+            loading={loading}
+            selectedGroupId={selectedGroupId}
+            onSelect={onSelect}
+            allLabel="全部设备"
+            ungroupedCount={ungroupedCount}
+            groupTitle={deviceGroupTitle}
+            canManage={canManageGroup}
+            formNoun="分组"
+            deleteHint="删除后该分组下的子分组和设备不会被删除，但需要先移除或转移。"
+            saving={saveMutation.isPending}
+            toFormValues={deviceGroupFormValues}
+            onSave={({ parentId, sortOrder, ...values }, onSaved) =>
+                saveMutation.mutate(
+                    // 后端以空字符串表示顶级分组；parent_id 不接受 null。
+                    { ...values, parent_id: parentId ?? '', sort_order: sortOrder },
+                    { onSuccess: onSaved }
+                )
+            }
+            onDelete={(group) => deleteMutation.mutate(group.id)}
+            extraActions={shareActions}
+        />
     );
 };
 
@@ -1384,6 +1117,8 @@ const DeviceGroupPanel = ({
  */
 const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.Overview[] = [];
+const EMPTY_GROUP_TREE: DeviceGroup.TreeItem[] = [];
+const EMPTY_LINK_OPTIONS: Link.Item[] = [];
 const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
 const DEVICE_CARD_GRID_CLASS =
     'grid grid-cols-1 items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
@@ -1392,7 +1127,8 @@ const DEVICE_CARD_ACTION_BUTTON_CLASS =
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
-const DEVICE_VIRTUAL_ROW_GAP = 12;
+const DEVICE_GRID_GAP = 12;
+const DEVICE_CARD_MIN_WIDTH = 300;
 interface DeviceProtocolStats {
     total: number;
     online: number;
@@ -1411,23 +1147,19 @@ const createDeviceStats = (): DeviceStats => ({
 });
 interface DeviceGroupStats extends DeviceProtocolStats {}
 const createGroupStats = (): DeviceGroupStats => ({ total: 0, online: 0, offline: 0, enabled: 0 });
-const accumulateStats = <T extends DeviceProtocolStats>(
-    stats: T,
-    device: Device.Overview,
-    now = Date.now()
-) => {
+const accumulateStats = <T extends DeviceProtocolStats>(stats: T, device: Device.Overview) => {
     stats.total++;
-    if (isDeviceOnline(device, now)) stats.online++;
+    if (isDeviceOnline(device)) stats.online++;
     else stats.offline++;
     if (device.status === 'enabled') stats.enabled++;
 };
-const buildDeviceStats = (devices: Device.Overview[], now = Date.now()) => {
+const buildDeviceStats = (devices: Device.Overview[]) => {
     const stats = createDeviceStats();
     for (const device of devices) {
-        accumulateStats(stats, device, now);
+        accumulateStats(stats, device);
         const protocol = device.protocol_type || device.protocol_name || '未知';
         stats.byProtocol[protocol] ??= { total: 0, online: 0, offline: 0, enabled: 0 };
-        accumulateStats(stats.byProtocol[protocol], device, now);
+        accumulateStats(stats.byProtocol[protocol], device);
     }
     return stats;
 };
@@ -1453,13 +1185,14 @@ const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
 };
 const buildGroupStats = (
     groups: DeviceGroup.TreeItem[],
-    deviceMap: Map<string, Device.Overview[]>,
-    now = Date.now()
+    deviceMap: Map<string, Device.Overview[]>
 ) => {
     const result = new Map<string, DeviceGroupStats>();
     const walk = (group: DeviceGroup.TreeItem): DeviceGroupStats => {
         const stats = createGroupStats();
-        for (const device of deviceMap.get(group.id) ?? []) accumulateStats(stats, device, now);
+        for (const device of deviceMap.get(group.id) ?? EMPTY_DEVICE_LIST) {
+            accumulateStats(stats, device);
+        }
         for (const child of group.children ?? []) {
             const childStats = walk(child);
             stats.total += childStats.total;
@@ -2196,7 +1929,6 @@ function DeviceDebug({
     return (
         <PacketDebugPanel
             scope="device"
-            idleKey={`device:${item.id}`}
             protocol={item.protocol_type ?? ''}
             buttonClassName={DEVICE_CARD_ACTION_BUTTON_CLASS}
             title={`设备调试 · ${item.name}`}
@@ -2207,7 +1939,6 @@ function DeviceDebug({
             error={packets.error}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
-            onDisable={() => toggle.mutate(false)}
             onOpen={onOpen}
             onClose={onClose}
         />
@@ -2222,6 +1953,8 @@ interface DeviceGridItemProps {
     onDebug: Dispatch<SetStateAction<string | undefined>>;
     device: Device.Overview;
     online: boolean;
+    /** 当前行内实际占用的列数，由虚拟网格按容器宽度计算。 */
+    span: number;
     linkById: ReadonlyMap<string, Link.Item>;
     onHistory: (device: Device.Overview) => void;
     onShare: (device: Device.Overview) => void;
@@ -2241,6 +1974,7 @@ const DeviceGridItem = memo(
         device,
         commandIds,
         online,
+        span,
         debugDeviceId,
         onDebug,
         linkById,
@@ -2261,6 +1995,10 @@ const DeviceGridItem = memo(
     }: DeviceGridItemProps) => {
         const items = useMemo(() => buildCardItems(device), [device]);
         const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
+        const spanStyle = useMemo<CSSProperties | undefined>(
+            () => (span > 1 ? { gridColumn: `span ${span}` } : undefined),
+            [span]
+        );
         const activeCommandDevice =
             commandPopoverOpen && commandDeviceId === device.id ? commandDevice : null;
         const commandOperations =
@@ -2278,7 +2016,7 @@ const DeviceGridItem = memo(
             device.registration.mode !== 'OFF' &&
             !!device.registration.content?.trim();
         return (
-            <div className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}>
+            <div className="flex h-full min-w-0 flex-col" style={spanStyle}>
                 <DeviceCard
                     title={
                         <Flex
@@ -2375,6 +2113,7 @@ const DeviceGridItem = memo(
                                             pending={commandPending}
                                             onSubmit={onSubmitCommand}
                                             device={activeCommandDevice}
+                                            online={online}
                                             func={commandFunc}
                                             onClose={onCloseCommandPopover}
                                         />
@@ -2484,135 +2223,39 @@ const DeviceGridItem = memo(
         );
     }
 );
-interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online'> {
+interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online' | 'span'> {
     devices: Device.Overview[];
-    statusNow: number;
-    scrollElementRef: RefObject<HTMLDivElement | null>;
 }
-const getDeviceColumnCount = () => {
-    if (window.matchMedia('(min-width: 1536px)').matches) return 4;
-    if (window.matchMedia('(min-width: 1280px)').matches) return 3;
-    if (window.matchMedia('(min-width: 1024px)').matches) return 2;
-    return 1;
-};
-const useResponsiveDeviceColumnCount = () => {
-    const [columnCount, setColumnCount] = useState(getDeviceColumnCount);
-    useEffect(() => {
-        const updateColumnCount = () => setColumnCount(getDeviceColumnCount());
-        const tabletQuery = window.matchMedia('(min-width: 1024px)');
-        const desktopQuery = window.matchMedia('(min-width: 1280px)');
-        const wideQuery = window.matchMedia('(min-width: 1536px)');
-        tabletQuery.addEventListener('change', updateColumnCount);
-        desktopQuery.addEventListener('change', updateColumnCount);
-        wideQuery.addEventListener('change', updateColumnCount);
-        return () => {
-            tabletQuery.removeEventListener('change', updateColumnCount);
-            desktopQuery.removeEventListener('change', updateColumnCount);
-            wideQuery.removeEventListener('change', updateColumnCount);
-        };
-    }, []);
-    return columnCount;
-};
-const buildDeviceRows = (devices: Device.Overview[], columnCount: number) => {
-    const rows: Device.Overview[][] = [];
-    let row: Device.Overview[] = [];
-    let occupiedColumns = 0;
-    devices.forEach((device) => {
-        const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
-        const span = wide && columnCount > 1 ? 2 : 1;
-        if (row.length && occupiedColumns + span > columnCount) {
-            rows.push(row);
-            row = [];
-            occupiedColumns = 0;
-        }
-        row.push(device);
-        occupiedColumns += span;
-        if (occupiedColumns >= columnCount) {
-            rows.push(row);
-            row = [];
-            occupiedColumns = 0;
-        }
-    });
-    if (row.length) rows.push(row);
-    return rows;
-};
-const DeviceGrid = memo(
-    ({ devices, statusNow, scrollElementRef, ...itemProps }: DeviceGridProps) => {
-        const columnCount = useResponsiveDeviceColumnCount();
-        const rows = useMemo(() => buildDeviceRows(devices, columnCount), [columnCount, devices]);
-        const rootRef = useRef<HTMLDivElement>(null);
-        const [scrollMargin, setScrollMargin] = useState(0);
-        const updateScrollMargin = useCallback(() => {
-            const root = rootRef.current;
-            const scrollElement = scrollElementRef.current;
-            if (!root || !scrollElement) return;
-            const rootRect = root.getBoundingClientRect();
-            const scrollRect = scrollElement.getBoundingClientRect();
-            const nextMargin = rootRect.top - scrollRect.top + scrollElement.scrollTop;
-            setScrollMargin((currentMargin) =>
-                Math.abs(currentMargin - nextMargin) < 0.5 ? currentMargin : nextMargin
-            );
-        }, [scrollElementRef]);
-        useLayoutEffect(() => {
-            const root = rootRef.current;
-            const scrollElement = scrollElementRef.current;
-            if (!root || !scrollElement) return;
-            updateScrollMargin();
-            const observer = new ResizeObserver(updateScrollMargin);
-            observer.observe(scrollElement);
-            let ancestor = root.parentElement;
-            while (ancestor && ancestor !== scrollElement) {
-                observer.observe(ancestor);
-                ancestor = ancestor.parentElement;
-            }
-            window.addEventListener('resize', updateScrollMargin);
-            return () => {
-                observer.disconnect();
-                window.removeEventListener('resize', updateScrollMargin);
-            };
-        }, [scrollElementRef, updateScrollMargin]);
-        const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-            count: rows.length,
-            getScrollElement: () => scrollElementRef.current,
-            estimateSize: () => 340,
-            getItemKey: (index) => rows[index].map((device) => device.id).join(':'),
-            overscan: 3,
-            scrollMargin,
-        });
-        if (devices.length === 0) return null;
-        return (
-            <div
-                ref={rootRef}
-                className="relative mt-4 w-full"
-                style={{ height: virtualizer.getTotalSize() }}
-            >
-                {virtualizer.getVirtualItems().map((virtualRow) => (
-                    <div
-                        key={virtualRow.key}
-                        ref={virtualizer.measureElement}
-                        data-index={virtualRow.index}
-                        className="absolute left-0 top-0 w-full"
-                        style={{
-                            transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-                            paddingBottom: DEVICE_VIRTUAL_ROW_GAP,
-                        }}
-                    >
-                        <div className={DEVICE_CARD_GRID_CLASS}>
-                            {rows[virtualRow.index].map((device) => (
-                                <DeviceGridItem
-                                    key={device.id}
-                                    device={device}
-                                    online={isDeviceOnline(device, statusNow)}
-                                    {...itemProps}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                ))}
-            </div>
-        );
-    }
-);
+const getDeviceKey = (device: Device.Overview) => device.id;
+const getDeviceSpan = (device: Device.Overview) =>
+    getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT ? 2 : 1;
+const DeviceGrid = memo(({ devices, ...itemProps }: DeviceGridProps) => {
+    if (devices.length === 0) return null;
+    return (
+        <VirtualGrid
+            className="mt-4 w-full"
+            rowClassName="items-stretch"
+            items={devices}
+            getItemKey={getDeviceKey}
+            getItemSpan={getDeviceSpan}
+            minItemWidth={DEVICE_CARD_MIN_WIDTH}
+            maxColumns={4}
+            estimateSize={340}
+            gap={DEVICE_GRID_GAP}
+            overscan={3}
+        >
+            {(device, span) => (
+                <DeviceGridItem
+                    key={device.id}
+                    device={device}
+                    span={span}
+                    online={isDeviceOnline(device)}
+                    {...itemProps}
+                />
+            )}
+        </VirtualGrid>
+    );
+});
 const EMPTY_COMMAND_IDS: string[] = [];
 const DevicePage = () => {
     const { modal, message } = App.useApp();
@@ -2749,12 +2392,7 @@ const DevicePage = () => {
         },
         [commandPending, message, submittedCommand, submitCommand]
     );
-    const [statusNow, setStatusNow] = useState(() => Date.now());
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        const timer = window.setInterval(() => setStatusNow(Date.now()), 5000);
-        return () => window.clearInterval(timer);
-    }, []);
     const {
         data,
         isLoading,
@@ -2778,20 +2416,15 @@ const DevicePage = () => {
         commandIds,
         enabled: canQuery && !!data,
     });
-    const { data: groupTree = [] } = useDeviceGroupTreeWithCount(
-        {
-            enabled: canQuery,
-            refetchOnWindowFocus: false,
-        },
-        debugDeviceId,
-        commandIds
-    );
-    const { data: linkOptions = [] } = useLinkOptions({
+    const { data: groupTree = EMPTY_GROUP_TREE, isLoading: isGroupTreeLoading } =
+        useDeviceGroupTreeWithCount({ enabled: canQuery }, debugDeviceId, commandIds);
+    const { data: linkOptions = EMPTY_LINK_OPTIONS } = useLinkOptions({
         enabled: canQuery,
         refetchOnWindowFocus: false,
     });
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
+    const loadDeviceDetail = useDeviceDetailLoader();
     const committedDevices = useRef<Device.Overview[]>([]);
     const deviceList = useMemo(() => {
         const realtimeSnapshotById = new Map(
@@ -2804,6 +2437,8 @@ const DevicePage = () => {
                 ...device,
                 connected: snapshot.connected,
                 connectionState: snapshot.connectionState,
+                runtimeState: snapshot.runtimeState,
+                runtimeReason: snapshot.runtimeReason,
                 reportTime: snapshot.reportTime,
                 elements: snapshot.elements ?? device.elements,
                 edgeStatus: snapshot.edgeStatus ?? device.edgeStatus,
@@ -2857,10 +2492,7 @@ const DevicePage = () => {
             )
         );
     }, [normalizedKeyword, scopedDevices]);
-    const stats = useMemo(
-        () => buildDeviceStats(scopedDevices, statusNow),
-        [scopedDevices, statusNow]
-    );
+    const stats = useMemo(() => buildDeviceStats(scopedDevices), [scopedDevices]);
     const protocolStatsEntries = useMemo(
         () => Object.entries(stats.byProtocol),
         [stats.byProtocol]
@@ -2876,8 +2508,8 @@ const DevicePage = () => {
         return map;
     }, [filteredDevices]);
     const groupStats = useMemo(
-        () => buildGroupStats(groupTree, visibleDeviceMap, statusNow),
-        [groupTree, statusNow, visibleDeviceMap]
+        () => buildGroupStats(groupTree, visibleDeviceMap),
+        [groupTree, visibleDeviceMap]
     );
     const groupRoots = useMemo(() => {
         if (selectedGroupId === 'ungrouped') return [];
@@ -2942,7 +2574,7 @@ const DevicePage = () => {
             if (!device.can_command || device.remote_control === false) return;
             setCommandLoadingId(device.id);
             try {
-                const detail = await getDeviceDetail(device.id);
+                const detail = await loadDeviceDetail(device.id);
                 const operations = detail.commandOperations ?? EMPTY_COMMAND_OPERATIONS;
                 if (!operations.length) {
                     message.info('当前协议没有可下发要素');
@@ -2957,7 +2589,7 @@ const DevicePage = () => {
                 setCommandLoadingId(undefined);
             }
         },
-        [message]
+        [loadDeviceDetail, message]
     );
     const selectCommandOperation = useCallback((operation: Device.CommandOperation) => {
         setCommandFunc(operation);
@@ -2973,9 +2605,7 @@ const DevicePage = () => {
             debugDeviceId={debugDeviceId}
             onDebug={setDebugDeviceId}
             devices={devices}
-            statusNow={statusNow}
             linkById={linkById}
-            scrollElementRef={scrollContainerRef}
             onHistory={openHistory}
             onShare={openShare}
             onEdit={openEdit}
@@ -3053,7 +2683,7 @@ const DevicePage = () => {
                             没有绑定设备分组的卡片会统一在这里展示
                         </div>
                     </div>
-                    {renderSectionStats(buildDeviceStats(devices, statusNow))}
+                    {renderSectionStats(buildDeviceStats(devices))}
                 </Flex>
                 {renderDeviceCards(devices)}
             </section>
@@ -3097,8 +2727,8 @@ const DevicePage = () => {
                     <h3 className="m-0 text-base font-medium">设备管理</h3>
                     <Space wrap>
                         <DeviceGroupPanel
-                            commandIds={commandIds}
-                            debugDeviceId={debugDeviceId}
+                            groups={groupTree}
+                            loading={isGroupTreeLoading}
                             selectedGroupId={selectedGroupId}
                             onSelect={setSelectedGroupId}
                             canManageGroup={canManageGroup}
@@ -3240,9 +2870,7 @@ const DevicePage = () => {
                                     <div className="text-sm font-semibold text-slate-800">
                                         {selectedGroup?.name ?? '全部设备'}
                                     </div>
-                                    {renderSectionStats(
-                                        buildDeviceStats(filteredDevices, statusNow)
-                                    )}
+                                    {renderSectionStats(buildDeviceStats(filteredDevices))}
                                 </Flex>
                                 {renderDeviceCards(filteredDevices)}
                             </section>
