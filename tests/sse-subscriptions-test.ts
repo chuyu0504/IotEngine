@@ -4,6 +4,7 @@ import { expect, spyOn, test } from 'bun:test';
 import { queryUrl } from '../web/lib/http';
 import { type LiveSession, LiveSubscriptions } from '../web/lib/live_subscriptions';
 import { SseTransport } from '../web/lib/sse_transport';
+import { consumeServerSentEvents, ServerSentEventIdleError } from '../web/lib/sse';
 import { getList as getLinks, getDebugPackets } from '../web/pages/link/link.api';
 import { useAuthStore } from '../web/store/auth_store';
 
@@ -689,4 +690,19 @@ test('video status reads use HTTP while device changes keep one SSE', async () =
         if (previousStorage) Object.defineProperty(globalThis, 'sessionStorage', previousStorage);
         else Reflect.deleteProperty(globalThis, 'sessionStorage');
     }
+});
+
+test('a stream silent beyond the idle limit ends and is cancelled, keepalives keep it open', async () => {
+    const wire = connection();
+    const events: string[] = [];
+    const consumed = consumeServerSentEvents(wire.response.body!, event => events.push(event.event), undefined, 80);
+    for (let index = 0; index < 4; index++) {
+        await Bun.sleep(40);
+        wire.keepalive();
+    }
+    wire.send('snapshot', { code: 0, data: 1 });
+    expect(await Promise.race([consumed.then(() => 'ended', () => 'failed'), Bun.sleep(40).then(() => 'open')])).toBe('open');
+    await expect(consumed).rejects.toBeInstanceOf(ServerSentEventIdleError);
+    expect(events).toEqual(['snapshot']);
+    expect(wire.cancelled()).toBe(true);
 });

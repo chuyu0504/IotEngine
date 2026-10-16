@@ -7,9 +7,11 @@
 #include <utility>
 
 #include <ruvia/web/context.h>
-#include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/db/db_handle.h>
+#include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/redis/redis_handle.h>
+
+#include "service/utils/change_feed.h"
 
 namespace service::middleware {
 
@@ -43,12 +45,25 @@ class RequestContext {
 
     const auto& env() const { return connection_.env(); }
 
+    // Live connections share authorization facts through the worker's change
+    // feed until the next auth change; plain requests always load them.
+    void shareAuthorization(service::utils::ChangeFeed& feed) { authorizations_ = &feed; }
+
+    template <typename Value, typename Load>
+    ruvia::task<Value> authorization(std::string key, Load load) {
+        if (authorizations_ == nullptr) {
+            co_return co_await load();
+        }
+        co_return co_await authorizations_->authorization<Value>(std::move(key), std::move(load));
+    }
+
     std::string userId;
     ruvia::stop_token stop;
 
   private:
     ruvia::context& connection_;
     std::pmr::monotonic_buffer_resource memory_;
+    service::utils::ChangeFeed* authorizations_ = nullptr;
 };
 
 // Bound by authentication middleware for this request only. The query runs

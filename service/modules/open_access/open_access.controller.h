@@ -344,10 +344,10 @@ class AccessController final {
 
     ruvia::task<void> history(ruvia::context& c) {
         bool audited = false;
-        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceRealtime) },
+        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceHistory) },
             [this, &c, &audited]() { return historySnapshot(c, audited); },
             [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
-                return touches(changes, service::message::live::topic::kDeviceRealtime, device);
+                return touches(changes, service::message::live::topic::kDeviceHistory, device);
             },
             [&c]() -> ruvia::task<void> { (void)co_await accessService().authenticate(c, kScopeHistory); });
     }

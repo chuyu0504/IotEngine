@@ -754,7 +754,9 @@ inline constexpr std::string_view kSchemaVersion{"2"};
 inline constexpr std::size_t kMaximumIds = 1000;
 
 // Entity kinds published on kChanges. Each producer owns the meaning of ids:
-// device/device.state/device.realtime → device ids; device-group → group ids;
+// device/device.state/device.realtime/device.history → device ids
+// (device.realtime: latest values; device.history: persisted history rows);
+// device-group → group ids;
 // link → link ids; protocol → protocol config ids; edge, edge-dtu, edge-logs →
 // edge node ids; edge-group → edge node group ids; alert → alert record ids;
 // alert-rule → alert rule ids; command → command operation ids; packet-debug →
@@ -764,6 +766,7 @@ inline constexpr std::string_view kDevice{"device"};
 inline constexpr std::string_view kDeviceGroup{"device-group"};
 inline constexpr std::string_view kDeviceState{"device.state"};
 inline constexpr std::string_view kDeviceRealtime{"device.realtime"};
+inline constexpr std::string_view kDeviceHistory{"device.history"};
 inline constexpr std::string_view kLink{"link"};
 inline constexpr std::string_view kProtocol{"protocol"};
 inline constexpr std::string_view kEdge{"edge"};

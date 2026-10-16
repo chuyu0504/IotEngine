@@ -864,9 +864,17 @@ try {
     liveStreams = [];
 
     const configStreams = await findConfigStreams(1);
-    const configLengths = await Promise.all(
-        configStreams.map(async (stream) => Number(await redis.send('XLEN', [stream])))
-    );
+    // Collector Workers delete acknowledged config entries, so count additions.
+    const entriesAdded = async (stream: string) => {
+        const info = (await redis.send('XINFO', ['STREAM', stream])) as unknown;
+        const fields = Array.isArray(info)
+            ? Object.fromEntries(
+                  Array.from({ length: info.length / 2 }, (_, index) => [info[index * 2], info[index * 2 + 1]])
+              )
+            : (info as Record<string, unknown>);
+        return Number(fields['entries-added']);
+    };
+    const configLengths = await Promise.all(configStreams.map(entriesAdded));
     await redis.send('XADD', [
         'iot:live:changes',
         '*',
@@ -878,16 +886,12 @@ try {
         '',
     ]);
     await until(async () => {
-        const lengths = await Promise.all(
-            configStreams.map(async (stream) => Number(await redis.send('XLEN', [stream])))
-        );
+        const lengths = await Promise.all(configStreams.map(entriesAdded));
         return lengths.every((length, index) => length > configLengths[index]);
     }, 'shared live configuration notification was not relayed to every Collector Worker');
     // Every Service Worker reads the entry; the per-instance claim lets exactly one relay it.
     await Bun.sleep(500);
-    const relayedLengths = await Promise.all(
-        configStreams.map(async (stream) => Number(await redis.send('XLEN', [stream])))
-    );
+    const relayedLengths = await Promise.all(configStreams.map(entriesAdded));
     assert.deepEqual(
         relayedLengths,
         configLengths.map((length) => length + 1),

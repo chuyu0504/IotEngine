@@ -633,6 +633,8 @@ iot_engine_add_integration(open-mqtt-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
 iot_engine_add_integration(mqtt-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
+iot_engine_add_integration(entity-live-changes-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
 
 iot_engine_add_integration_fixture(storage-policy MANAGED)
 iot_engine_add_integration(storage-policy-integration FIXTURE storage-policy)

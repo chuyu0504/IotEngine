@@ -1,20 +1,21 @@
 #pragma once
 
+#include <any>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <spdlog/spdlog.h>
 
 #include <ruvia/core/channel.h>
 #include <ruvia/core/stop_token.h>
@@ -95,7 +96,7 @@ class ChangeFeed final {
                 co_return ChangeWait::Changed;
             }
             co_return result.status() == ruvia::worker_wait_status::timed_out ? ChangeWait::TimedOut
-                                                                                : ChangeWait::Stopped;
+                                                                              : ChangeWait::Stopped;
         }
 
         [[nodiscard]] ChangeSet take() { return std::exchange(pending_, {}); }
@@ -184,7 +185,55 @@ class ChangeFeed final {
         }
     }
 
+    // Authorization facts (permission grants, data-scope actors) shared by the
+    // live connections of this worker: one load per key, reused until the
+    // reader sees an auth change, loses its position or stops. Revocation thus
+    // reaches every connection with the auth event that also makes it resend
+    // its snapshots. Without a positioned reader nothing is kept.
+    template <typename Value, typename Load>
+    ruvia::task<Value> authorization(std::string key, Load load) {
+        for (;;) {
+            if (!ready_) {
+                co_return co_await load();
+            }
+            const auto found = authorizations_.find(key);
+            if (found == authorizations_.end()) {
+                break;
+            }
+            if (found->second.has_value()) {
+                co_return std::any_cast<Value>(found->second);
+            }
+            // Another connection is loading this key; it notifies when done.
+            co_await positioned_->signal.wait();
+        }
+        authorizations_.emplace(key, std::any{});
+        // Releases the in-flight marker however the load ends (value, error or
+        // a cancelled connection destroying this frame) and wakes the waiters.
+        PendingAuthorization pending{ *this, key, authorizationGeneration_ };
+        Value value = co_await load();
+        if (pending.generation == authorizationGeneration_) {
+            authorizations_.insert_or_assign(std::move(key), value);
+        }
+        co_return value;
+    }
+
   private:
+    struct PendingAuthorization final {
+        ~PendingAuthorization() {
+            if (generation == feed.authorizationGeneration_) {
+                const auto found = feed.authorizations_.find(key);
+                if (found != feed.authorizations_.end() && !found->second.has_value()) {
+                    feed.authorizations_.erase(found);
+                }
+            }
+            feed.positioned_->signal.notify();
+        }
+
+        ChangeFeed& feed;
+        std::string key;
+        std::uint64_t generation;
+    };
+
     static constexpr auto kLinger = std::chrono::seconds(60);
     static constexpr std::size_t kBatch = 512;
 
@@ -197,7 +246,9 @@ class ChangeFeed final {
             positioned_ = std::make_unique<Positioning>(context.worker());
         }
         auto subscription = std::make_shared<Subscription>(context.worker(), std::move(topics), std::move(directed));
-        std::erase_if(subscriptions_, [](const auto& entry) { return entry.expired(); });
+        std::erase_if(subscriptions_, [](const auto& entry) {
+            return entry.expired();
+        });
         subscriptions_.push_back(subscription);
         if (!running_) {
             start(context);
@@ -223,14 +274,19 @@ class ChangeFeed final {
         failure_ = nullptr;
         streams_ = { std::string(service::message::live::kChanges),
                      service::message::live::workerStream(service::runtime::instanceId(), *topology.index) };
-        if (!worker.post([this](ruvia::web_worker_context& reader) { return read(reader); }).accepted()) {
+        if (!worker.post([this](ruvia::web_worker_context& reader) {
+                       return read(reader);
+                   })
+                 .accepted()) {
             running_ = false;
             throw std::runtime_error("change feed reader rejected");
         }
     }
 
     [[nodiscard]] bool idle() {
-        std::erase_if(subscriptions_, [](const auto& entry) { return entry.expired(); });
+        std::erase_if(subscriptions_, [](const auto& entry) {
+            return entry.expired();
+        });
         return subscriptions_.empty();
     }
 
@@ -253,7 +309,12 @@ class ChangeFeed final {
             bool failed = false;
             try {
                 const auto batches = co_await service::message::redis::readStreamsBlocking(
-                    redis, streams_, cursors_, stop, kLinger, kBatch
+                    redis,
+                    streams_,
+                    cursors_,
+                    stop,
+                    kLinger,
+                    kBatch
                 );
                 if (batches.empty() && idle()) {
                     break;
@@ -275,6 +336,8 @@ class ChangeFeed final {
                 failed = true;
             }
             if (failed) {
+                // Auth changes may have been missed while the position was lost.
+                clearAuthorizations();
                 for (const auto& entry : subscriptions_) {
                     if (const auto subscription = entry.lock()) {
                         subscription->recover();
@@ -285,6 +348,12 @@ class ChangeFeed final {
         }
         running_ = false;
         ready_ = false;
+        clearAuthorizations();
+    }
+
+    void clearAuthorizations() {
+        ++authorizationGeneration_;
+        authorizations_.clear();
     }
 
     void deliver(bool broadcast, const service::message::StreamMessage& entry) {
@@ -293,6 +362,9 @@ class ChangeFeed final {
             return;
         }
         const auto ids = broadcast ? entry.get(service::message::live::kIdsField) : std::string_view{};
+        if (broadcast && topic == service::message::live::topic::kAuth) {
+            clearAuthorizations();
+        }
         std::erase_if(subscriptions_, [&](const auto& weak) {
             const auto subscription = weak.lock();
             if (!subscription) {
@@ -307,18 +379,24 @@ class ChangeFeed final {
     }
 
     std::vector<std::weak_ptr<Subscription>> subscriptions_;
+
     // worker_signal borrows its worker handle; both stay at a stable address.
     struct Positioning {
         explicit Positioning(ruvia::worker_handle owner) : worker(std::move(owner)), signal(worker) {}
+
         ruvia::worker_handle worker;
         ruvia::worker_signal signal;
     };
+
     std::unique_ptr<Positioning> positioned_;
     std::exception_ptr failure_;
     std::vector<std::string> streams_;
     std::vector<std::string> cursors_;
     bool running_ = false;
     bool ready_ = false;
+    // Values of authorization(); an empty std::any marks a load in flight.
+    std::map<std::string, std::any, std::less<>> authorizations_;
+    std::uint64_t authorizationGeneration_ = 0;
 };
 
 } // namespace service::utils

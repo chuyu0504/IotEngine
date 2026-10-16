@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/message.h"
+#include "service/features/live/live.service.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/features/telemetry/telemetry.protocol.h"
 
@@ -223,7 +224,9 @@ class TelemetryService {
                 for (const auto& parsed : parsedMessages) deviceIds.emplace_back(parsed.deviceId);
                 std::ranges::sort(deviceIds);
                 deviceIds.erase(std::unique(deviceIds.begin(), deviceIds.end()), deviceIds.end());
-                co_await latest::publishRealtimeChange(redis, deviceIds);
+                // Latest publishes device.realtime for the same samples; History
+                // only tells readers of persisted rows (open history stream).
+                co_await service::live::publish(redis, service::message::live::topic::kDeviceHistory, deviceIds);
                 break;
             }
             case Consumer::Latest:

@@ -144,7 +144,13 @@ try {
     assert.equal((await publicList(rotated.accessKey)).data.list[0].id, device);
     assert.equal((await publicStream(rotated.accessKey)).data.list[0].id, device);
     // Entity-level trigger: a change of another device is not this key's
-    // snapshot; the next change of the requested device is revision 2.
+    // snapshot; the next change of the requested device is revision 2. The
+    // realtime view reads the asynchronously published runtime projection.
+    const projected = Date.now() + 15000;
+    while ((await fetch(`${apiBase}/open-api/device/realtime?deviceId=${device}`,{headers:{'X-Access-Key':rotated.accessKey,Accept:'application/json'}})).status !== 200) {
+        assert(Date.now() < projected,'device realtime projection was not published');
+        await Bun.sleep(50);
+    }
     const frames = await publicFrames(`/open-api/device/realtime?deviceId=${device}`,rotated.accessKey);
     try {
         const initial = await frames.next();

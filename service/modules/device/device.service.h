@@ -58,8 +58,20 @@ class DeviceAccessService {
         return service;
     }
 
+    // The caller's data scope. Live connections share it until the next
+    // authorization change; other requests resolve it per call.
     template <typename Context>
     ruvia::task<DeviceActor> actor(Context& c, std::string_view userId) const {
+        auto load = [this, &c, userId]() { return resolveActor(c, userId); };
+        if constexpr (requires { c.template authorization<DeviceActor>(std::string{}, load); }) {
+            co_return co_await c.template authorization<DeviceActor>("device-actor:" + std::string(userId), load);
+        } else {
+            co_return co_await load();
+        }
+    }
+
+    template <typename Context>
+    ruvia::task<DeviceActor> resolveActor(Context& c, std::string_view userId) const {
         ruvia::db_query query(c.pool());
         const auto roleCode = query.column(std::tuple_element_t<service::device::entities::SysRoleEntity::column_index<"code">(), service::device::entities::SysRoleEntity::columns_type>::name.view(), "role");
         const auto isSuperadmin = query.binary(roleCode, ruvia::db_binary_operator::equal, query.value("superadmin"));

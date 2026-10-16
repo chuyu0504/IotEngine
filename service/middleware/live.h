@@ -179,6 +179,8 @@ inline service::utils::ChangeSet relevant(const service::utils::ChangeSet& chang
 // and on recovery; afterwards only committed changes of its declared topics reach
 // it, answered by `update` with the affected entities. Authorization changes
 // (topic auth) re-run every channel because they may change the visible scope.
+// Permission and scope resolution is shared by the worker's live connections
+// and reloaded after each auth change (ChangeFeed::authorization).
 template <typename CheckToken, typename OnKeepalive>
 ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::vector<LiveChannel> channels, CheckToken checkToken, OnKeepalive onKeepalive) {
     using namespace std::chrono_literals;
@@ -196,11 +198,13 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
             }
         }
     }
-    auto subscription = co_await context.worker_state<service::utils::ChangeFeed>().watch(context, std::move(topics));
+    auto& feed = context.worker_state<service::utils::ChangeFeed>();
+    auto subscription = co_await feed.watch(context, std::move(topics));
     auto snapshot = [&](const LiveChannel& channel) -> ruvia::task<std::string> {
         std::string payload;
         try {
             RequestContext request(context, userId);
+            request.shareAuthorization(feed);
             payload = co_await channel.snapshot(request);
         } catch (const ruvia::http_error& failure) {
             payload = live_detail::failurePayload(context, failure);
@@ -213,6 +217,7 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
         std::optional<std::string> payload;
         try {
             RequestContext request(context, userId);
+            request.shareAuthorization(feed);
             payload = co_await channel.update(request, changes);
         } catch (const ruvia::http_error& failure) {
             payload = live_detail::failurePayload(context, failure);
@@ -266,29 +271,30 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
                 continue;
             } else if (resend || !channel.update) {
                 payload = co_await snapshot(channel);
-                // A full resend (authorization, recovery or a channel without
-                // entity updates) is skipped when the client already holds it.
-                const auto digest = std::hash<std::string>{}(*payload);
-                if (sent[index] == digest) {
-                    continue;
-                }
-                sent[index] = digest;
             } else {
                 payload = co_await update(channel, relevant);
-                if (payload) {
-                    sent[index].reset();
-                }
             }
-            if (payload) {
-                co_await stream.write({ .data_ = *payload, .event_ = channel.event });
+            if (!payload) {
+                continue;
             }
+            // A payload identical to the previous one of this channel (a change
+            // already covered by the subscription snapshot, a resend after an
+            // unrelated authorization change) tells the client nothing.
+            const auto digest = std::hash<std::string>{}(*payload);
+            if (sent[index] == digest) {
+                continue;
+            }
+            sent[index] = digest;
+            co_await stream.write({ .data_ = *payload, .event_ = channel.event });
         }
     }
 }
 
 template <typename CheckToken>
 ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::vector<LiveChannel> channels, CheckToken checkToken) {
-    co_await serveLive(context, std::move(userId), std::move(channels), std::move(checkToken), []() -> ruvia::task<void> { co_return; });
+    co_await serveLive(context, std::move(userId), std::move(channels), std::move(checkToken), []() -> ruvia::task<void> {
+        co_return;
+    });
 }
 
 } // namespace service::middleware
