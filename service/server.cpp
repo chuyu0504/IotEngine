@@ -644,6 +644,12 @@ void configureServer(
                 return service::edge::config::PlatformIdentity{platformId};
             })
         .use_worker_state<service::edge::SessionDispatcher>()
+        .use_worker_state<service::device::DeviceCommandPort>([] {
+            return service::device::DeviceCommandPort{
+                &service::command::CommandService::statuses<service::middleware::RequestContext>,
+                &service::command::CommandService::fillOperations<service::middleware::RequestContext>,
+            };
+        })
         .database(ruvia::db_registration_config{
             .config_ = std::move(components.database),
         })

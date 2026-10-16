@@ -62,10 +62,10 @@ int main() {
         require(now.size() == 20 && now[4] == '-' && now[7] == '-' && now[10] == 'T' &&
                     now[13] == ':' && now[16] == ':' && now[19] == 'Z',
                 "current timestamp must use the RFC 3339 wire format");
-        const auto key = service::access::generateAccessKey();
+        const auto key = service::open_access::generateAccessKey();
         require(key.starts_with("ak_") && key.size() == 51, "AccessKey format contract changed");
-        require(service::access::supportedScope("device:command") &&
-                    !service::access::supportedScope("device:admin"),
+        require(service::open_access::supportedScope("device:command") &&
+                    !service::open_access::supportedScope("device:admin"),
                 "scope allowlist contract changed");
         require(service::message::supportedEvent("device.data.reported") &&
                     !service::message::supportedEvent("device.deleted"),

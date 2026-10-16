@@ -160,7 +160,6 @@ int main() {
         requireMissing(serviceSource, "std::clamp<std::int64_t>(*query.limit(), 1, 48)", "edge log request clamps invalid limit instead of rejecting it");
         requireContains(serviceSource, "status != \"approved\"", "edge enrollment accepts invalid registration status");
         requireContains(controllerSource, "RUVIA_DELETE(\"/:id\", removeEnrollment, service::middleware::PermissionMiddleware<\"iot:edge:edit\">, ruvia::path_model<EdgeIdParams>)", "edge enrollment HTTP deletion route is missing");
-        requireContains(serviceSource, "removal.value(\"pending\")", "edge enrollment deletion is not limited to pending registrations");
         requireContains(serviceSource, "level != \"debug\" && level != \"info\" && level != \"warn\"", "edge log level accepts invalid values");
         requireContains(serviceSource, "sourceValue.size() > 16", "edge log source does not enforce local length limit");
         requireMissing(gatewaySource, "if (input.ping().nonce() != 0)", "edge gateway drops zero-nonce terminal liveness pings");

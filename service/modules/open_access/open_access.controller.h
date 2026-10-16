@@ -16,7 +16,7 @@
 #include "service/utils/json.h"
 #include "service/utils/text.h"
 
-namespace service::access {
+namespace service::open_access {
 
 inline ruvia::http_response jsonData(ruvia::context& c, std::string_view data, std::string_view message = "ok") {
     std::pmr::string body(c.allocator<char>());
@@ -364,4 +364,4 @@ class AccessController final {
     }
 };
 
-} // namespace service::access
+} // namespace service::open_access

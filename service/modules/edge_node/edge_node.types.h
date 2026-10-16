@@ -8,7 +8,7 @@
 
 #include <ruvia/web/validation.h>
 
-namespace service::edge {
+namespace service::edge_node {
 
 inline constexpr auto kDefaultDtu = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultLogs = RUVIA_DEFAULT(false){};
@@ -166,4 +166,4 @@ RUVIA_MODEL(EdgePageResponse,
     RUVIA_REQUIRED_FIELD(message, ruvia::string),
     RUVIA_REQUIRED_FIELD(data, EdgePageDto));
 
-} // namespace service::edge
+} // namespace service::edge_node

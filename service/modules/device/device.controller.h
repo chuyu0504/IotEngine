@@ -47,7 +47,7 @@ class DeviceController final {
 
   private:
     ruvia::task<DeviceCommandStatusesResponse> queryCommandStatuses(service::middleware::RequestContext& request, std::string_view ids) {
-        co_return service::common::ok<DeviceCommandStatusesResponse>(request, co_await deviceService().commandStatuses(request, ids));
+        co_return service::common::ok<DeviceCommandStatusesResponse>(request, co_await deviceCommandPort(request).statuses(request, ids));
     }
 
     ruvia::task<DeviceDebugPacketsResponse> queryDebugPackets(service::middleware::RequestContext& request, std::string_view deviceId) {

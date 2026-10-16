@@ -27,7 +27,7 @@ class ValidationRoutes final {
     RUVIA_POST("/devices", createDevice, ruvia::json_body<service::device::CreateDeviceBody>);
     RUVIA_PUT("/devices", updateDevice, ruvia::json_body<service::device::UpdateDeviceBody>);
     RUVIA_POST("/debug", debug, ruvia::json_body<service::device::DeviceDebugBody>);
-    RUVIA_POST("/network", network, ruvia::json_body<service::edge::NetworkBody>);
+    RUVIA_POST("/network", network, ruvia::json_body<service::edge_node::NetworkBody>);
     RUVIA_POST("/user", createUser, ruvia::json_body<service::user::CreateUserBody>);
     RUVIA_GET("/users", query, ruvia::query_model<service::user::UserListQuery>);
     RUVIA_GET("/device/:deviceId", device, ruvia::path_model<service::gb28181::GbDeviceParams>);

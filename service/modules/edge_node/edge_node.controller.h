@@ -29,7 +29,7 @@
 #include "service/modules/edge_node/edge_node.types.h"
 #include "service/modules/edge_node/edge_node.service.h"
 
-namespace service::edge::debug {
+namespace service::edge_node::debug {
 
 class EventError final : public std::runtime_error {
   public:
@@ -201,13 +201,13 @@ class EventRegistry final {
     bool sealed_{};
 };
 
-} // namespace service::edge::debug
+} // namespace service::edge_node::debug
 
-namespace service::edge {
+namespace service::edge_node {
 
 class DebugConnection final {
   public:
-    DebugConnection(ruvia::context& context, service::edge::debug::EventRegistry& registry)
+    DebugConnection(ruvia::context& context, service::edge_node::debug::EventRegistry& registry)
         : context_(context), socket_(context.get_websocket()), tasks_(context.worker(), { .resource_ = context.pool() }),
           registry_(registry),
           identity_{ context.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next() } {}
@@ -221,7 +221,7 @@ class DebugConnection final {
                     malformed = true;
                     break;
                 }
-                co_await accept(service::edge::debug::Request::parse(frame->payload()));
+                co_await accept(service::edge_node::debug::Request::parse(frame->payload()));
             }
         } catch (...) {
             malformed = true;
@@ -249,7 +249,7 @@ class DebugConnection final {
         explicit Operation(const ruvia::worker_handle& worker)
             : completion(ruvia::make_channel<int>(worker, { .capacity_ = 1 })) {}
 
-        service::edge::debug::Request request;
+        service::edge_node::debug::Request request;
         ruvia::stop_source stop;
         std::any state;
         std::pair<ruvia::channel_sender<int>, ruvia::channel_receiver<int>> completion;
@@ -269,7 +269,7 @@ class DebugConnection final {
         co_await reply(id, data, true);
     }
 
-    ruvia::task<void> accept(service::edge::debug::Request request) {
+    ruvia::task<void> accept(service::edge_node::debug::Request request) {
         if (seen_.size() >= 100000) {
             co_await reject(request.id, 10002, "当前会话请求数量已达上限，请重新连接");
             co_return;
@@ -324,11 +324,11 @@ class DebugConnection final {
         try {
             do {
                 const auto revision = identity_.revision;
-                service::edge::debug::EventContext event(context_, identity_, request, stop, resources_, operation->state);
+                service::edge_node::debug::EventContext event(context_, identity_, request, stop, resources_, operation->state);
                 const auto policy = registry_.policy(request.event);
                 if (policy.authenticated) {
                     if (identity_.accessToken.empty()) {
-                        throw service::edge::debug::EventError(11004, "未登录");
+                        throw service::edge_node::debug::EventError(11004, "未登录");
                     }
                     const auto principal = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
                     event.userId = principal.userId;
@@ -375,7 +375,7 @@ class DebugConnection final {
                         break;
                     }
                     if (identity_.accessToken.empty()) {
-                        throw service::edge::debug::EventError(11004, "未登录");
+                        throw service::edge_node::debug::EventError(11004, "未登录");
                     }
                     (void)service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
                     if (change.has_value()) {
@@ -383,7 +383,7 @@ class DebugConnection final {
                     }
                 }
             } while (!stop.stop_requested());
-        } catch (const service::edge::debug::EventError& error) {
+        } catch (const service::edge_node::debug::EventError& error) {
             code = error.code;
             message = error.what();
         } catch (const ruvia::validation_error&) {
@@ -415,7 +415,7 @@ class DebugConnection final {
     }
 
     ruvia::task<void> closeResources(std::string_view retainedOwner) {
-        std::vector<std::pair<std::string, std::shared_ptr<service::edge::debug::ConnectionResource>>> closing;
+        std::vector<std::pair<std::string, std::shared_ptr<service::edge_node::debug::ConnectionResource>>> closing;
         for (const auto& [id, resource] : resources_) {
             if (resource->owner != retainedOwner || resource->lifetime.stop_requested()) {
                 resource->lifetime.request_stop();
@@ -423,9 +423,9 @@ class DebugConnection final {
             }
         }
         for (const auto& [id, resource] : closing) {
-            const service::edge::debug::Request request;
+            const service::edge_node::debug::Request request;
             std::any state;
-            service::edge::debug::EventContext event(context_, identity_, request, {}, resources_, state);
+            service::edge_node::debug::EventContext event(context_, identity_, request, {}, resources_, state);
             event.userId = resource->owner;
             try {
                 co_await resource->close(event);
@@ -450,9 +450,9 @@ class DebugConnection final {
                 continue;
             }
             const auto revision = identity_.revision;
-            const service::edge::debug::Request request;
+            const service::edge_node::debug::Request request;
             std::any state;
-            service::edge::debug::EventContext event(context_, identity_, request, stop, resources_, state);
+            service::edge_node::debug::EventContext event(context_, identity_, request, stop, resources_, state);
             bool denied = false;
             try {
                 event.userId = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
@@ -484,9 +484,9 @@ class DebugConnection final {
     ruvia::context& context_;
     ruvia::websocket& socket_;
     ruvia::task_scope tasks_;
-    service::edge::debug::EventRegistry& registry_;
-    service::edge::debug::ConnectionResources resources_;
-    service::edge::debug::SessionIdentity identity_;
+    service::edge_node::debug::EventRegistry& registry_;
+    service::edge_node::debug::ConnectionResources resources_;
+    service::edge_node::debug::SessionIdentity identity_;
     std::unordered_map<std::string, std::shared_ptr<Operation>> operations_;
     std::unordered_set<std::string> seen_;
     bool closing_{};
@@ -503,7 +503,7 @@ class EdgeController final {
     RUVIA_ROUTES_END
 
   private:
-    void registerDebugOperations(service::edge::debug::EventRegistry& registry) {
+    void registerDebugOperations(service::edge_node::debug::EventRegistry& registry) {
         registry.add<EdgeController, &EdgeController::authenticateDebugConnection, DebugAuthenticationBody>("edge.debug.authenticate", *this, { .authenticated = false });
         registry.add<EdgeController, &EdgeController::openSerial, NodeSerialOpenInput>("edge.serial.open", *this, { .permission = "iot:edge:terminal" });
         registry.add<EdgeController, &EdgeController::sendSerialCommand, NodeSerialCommandInput>("edge.serial.command", *this, { .permission = "iot:edge:terminal" });
@@ -519,31 +519,31 @@ class EdgeController final {
     }
 
     ruvia::task<void> debugConnection(ruvia::context& context) {
-        service::edge::debug::EventRegistry registry;
+        service::edge_node::debug::EventRegistry registry;
         registerDebugOperations(registry);
         registry.seal();
         DebugConnection session(context, registry);
         co_await session.run();
     }
 
-    ruvia::task<service::edge::debug::EventResult> authenticateDebugConnection(service::edge::debug::EventContext& c, const DebugAuthenticationBody& body) {
+    ruvia::task<service::edge_node::debug::EventResult> authenticateDebugConnection(service::edge_node::debug::EventContext& c, const DebugAuthenticationBody& body) {
         const auto revision = c.identity.revision;
         const auto token = body.get<"token">().view();
         co_await edgeService().authenticateDebugConnection(c, token);
         if (c.stop.stop_requested() || c.identity.revision != revision) {
-            throw service::edge::debug::EventError(10002, "认证操作已取消或会话已变更");
+            throw service::edge_node::debug::EventError(10002, "认证操作已取消或会话已变更");
         }
         c.identity.accessToken.assign(token);
         ++c.identity.revision;
-        co_return service::edge::debug::EventResult{ "null", {}, true };
+        co_return service::edge_node::debug::EventResult{ "null", {}, true };
     }
 
-    class TerminalSession final : public service::edge::debug::ConnectionResource {
+    class TerminalSession final : public service::edge_node::debug::ConnectionResource {
       public:
         TerminalSession(std::string id, std::string owner, std::string node, std::string connection, unsigned columns, unsigned rows)
             : ConnectionResource(std::move(owner), "iot:edge:terminal"), id(std::move(id)), node(std::move(node)), connection(std::move(connection)), columns(columns), rows(rows) {}
 
-        ruvia::task<void> close(service::edge::debug::EventContext& c) override {
+        ruvia::task<void> close(service::edge_node::debug::EventContext& c) override {
             (void)co_await edgeService().terminalOperation(c, node, id, connection, "terminal-close");
         }
 
@@ -559,19 +559,19 @@ class EdgeController final {
     };
 
     template <typename Body>
-    static std::shared_ptr<TerminalSession> terminalSession(service::edge::debug::EventContext& c, const Body& body) {
+    static std::shared_ptr<TerminalSession> terminalSession(service::edge_node::debug::EventContext& c, const Body& body) {
         const auto found = c.resources.find("terminal:" + std::string(body.template get<"sessionId">().view()));
         const auto session = found == c.resources.end() ? nullptr : std::dynamic_pointer_cast<TerminalSession>(found->second);
         if (!session || session->owner != c.userId || session->node != body.template get<"id">().view() || session->lifetime.stop_requested()) {
-            throw service::edge::debug::EventError(17018, "终端已结束或不属于当前连接");
+            throw service::edge_node::debug::EventError(17018, "终端已结束或不属于当前连接");
         }
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
         return session;
     }
 
-    ruvia::task<service::edge::debug::EventResult> openTerminal(service::edge::debug::EventContext& c, const TerminalOpenInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> openTerminal(service::edge_node::debug::EventContext& c, const TerminalOpenInput& body) {
         if (c.resources.size() >= 8) {
-            throw service::edge::debug::EventError(17018, "当前连接的调试会话过多");
+            throw service::edge_node::debug::EventError(17018, "当前连接的调试会话过多");
         }
         const auto session = std::make_shared<TerminalSession>(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId, static_cast<unsigned>(body.get<"columns">().value_), static_cast<unsigned>(body.get<"rows">().value_));
         const auto key = "terminal:" + session->id;
@@ -583,10 +583,10 @@ class EdgeController final {
             const auto parsed = ruvia::from_json<service::message::terminal::OpenReply>(reply, { .resource_ = c.arena() });
             const auto version = parsed ? parsed->get<"protocolVersion">().value_ : 0;
             if (c.stop.stop_requested() || !parsed || parsed->get<"id">().view() != session->id || version < 1 || version > 100) {
-                throw service::edge::debug::EventError(17018, "终端打开已取消或响应无效");
+                throw service::edge_node::debug::EventError(17018, "终端打开已取消或响应无效");
             }
             session->protocolVersion = static_cast<unsigned>(version);
-            co_return service::edge::debug::EventResult{ "{\"id\":" + service::utils::jsonQuoted(session->id) + "}" };
+            co_return service::edge_node::debug::EventResult{ "{\"id\":" + service::utils::jsonQuoted(session->id) + "}" };
         } catch (...) {
             failure = std::current_exception();
         }
@@ -600,11 +600,11 @@ class EdgeController final {
         std::rethrow_exception(failure);
     }
 
-    ruvia::task<service::edge::debug::EventResult> terminalEvents(service::edge::debug::EventContext& c, const TerminalSessionInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> terminalEvents(service::edge_node::debug::EventContext& c, const TerminalSessionInput& body) {
         const auto session = terminalSession(c, body);
         if (!c.state.has_value()) {
             if (!session->outputSubscription.expired()) {
-                throw service::edge::debug::EventError(17018, "终端已有输出订阅");
+                throw service::edge_node::debug::EventError(17018, "终端已有输出订阅");
             }
             const auto subscription = std::make_shared<std::string>(c.request.id);
             session->outputSubscription = subscription;
@@ -613,15 +613,15 @@ class EdgeController final {
         const auto reply = co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-events");
         const auto parsed = ruvia::from_json<service::message::terminal::EventsReply>(reply, { .resource_ = c.arena() });
         if (!parsed) {
-            throw service::edge::debug::EventError(17018, "终端输出响应无效");
+            throw service::edge_node::debug::EventError(17018, "终端输出响应无效");
         }
-        co_return service::edge::debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed->get<"more">().value_, true };
+        co_return service::edge_node::debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed->get<"more">().value_, true };
     }
 
-    ruvia::task<service::edge::debug::EventResult> writeTerminal(service::edge::debug::EventContext& c, const TerminalWriteInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> writeTerminal(service::edge_node::debug::EventContext& c, const TerminalWriteInput& body) {
         const auto session = terminalSession(c, body);
         if (session->writing) {
-            throw service::edge::debug::EventError(17018, "上一笔终端输入尚未确认");
+            throw service::edge_node::debug::EventError(17018, "上一笔终端输入尚未确认");
         }
         session->writing = true;
         std::exception_ptr failure;
@@ -641,54 +641,54 @@ class EdgeController final {
             }
             std::rethrow_exception(failure);
         }
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    ruvia::task<service::edge::debug::EventResult> resizeTerminal(service::edge::debug::EventContext& c, const TerminalResizeInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> resizeTerminal(service::edge_node::debug::EventContext& c, const TerminalResizeInput& body) {
         const auto session = terminalSession(c, body);
         session->columns = static_cast<unsigned>(body.get<"columns">().value_);
         session->rows = static_cast<unsigned>(body.get<"rows">().value_);
         (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-resize", [&session](service::message::terminal::Request& request) {
             request.set<"columns">(session->columns).set<"rows">(session->rows);
         });
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    ruvia::task<service::edge::debug::EventResult> keepTerminalAlive(service::edge::debug::EventContext& c, const TerminalSessionInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> keepTerminalAlive(service::edge_node::debug::EventContext& c, const TerminalSessionInput& body) {
         const auto session = terminalSession(c, body);
         (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-keepalive", [&session](service::message::terminal::Request& request) {
             request.set<"columns">(session->columns).set<"rows">(session->rows);
         });
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    ruvia::task<service::edge::debug::EventResult> acknowledgeTerminalOutput(service::edge::debug::EventContext& c, const TerminalAckInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> acknowledgeTerminalOutput(service::edge_node::debug::EventContext& c, const TerminalAckInput& body) {
         const auto session = terminalSession(c, body);
         (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-output-ack", [&body](service::message::terminal::Request& request) {
             request.set<"sequence">(body.get<"sequence">().value_);
         });
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    ruvia::task<service::edge::debug::EventResult> closeTerminal(service::edge::debug::EventContext& c, const TerminalSessionInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> closeTerminal(service::edge_node::debug::EventContext& c, const TerminalSessionInput& body) {
         const auto key = "terminal:" + std::string(body.get<"sessionId">().view());
         if (!c.resources.contains(key)) {
-            co_return service::edge::debug::EventResult{};
+            co_return service::edge_node::debug::EventResult{};
         }
         const auto session = terminalSession(c, body);
         session->lifetime.request_stop();
         c.stop = {};
         co_await session->close(c);
         c.resources.erase(key);
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    class SerialSession final : public service::edge::debug::ConnectionResource {
+    class SerialSession final : public service::edge_node::debug::ConnectionResource {
       public:
         SerialSession(std::string id, std::string owner, std::string node, std::string connection)
             : ConnectionResource(std::move(owner), "iot:edge:terminal"), id(std::move(id)), node(std::move(node)), connection(std::move(connection)) {}
 
-        ruvia::task<void> close(service::edge::debug::EventContext& c) override {
+        ruvia::task<void> close(service::edge_node::debug::EventContext& c) override {
             (void)co_await edgeService().serialOperation(c, node, id, connection, "serial-close");
         }
 
@@ -697,18 +697,18 @@ class EdgeController final {
         const std::string connection;
     };
 
-    static std::shared_ptr<SerialSession> serialSession(service::edge::debug::EventContext& c, std::string_view node, std::string_view id) {
+    static std::shared_ptr<SerialSession> serialSession(service::edge_node::debug::EventContext& c, std::string_view node, std::string_view id) {
         const auto found = c.resources.find("serial:" + std::string(id));
         const auto session = found == c.resources.end() ? nullptr : std::dynamic_pointer_cast<SerialSession>(found->second);
         if (!session || session->owner != c.userId || session->node != node || session->lifetime.stop_requested()) {
-            throw service::edge::debug::EventError(17021, "串口会话已结束或不属于当前连接");
+            throw service::edge_node::debug::EventError(17021, "串口会话已结束或不属于当前连接");
         }
         return session;
     }
 
-    ruvia::task<service::edge::debug::EventResult> openSerial(service::edge::debug::EventContext& c, const NodeSerialOpenInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> openSerial(service::edge_node::debug::EventContext& c, const NodeSerialOpenInput& body) {
         if (c.resources.size() >= 8) {
-            throw service::edge::debug::EventError(17021, "当前连接的调试会话过多");
+            throw service::edge_node::debug::EventError(17021, "当前连接的调试会话过多");
         }
         const auto session = std::make_shared<SerialSession>(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId);
         const auto key = "serial:" + session->id;
@@ -720,9 +720,9 @@ class EdgeController final {
             configuration.set<"path">(body.get<"path">().view());
             const auto result = co_await edgeService().openSerialDebug(c, std::string(body.get<"id">().view()), configuration, session->connection, session->id);
             if (c.stop.stop_requested()) {
-                throw service::edge::debug::EventError(17021, "串口打开已取消");
+                throw service::edge_node::debug::EventError(17021, "串口打开已取消");
             }
-            co_return service::edge::debug::EventResult{ result };
+            co_return service::edge_node::debug::EventResult{ result };
         } catch (...) {
             failure = std::current_exception();
         }
@@ -737,21 +737,21 @@ class EdgeController final {
         std::rethrow_exception(failure);
     }
 
-    ruvia::task<service::edge::debug::EventResult> sendSerialCommand(service::edge::debug::EventContext& c, const NodeSerialCommandInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> sendSerialCommand(service::edge_node::debug::EventContext& c, const NodeSerialCommandInput& body) {
         const auto payload = ruvia::json_value::parse(c.request.data);
         const auto command = payload->get<ruvia::json_value>("command");
         if (!command || command->view().size() > 4096) {
-            throw service::edge::debug::EventError(10001, "串口指令过大");
+            throw service::edge_node::debug::EventError(10001, "串口指令过大");
         }
         const auto session = serialSession(c, std::string(body.get<"id">().view()), std::string(body.get<"sessionId">().view()));
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
         (void)co_await edgeService().serialOperation(c, session->node, session->id, session->connection, "serial-command", [&command](service::message::serial_debug::Request& request) {
             request.set<"command">(*command);
         });
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 
-    ruvia::task<service::edge::debug::EventResult> serialEvents(service::edge::debug::EventContext& c, const NodeSerialSessionInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> serialEvents(service::edge_node::debug::EventContext& c, const NodeSerialSessionInput& body) {
         const auto session = serialSession(c, body.get<"id">().view(), body.get<"sessionId">().view());
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
         if (!c.state.has_value()) {
@@ -759,19 +759,19 @@ class EdgeController final {
         }
         auto& cursor = std::any_cast<std::int64_t&>(c.state);
         const auto result = co_await edgeService().serialEvents(c, session->node, session->id, session->connection, cursor);
-        co_return service::edge::debug::EventResult{ result, service::message::serial_debug::eventTopic(session->node, session->id), false, session->lifetime.token() };
+        co_return service::edge_node::debug::EventResult{ result, service::message::serial_debug::eventTopic(session->node, session->id), false, session->lifetime.token() };
     }
 
-    ruvia::task<service::edge::debug::EventResult> closeSerial(service::edge::debug::EventContext& c, const NodeSerialSessionInput& body) {
+    ruvia::task<service::edge_node::debug::EventResult> closeSerial(service::edge_node::debug::EventContext& c, const NodeSerialSessionInput& body) {
         const auto key = "serial:" + std::string(body.get<"sessionId">().view());
         if (!c.resources.contains(key)) {
-            co_return service::edge::debug::EventResult{};
+            co_return service::edge_node::debug::EventResult{};
         }
         const auto session = serialSession(c, body.get<"id">().view(), body.get<"sessionId">().view());
         session->lifetime.request_stop();
         co_await session->close(c);
         c.resources.erase(key);
-        co_return service::edge::debug::EventResult{};
+        co_return service::edge_node::debug::EventResult{};
     }
 };
 
@@ -1071,4 +1071,4 @@ class EdgePublicController final {
     }
 };
 
-} // namespace service::edge
+} // namespace service::edge_node

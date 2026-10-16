@@ -18,7 +18,7 @@ class OutboxService final {
     static ruvia::task<void> enqueueQueryChange(Database& database, std::string_view topic,
         std::string_view aggregateId, std::string_view eventId) {
         ruvia::db_query query;
-        query.insert_into(OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version" })
+        query.insert_into(entities::OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version" })
             .values({query.cast(query.value(eventId), ruvia::db_data_type::uuid), query.value("query.changed"),
                 query.value(topic), query.value(aggregateId), query.value("UPDATE"), query.value(std::int32_t{1})});
         (void)co_await database.execute(query);
@@ -31,7 +31,7 @@ class OutboxService final {
             throw std::invalid_argument("unsupported outbox aggregate: " + std::string(aggregate));
         }
         ruvia::db_query query;
-        query.insert_into(OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version", "payload" })
+        query.insert_into(entities::OutboxEventEntity::table_name(), { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version", "payload" })
             .values({ query.cast(query.value(eventId), ruvia::db_data_type::uuid), query.value("config.changed"), query.value(aggregate), query.value(aggregateId), query.value(action), query.value(std::int32_t{ 1 }), query.cast(query.value("{}"), ruvia::db_data_type::jsonb) });
         (void)co_await database.execute(query);
     }

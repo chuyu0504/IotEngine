@@ -1480,3 +1480,18 @@ RUVIA_MODEL(RuntimeStatus,
     RUVIA_REQUIRED_FIELD(runtimePeerCount, ruvia::int64));
 
 } // namespace service::message::vpn
+
+namespace service::message::device {
+
+// 设备未配置时区时的默认时区。
+inline constexpr std::string_view kDefaultTimezone{"+08:00"};
+
+} // namespace service::message::device
+
+namespace service::message::edge::firmware {
+
+// 固件引用变化后通知本 Worker 的固件回收重算最近截止时间；载荷与回执均为空串。
+inline constexpr std::string_view kRpcComponent{"edge-firmware"};
+inline constexpr std::string_view kScheduleCleanupOperation{"schedule-cleanup"};
+
+} // namespace service::message::edge::firmware

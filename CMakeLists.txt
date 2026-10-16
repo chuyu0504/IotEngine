@@ -394,7 +394,7 @@ set_tests_properties(firmware-download PROPERTIES TIMEOUT 30)
 
 iot_engine_add_test(edge-debug-request LARGE
     SOURCES tests/edge-debug-request-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(edge-metadata
     SOURCES tests/edge-metadata-test.cpp

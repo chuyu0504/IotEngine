@@ -107,11 +107,11 @@ class OperationsService final {
 
     static ruvia::task<std::vector<WorkerDiagnosticSnapshot>>
     loadSnapshots(ruvia::context& context, std::size_t count) {
-        auto snapshots = context.redis().get_repository<WorkerSnapshotEntity>();
+        auto snapshots = context.redis().get_repository<entities::WorkerSnapshotEntity>();
         std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
-                .where_ = WorkerSnapshotEntity::field<"id">() ==
+                .where_ = entities::WorkerSnapshotEntity::field<"id">() ==
                     service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
             const auto snapshot = co_await snapshots.find_one(options);
             if (!snapshot) continue;
