@@ -9,12 +9,10 @@
 
 namespace service::live {
 
-inline constexpr std::string_view kChanges = service::message::live::kChanges;
-
 template <typename Redis>
 ruvia::task<void> publish(const Redis& redis, std::string_view topic) {
     const std::vector<std::string> args{
-        "XADD", std::string(kChanges), "MAXLEN", "~", "100000", "*",
+        "XADD", std::string(service::message::live::kChanges), "MAXLEN", "~", "100000", "*",
         std::string(service::message::live::kSchemaVersionField),
         std::string(service::message::live::kSchemaVersion),
         std::string(service::message::live::kTopicField), std::string(topic)};

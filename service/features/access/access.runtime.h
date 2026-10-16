@@ -137,13 +137,13 @@ class DeliveryRuntime final {
             const auto redis = context.redis();
             std::map<std::string, StreamKind, std::less<>> streamKinds;
             streamKinds.emplace(
-                service::message::webhookCatalogChangesStream(index),
+                service::message::access::stream::catalogChanges(index),
                 StreamKind::Catalog
             );
-            streamKinds.emplace(stream::sessionChanges(), StreamKind::Session);
-            streamKinds.emplace(stream::deliveryResult(), StreamKind::DeliveryResult);
-            streamKinds.emplace(stream::audit(), StreamKind::Audit);
-            streamKinds.emplace(stream::event(), StreamKind::Event);
+            streamKinds.emplace(service::message::access::stream::sessionChanges(), StreamKind::Session);
+            streamKinds.emplace(service::message::access::stream::deliveryResult(), StreamKind::DeliveryResult);
+            streamKinds.emplace(service::message::access::stream::audit(), StreamKind::Audit);
+            streamKinds.emplace(service::message::access::stream::event(), StreamKind::Event);
             std::vector<std::string> streams;
             streams.reserve(streamKinds.size());
             for (const auto& [streamName, kind] : streamKinds) {

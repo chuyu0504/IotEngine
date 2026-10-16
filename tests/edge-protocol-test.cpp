@@ -88,7 +88,7 @@ void testConfigItemNanopbWireContract() {
 
 void testEnvelopeRoundTrip() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002", 42, 7);
     envelope.mutable_ping()->set_nonce(1234);
     const auto wire = service::edge::protocol::encode(envelope);
@@ -123,7 +123,7 @@ void testCompatibleProtocolVersionContract() {
     require(service::edge::protocol::kProtocolVersion == 6,
             "firmware streaming did not advance the wire protocol");
 
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002");
     envelope.mutable_heartbeat_ack()->set_platform_time_ms(1234);
     const std::string platform(16, '\x01');
@@ -165,7 +165,7 @@ void testCompatibleProtocolVersionContract() {
 
 void testTerminalOpenedContract() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002", 42, 7);
     const std::string terminalId(16, '\x03');
     envelope.mutable_terminal_opened()->set_terminal_id(terminalId);
@@ -182,7 +182,7 @@ void testTerminalOpenedContract() {
 
 void testTerminalFlowControlContract() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002", 42, 8);
     const std::string terminalId(16, '\x04');
     auto* data = envelope.mutable_terminal_data();
@@ -196,7 +196,7 @@ void testTerminalFlowControlContract() {
                 decoded.terminal_data().sequence() == 9,
             "terminal data sequence did not round trip");
 
-    auto ack = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto ack = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002", 42, 9);
     ack.mutable_terminal_data_ack()->set_terminal_id(terminalId);
     ack.mutable_terminal_data_ack()->set_sequence(9);
@@ -210,7 +210,7 @@ void testTerminalFlowControlContract() {
 
 void testVpnConfigContract() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002", 42, 10);
     auto* request = envelope.mutable_vpn_config_request();
     const std::string requestId(16, '\x06');
@@ -250,7 +250,7 @@ void testLegacyEdgenodeContract() {
     const std::string node(16, '\x02');
     const std::string terminalId(16, '\x05');
 
-    auto helloAck = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId, nodeId, 77, 1, legacyVersion);
+    auto helloAck = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId, nodeId, 77, 1, legacyVersion);
     auto* negotiated = helloAck.mutable_hello_ack();
     negotiated->set_assigned_node_id(node);
     negotiated->set_session_epoch(77);
@@ -264,7 +264,7 @@ void testLegacyEdgenodeContract() {
                 decoded.hello_ack().negotiated_protocol_version() == legacyVersion,
             "legacy hello negotiation did not round trip");
 
-    auto open = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId, nodeId, 77, 2, legacyVersion);
+    auto open = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId, nodeId, 77, 2, legacyVersion);
     auto* terminalOpen = open.mutable_terminal_open();
     terminalOpen->set_terminal_id(terminalId);
     terminalOpen->set_ticket("legacy-browser-ticket");
@@ -276,7 +276,7 @@ void testLegacyEdgenodeContract() {
                 decoded.terminal_open().ticket().size() >= 16,
             "legacy terminal ticket contract was not preserved");
 
-    auto data = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId, nodeId, 77, 3, legacyVersion);
+    auto data = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId, nodeId, 77, 3, legacyVersion);
     data.mutable_terminal_data()->set_terminal_id(terminalId);
     data.mutable_terminal_data()->set_data("legacy input");
     wire = service::edge::protocol::encode(data);
@@ -312,7 +312,7 @@ void testPlatformIdConfiguration() {
             "valid platform id was rejected");
     const service::edge::config::PlatformIdentity secondary{std::string(secondaryPlatformId)};
     const service::edge::config::PlatformIdentity primary{
-        std::string(service::edge::protocol::kDefaultPlatformId)};
+        std::string(service::message::edge::kDefaultPlatformId)};
     require(secondary.id == secondaryPlatformId && primary.id != secondary.id,
             "platform configurations do not retain independent identities");
     std::uint8_t expected[16]{};
@@ -323,11 +323,11 @@ void testPlatformIdConfiguration() {
     require(envelope.platform_id() == service::edge::protocol::bytes(expected, 16),
             "outbound envelope ignored the configured platform id");
     require(service::edge::config::validPlatformId(
-                service::edge::protocol::kDefaultPlatformId),
+                service::message::edge::kDefaultPlatformId),
             "default platform id is invalid");
     const auto defaultEnvelope = service::edge::protocol::outbound(
         uuidGenerator.next(), service::message::utcNowMilliseconds(),
-        service::edge::protocol::kDefaultPlatformId,
+        service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000003");
     require(defaultEnvelope.platform_id() != envelope.platform_id(),
             "explicit platform identities affected another envelope");
@@ -344,7 +344,7 @@ void testSessionPlatformIdentityIsInternal() {
 
 void testModemProfileRoundTrip() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002");
     auto* request = envelope.mutable_modem_control_request();
     request->set_request_id(std::string(16, '\1'));
@@ -380,7 +380,7 @@ void testModemProfileRoundTrip() {
 
 void testNanopbBounds() {
     service::common::UuidV7Generator uuidGenerator;
-    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::edge::protocol::kDefaultPlatformId,
+    auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000002");
     auto* request = envelope.mutable_network_config_request();
     request->set_request_id(std::string(16, '\1'));
@@ -510,7 +510,7 @@ void testCommandResultProjectionState() {
 
     auto envelope = service::edge::protocol::outbound(
         "00000000-0000-7000-8000-000000000010", 123456789,
-        service::edge::protocol::kDefaultPlatformId,
+        service::message::edge::kDefaultPlatformId,
         "00000000-0000-7000-8000-000000000011");
     auto* result = envelope.mutable_command_result();
     result->set_command_id(std::string(16, '\x01'));

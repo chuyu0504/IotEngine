@@ -206,8 +206,8 @@ return changed and 1 or 0
 
 )lua";
         std::vector<std::string> storage;
-        if (captureLink) storage.push_back(DebugPacketStorage::key("link", linkId));
-        if (captureDevice && !deviceId.empty()) storage.push_back(DebugPacketStorage::key("device", deviceId));
+        if (captureLink) storage.push_back(service::message::packet_log::linkIndexKey(linkId));
+        if (captureDevice && !deviceId.empty()) storage.push_back(service::message::packet_log::deviceIndexKey(deviceId));
         if (storage.empty()) co_return;
         const std::vector<std::string_view> keys(storage.begin(), storage.end());
         // Preserve decimal and 64-bit numeric text while merging per-response values in Redis.

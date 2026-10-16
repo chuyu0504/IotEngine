@@ -25,6 +25,8 @@ int main() {
     const auto encoded = eventJson(event);
     require(encoded.find("\"hex\":\"00FF\"") != std::string::npos, "event lost binary bytes");
     require(ruvia::json_value::parse(encoded).has_value(), "event JSON is invalid");
+    require(encoded == R"({"kind":"data","requestId":0,"manual":false,"direction":"RX","hex":"00FF","timestamp":0,"sequence":8,"droppedBytes":0,"message":"","settings":{"path":"/dev/ttyS1","baudRate":0,"dataBits":0,"stopBits":0,"parity":"","rs485":false}})",
+        "serial event wire shape changed");
     const auto ticket = SerialTargetRecord::decode("00000000-0000-7000-8000-000000000001\n1|6|2|owner\n/dev/ttyS1");
     require(ticket && ticket->path == "/dev/ttyS1", "ticket mapping failed");
     require(!SerialTargetRecord::decode("00000000-0000-7000-8000-000000000001\nowner\n/dev/ttyS1\nextra"), "multiline path accepted");

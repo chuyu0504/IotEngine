@@ -124,19 +124,10 @@ struct EnrollmentRecord final {
 };
 
 // Redis String 保存设备返回的 Protobuf 字节；固定 Hash ORM 不能映射此标量格式。
+// 键为 service::message::edge 的 logResultKey、logSnapshotKey、logLevelResultKey；
 // 请求结果带过期时间，成功快照持续保留，期限和写入顺序由 GatewayService 管理。
 struct LogResultRecord final {
     std::string protobufBytes;
-
-    static std::string responseKey(std::string_view requestId) {
-        return "iot:edge:logs:" + std::string(requestId);
-    }
-    static std::string snapshotKey(std::string_view nodeId) {
-        return "iot:edge:logs:snapshot:" + std::string(nodeId);
-    }
-    static std::string levelKey(std::string_view requestId) {
-        return "iot:edge:logs:level:" + std::string(requestId);
-    }
 };
 
 } // namespace service::edge::gateway

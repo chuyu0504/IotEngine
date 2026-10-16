@@ -817,7 +817,7 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
         } else if (sip_ && !stopping_.load()) {
             invalidateOwnerTarget(key, token, deviceId, streamId);
         }
-        if (key.starts_with("iot:gb28181:owner:")) {
+        if (key.starts_with(control_protocol::stream::kOwnerPrefix)) {
             retiredOwnerTokens_[key] = token;
         }
         try {
@@ -994,7 +994,7 @@ void CollectorRuntime::expireOwnerLease(std::string key, std::string token) {
     if (found == ownerLeases_.end() || found->second.token != token) {
         return;
     }
-    if (key.starts_with("iot:gb28181:owner:")) {
+    if (key.starts_with(control_protocol::stream::kOwnerPrefix)) {
         retiredOwnerTokens_[key] = token;
     }
     auto deviceId = std::move(found->second.deviceId);
@@ -1010,7 +1010,7 @@ void CollectorRuntime::invalidateOwnerTarget(const std::string& key, const std::
     if (!sip_ || stopping_.load()) {
         return;
     }
-    constexpr std::string_view prefix = "iot:gb28181:session-owner:";
+    constexpr auto prefix = control_protocol::stream::kSessionOwnerPrefix;
     if (key.starts_with(prefix)) {
         (void)sip_->stopPreview(key.substr(prefix.size()));
         return;
@@ -1159,7 +1159,7 @@ ruvia::task<void> CollectorRuntime::handleControl(
     const auto replyStream = control_protocol::stream::reply(requestId);
     const auto operation = std::string(message.get("operation"));
     const auto payload = std::string(message.get("payload"));
-    const auto resultKey = "iot:gb28181:result:" + requestId;
+    const auto resultKey = control_protocol::stream::result(requestId);
     const auto claimKey = resultKey + ":claim";
     const auto cancelKey = control_protocol::stream::cancel(requestId);
     const auto key = std::string(message.get("owner_key"));
@@ -1178,8 +1178,7 @@ ruvia::task<void> CollectorRuntime::handleControl(
     std::string status, result, claimOwner;
     const auto fail = [&](int code, std::string_view reason) {
         status = "error";
-        result = "{\"code\":" + std::to_string(code) + ",\"message\":" +
-            service::utils::jsonQuoted(reason) + "}";
+        result = control_protocol::operationJson(code, reason);
     };
     const auto redis = redis_.with_options({ .timeout_ = std::chrono::seconds(3), .stop_token_ = scope_.get_stop_token() });
     const auto cached = co_await GbControlService::loadControlResult(redis, resultKey);
@@ -1291,9 +1290,9 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
     }
 
     std::pmr::monotonic_buffer_resource resource;
-    auto request = control_protocol::parseRequest(
+    auto request = ruvia::from_json<service::message::gb28181::ControlRequest>(
         payload.empty() ? std::string_view{ "{}" } : payload,
-        &resource
+        { .resource_ = &resource }
     );
     if (!request) {
         throw std::invalid_argument("GB28181 RPC request body is invalid");
@@ -1310,7 +1309,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
         if (!devices_.updateDeviceName(id, name)) {
             throw std::runtime_error("GB28181 device does not exist");
         }
-        co_return control_protocol::operationJson("摄像头名称已更新");
+        co_return control_protocol::operationJson(0, "摄像头名称已更新");
     }
     if (operation == control_protocol::kRenameChannelOperation) {
         const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
@@ -1319,7 +1318,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
         if (!devices_.updateChannelName(id, channel, name)) {
             throw std::runtime_error("GB28181 device or channel does not exist");
         }
-        co_return control_protocol::operationJson("通道名称已更新");
+        co_return control_protocol::operationJson(0, "通道名称已更新");
     }
     if (operation == control_protocol::kPreviewStartOperation) {
         const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
@@ -1381,7 +1380,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
         ZlmSdk::OwnerScope owner(index_);
         auto& sdk = sdkSupervisor().sdk();
         if (operation == control_protocol::kRecordingOperation) {
-            co_return control_protocol::jsonData(sdk.isMp4Recording(streamId) ? "{\"recording\":true}" : "{\"recording\":false}");
+            co_return control_protocol::jsonRecording(sdk.isMp4Recording(streamId));
         }
         const auto changed = operation == control_protocol::kRecordingStartOperation
             ? sdk.startMp4Recording(streamId)

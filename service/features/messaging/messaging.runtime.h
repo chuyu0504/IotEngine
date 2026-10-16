@@ -172,7 +172,7 @@ class RpcConsumerRuntime final {
 
     void start(ruvia::web_worker_handle worker, std::size_t workerIndex) {
         worker_ = worker;
-        stream_ = Contract::requests(service::runtime::instanceId(), workerIndex);
+        stream_ = service::message::rpc::Contract::requests(service::runtime::instanceId(), workerIndex);
         stop_ = std::make_unique<ruvia::stop_source>();
         auto ready = std::make_shared<std::promise<void>>();
         auto done = std::make_shared<std::promise<void>>();
@@ -208,10 +208,10 @@ class RpcConsumerRuntime final {
         const auto id = std::string(message.get("id"));
         std::string result;
         try {
-            if (!service::common::isUuid(id) || message.get("version") != Contract::version ||
-                message.get("payload").size() > Contract::maximumPayload)
+            if (!service::common::isUuid(id) || message.get("version") != service::message::rpc::Contract::version ||
+                message.get("payload").size() > service::message::rpc::Contract::maximumPayload)
                 service::common::fail(10002, "Invalid background request", 400);
-            if (pending->deadline <= Contract::now())
+            if (pending->deadline <= service::message::rpc::Contract::now())
                 service::common::fail(10004, "Background operation timed out", 504);
             const auto previous = co_await RpcReceiptService::beginRequest(context.redis(), id);
             if (previous) {
@@ -221,16 +221,16 @@ class RpcConsumerRuntime final {
                 if (handler == handlers_.end())
                     service::common::fail(10004, "Background component is unavailable", 503);
                 const auto token = ruvia::combine_stop_tokens(context.get_stop_token(), pending->stop.token());
-                result = Contract::success(co_await handler->second(
+                result = service::message::rpc::Contract::success(co_await handler->second(
                     context, message.get("operation"), message.get("payload"), token));
             }
         } catch (const ruvia::http_error& error) {
             const auto info = error.info();
-            result = Contract::failure(info.status().value(), info.code(), info.message());
+            result = service::message::rpc::Contract::failure(info.status().value(), info.code(), info.message());
         } catch (const std::exception& error) {
-            result = Contract::failure(500, "10004", error.what());
+            result = service::message::rpc::Contract::failure(500, "10004", error.what());
         } catch (...) {
-            result = Contract::failure(500, "10004", "Background operation failed");
+            result = service::message::rpc::Contract::failure(500, "10004", "Background operation failed");
         }
         // Retry only persistence of the completed result, never the operation.
         while (true) {
@@ -259,8 +259,8 @@ class RpcConsumerRuntime final {
             std::vector<std::string> arguments{"MGET"};
             for (const auto& [entry, pending] : pending_) {
                 snapshot.push_back(pending);
-                arguments.push_back(Contract::cancelled(pending->requestId));
-                if (pending->deadline <= Contract::now()) pending->stop.request_stop();
+                arguments.push_back(service::message::rpc::Contract::cancelled(pending->requestId));
+                if (pending->deadline <= service::message::rpc::Contract::now()) pending->stop.request_stop();
             }
             if (!snapshot.empty()) {
                 try {
@@ -275,12 +275,12 @@ class RpcConsumerRuntime final {
                     // The local deadline remains effective during Redis outages.
                 }
             }
-            if (Contract::now() >= nextExpiryRefresh) {
+            if (service::message::rpc::Contract::now() >= nextExpiryRefresh) {
                 try {
                     const std::vector<std::string> expireArguments{"EXPIRE", stream_, "86400"};
                     (void)co_await service::message::redis::command(
                         context.redis(), expireArguments);
-                    nextExpiryRefresh = Contract::now() + 60000;
+                    nextExpiryRefresh = service::message::rpc::Contract::now() + 60000;
                 } catch (...) {
                 }
             }

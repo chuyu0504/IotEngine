@@ -3,14 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
-#include <ruvia/web/model_json.h>
+#include <string>
 
 namespace service::command {
-
-RUVIA_MODEL(PrepareCommandBody,
-    RUVIA_REQUIRED_FIELD(deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(elements, ruvia::array<ruvia::array<ruvia::string>>));
 
 inline constexpr std::array<std::string_view, 2> kCommandResultAcceptingStatuses{
     "DISPATCHING", "AWAITING_RESULT"};

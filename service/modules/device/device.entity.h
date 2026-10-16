@@ -10,11 +10,6 @@
 #include "service/modules/command/command.entity.h"
 
 namespace service::device::entities {
-// 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
-struct DeviceDebugIndex {
-    static std::string key(std::string_view id) { return "iot:debug:v4:device:" + std::string(id); }
-};
-
 // 连接租约与永久遥测投影分别存储。跨键有效性读取需要 Redis Lua，
 // ORM 无法原子读取连接 TTL、链路归属和最后上报时间。
 struct DeviceConnectionState final {

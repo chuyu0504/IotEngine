@@ -2441,10 +2441,10 @@ void testRealtimeProjectionContract() {
             service::message::deadLetterStream(worker, instance),
             service::message::workerWakeStream(worker, instance),
             service::message::worker_metrics::snapshotId(worker, instance),
-            service::edge::dispatch::stream(worker, instance),
-            service::edge::projector_stream::stream(worker, instance),
-            service::edge::projector_stream::leaseKey(worker, instance),
-            service::edge::projector_stream::ownerToken(worker, instance)};
+            service::message::edge::dispatch::stream(worker, instance),
+            service::message::edge::projector_stream::stream(worker, instance),
+            service::message::edge::projector_stream::leaseKey(worker, instance),
+            service::message::edge::projector_stream::ownerToken(worker, instance)};
     };
     const auto keys = scopedKeys(2, "process-a");
     const std::vector<std::string> expected{
@@ -2493,10 +2493,10 @@ void testRealtimeProjectionContract() {
 }
 
 void testBooleanPointValueContract() {
-    namespace latest = service::telemetry::latest;
-    require(latest::canonicalPointText("true", "BOOL") == "1" && latest::canonicalPointText("false", "BOOL") == "0" && latest::canonicalPointText("1", "BOOL") == "1" && latest::canonicalPointText("0", "BOOL") == "0", "BOOL point text is not canonicalized to 0/1");
-    require(latest::canonicalPointJson("true", "BOOL") == "1" && latest::canonicalPointJson("false", "BOOL") == "0" && latest::canonicalPointJson("\"true\"", "BOOL") == "\"1\"" && latest::canonicalPointJson("\"false\"", "BOOL") == "\"0\"", "BOOL point JSON is not canonicalized to 0/1");
-    require(latest::canonicalPointText("true", "STRING") == "true" && latest::canonicalPointJson("true", "STRING") == "true", "non-BOOL point values were rewritten");
+    namespace telemetry = service::message::telemetry;
+    require(telemetry::canonicalPointText("true", "BOOL") == "1" && telemetry::canonicalPointText("false", "BOOL") == "0" && telemetry::canonicalPointText("1", "BOOL") == "1" && telemetry::canonicalPointText("0", "BOOL") == "0", "BOOL point text is not canonicalized to 0/1");
+    require(telemetry::canonicalPointJson("true", "BOOL") == "1" && telemetry::canonicalPointJson("false", "BOOL") == "0" && telemetry::canonicalPointJson("\"true\"", "BOOL") == "\"1\"" && telemetry::canonicalPointJson("\"false\"", "BOOL") == "\"0\"", "BOOL point JSON is not canonicalized to 0/1");
+    require(telemetry::canonicalPointText("true", "STRING") == "true" && telemetry::canonicalPointJson("true", "STRING") == "true", "non-BOOL point values were rewritten");
 }
 
 void testFreshnessDeadlineWait() {
@@ -2556,7 +2556,7 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
         context.redisClient.state->directCommands,
         [](const auto& command) {
             return command.size() == 8 && command[0] == "XADD" &&
-                command[1] == service::telemetry::latest::kRealtimeChangesStream &&
+                command[1] == service::message::live::kChanges &&
                 command[6] == "topic" && command[7] == "device.realtime";
         }
     );

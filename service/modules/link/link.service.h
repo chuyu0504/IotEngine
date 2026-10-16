@@ -194,7 +194,8 @@ class LinkService {
         if (!leaseRows.empty() && leaseRows.front()[0].value().value_or("") == "t")
             co_await service::debug_idle::touch(c.redis(), "link", id);
         co_await leaseTransaction.commit();
-        const auto key = service::link::LinkDebugIndex::key(id);
+        // 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
+        const auto key = service::message::packet_log::linkIndexKey(id);
         static constexpr std::string_view readPackets = R"lua(
 local result={}
 local count=0
@@ -1072,11 +1073,11 @@ return result
     static ruvia::task<LinkRuntimeRecord> loadRuntimeStatus(Context& c, std::string_view id) {
         LinkRuntimeRecord status;
         try {
-            const auto owner = co_await c.redis().get(LinkRuntimeRecord::ownerKey(id));
+            const auto owner = co_await c.redis().get(service::message::collector::linkOwnerKey(id));
             if (!owner) {
                 co_return status;
             }
-            const auto pattern = LinkRuntimeRecord::workerPattern(id, {owner->data(), owner->size()});
+            const auto pattern = service::message::collector::linkRuntimePrefix(id) + std::string(owner->data(), owner->size()) + ":*";
             std::string cursor = "0";
             std::set<std::string> keys;
             do {

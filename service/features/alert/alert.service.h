@@ -272,7 +272,7 @@ ruvia::task<void> refresh(Context& context) {
     // Telemetry reads never take this cold-path configuration lock.
     auto transaction = co_await context.db().begin_transaction();
     ruvia::db_query lock;
-    lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(734623), ruvia::db_data_type::big_int) }));
+    lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kAlertMetadataProjection), ruvia::db_data_type::big_int) }));
     (void)co_await transaction.query(lock);
     const auto rows = co_await transaction.query(detail::refreshQuery());
 

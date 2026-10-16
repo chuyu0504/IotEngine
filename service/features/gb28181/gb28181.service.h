@@ -104,7 +104,7 @@ class GbProjectionService {
             if (id.empty()) {
                 continue;
             }
-            const auto ownerKey = "iot:gb28181:owner:" + id;
+            const auto ownerKey = control_protocol::stream::owner(id);
             if (co_await context.redis().get(ownerKey)) {
                 continue;
             }
@@ -164,7 +164,7 @@ class GbProjectionService {
                 continue;
             }
             const auto identity = StreamStatus::identity(app, stream, schema);
-            const auto ownerKey = "iot:gb28181:owner:" + identity;
+            const auto ownerKey = control_protocol::stream::owner(identity);
             if (co_await context.redis().get(ownerKey)) {
                 continue;
             }
@@ -232,7 +232,7 @@ class GbProjectionService {
         query.select(query.call(
             "pg_advisory_xact_lock",
             {query.call("hashtextextended",
-                        {query.value(key), query.value(std::int64_t{28181})})}));
+                        {query.value(key), query.value(service::message::lock::kGb28181OwnerSeed)})}));
         return query;
     }
 
@@ -859,7 +859,7 @@ end
 redis.call('SET', KEYS[2], order .. '|' .. id, 'EX', 86400)
 return { order, id }
 )lua";
-    const auto sentKey = "iot:gb28181:projection:sent:" + projectionId;
+    const auto sentKey = control_protocol::stream::projectionSent(projectionId);
     const std::string_view keys[]{ control_protocol::stream::kProjection, sentKey };
         std::vector<std::string_view> args;
         args.reserve(2 + fields.size() * 2);
@@ -1097,9 +1097,9 @@ static ruvia::task<std::string> executeOperation(
     }
 
     std::pmr::monotonic_buffer_resource resource;
-    auto request = control_protocol::parseRequest(
+    auto request = ruvia::from_json<service::message::gb28181::ControlRequest>(
         payload.empty() ? std::string_view{ "{}" } : payload,
-        &resource
+        { .resource_ = &resource }
     );
     if (!request) {
         service::common::fail(10001, "GB28181 RPC 请求体无效", 400);
@@ -1108,7 +1108,7 @@ static ruvia::task<std::string> executeOperation(
     const auto enabled = co_await GbProjectionService::configuredEnabled(context.redis());
 
     if (operation == control_protocol::kHealthOperation) {
-        co_return control_protocol::successJson(
+        co_return control_protocol::successJson<service::message::gb28181::HealthResponse>(
             healthJson(context, enabled),
             context.pool()
         );
@@ -1117,15 +1117,15 @@ static ruvia::task<std::string> executeOperation(
     if (operation == control_protocol::kDevicesOperation) {
         GbControlService::requireEnabled(enabled);
         const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
-        ruvia::boxed_array<control_protocol::DeviceJson> items(
+        ruvia::boxed_array<service::message::gb28181::Device> items(
             ruvia::model_options{ .resource_ = context.pool() }
         );
         for (const auto& device : snapshot.devices) {
             items.emplace(control_protocol::deviceJson(context.pool(), device));
         }
-        control_protocol::DeviceListJson result(ruvia::model_options{ .resource_ = context.pool() });
+        service::message::gb28181::DeviceList result(ruvia::model_options{ .resource_ = context.pool() });
         result.set<"items">(std::move(items));
-        co_return control_protocol::successJson(result, context.pool());
+        co_return control_protocol::successJson<service::message::gb28181::DeviceListResponse>(std::move(result), context.pool());
     }
 
     if (operation == control_protocol::kCatalogOperation ||
@@ -1203,9 +1203,9 @@ static ruvia::task<std::string> executeOperation(
 }
 
   private:
-static control_protocol::HealthJson healthJson(ruvia::web_worker_context& context, bool enabled, std::string_view error = {}) {
+static service::message::gb28181::Health healthJson(ruvia::web_worker_context& context, bool enabled, std::string_view error = {}) {
     const auto started = sdkSupervisor().started();
-    control_protocol::HealthJson result(ruvia::model_options{ .resource_ = context.pool() });
+    service::message::gb28181::Health result(ruvia::model_options{ .resource_ = context.pool() });
     result.set<"status">(started ? "ok" : (enabled ? "error" : "disabled"))
         .set<"service">("iot-engine-gb28181")
         .set<"enabled">(enabled)

@@ -53,25 +53,22 @@ class TerminalService final {
         if (stop.stop_requested()) {
             service::common::fail(17018, "终端操作已取消", 409);
         }
-        const auto input = ruvia::json_value::parse(payload);
-        if (!input || !input->is_object()) {
+        const auto input = ruvia::from_json<service::message::terminal::Request>(payload, { .resource_ = c.pool() });
+        if (!input) {
             service::common::fail(17018, "终端请求无效", 400);
         }
-        const auto text = [&](std::string_view name) {
-            const auto value = input->get<ruvia::string>(name);
-            return value ? std::string(value->view()) : std::string{};
-        };
-        const auto node = text("nodeId"), id = text("sessionId"), user = text("userId"), connection = text("connectionId");
+        const auto node = std::string(input->get<"nodeId">().view()), id = std::string(input->get<"sessionId">().view()), user = std::string(input->get<"userId">().view()), connection = std::string(input->get<"connectionId">().view());
         if (!service::common::isUuid(node) || !service::common::isUuid(id) || !service::common::isUuid(user) || !service::common::isUuid(connection)) {
             service::common::fail(17018, "终端会话身份无效", 400);
         }
         const auto bindingKey = TerminalBrowserRecord::key(id);
         const auto closedKey = TerminalBrowserRecord::closedKey(id);
         const auto ownerKey = TerminalSessionRecord::terminalSessionKey(node, id);
-        const auto nodeKey = session_state::key(node);
+        const auto nodeKey = service::message::edge::sessionKey(node);
         const auto readyKey = TerminalBrowserRecord::readyKey(id);
         const auto dimensions = [&] {
-            const auto columns = input->get<ruvia::int64>("columns"), rows = input->get<ruvia::int64>("rows");
+            const auto& columns = input->get<"columns">();
+            const auto& rows = input->get<"rows">();
             if (!columns || !rows || columns->value_ < 1 || columns->value_ > 1000 || rows->value_ < 1 || rows->value_ > 1000) {
                 service::common::fail(17018, "终端尺寸无效", 400);
             }
@@ -120,7 +117,9 @@ return 1
                 ready.mutable_ready();
                 co_await saveTerminalFrame(c, ConnectionIdentity{ node, state->epoch, state->protocolVersion, state->workerIndex }, id, ready);
             }
-            co_return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"protocolVersion\":" + std::to_string(state->protocolVersion) + "}";
+            service::message::terminal::OpenReply reply(ruvia::model_options{ .resource_ = c.pool() });
+            reply.set<"id">(id).set<"protocolVersion">(static_cast<std::int64_t>(state->protocolVersion));
+            co_return service::message::rpc::encode(reply, c.pool());
         }
         const auto stored = co_await c.redis().get(bindingKey);
         if (!stored && operation == "terminal-close") {
@@ -154,7 +153,7 @@ return 1
             co_return "{}";
         }
         if (operation == "terminal-events") {
-            std::string events = "[";
+            ruvia::boxed_array<service::message::terminal::Event> events(ruvia::model_options{ .resource_ = c.pool() });
             for (unsigned count = 0; count < 32; ++count) {
                 const auto item = co_await takeOutput(c, node, id);
                 if (!item) {
@@ -164,24 +163,26 @@ return 1
                 if (!frame.ParseFromString(*item)) {
                     service::common::fail(17018, "终端输出格式无效", 502);
                 }
-                if (events.size() > 1) {
-                    events += ',';
-                }
+                auto& event = events.emplace();
                 if (frame.has_ready()) {
-                    events += "{\"kind\":\"ready\"}";
+                    event.set<"kind">("ready");
                 } else if (frame.has_close()) {
-                    events += "{\"kind\":\"close\",\"reason\":" + service::utils::jsonQuoted(frame.close().reason()) + "}";
+                    event.set<"kind">("close").set<"reason">(frame.close().reason());
                 } else if (frame.has_data()) {
-                    events += "{\"kind\":\"data\",\"content\":" + service::utils::jsonQuoted(service::utils::encode_base64(frame.data().data())) + ",\"sequence\":" + std::to_string(frame.data().sequence()) + "}";
+                    event.set<"kind">("data")
+                        .set<"content">(service::utils::encode_base64(frame.data().data()))
+                        .set<"sequence">(static_cast<std::int64_t>(frame.data().sequence()));
                 } else {
                     service::common::fail(17018, "终端输出类型无效", 502);
                 }
             }
-            const auto remaining = co_await c.redis().llen(terminalOutputKey(node, id));
-            co_return "{\"events\":" + events + "],\"more\":" + (remaining > 0 ? "true" : "false") + "}";
+            const auto remaining = co_await c.redis().llen(service::message::terminal::terminalOutputKey(node, id));
+            service::message::terminal::EventsReply reply(ruvia::model_options{ .resource_ = c.pool() });
+            reply.set<"events">(std::move(events)).set<"more">(remaining > 0);
+            co_return service::message::rpc::encode(reply, c.pool());
         }
         if (operation == "terminal-input-status") {
-            const auto sequence = input->get<ruvia::int64>("sequence");
+            const auto& sequence = input->get<"sequence">();
             if (!sequence || sequence->value_ <= 0) {
                 service::common::fail(17018, "终端确认序号无效", 400);
             }
@@ -192,17 +193,20 @@ return 1
             if (status != InputAckStatus::Acknowledged && co_await c.redis().get(TerminalBrowserRecord::remoteClosedKey(id))) {
                 service::common::fail(17019, "节点已关闭终端", 409);
             }
-            co_return status == InputAckStatus::Acknowledged ? "{\"acknowledged\":true}" : "{\"acknowledged\":false}";
+            service::message::terminal::InputStatusReply reply(ruvia::model_options{ .resource_ = c.pool() });
+            reply.set<"acknowledged">(status == InputAckStatus::Acknowledged);
+            co_return service::message::rpc::encode(reply, c.pool());
         }
         auto command = envelope();
         if (operation == "terminal-write") {
             std::string content;
             try {
-                content = service::utils::decode_base64(text("content"), 4096);
+                const auto& encoded = input->get<"content">();
+                content = service::utils::decode_base64(encoded ? encoded->view() : std::string_view{}, 4096);
             } catch (const service::utils::base64_decode_error&) {
                 service::common::fail(17018, "终端输入无效", 400);
             }
-            const auto sequence = input->get<ruvia::int64>("sequence");
+            const auto& sequence = input->get<"sequence">();
             if (!sequence || sequence->value_ < 0 || sequence->value_ > 9007199254740991LL || (state->protocolVersion >= 5 && sequence->value_ == 0)) {
                 service::common::fail(17018, "终端输入无效", 400);
             }
@@ -213,7 +217,7 @@ return 1
                 data->set_sequence(static_cast<std::uint64_t>(sequence->value_));
             }
         } else if (operation == "terminal-output-ack") {
-            const auto sequence = input->get<ruvia::int64>("sequence");
+            const auto& sequence = input->get<"sequence">();
             if (!sequence || sequence->value_ <= 0 || sequence->value_ > 9007199254740991LL || state->protocolVersion < 5) {
                 service::common::fail(17018, "终端确认无效", 400);
             }
@@ -241,8 +245,8 @@ return 1
 
     template <typename Context>
     static ruvia::task<void> enqueueBrowserInput(Context& c, const TerminalBrowserRecord& binding, std::string_view id, const pb::Envelope& envelope) {
-        const auto currentKey = session_state::key(binding.nodeId), ownerKey = TerminalSessionRecord::terminalSessionKey(binding.nodeId, id);
-        const auto browserKey = TerminalBrowserRecord::key(id), closedKey = TerminalBrowserRecord::closedKey(id), queueKey = terminalInputKey(binding.nodeId);
+        const auto currentKey = service::message::edge::sessionKey(binding.nodeId), ownerKey = TerminalSessionRecord::terminalSessionKey(binding.nodeId, id);
+        const auto browserKey = TerminalBrowserRecord::key(id), closedKey = TerminalBrowserRecord::closedKey(id), queueKey = service::message::terminal::terminalInputKey(binding.nodeId);
         const auto sequenceKey = TerminalBrowserRecord::inputSequenceKey(id), inputAckKey = TerminalSessionRecord::terminalInputAckKey(binding.nodeId, id);
         const auto outputAckKey = TerminalBrowserRecord::outputAckKey(id), outputSequenceKey = TerminalSessionRecord::terminalOutputSequenceKey(binding.nodeId, id), readyKey = TerminalBrowserRecord::readyKey(id);
         const auto encoded = protocol::encode(envelope), owner = binding.encode();
@@ -285,7 +289,7 @@ return 1
 
     template <typename Context>
     static ruvia::task<std::optional<std::string>> takeOutput(Context& c, std::string_view nodeId, std::string_view terminalId) {
-        const auto item = co_await c.redis().lpop(terminalOutputKey(nodeId, terminalId));
+        const auto item = co_await c.redis().lpop(service::message::terminal::terminalOutputKey(nodeId, terminalId));
         if (!item) {
             co_return std::nullopt;
         }
@@ -311,9 +315,9 @@ return 1
 
     template <typename Context>
     static ruvia::task<std::int64_t> refreshSession(Context& c, std::string_view nodeId, std::string_view terminalId, std::string_view nodeSession) {
-        const auto nodeKey = session_state::key(nodeId);
+        const auto nodeKey = service::message::edge::sessionKey(nodeId);
         const auto owner = TerminalSessionRecord::terminalSessionKey(nodeId, terminalId);
-        const auto output = terminalOutputKey(nodeId, terminalId);
+        const auto output = service::message::terminal::terminalOutputKey(nodeId, terminalId);
         const auto inputAck = TerminalSessionRecord::terminalInputAckKey(nodeId, terminalId);
         const auto outputSequence = TerminalSessionRecord::terminalOutputSequenceKey(nodeId, terminalId);
         const std::string_view keys[]{ nodeKey, owner, output, inputAck, outputSequence };
@@ -335,7 +339,7 @@ return 1
         // head-trimmed by command dispatch, which would hand the node a terminal_data
         // whose terminal_open it never saw. Overflow here drops the newest envelope
         // instead, so whatever the node does receive stays a valid prefix.
-        const auto key = terminalInputKey(nodeId);
+        const auto key = service::message::terminal::terminalInputKey(nodeId);
         static constexpr std::string_view script = R"lua(
 if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
 local length = redis.call('RPUSH', KEYS[1], ARGV[1])
@@ -362,7 +366,7 @@ redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])
 return 1
 )lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(nodeId, terminalId);
-        const auto outputKey = terminalOutputKey(nodeId, terminalId);
+        const auto outputKey = service::message::terminal::terminalOutputKey(nodeId, terminalId);
         const auto inputAckKey = TerminalSessionRecord::terminalInputAckKey(nodeId, terminalId);
         const auto outputSequenceKey = TerminalSessionRecord::terminalOutputSequenceKey(nodeId, terminalId);
         const std::string_view keys[]{ ownershipKey, outputKey, inputAckKey, outputSequenceKey };
@@ -394,7 +398,7 @@ redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',A
 return 1
 )lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(session.nodeId, terminalId);
-        const auto outputKey = terminalOutputKey(session.nodeId, terminalId);
+        const auto outputKey = service::message::terminal::terminalOutputKey(session.nodeId, terminalId);
         const auto epoch = session_state::value(
             session.epoch,
             session.protocolVersion,
@@ -403,7 +407,7 @@ return 1
         );
         const std::string ttl = "120";
         const auto readyKey = TerminalBrowserRecord::readyKey(terminalId), remoteClosedKey = TerminalBrowserRecord::remoteClosedKey(terminalId);
-        const auto topic = terminalEventTopic(session.nodeId, terminalId), ackTopic = terminalAckTopic(session.nodeId, terminalId);
+        const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, terminalId), ackTopic = service::message::terminal::terminalAckTopic(session.nodeId, terminalId);
         const std::string_view keys[]{ ownershipKey, outputKey, readyKey, service::message::live::kChanges, remoteClosedKey };
         const std::string_view arguments[]{ epoch, wire, ttl, frame.has_ready() ? "ready" : frame.has_close() ? "close"
                                                                                                               : "data",
@@ -431,11 +435,11 @@ return 1
             co_return;
         }
         const auto owner = TerminalSessionRecord::terminalSessionKey(session.nodeId, terminalId);
-        const auto output = terminalOutputKey(session.nodeId, terminalId);
+        const auto output = service::message::terminal::terminalOutputKey(session.nodeId, terminalId);
         const auto inputAck = TerminalSessionRecord::terminalInputAckKey(session.nodeId, terminalId);
         const auto outputSequence = TerminalSessionRecord::terminalOutputSequenceKey(session.nodeId, terminalId);
         const auto epoch = session_state::value(session.epoch, session.protocolVersion, session.workerIndex, service::runtime::instanceId());
-        const auto topic = terminalEventTopic(session.nodeId, terminalId), ackTopic = terminalAckTopic(session.nodeId, terminalId);
+        const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, terminalId), ackTopic = service::message::terminal::terminalAckTopic(session.nodeId, terminalId);
         const std::string_view keys[]{ owner, output, inputAck, outputSequence, service::message::live::kChanges };
         const std::string_view args[]{ epoch, wire, topic, ackTopic };
         const auto result = co_await c.redis().eval(terminal_state::kFailScript, keys, args);
@@ -493,7 +497,7 @@ redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',A
 return 1
 )lua";
         const auto ownershipKey = TerminalSessionRecord::terminalSessionKey(session.nodeId, id);
-        const auto outputKey = terminalOutputKey(session.nodeId, id);
+        const auto outputKey = service::message::terminal::terminalOutputKey(session.nodeId, id);
         const auto sequenceKey = TerminalSessionRecord::terminalOutputSequenceKey(session.nodeId, id);
         const auto epoch = session_state::value(
             session.epoch,
@@ -503,7 +507,7 @@ return 1
         );
         const auto sequence = std::to_string(data.sequence());
         const std::string ttl = "120";
-        const auto topic = terminalEventTopic(session.nodeId, id);
+        const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, id);
         const std::string_view keys[]{ ownershipKey, outputKey, sequenceKey, service::message::live::kChanges };
         const std::string_view arguments[]{ epoch, wire, sequence, ttl, topic };
         const auto reply = co_await c.redis().eval(script, keys, arguments);
@@ -552,7 +556,7 @@ return 1
         );
         const auto sequence = std::to_string(ack.sequence());
         const std::string ttl = "120";
-        const auto topic = terminalAckTopic(session.nodeId, id);
+        const auto topic = service::message::terminal::terminalAckTopic(session.nodeId, id);
         const std::string_view keys[]{ ownershipKey, ackKey, service::message::live::kChanges };
         const std::string_view arguments[]{ epoch, sequence, ttl, topic };
         const auto reply = co_await c.redis().eval(script, keys, arguments);

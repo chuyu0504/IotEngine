@@ -407,10 +407,6 @@ struct Device final {
 using NodeSnapshot = std::unordered_map<std::string, Device>;
 using Catalog = std::unordered_map<std::string, NodeSnapshot>;
 
-inline std::string key(std::string_view nodeId) {
-    return "iot:edge:metadata:" + std::string(nodeId);
-}
-
 inline void appendField(std::string& output, std::string_view value) {
     output += std::to_string(value.size());
     output.push_back(':');

@@ -115,7 +115,7 @@ class Reconciler final {
         try {
             const auto redis = context.redis();
             std::vector<std::string> streams;
-            streams.push_back(service::message::runtimeConfigChangesStream());
+            streams.push_back(service::message::configuration::runtimeChangesStream());
             co_await service::message::redis::ensureGroup(
                 redis,
                 streams.back(),

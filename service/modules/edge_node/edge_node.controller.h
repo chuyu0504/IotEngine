@@ -580,13 +580,12 @@ class EdgeController final {
         std::exception_ptr failure;
         try {
             const auto reply = co_await edgeService().openTerminal(c, session->node, session->id, session->connection, session->columns, session->rows);
-            const auto parsed = ruvia::json_value::parse(reply);
-            const auto id = parsed ? parsed->get<ruvia::string>("id") : std::nullopt;
-            const auto version = parsed ? parsed->get<ruvia::int64>("protocolVersion") : std::nullopt;
-            if (c.stop.stop_requested() || !id || id->view() != session->id || !version || version->value_ < 1 || version->value_ > 100) {
+            const auto parsed = ruvia::from_json<service::message::terminal::OpenReply>(reply, { .resource_ = c.arena() });
+            const auto version = parsed ? parsed->get<"protocolVersion">().value_ : 0;
+            if (c.stop.stop_requested() || !parsed || parsed->get<"id">().view() != session->id || version < 1 || version > 100) {
                 throw service::edge::debug::EventError(17018, "终端打开已取消或响应无效");
             }
-            session->protocolVersion = static_cast<unsigned>(version->value_);
+            session->protocolVersion = static_cast<unsigned>(version);
             co_return service::edge::debug::EventResult{ "{\"id\":" + service::utils::jsonQuoted(session->id) + "}" };
         } catch (...) {
             failure = std::current_exception();
@@ -612,12 +611,11 @@ class EdgeController final {
             c.state = subscription;
         }
         const auto reply = co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-events");
-        const auto parsed = ruvia::json_value::parse(reply);
-        const auto more = parsed ? parsed->get<ruvia::bool_value>("more") : std::nullopt;
-        if (!more) {
+        const auto parsed = ruvia::from_json<service::message::terminal::EventsReply>(reply, { .resource_ = c.arena() });
+        if (!parsed) {
             throw service::edge::debug::EventError(17018, "终端输出响应无效");
         }
-        co_return service::edge::debug::EventResult{ reply, service::edge::terminal_state::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), more->value_, true };
+        co_return service::edge::debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed->get<"more">().value_, true };
     }
 
     ruvia::task<service::edge::debug::EventResult> writeTerminal(service::edge::debug::EventContext& c, const TerminalWriteInput& body) {
@@ -650,19 +648,25 @@ class EdgeController final {
         const auto session = terminalSession(c, body);
         session->columns = static_cast<unsigned>(body.get<"columns">().value_);
         session->rows = static_cast<unsigned>(body.get<"rows">().value_);
-        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-resize", ",\"columns\":" + std::to_string(session->columns) + ",\"rows\":" + std::to_string(session->rows));
+        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-resize", [&session](service::message::terminal::Request& request) {
+            request.set<"columns">(session->columns).set<"rows">(session->rows);
+        });
         co_return service::edge::debug::EventResult{};
     }
 
     ruvia::task<service::edge::debug::EventResult> keepTerminalAlive(service::edge::debug::EventContext& c, const TerminalSessionInput& body) {
         const auto session = terminalSession(c, body);
-        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-keepalive", ",\"columns\":" + std::to_string(session->columns) + ",\"rows\":" + std::to_string(session->rows));
+        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-keepalive", [&session](service::message::terminal::Request& request) {
+            request.set<"columns">(session->columns).set<"rows">(session->rows);
+        });
         co_return service::edge::debug::EventResult{};
     }
 
     ruvia::task<service::edge::debug::EventResult> acknowledgeTerminalOutput(service::edge::debug::EventContext& c, const TerminalAckInput& body) {
         const auto session = terminalSession(c, body);
-        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-output-ack", ",\"sequence\":" + std::to_string(body.get<"sequence">().value_));
+        (void)co_await edgeService().terminalOperation(c, session->node, session->id, session->connection, "terminal-output-ack", [&body](service::message::terminal::Request& request) {
+            request.set<"sequence">(body.get<"sequence">().value_);
+        });
         co_return service::edge::debug::EventResult{};
     }
 
@@ -741,7 +745,9 @@ class EdgeController final {
         }
         const auto session = serialSession(c, std::string(body.get<"id">().view()), std::string(body.get<"sessionId">().view()));
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
-        (void)co_await edgeService().serialOperation(c, session->node, session->id, session->connection, "serial-command", ",\"command\":" + std::string(command->view()));
+        (void)co_await edgeService().serialOperation(c, session->node, session->id, session->connection, "serial-command", [&command](service::message::serial_debug::Request& request) {
+            request.set<"command">(*command);
+        });
         co_return service::edge::debug::EventResult{};
     }
 
@@ -836,7 +842,7 @@ class EdgeManagementController final {
                 } });
             }
             if (*scope.get<"logs">()) {
-                channels.push_back({ "logs", "iot:edge:logs:snapshot:" + *nodeId, [this, &c, id = *nodeId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+                channels.push_back({ "logs", service::message::edge::logSnapshotKey(*nodeId), [this, &c, id = *nodeId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                                         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                                         co_return service::live::data(c, std::string(ruvia::to_json(co_await edgeService().logSnapshot(request, id, c.req().validated<LogsQuery>()))));
                                     } });

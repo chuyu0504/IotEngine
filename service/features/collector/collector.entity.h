@@ -175,8 +175,8 @@ return redis.call('DEL', KEYS[1])
     }
 
     static std::string key(std::string_view id, std::size_t index, std::string_view instance) {
-        return "iot:runtime:link:" + std::string(id) + ":worker:" +
-            std::string(instance) + ":" + std::to_string(index);
+        return service::message::collector::linkRuntimePrefix(id) + std::string(instance) + ":" +
+            std::to_string(index);
     }
 };
 

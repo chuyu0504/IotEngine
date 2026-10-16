@@ -11,13 +11,9 @@
 
 namespace service::edge::session_state {
 
-// Redis String 存储 epoch、协议版本与连接所属 Worker；有序集合维护过期索引。
-// 固定 Hash ORM 无法映射该字符串格式及跨键原子更新，service 使用以下映射。
+// Redis String service::message::edge::sessionKey 存储 epoch、协议版本与连接所属 Worker；
+// 有序集合维护过期索引。固定 Hash ORM 无法映射该字符串格式及跨键原子更新，service 使用以下映射。
 inline constexpr std::string_view kDeadlines = "iot:edge:session-deadlines";
-
-inline std::string key(std::string_view nodeId) {
-    return "iot:edge:session:" + std::string(nodeId);
-}
 
 struct State final {
     std::uint64_t epoch{};

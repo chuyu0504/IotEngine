@@ -121,13 +121,13 @@ class SessionDispatcher final {
             failed_ = false;
             stopSource_ = std::make_unique<ruvia::stop_source>();
             const auto redis = context.redis();
-            const auto workerStream = dispatch::stream(workerIndex, service::runtime::instanceId());
+            const auto workerStream = service::message::edge::dispatch::stream(workerIndex, service::runtime::instanceId());
             const auto consumer = "service-edge-dispatcher-" +
                 std::to_string(workerIndex);
             co_await service::message::redis::ensureGroup(
                 redis,
                 workerStream,
-                dispatch::kGroup
+                service::message::edge::dispatch::kGroup
             );
             running_ = true;
             ready->set_value();
@@ -144,7 +144,7 @@ class SessionDispatcher final {
                         ? co_await service::message::redis::readGroup(
                               redis,
                               workerStream,
-                              dispatch::kGroup,
+                              service::message::edge::dispatch::kGroup,
                               consumer,
                               "0",
                               std::chrono::milliseconds(0),
@@ -153,7 +153,7 @@ class SessionDispatcher final {
                         : co_await service::message::redis::readGroup(
                               redis,
                               workerStream,
-                              dispatch::kGroup,
+                              service::message::edge::dispatch::kGroup,
                               consumer,
                               ">",
                               std::chrono::milliseconds(0),
@@ -172,8 +172,8 @@ class SessionDispatcher final {
                         continue;
                     }
                     for (const auto& message : messages) {
-                        const auto event = dispatch::eventFrom(message);
-                        if (event.kind == dispatch::kNodeKind &&
+                        const auto event = service::message::edge::dispatch::eventFrom(message);
+                        if (event.kind == service::message::edge::dispatch::kNodeKind &&
                             !event.nodeId.empty() && !deliver(event.nodeId)) {
                             recovering = true;
                             failed = true;
@@ -182,7 +182,7 @@ class SessionDispatcher final {
                         co_await service::message::redis::acknowledgeAndDelete(
                             redis,
                             workerStream,
-                            dispatch::kGroup,
+                            service::message::edge::dispatch::kGroup,
                             message.id
                         );
                     }
@@ -505,9 +505,9 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         bool heartbeatStarted = false;
         try {
             const auto redis = context.redis();
-            const auto currentStream = projector_stream::stream(index, service::runtime::instanceId());
-            const auto currentLease = projector_stream::leaseKey(index, service::runtime::instanceId());
-            const auto currentToken = projector_stream::ownerToken(index, service::runtime::instanceId());
+            const auto currentStream = service::message::edge::projector_stream::stream(index, service::runtime::instanceId());
+            const auto currentLease = service::message::edge::projector_stream::leaseKey(index, service::runtime::instanceId());
+            const auto currentToken = service::message::edge::projector_stream::ownerToken(index, service::runtime::instanceId());
             recoveryLeases_.clear();
             lostRecoveryLeases_.clear();
             acquisitionConfigurations_.clear();
@@ -868,7 +868,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                                 break;
                             }
                             const bool metadataEvent =
-                                message.get("kind") == projector_stream::kMetadataKind;
+                                message.get("kind") == service::message::edge::projector_stream::kMetadataKind;
                             if (metadataEvent) {
                                 const auto nodeId = message.get("node_id");
                                 if (!nodeId.empty()) {
@@ -894,7 +894,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                                 continue;
                             }
                             const bool ingressEvent =
-                                message.get("kind") == projector_stream::kIngressKind;
+                                message.get("kind") == service::message::edge::projector_stream::kIngressKind;
                             if (ingressEvent) {
                                 co_await project(
                                     context,

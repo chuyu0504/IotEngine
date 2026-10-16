@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "service/common/message.h"
 #include "service/features/edge/edge.entity.h"
 
 namespace metadata = service::edge::metadata;
@@ -47,7 +48,7 @@ int main() {
             require(!metadata::decode(malformed).has_value(),
                     "metadata decoder accepted an unframed payload");
         }
-        require(metadata::key("node") == "iot:edge:metadata:node",
+        require(service::message::edge::metadataKey("node") == "iot:edge:metadata:node",
                 "metadata Redis key is unstable");
         std::cout << "edge metadata tests passed\n";
         return 0;

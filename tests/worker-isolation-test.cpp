@@ -64,7 +64,7 @@ ruvia::task<Observation> observe(ruvia::event_loop loop, ruvia::worker_handle fo
     if (bus.workerIndex() != index || diagnostics.workerIndex() != std::to_string(index)) {
         throw std::runtime_error("another worker replaced local state");
     }
-    co_return Observation{ &bus, service::rpc::Contract::requests("test", bus.workerIndex()), message.has_value() };
+    co_return Observation{ &bus, service::message::rpc::Contract::requests("test", bus.workerIndex()), message.has_value() };
 }
 } // namespace
 

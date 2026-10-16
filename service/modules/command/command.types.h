@@ -10,10 +10,4 @@ RUVIA_MODEL(SubmitCommandBody, RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::string
 
 RUVIA_MODEL(CommandStatusQuery, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 
-RUVIA_MODEL(PreparedElement, RUVIA_OPTIONAL_FIELD(elementId, ruvia::string), RUVIA_OPTIONAL_FIELD(value, ruvia::string));
-
-RUVIA_MODEL(PreparedOperation, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceCode, ruvia::string), RUVIA_OPTIONAL_FIELD(protocol, ruvia::string), RUVIA_OPTIONAL_FIELD(elements, ruvia::boxed_array<PreparedElement>), RUVIA_OPTIONAL_FIELD(payload, ruvia::array<ruvia::string>));
-
-RUVIA_MODEL(PreparedBatch, RUVIA_OPTIONAL_FIELD(queue, ruvia::string), RUVIA_OPTIONAL_FIELD(kind, ruvia::string), RUVIA_OPTIONAL_FIELD(maximum, ruvia::int64), RUVIA_OPTIONAL_FIELD(nodeId, ruvia::string), RUVIA_OPTIONAL_FIELD(commands, ruvia::boxed_array<PreparedOperation>));
-
 } // namespace service::command

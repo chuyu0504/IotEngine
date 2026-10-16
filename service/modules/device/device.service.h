@@ -626,7 +626,7 @@ class DeviceService {
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "initialize", id + "\n" + deviceCode);
+            (void)co_await service::rpc::call(c, "telemetry", "initialize", service::message::rpc::encodeLinePair(id, deviceCode));
         } catch (...) {
             // PostgreSQL is authoritative; startup hydration or the first report repairs Redis.
         }
@@ -639,7 +639,8 @@ class DeviceService {
     ruvia::task<ruvia::boxed_array<DeviceDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
         co_await service::debug_idle::touch(c.redis(), "device", id);
-        const auto key = service::device::entities::DeviceDebugIndex::key(id);
+        // 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
+        const auto key = service::message::packet_log::deviceIndexKey(id);
         static constexpr std::string_view readPackets = R"lua(
 local result={}
 local count=0
@@ -1303,11 +1304,6 @@ return result
         return parseDouble(value).value_or(fallback);
     }
 
-    static std::string edgeDeviceStatusKey(std::string_view nodeId, std::string_view deviceId) {
-        return "iot:runtime:edge:" + std::string(nodeId) + ":device:" +
-            std::string(deviceId);
-    }
-
     static ruvia::db_query historyQuery(std::pmr::memory_resource* resource, std::string_view deviceId, std::string_view start, std::string_view end, std::int64_t pageSize, std::int64_t offset, std::int64_t page) {
         const auto timestamp = [](ruvia::db_query& query, std::string_view value) {
             return query.cast(query.value(value), ruvia::db_data_type::timestamp_tz);
@@ -1662,19 +1658,19 @@ return result
             // 原子核验连接租约与链路归属；读取不会延长租约，也不读取历史连接身份。
             pipeline.command(
                 "EVAL", entities::DeviceConnectionState::readScript, "2",
-                service::telemetry::latest::runtimeKey(id),
+                service::message::telemetry::runtimeKey(id),
                 service::message::collector::connectionKey(id),
                 service::message::collector::kLinkOwnerPrefix
             );
             bindings.push_back({ ReplyKind::runtime, item });
-            pipeline.hget_all(service::telemetry::latest::latestKey(id));
+            pipeline.hget_all(service::message::telemetry::latestKey(id));
             bindings.push_back({ ReplyKind::latest, item });
             if (item->template get<"edgeNodeId">() &&
                 item->template get<"edgeTransport">() &&
                 item->template get<"edgeTransport">()->view() == "tcp") {
                 pipeline.command(
                     "HMGET",
-                    edgeDeviceStatusKey(
+                    service::message::edge::deviceStatusKey(
                         item->template get<"edgeNodeId">()->view(),
                         item->template get<"id">()->view()
                     ),
@@ -2236,7 +2232,7 @@ return result
             element.id = jsonString(*parsed, "id").value_or(std::string(field));
             element.name = jsonString(*parsed, "name").value_or(element.id);
             element.dataType = jsonString(*parsed, "dataType").value_or("");
-            element.value = service::telemetry::latest::canonicalPointText(
+            element.value = service::message::telemetry::canonicalPointText(
                 jsonString(*parsed, "value").value_or("-"),
                 element.dataType
             );

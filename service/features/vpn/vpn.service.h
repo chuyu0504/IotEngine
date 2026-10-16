@@ -121,7 +121,7 @@ return redis.call('ZCOUNT',KEYS[1],'('..now,'+inf')
         std::pmr::memory_resource* resource, bool background) {
         ruvia::db_query lock(resource);
         lock.select(lock.call(background ? "pg_try_advisory_xact_lock" : "pg_advisory_xact_lock",
-            { lock.cast(lock.value(std::int64_t{5282804697543808071}), ruvia::db_data_type::big_int) }));
+            { lock.cast(lock.value(service::message::lock::kVpnReconciliation), ruvia::db_data_type::big_int) }));
         const auto rows = co_await transaction.query(lock);
         co_return !background || (!rows.empty() && rows[0][0].value().value_or("") == "t");
     }
@@ -131,7 +131,7 @@ return redis.call('ZCOUNT',KEYS[1],'('..now,'+inf')
         std::pmr::memory_resource* resource) {
         ruvia::db_query lock(resource);
         lock.select(lock.call("pg_advisory_xact_lock",
-            { lock.cast(lock.value(std::int64_t{5282804697543808068}), ruvia::db_data_type::big_int) }));
+            { lock.cast(lock.value(service::message::lock::kVpnAddressAllocation), ruvia::db_data_type::big_int) }));
         (void)co_await transaction.query(lock);
     }
 
@@ -438,7 +438,7 @@ ruvia::task<void> queueEdgeConfig(Context& c, std::string_view peerId,
     auto configuration = co_await c.db("vpn-edge-config").begin_transaction();
     ruvia::db_query lock;
     lock.select(lock.call("pg_advisory_xact_lock", {
-        lock.call("hashtextextended", {lock.cast(lock.value(peerId), ruvia::db_data_type::text), lock.value(std::int64_t{5282804697543808072})})}));
+        lock.call("hashtextextended", {lock.cast(lock.value(peerId), ruvia::db_data_type::text), lock.value(service::message::lock::kVpnEdgeConfigSeed)})}));
     (void)co_await configuration.query(lock);
     ruvia::db_query peer;
     const auto capability = peer.call("lower", { peer.coalesce({ peer.binary(
@@ -687,7 +687,7 @@ ruvia::task<std::optional<wireguard::HubConfig>> loadOrInitialize(
     auto transaction = co_await context.db().begin_transaction();
     ruvia::db_query lock;
     lock.select(lock.call("pg_advisory_xact_lock", {
-        lock.cast(lock.value(std::int64_t{5282804697543808067}), ruvia::db_data_type::big_int) }));
+        lock.cast(lock.value(service::message::lock::kVpnDefaultNetwork), ruvia::db_data_type::big_int) }));
     (void)co_await transaction.query(lock);
     ruvia::db_query network;
     network.select({ network.column(std::tuple_element_t<service::vpn::persistence::VpnNetworkEntity::column_index<"hub_private_key">(), service::vpn::persistence::VpnNetworkEntity::columns_type>::name.view()), network.column(std::tuple_element_t<service::vpn::persistence::VpnNetworkEntity::column_index<"hub_public_key">(), service::vpn::persistence::VpnNetworkEntity::columns_type>::name.view()),
@@ -977,7 +977,7 @@ class VpnControlService final {
     explicit VpnControlService(
         wireguard::HubConfig fallback,
         std::string platformId =
-            std::string(service::edge::protocol::kDefaultPlatformId)
+            std::string(service::message::edge::kDefaultPlatformId)
     )
         : fallback_(std::move(fallback)), platformId_(std::move(platformId)) {}
 
@@ -987,14 +987,11 @@ class VpnControlService final {
         }
 
         if (operation == "queue-edge-config") {
-            const auto separator = payload.find('\n');
-            if (separator == std::string_view::npos || separator == 0 ||
-                separator + 1 >= payload.size() ||
-                !service::common::isUuid(payload.substr(0, separator)) ||
-                !service::common::isUuid(payload.substr(separator + 1))) {
+            const auto request = service::message::rpc::decodeLinePair(payload);
+            if (!request || !service::common::isUuid(request->first) || !service::common::isUuid(request->second)) {
                 service::common::fail(10002, "VPN Edge 配置请求无效", 400);
             }
-            co_await queueEdgeConfig(context, payload.substr(0, separator), payload.substr(separator + 1), platformId_);
+            co_await queueEdgeConfig(context, request->first, request->second, platformId_);
             co_return "{}";
         }
 
@@ -1005,7 +1002,7 @@ class VpnControlService final {
                 result.code != "hub_config_missing") {
                 service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
             }
-            co_return runtimeStatusJson(result);
+            co_return runtimeStatusJson(result, context.pool());
         }
 
         if (operation == "wireguard-remove-peer") {
@@ -1017,14 +1014,15 @@ class VpnControlService final {
     }
 
   private:
-    static std::string runtimeStatusJson(const wireguard::RuntimeStatus& result) {
-    return "{\"platformSupported\":" +
-        std::string(result.supported ? "true" : "false") +
-        ",\"configured\":" + std::string(result.configured ? "true" : "false") +
-        ",\"code\":" + service::utils::jsonQuoted(result.code) +
-        ",\"message\":" + service::utils::jsonQuoted(result.message) +
-        ",\"runtimePeerCount\":" + std::to_string(result.peerCount) + "}";
-}
+    static std::string runtimeStatusJson(const wireguard::RuntimeStatus& result, std::pmr::memory_resource* resource) {
+        service::message::vpn::RuntimeStatus status(ruvia::model_options{ .resource_ = resource });
+        status.set<"platformSupported">(result.supported)
+            .set<"configured">(result.configured)
+            .set<"code">(result.code)
+            .set<"message">(result.message)
+            .set<"runtimePeerCount">(static_cast<std::int64_t>(result.peerCount));
+        return service::message::rpc::encode(status, resource);
+    }
 
     const wireguard::HubConfig fallback_;
     const std::string platformId_;

@@ -30,11 +30,11 @@ namespace redis = service::message::redis;
 using service::message::projection::kRuntimeActiveVersionKey;
 using service::message::projection::realtimeDeviceKey;
 using service::message::projection::realtimeDevicePointsKey;
-inline constexpr std::string_view kVersionsKey = "iot:config:runtime:versions";
+using service::message::projection::kRuntimeVersionsKey;
 inline constexpr std::int64_t kSnapshotGraceMilliseconds = 120000;
 
 inline std::string prefix(std::string_view version) {
-    return "iot:config:runtime:" + std::string(version);
+    return std::string(service::message::projection::kRuntimeVersionPrefix) + std::string(version);
 }
 
 inline std::string linkKey(std::string_view version, std::string_view linkId) {
@@ -514,7 +514,7 @@ ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 template <typename Redis>
 ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds, std::string_view preserveVersion) {
     const std::vector<std::string> expiredArguments{
-        "ZRANGEBYSCORE", std::string(kVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)
+        "ZRANGEBYSCORE", std::string(kRuntimeVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)
     };
     const auto expired = detail::stringArray(
         co_await redis::command(redis, expiredArguments),
@@ -525,7 +525,7 @@ ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
             continue;
         }
         co_await detail::eraseSnapshot(redis, candidate);
-        const std::vector<std::string> removeArguments{ "ZREM", std::string(kVersionsKey), candidate };
+        const std::vector<std::string> removeArguments{ "ZREM", std::string(kRuntimeVersionsKey), candidate };
         (void)detail::integerReply(
             co_await redis::command(redis, removeArguments),
             "ZREM runtime version"
@@ -570,7 +570,7 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     const auto version = uuidGenerator.next();
     const auto createdAt = message::utcNowMilliseconds();
-    const std::vector<std::string> versionArguments{ "ZADD", std::string(kVersionsKey), std::to_string(createdAt), version };
+    const std::vector<std::string> versionArguments{ "ZADD", std::string(kRuntimeVersionsKey), std::to_string(createdAt), version };
     (void)detail::integerReply(
         co_await redis::command(redis, versionArguments),
         "ZADD runtime version"
@@ -666,7 +666,7 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
     if (!previousReply.null()) {
         const auto previous = detail::stringReply(previousReply, "GET active runtime");
         if (!previous.empty() && previous != version) {
-            const std::vector<std::string> previousVersionArguments{ "ZADD", std::string(kVersionsKey), std::to_string(createdAt), previous };
+            const std::vector<std::string> previousVersionArguments{ "ZADD", std::string(kRuntimeVersionsKey), std::to_string(createdAt), previous };
             (void)detail::integerReply(
                 // The score is the time this version stopped being active, not its creation
                 // time. Refresh it on every switch so readers that captured the old pointer
@@ -920,7 +920,7 @@ class CollectorStateService final {
         const ProtocolAction& action, std::uint64_t sessionEpoch,
         std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId) {
         const auto key = message::collector::connectionKey(action.deviceId);
-        const auto runtimeKey = service::telemetry::latest::runtimeKey(action.deviceId);
+        const auto runtimeKey = service::message::telemetry::runtimeKey(action.deviceId);
         const auto ownerKey = message::collector::linkOwnerKey(linkId);
         const auto revisionKey = std::string(service::message::live::kChanges);
         const auto worker = std::to_string(workerIndex);
@@ -961,7 +961,7 @@ class CollectorStateService final {
         std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex,
         std::string_view workerInstanceId, std::string_view reason) {
         const auto key = message::collector::connectionKey(deviceId);
-        const auto runtimeKey = service::telemetry::latest::runtimeKey(deviceId);
+        const auto runtimeKey = service::message::telemetry::runtimeKey(deviceId);
         const auto revisionKey = std::string(service::message::live::kChanges);
         const auto now = std::to_string(message::utcNowMilliseconds());
         const auto worker = std::to_string(workerIndex);
@@ -997,7 +997,7 @@ class CollectorStateService final {
         const auto now = std::to_string(message::utcNowMilliseconds());
         const auto changes = std::string(message::live::kChanges);
         for (const auto& device : snapshot.devices) {
-            const auto key = service::telemetry::latest::runtimeKey(device.id);
+            const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);
             const std::string_view keys[]{key, owner, changes};
             const std::string_view args[]{service::runtime::instanceId(), device.linkId, now};
@@ -1010,7 +1010,7 @@ class CollectorStateService final {
     template <typename Redis>
     static ruvia::task<void> eraseLegacyLinkSnapshots(const Redis& redis, const RuntimeSnapshot& snapshot) {
         for (const auto& link : snapshot.links) {
-            const auto prefix = "iot:runtime:link:" + link.id + ":worker:";
+            const auto prefix = message::collector::linkRuntimePrefix(link.id);
             const auto ownerKey = message::collector::linkOwnerKey(link.id);
             for (const auto& key : co_await message::redis::keysMatching(redis, prefix + '*')) {
                 const auto separator = key.find_last_of(':');

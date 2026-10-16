@@ -585,7 +585,7 @@ class AccessService final {
         if (projected->status != "enabled") {
             service::common::fail(19011, "AccessKey 已被禁用", 403);
         }
-        if (session::expired(*projected, service::message::utcNowMilliseconds())) {
+        if (service::message::access::session::expired(*projected, service::message::utcNowMilliseconds())) {
             service::common::fail(19010, "AccessKey 已过期", 401);
         }
         AccessSession session;
@@ -604,18 +604,21 @@ class AccessService final {
 
     ruvia::task<void> audit(ruvia::context& c, std::string_view action, const AccessSession& session, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
         try {
-            std::string payload =
-                "{\"action\":" + service::utils::jsonQuoted(action) +
-                ",\"accessKeyId\":" + service::utils::jsonQuoted(session.id) +
-                ",\"method\":" + service::utils::jsonQuoted(c.req().method()) +
-                ",\"target\":" + service::utils::jsonQuoted(c.req().path()) +
-                ",\"requestIp\":" +
-                service::utils::jsonQuoted(service::common::clientIp(c)) +
-                ",\"httpStatus\":200,\"deviceId\":" +
-                service::utils::jsonQuoted(deviceId) +
-                ",\"requestPayload\":" + std::string(requestPayload) +
-                ",\"responsePayload\":" + std::string(responsePayload) + "}";
-            (void)co_await service::rpc::call(c, "access", "audit", std::move(payload));
+            service::message::access::AuditRequest payload(ruvia::model_options{ .resource_ = c.arena() });
+            payload.set<"action">(action)
+                .set<"accessKeyId">(session.id)
+                .set<"method">(c.req().method())
+                .set<"target">(c.req().path())
+                .set<"requestIp">(service::common::clientIp(c))
+                .set<"httpStatus">(200)
+                .set<"deviceId">(deviceId);
+            if (auto value = ruvia::json_value::parse(requestPayload, { .resource_ = c.arena() })) {
+                payload.set<"requestPayload">(std::move(*value));
+            }
+            if (auto value = ruvia::json_value::parse(responsePayload, { .resource_ = c.arena() })) {
+                payload.set<"responsePayload">(std::move(*value));
+            }
+            (void)co_await service::rpc::call(c, "access", "audit", service::message::rpc::encode(payload, c.arena()));
         } catch (...) {
             // Open-access audit is best effort.
         }
@@ -802,7 +805,7 @@ class AccessService final {
         if (!device) {
             service::common::fail(19001, "设备不存在", 404);
         }
-        const auto latestKey = service::telemetry::latest::latestKey(device->id);
+        const auto latestKey = service::message::telemetry::latestKey(device->id);
         const std::vector<std::string> latestArguments{ "HGETALL", latestKey };
         const auto latest = co_await service::message::redis::command(
             c.redis(),
@@ -834,7 +837,7 @@ class AccessService final {
                 if (const auto json = ruvia::json_value::parse(data->second)) {
                     const auto dataType = json->template get<ruvia::string>("dataType");
                     if (const auto current = json->template get<ruvia::json_value>("value")) {
-                        value = service::telemetry::latest::canonicalPointJson(
+                        value = service::message::telemetry::canonicalPointJson(
                             current->view(),
                             dataType ? dataType->view() : std::string_view{}
                         );
@@ -890,7 +893,7 @@ class AccessService final {
         (void)co_await service::rpc::call(c, "access", "refresh", "{}");
     }
 
-    static ruvia::task<std::optional<session::Entry>> loadSession(
+    static ruvia::task<std::optional<service::message::access::session::Entry>> loadSession(
         ruvia::context& c,
         std::string_view rawKey
     ) {
@@ -900,9 +903,9 @@ if not version then return nil end
 return redis.call('HGET', ARGV[2] .. version, ARGV[1])
 )lua";
         const auto keyHash = service::utils::sha256(rawKey);
-        const std::string activeKey(session::kActiveVersionKey);
+        const std::string activeKey(service::message::access::session::kActiveVersionKey);
         const std::string_view keys[]{ activeKey };
-        const std::string prefix(session::kVersionPrefix);
+        const std::string prefix(service::message::access::session::kVersionPrefix);
         const std::string_view args[]{ keyHash, prefix };
         const auto reply = co_await c.redis().eval(script, keys, args);
         if (reply.null()) {
@@ -911,7 +914,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         if (reply.kind() != ruvia::redis_value::kind_type::string) {
             service::message::redis::throwValue("load projected access session", reply);
         }
-        co_return session::decode(reply.string());
+        co_return service::message::access::session::decode(reply.string());
     }
 
     static std::string_view projectionField(

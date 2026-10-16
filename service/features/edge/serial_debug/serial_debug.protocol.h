@@ -4,8 +4,8 @@
 #include <optional>
 #include <string>
 #include <edge.pb.h>
-#include "service/features/edge/serial_debug/serial_debug.types.h"
-#include "service/utils/json.h"
+#include <ruvia/web/model_json.h>
+#include "service/common/message.h"
 
 namespace service::edge::serial_debug {
 namespace wire = ::iot::edge::v1;
@@ -45,7 +45,7 @@ inline std::optional<std::string> decodeHex(std::string_view hex) {
 inline std::optional<wire::SerialDebugRequest> decodeRequest(
     std::string_view json, std::string_view path, std::uint64_t previous) {
     if (json.size() > 4096) return std::nullopt;
-    const auto input = ruvia::from_json<BrowserRequest>(json);
+    const auto input = ruvia::from_json<service::message::serial_debug::Command>(json);
     if (!input || !input->get<"action">() || !input->get<"requestId">()) return std::nullopt;
     const auto sequence = *input->get<"requestId">();
     if (sequence <= 0 || sequence > 9007199254740991LL ||
@@ -78,15 +78,25 @@ inline std::optional<wire::SerialDebugRequest> decodeRequest(
     return request;
 }
 inline std::string eventJson(const wire::SerialDebugEvent& event) {
-    const auto& settings = event.settings();
-    const auto quote = service::utils::jsonQuoted;
-    return "{\"kind\":" + quote(event.kind()) + ",\"requestId\":" + std::to_string(event.request_sequence()) +
-        ",\"manual\":" + (event.manual() ? "true" : "false") + ",\"direction\":" + quote(event.direction()) +
-        ",\"hex\":" + quote(hexBytes(event.data())) + ",\"timestamp\":" + std::to_string(event.occurred_at_ms()) +
-        ",\"sequence\":" + std::to_string(event.sequence()) + ",\"droppedBytes\":" + std::to_string(event.dropped_bytes()) +
-        ",\"message\":" + quote(event.message()) + ",\"settings\":{\"path\":" + quote(settings.channel()) +
-        ",\"baudRate\":" + std::to_string(settings.baud_rate()) + ",\"dataBits\":" + std::to_string(settings.data_bits()) +
-        ",\"stopBits\":" + std::to_string(settings.stop_bits()) + ",\"parity\":" + quote(settings.parity()) +
-        ",\"rs485\":" + (settings.rs485() ? "true" : "false") + "}}";
+    const auto& source = event.settings();
+    service::message::serial_debug::Settings settings;
+    settings.set<"path">(source.channel())
+        .set<"baudRate">(static_cast<std::int64_t>(source.baud_rate()))
+        .set<"dataBits">(static_cast<std::int64_t>(source.data_bits()))
+        .set<"stopBits">(static_cast<std::int64_t>(source.stop_bits()))
+        .set<"parity">(source.parity())
+        .set<"rs485">(source.rs485());
+    service::message::serial_debug::Event result;
+    result.set<"kind">(event.kind())
+        .set<"requestId">(static_cast<std::int64_t>(event.request_sequence()))
+        .set<"manual">(event.manual())
+        .set<"direction">(event.direction())
+        .set<"hex">(hexBytes(event.data()))
+        .set<"timestamp">(static_cast<std::int64_t>(event.occurred_at_ms()))
+        .set<"sequence">(static_cast<std::int64_t>(event.sequence()))
+        .set<"droppedBytes">(static_cast<std::int64_t>(event.dropped_bytes()))
+        .set<"message">(event.message())
+        .set<"settings">(std::move(settings));
+    return service::message::rpc::encode(result, nullptr);
 }
 } // namespace service::edge::serial_debug

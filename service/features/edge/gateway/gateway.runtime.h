@@ -507,10 +507,6 @@ class GatewayController final {
         );
     }
 
-    static std::string sessionKey(std::string_view nodeId) {
-        return session_state::key(nodeId);
-    }
-
     // This worker's SessionDispatcher wakes the worker-local session when one of its
     // reliable queues changes. Redis reads are non-blocking and reuse this
     // worker's ordinary pool; no callback or socket crosses worker boundaries.
@@ -579,11 +575,11 @@ class GatewayController final {
         auto& c = *live->context;
         auto& socket = *live->socket;
         auto& session = *live->session;
-        const std::string terminalKey = terminal_state::terminalInputKey(session.nodeId);
+        const std::string terminalKey = service::message::terminal::terminalInputKey(session.nodeId);
         const auto serialKey = service::message::serial_debug::inputKey(session.nodeId);
-        const std::string configKey = "iot:edge:config:" + session.nodeId;
-        const std::string egressKey = "iot:edge:egress:" + session.nodeId;
-        const std::string commandKey = "iot:v2:edge:commands:" + session.nodeId;
+        const std::string configKey = service::message::edge::configKey(session.nodeId);
+        const std::string egressKey = service::message::edge::egressKey(session.nodeId);
+        const std::string commandKey = service::message::edge::commandQueueKey(session.nodeId);
         std::exception_ptr failure;
         try {
             while (live->active && !live->scope->stop_requested() &&

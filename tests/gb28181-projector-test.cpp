@@ -63,6 +63,34 @@ int main() {
             controlStream != service::gb28181::control_protocol::stream::control(
                 2, "01970000-1234-7000-8000-000000000124"),
             "GB28181 control streams collide between workers or process incarnations");
+    namespace control = service::gb28181::control_protocol;
+    require(control::jsonAction(true, "camera-1", "channel-1") ==
+                R"({"code":0,"message":"ok","data":{"sent":true,"device_id":"camera-1","channel_id":"channel-1"}})",
+            "GB28181 action reply wire shape changed");
+    require(control::jsonRecording(false) == R"({"code":0,"message":"ok","data":{"recording":false}})",
+            "GB28181 recording reply wire shape changed");
+    require(control::operationJson(400, "invalid command deadline") ==
+                R"({"code":400,"message":"invalid command deadline"})",
+            "GB28181 operation reply wire shape changed");
+    const SipPreviewStartResult started{
+        .sessionId = "session-1", .deviceId = "camera-1", .channelId = "channel-1",
+        .streamId = "stream-1", .ssrc = "0100000001", .rtpPort = 30000,
+        .playUrls = {.httpFlv = "f", .wsFlv = "w", .httpTs = "t", .hls = "h", .webRtc = "r", .rtsp = "s", .rtmp = "m"},
+        .leaseTimeoutSeconds = 90};
+    const auto startReply = control::jsonPreviewStart(started);
+    require(startReply ==
+                R"({"code":0,"message":"ok","data":{"sent":true,"session_id":"session-1","device_id":"camera-1","channel_id":"channel-1","stream_id":"stream-1","ssrc":"0100000001","rtp_port":30000,"lease_timeout_seconds":90,"play_urls":{"http_flv":"f","ws_flv":"w","http_ts":"t","hls":"h","webrtc":"r","rtsp":"s","rtmp":"m"}}})",
+            "GB28181 preview start reply wire shape changed");
+    const auto parsedStart = ruvia::from_json<service::message::gb28181::PreviewStartResponse>(startReply);
+    require(parsedStart.has_value(), "GB28181 preview start reply is not a valid model");
+    const auto& startData = parsedStart->get<"data">();
+    require(startData && startData->get<"playUrls">() &&
+                startData->get<"playUrls">()->get<"webrtc">()->view() == "r",
+            "GB28181 preview start reply is not readable by the module");
+    const auto stopReply = control::jsonPreviewStop({.sessionId = "session-1", .streamId = "stream-1", .byeSent = true});
+    require(stopReply ==
+                R"({"code":0,"message":"ok","data":{"stopped":true,"session_id":"session-1","stream_id":"stream-1","bye_sent":true,"rtp_server_closed":false}})",
+            "GB28181 preview stop reply wire shape changed");
     testNonemptyProjectionQueries();
     require(service::gb28181::GbProjectionService::integerForTest("12", -1) == 12,
             "GB28181 projector integer parser changed valid integer");

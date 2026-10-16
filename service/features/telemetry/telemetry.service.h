@@ -171,13 +171,13 @@ class TelemetryService {
         if (stop.stop_requested()) {
             service::common::fail(10004, "Telemetry operation cancelled", 503);
         }
-        const auto separator = payload.find('\n');
-        const auto id = payload.substr(0, separator);
+        const auto pair = service::message::rpc::decodeLinePair(payload);
+        const auto id = pair ? pair->first : payload;
         if (!service::common::isUuid(id)) {
             service::common::fail(10002, "Invalid telemetry object identifier", 400);
         }
-        if (operation == "initialize" && separator != std::string_view::npos) {
-            co_await latest::initializeDevice(context.redis(), id, payload.substr(separator + 1));
+        if (operation == "initialize" && pair) {
+            co_await latest::initializeDevice(context.redis(), id, pair->second);
             co_await latest::projectDevice(context, id);
         } else if (operation == "project-device") {
             co_await latest::projectDevice(context, id);
@@ -476,7 +476,7 @@ class TelemetryService {
         Query locks(context.pool());
         locks.with("requested", requestedDevices, { .columns_ = { "device_id" } })
             .select(locks.call("pg_advisory_xact_lock", { locks.call("hashtextextended", {
-                locks.cast(locks.column("device_id"), Type::text), locks.cast(locks.value(734621), Type::big_int) }) }))
+                locks.cast(locks.column("device_id"), Type::text), locks.cast(locks.value(service::message::lock::kTelemetryDeviceSeed), Type::big_int) }) }))
             .from("requested").add_order_by(locks.column("device_id"));
         (void)co_await transaction.query(locks);
         Query deviceRows(context.pool());

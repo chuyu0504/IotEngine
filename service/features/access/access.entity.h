@@ -304,7 +304,7 @@ struct LatestValuesRecord final {
                     point.observedAt = static_cast<std::int64_t>(*value);
                 }
                 if (const auto value = parsed->get<ruvia::json_value>("value")) {
-                    point.value = telemetry::latest::canonicalPointJson(
+                    point.value = service::message::telemetry::canonicalPointJson(
                         value->view(),
                         point.dataType
                     );

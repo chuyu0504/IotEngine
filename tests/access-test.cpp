@@ -80,27 +80,27 @@ int main() {
                                        "019fd9f6-4be5-7272-a194-9e571bce848d",
                                        "device.command.updated"),
                 "different event types incorrectly share an idempotency key");
-        require(service::access::stream::event() ==
+        require(service::message::access::stream::event() ==
                         "iot:channel:open-access:event" &&
-                    service::access::stream::deliveryResult() ==
+                    service::message::access::stream::deliveryResult() ==
                         "iot:channel:open-access:delivery-result" &&
-                    service::access::stream::sessionChanges() ==
+                    service::message::access::stream::sessionChanges() ==
                         "iot:channel:open-access:session-change",
                 "shared access streams changed");
-        require(service::message::webhookCatalogChangesStream(0) !=
-                    service::message::webhookCatalogChangesStream(1),
+        require(service::message::access::stream::catalogChanges(0) !=
+                    service::message::access::stream::catalogChanges(1),
                 "webhook workers share a catalog refresh Stream");
-        require(service::message::webhookCatalogChangesStream(0) !=
-                    service::access::stream::sessionChanges(),
+        require(service::message::access::stream::catalogChanges(0) !=
+                    service::message::access::stream::sessionChanges(),
                 "local catalog refresh and shared session work must use distinct streams");
-        require(service::message::runtimeConfigChangesStream() !=
-                    service::message::webhookCatalogChangesStream(0),
+        require(service::message::configuration::runtimeChangesStream() !=
+                    service::message::access::stream::catalogChanges(0),
                 "independent config consumers must not XDEL from a shared Stream");
-        const auto encodedSession = service::access::session::encode(
+        const auto encodedSession = service::message::access::session::encode(
             "019fd9f6-4be5-7272-a194-9e571bce848d", "production key", "enabled",
             "4102444800000", R"(["device:realtime","device:history"])",
             R"(["019fd9f6-4be5-7272-a194-9e571bce848e"])");
-        const auto decodedSession = service::access::session::decode(encodedSession);
+        const auto decodedSession = service::message::access::session::decode(encodedSession);
         require(decodedSession.id == "019fd9f6-4be5-7272-a194-9e571bce848d" &&
                     decodedSession.name == "production key" &&
                     decodedSession.status == "enabled" &&
@@ -110,12 +110,12 @@ int main() {
                     decodedSession.deviceIds.contains(
                         "019fd9f6-4be5-7272-a194-9e571bce848e"),
                 "projected AccessKey session round-trip changed");
-        require(!service::access::session::expired(decodedSession, 4102444799999LL) &&
-                    service::access::session::expired(decodedSession, 4102444800000LL),
+        require(!service::message::access::session::expired(decodedSession, 4102444799999LL) &&
+                    service::message::access::session::expired(decodedSession, 4102444800000LL),
                 "projected AccessKey expiration boundary changed");
         bool invalidSessionExpirationRejected = false;
         try {
-            (void)service::access::session::decode(service::access::session::encode(
+            (void)service::message::access::session::decode(service::message::access::session::encode(
                 "019fd9f6-4be5-7272-a194-9e571bce848d", "production key", "enabled",
                 "4102444800000x", R"(["device:realtime"])", R"([])"));
         } catch (const std::runtime_error&) {

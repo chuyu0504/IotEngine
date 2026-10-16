@@ -48,9 +48,4 @@ RUVIA_REDIS_ENTITY(DebugPacketHash, "iot:debug:v4:packet",
     RUVIA_REDIS_COLUMN(link_index, ruvia::string),
     RUVIA_REDIS_COLUMN(device_index, ruvia::string));
 
-struct DebugPacketStorage {
-    static std::string key(std::string_view scope, std::string_view id) {
-        return "iot:debug:v4:" + std::string(scope) + ':' + std::string(id);
-    }
-};
 }

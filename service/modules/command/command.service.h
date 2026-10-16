@@ -155,7 +155,7 @@ class CommandService final {
         ruvia::db_query advisory(context.pool());
         advisory.select(advisory.call(
             "pg_advisory_xact_lock",
-            { advisory.call("hashtextextended", { advisory.value(lockKey), advisory.value(std::int64_t{ 0 }) }) }
+            { advisory.call("hashtextextended", { advisory.value(lockKey), advisory.value(service::message::lock::kCommandIdempotencySeed) }) }
         ));
         (void)co_await transaction.query(advisory);
 
@@ -220,7 +220,19 @@ class CommandService final {
             .where(deviceLock.binary(deviceLock.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, deviceLock.cast(deviceLock.value(deviceId), ruvia::db_data_type::uuid)))
             .lock({ .mode_ = ruvia::db_row_lock::share });
         (void)co_await transaction.query(deviceLock);
-        const auto prepared = co_await service::rpc::call(context, "command", "prepare", "{\"deviceId\":" + service::utils::jsonQuoted(deviceId) + mqttSelection + ",\"elements\":" + payload + "}");
+        service::message::command::PrepareRequest prepareRequest(ruvia::model_options{ .resource_ = context.arena() });
+        prepareRequest.template set<"deviceId">(deviceId);
+        if (mqttMessage) {
+            prepareRequest.template set<"mqttMessageId">(mqttMessage->view());
+        }
+        ruvia::array<ruvia::array<ruvia::string>> preparedElements(ruvia::model_options{ .resource_ = context.arena() });
+        for (const auto& [elementId, value] : elements) {
+            auto& pair = preparedElements.emplace_back();
+            pair.emplace_back(std::string_view(elementId));
+            pair.emplace_back(std::string_view(value));
+        }
+        prepareRequest.template set<"elements">(std::move(preparedElements));
+        const auto prepared = co_await service::rpc::call(context, "command", "prepare", service::message::rpc::encode(prepareRequest, context.arena()));
         auto result = co_await appendPrepared(context, transaction, requestId, deviceId, submittedBy, prepared);
         co_await transaction.commit();
         co_return result;
@@ -235,51 +247,44 @@ class CommandService final {
         std::string_view submittedBy,
         std::string_view preparedJson
     ) {
-        const auto batch = ruvia::from_json<PreparedBatch>(preparedJson, { .resource_ = context.arena() });
-        if (!batch || !batch->template get<"queue">() || !batch->template get<"kind">() ||
-            !batch->template get<"maximum">() || !batch->template get<"nodeId">() || !batch->template get<"commands">() ||
-            batch->template get<"commands">()->empty() || batch->template get<"commands">()->size() > 256) {
+        const auto batch = ruvia::from_json<service::message::command::PreparedBatch>(preparedJson, { .resource_ = context.arena() });
+        if (!batch || batch->template get<"commands">().empty() || batch->template get<"commands">().size() > 256) {
             common::fail(10004, "Invalid prepared command batch", 502);
         }
-        const auto kind = batch->template get<"kind">()->view();
-        const auto maximum = static_cast<std::int64_t>(*batch->template get<"maximum">());
+        const auto kind = batch->template get<"kind">().view();
+        const auto maximum = static_cast<std::int64_t>(batch->template get<"maximum">());
         if ((kind != "list" && kind != "stream") || maximum <= 0 || maximum > 10000) {
             common::fail(10004, "Invalid prepared command queue", 502);
         }
         ruvia::boxed_array<ruvia::string> commandIds(ruvia::model_options{ .resource_ = context.arena() });
         std::int64_t ordinal = 0;
-        for (const auto& command : *batch->template get<"commands">()) {
-            if (!command.template get<"id">() || !common::isUuid(command.template get<"id">()->view()) ||
-                !command.template get<"deviceId">() || command.template get<"deviceId">()->view() != deviceId ||
-                !command.template get<"deviceCode">() || !command.template get<"protocol">() ||
-                !command.template get<"elements">() || !command.template get<"payload">()) {
+        for (const auto& command : batch->template get<"commands">()) {
+            if (!common::isUuid(command.template get<"id">().view()) ||
+                command.template get<"deviceId">().view() != deviceId) {
                 common::fail(10004, "Invalid prepared command", 502);
             }
             std::string elements = "[";
-            for (const auto& element : *command.template get<"elements">()) {
-                if (!element.template get<"elementId">() || !element.template get<"value">()) {
-                    common::fail(10004, "Invalid prepared command element", 502);
-                }
+            for (const auto& element : command.template get<"elements">()) {
                 if (elements.size() > 1) {
                     elements += ',';
                 }
-                elements += "{\"elementId\":" + service::utils::jsonQuoted(element.template get<"elementId">()->view()) +
-                    ",\"value\":" + service::utils::jsonQuoted(element.template get<"value">()->view()) + "}";
+                elements += "{\"elementId\":" + service::utils::jsonQuoted(element.template get<"elementId">().view()) +
+                    ",\"value\":" + service::utils::jsonQuoted(element.template get<"value">().view()) + "}";
             }
             elements += ']';
             std::string payload = "[";
-            for (const auto& value : *command.template get<"payload">()) {
+            for (const auto& value : command.template get<"payload">()) {
                 if (payload.size() > 1) {
                     payload += ',';
                 }
                 payload += service::utils::jsonQuoted(value.view());
             }
             payload += ']';
-            const auto id = command.template get<"id">()->view();
+            const auto id = command.template get<"id">().view();
             const auto operationOrdinal = ordinal++;
             ruvia::db_query operationSource(context.pool());
             operationSource
-                .select({ operationSource.cast(operationSource.value(id), ruvia::db_data_type::uuid), operationSource.cast(operationSource.value(requestId), ruvia::db_data_type::uuid), operationSource.value(static_cast<std::int32_t>(operationOrdinal)), operationSource.cast(operationSource.value(deviceId), ruvia::db_data_type::uuid), operationSource.value(command.template get<"deviceCode">()->view()), operationSource.value(command.template get<"protocol">()->view()), operationSource.value("ACCEPTED"), operationSource.cast(operationSource.value(elements), ruvia::db_data_type::jsonb), operationSource.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"protocol_config_id">(), service::command::entities::DeviceEntity::columns_type>::name.view()) })
+                .select({ operationSource.cast(operationSource.value(id), ruvia::db_data_type::uuid), operationSource.cast(operationSource.value(requestId), ruvia::db_data_type::uuid), operationSource.value(static_cast<std::int32_t>(operationOrdinal)), operationSource.cast(operationSource.value(deviceId), ruvia::db_data_type::uuid), operationSource.value(command.template get<"deviceCode">().view()), operationSource.value(command.template get<"protocol">().view()), operationSource.value("ACCEPTED"), operationSource.cast(operationSource.value(elements), ruvia::db_data_type::jsonb), operationSource.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"protocol_config_id">(), service::command::entities::DeviceEntity::columns_type>::name.view()) })
                 .from(service::command::entities::DeviceEntity::table_name())
                 .where(operationSource.binary(
                     operationSource.column(std::tuple_element_t<service::command::entities::DeviceEntity::column_index<"id">(), service::command::entities::DeviceEntity::columns_type>::name.view()),
@@ -295,7 +300,7 @@ class CommandService final {
             ruvia::db_query attemptQuery(context.pool());
             attemptQuery
                 .insert_into(service::command::entities::CommandAttemptEntity::table_name(), { "operation_id", "queue_key", "queue_kind", "payload", "submitted_by", "node_id", "max_length" })
-                .values({ attemptQuery.cast(attemptQuery.value(id), ruvia::db_data_type::uuid), attemptQuery.value(batch->template get<"queue">()->view()), attemptQuery.value(kind), attemptQuery.cast(attemptQuery.value(payload), ruvia::db_data_type::jsonb), attemptQuery.value(submittedBy), attemptQuery.value(batch->template get<"nodeId">()->view()), attemptQuery.value(static_cast<std::int32_t>(maximum)) });
+                .values({ attemptQuery.cast(attemptQuery.value(id), ruvia::db_data_type::uuid), attemptQuery.value(batch->template get<"queue">().view()), attemptQuery.value(kind), attemptQuery.cast(attemptQuery.value(payload), ruvia::db_data_type::jsonb), attemptQuery.value(submittedBy), attemptQuery.value(batch->template get<"nodeId">().view()), attemptQuery.value(static_cast<std::int32_t>(maximum)) });
             (void)co_await transaction.execute(attemptQuery);
             const auto eventId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
             ruvia::db_query eventSource(context.pool());

@@ -20,29 +20,26 @@ class Service final {
         if (stop.stop_requested()) {
             service::common::fail(10004, "串口操作已取消", 503);
         }
-        const auto input = ruvia::json_value::parse(payload);
-        if (!input || !input->is_object()) {
+        const auto input = ruvia::from_json<service::message::serial_debug::Request>(payload, { .resource_ = c.pool() });
+        if (!input) {
             service::common::fail(17021, "串口请求格式无效", 400);
         }
-        const auto field = [&](std::string_view name) {
-            const auto value = input->template get<ruvia::string>(name);
-            return value ? std::string(value->view()) : std::string{};
-        };
-        const auto user = field("userId"), connection = field("connectionId"), node = field("nodeId");
+        const auto user = std::string(input->get<"userId">().view()), connection = std::string(input->get<"connectionId">().view()), node = std::string(input->get<"nodeId">().view());
         if (!service::common::isUuid(user) || !service::common::isUuid(connection) || !service::common::isUuid(node)) {
             service::common::fail(17021, "串口会话身份无效", 400);
         }
-        const auto id = field("sessionId");
+        const auto id = std::string(input->get<"sessionId">().view());
         if (!service::common::isUuid(id)) {
             service::common::fail(17021, "串口会话无效", 400);
         }
         const auto closedKey = BrowserBindingRecord::closedKey(id);
         if (operation == "serial-open") {
-            const auto current = co_await c.redis().get(session_state::key(node));
+            const auto current = co_await c.redis().get(service::message::edge::sessionKey(node));
             if (!current) {
                 service::common::fail(17019, "节点当前离线", 409);
             }
-            auto ticket = SerialTargetRecord::decode(node + "\n" + std::string(*current) + "\n" + field("path"));
+            const auto& path = input->get<"path">();
+            auto ticket = SerialTargetRecord::decode(node + "\n" + std::string(*current) + "\n" + (path ? std::string(path->view()) : std::string{}));
             if (!ticket || !co_await registerSession(c, *ticket, id)) {
                 service::common::fail(17021, "节点不支持串口调试或已重新连接", 409);
             }
@@ -61,7 +58,9 @@ class Service final {
                 (void)co_await c.redis().eval("return redis.call('DEL',KEYS[1],KEYS[2])", keys, std::span<const std::string_view>{});
                 service::common::fail(17021, "串口打开指令未入队", 409);
             }
-            co_return "{\"id\":" + service::utils::jsonQuoted(id) + "}";
+            service::message::serial_debug::OpenReply reply(ruvia::model_options{ .resource_ = c.pool() });
+            reply.set<"id">(id);
+            co_return service::message::rpc::encode(reply, c.pool());
         }
         const auto bindingKey = BrowserBindingRecord::key(id);
         const auto stored = co_await c.redis().get(bindingKey);
@@ -75,35 +74,32 @@ class Service final {
         }
         const auto& ticket = binding->ticket;
         if (operation == "serial-events") {
-            const auto after = input->template get<ruvia::int64>("after");
+            const auto& after = input->get<"after">();
             if (!after || after->value_ < 0) {
                 service::common::fail(17021, "串口事件游标无效", 400);
             }
-            const auto current = co_await c.redis().get(session_state::key(node));
+            const auto current = co_await c.redis().get(service::message::edge::sessionKey(node));
             if (!current || std::string_view(*current) != ticket.nodeSession) {
                 service::common::fail(17019, "节点已断开或重新连接", 409);
             }
             const auto items = co_await c.redis().lrange(service::message::serial_debug::outputKey(node, id), 0, -1);
-            std::string events = "[";
+            ruvia::boxed_array<service::message::serial_debug::Event> events(ruvia::model_options{ .resource_ = c.pool() });
             auto cursor = after->value_;
-            bool comma = false;
             for (const auto& item : items) {
-                const auto event = ruvia::json_value::parse(item);
-                const auto sequence = event ? event->template get<ruvia::int64>("sequence") : std::nullopt;
-                if (!sequence || sequence->value_ <= cursor) {
+                auto event = ruvia::from_json<service::message::serial_debug::Event>(item, { .resource_ = c.pool() });
+                if (!event || event->get<"sequence">().value_ <= cursor) {
                     continue;
                 }
-                if (sequence->value_ != cursor + 1) {
+                const auto sequence = event->get<"sequence">().value_;
+                if (sequence != cursor + 1) {
                     service::common::fail(17021, "串口接收缓冲区已溢出，请重新打开调试", 409);
                 }
-                if (comma) {
-                    events += ',';
-                }
-                events += item;
-                comma = true;
-                cursor = sequence->value_;
+                events.emplace(std::move(*event));
+                cursor = sequence;
             }
-            co_return "{\"events\":" + events + "],\"cursor\":" + std::to_string(cursor) + "}";
+            service::message::serial_debug::EventsReply reply(ruvia::model_options{ .resource_ = c.pool() });
+            reply.set<"events">(std::move(events)).set<"cursor">(cursor);
+            co_return service::message::rpc::encode(reply, c.pool());
         }
         const auto sequenceKey = BrowserBindingRecord::sequenceKey(id);
         if (operation == "serial-close") {
@@ -114,7 +110,7 @@ class Service final {
             request.set_request_sequence(static_cast<std::uint64_t>(next));
             request.mutable_settings()->set_channel(ticket.path);
             if (!co_await enqueue(c, ticket, id, std::move(request))) {
-                const auto current = co_await c.redis().get(session_state::key(node));
+                const auto current = co_await c.redis().get(service::message::edge::sessionKey(node));
                 const auto owner = co_await c.redis().get(SessionRecord::key(node, id));
                 if (current && owner && std::string_view(*current) == ticket.nodeSession && std::string_view(*owner) == ticket.nodeSession) {
                     // Preserve the owner and binding so cleanup can retry after
@@ -130,7 +126,7 @@ class Service final {
         if (operation != "serial-command") {
             service::common::fail(17021, "未知串口操作", 400);
         }
-        const auto command = input->get<ruvia::json_value>("command");
+        const auto& command = input->get<"command">();
         auto request = command ? decodeRequest(command->view(), ticket.path, 1) : std::nullopt;
         if (!request) {
             service::common::fail(17021, "串口指令或参数无效", 400);
@@ -165,7 +161,7 @@ return 1
             co_return false;
         }
         const SessionRecord record{ ticket.nodeSession };
-        const auto currentKey = session_state::key(ticket.nodeId);
+        const auto currentKey = service::message::edge::sessionKey(ticket.nodeId);
         const auto ownerKey = SessionRecord::key(ticket.nodeId, id);
         const auto closedKey = BrowserBindingRecord::closedKey(id);
         const std::string_view keys[]{ currentKey, ownerKey, closedKey };
@@ -195,7 +191,7 @@ return 1
         envelope.set_protocol_version(parsed->protocolVersion);
         *envelope.mutable_serial_debug_request() = std::move(request);
         const auto encoded = protocol::encode(envelope);
-        const auto currentKey = session_state::key(ticket.nodeId);
+        const auto currentKey = service::message::edge::sessionKey(ticket.nodeId);
         const auto ownerKey = SessionRecord::key(ticket.nodeId, id);
         const auto inputKey = service::message::serial_debug::inputKey(ticket.nodeId);
         const auto closedKey = BrowserBindingRecord::closedKey(id);
@@ -227,7 +223,7 @@ return 1
         const auto id = protocol::uuidText(event.session_id());
         const auto ownerKey = SessionRecord::key(nodeId, id);
         const auto outputKey = service::message::serial_debug::outputKey(nodeId, id);
-        const auto currentKey = session_state::key(nodeId);
+        const auto currentKey = service::message::edge::sessionKey(nodeId);
         const auto json = eventJson(event);
         const auto topic = service::message::serial_debug::eventTopic(nodeId, id);
         const std::string_view keys[]{ ownerKey, outputKey, currentKey, service::message::live::kChanges };

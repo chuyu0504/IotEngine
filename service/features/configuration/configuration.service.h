@@ -608,7 +608,7 @@ class ConfigurationService final {
         // state.
         ruvia::db_query lock;
         lock.select(lock.call("pg_advisory_xact_lock", {
-            lock.cast(lock.value(std::int64_t{5282804697543808067}), ruvia::db_data_type::big_int) }));
+            lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
         (void)co_await transaction.query(lock);
         auto snapshot =
             co_await service::configuration::loadRuntimeSnapshot(transaction);

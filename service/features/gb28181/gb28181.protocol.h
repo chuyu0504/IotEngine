@@ -63,16 +63,23 @@ inline std::string cancel(std::string_view requestId) {
     return "iot:gb28181:cancel:" + std::string(requestId);
 }
 
+inline constexpr std::string_view kOwnerPrefix{ "iot:gb28181:owner:" };
+inline constexpr std::string_view kSessionOwnerPrefix{ "iot:gb28181:session-owner:" };
+
 inline std::string owner(std::string_view deviceId) {
-    return "iot:gb28181:owner:" + std::string(deviceId);
+    return std::string(kOwnerPrefix) + std::string(deviceId);
 }
 
 inline std::string sessionOwner(std::string_view sessionId) {
-    return "iot:gb28181:session-owner:" + std::string(sessionId);
+    return std::string(kSessionOwnerPrefix) + std::string(sessionId);
 }
 
 inline std::string projectionDone(std::string_view projectionId) {
     return "iot:gb28181:projection:done:" + std::string(projectionId);
+}
+
+inline std::string projectionSent(std::string_view projectionId) {
+    return "iot:gb28181:projection:sent:" + std::string(projectionId);
 }
 
 // Owner tokens are process-incarnation fences.  The suffix is the Collector
@@ -153,99 +160,6 @@ inline bool completeOwnerToken(std::string_view token) {
 
 } // namespace stream
 
-// The northbound module and the GB28181 feature communicate with a small,
-// deliberately boring JSON contract.  These models are feature-owned: the
-// module keeps its HTTP DTOs independent and only parses the wire shape.
-RUVIA_MODEL(
-    ControlRequest,
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(pan, ruvia::double_value),
-    RUVIA_OPTIONAL_FIELD(tilt, ruvia::double_value),
-    RUVIA_OPTIONAL_FIELD(zoom, ruvia::double_value)
-);
-
-RUVIA_MODEL(
-    MediaPortsJson,
-    RUVIA_OPTIONAL_FIELD(http, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(https, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtsps, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtmps, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtc, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::int64)
-);
-
-RUVIA_MODEL(
-    MediaCapabilitiesJson,
-    RUVIA_OPTIONAL_FIELD(faac, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(hls, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(mp4, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(sctp, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(x264, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(tls, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value)
-);
-
-RUVIA_MODEL(
-    HealthJson,
-    RUVIA_OPTIONAL_FIELD(status, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(service, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(started, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(error, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPortsJson),
-    RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilitiesJson)
-);
-
-RUVIA_MODEL(
-    ChannelJson,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::bool_value)
-);
-
-RUVIA_MODEL(
-    DeviceJson,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(channels, ruvia::boxed_array<ChannelJson>)
-);
-
-RUVIA_MODEL(DeviceListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::boxed_array<DeviceJson>));
-
-inline std::optional<ControlRequest> parseRequest(
-    std::string_view body,
-    std::pmr::memory_resource* resource
-) {
-    return ruvia::from_json<ControlRequest>(body, { .resource_ = resource });
-}
-
 inline constexpr std::string_view kHealthOperation{ "health" };
 inline constexpr std::string_view kDevicesOperation{ "devices" };
 inline constexpr std::string_view kCatalogOperation{ "catalog" };
@@ -261,19 +175,6 @@ inline constexpr std::string_view kPtzPositionOperation{ "ptz.position" };
 inline constexpr std::string_view kRecordingOperation{ "recording" };
 inline constexpr std::string_view kRecordingStartOperation{ "recording.start" };
 inline constexpr std::string_view kRecordingStopOperation{ "recording.stop" };
-
-inline std::string successJson(const auto& model, std::pmr::memory_resource* resource) {
-    const auto encoded = ruvia::to_json(model, { .resource_ = resource });
-    std::string result{ "{\"code\":0,\"message\":\"ok\",\"data\":" };
-    result.append(encoded.data(), encoded.size());
-    result.push_back('}');
-    return result;
-}
-
-inline std::string operationJson(std::string_view message) {
-    return "{\"code\":0,\"message\":" + service::utils::jsonQuoted(message) +
-        "}";
-}
 
 } // namespace service::gb28181::control_protocol
 
@@ -542,8 +443,8 @@ inline std::pair<std::string, std::string> splitRemoteAddress(std::string_view a
 
 namespace service::gb28181::control_protocol {
 
-inline MediaPortsJson mediaPortsJson(std::pmr::memory_resource* resource, const MediaServerPorts& ports) {
-    MediaPortsJson result(ruvia::model_options{.resource_ = resource});
+inline service::message::gb28181::MediaPorts mediaPortsJson(std::pmr::memory_resource* resource, const MediaServerPorts& ports) {
+    service::message::gb28181::MediaPorts result(ruvia::model_options{.resource_ = resource});
     result.set<"http">(ports.http)
         .set<"https">(ports.https)
         .set<"rtsp">(ports.rtsp)
@@ -555,11 +456,11 @@ inline MediaPortsJson mediaPortsJson(std::pmr::memory_resource* resource, const 
     return result;
 }
 
-inline MediaCapabilitiesJson mediaCapabilitiesJson(
+inline service::message::gb28181::MediaCapabilities mediaCapabilitiesJson(
     std::pmr::memory_resource* resource,
     const MediaCapabilities& capabilities
 ) {
-    MediaCapabilitiesJson result(ruvia::model_options{.resource_ = resource});
+    service::message::gb28181::MediaCapabilities result(ruvia::model_options{.resource_ = resource});
     result.set<"faac">(capabilities.faac)
         .set<"ffmpeg">(capabilities.ffmpeg)
         .set<"hls">(capabilities.hls)
@@ -575,8 +476,8 @@ inline MediaCapabilitiesJson mediaCapabilitiesJson(
     return result;
 }
 
-inline ChannelJson channelJson(std::pmr::memory_resource* resource, const Channel& channel) {
-    ChannelJson result(ruvia::model_options{.resource_ = resource});
+inline service::message::gb28181::Channel channelJson(std::pmr::memory_resource* resource, const Channel& channel) {
+    service::message::gb28181::Channel result(ruvia::model_options{.resource_ = resource});
     result.set<"id">(channel.id)
         .set<"name">(channel.displayName())
         .set<"reportedName">(channel.name)
@@ -588,16 +489,16 @@ inline ChannelJson channelJson(std::pmr::memory_resource* resource, const Channe
     return result;
 }
 
-inline DeviceJson deviceJson(std::pmr::memory_resource* resource, const Device& device) {
+inline service::message::gb28181::Device deviceJson(std::pmr::memory_resource* resource, const Device& device) {
     const auto [remoteIp, remotePort] = control_protocol::splitRemoteAddress(device.remoteAddress);
-    ruvia::boxed_array<ChannelJson> channels(
+    ruvia::boxed_array<service::message::gb28181::Channel> channels(
         ruvia::model_options{ .resource_ = resource }
     );
     for (const auto& channel : device.channels) {
         channels.emplace(channelJson(resource, channel));
     }
 
-    DeviceJson result(ruvia::model_options{.resource_ = resource});
+    service::message::gb28181::Device result(ruvia::model_options{.resource_ = resource});
     result.set<"id">(device.id)
         .set<"name">(device.displayName())
         .set<"reportedName">(device.name)
@@ -613,65 +514,67 @@ inline DeviceJson deviceJson(std::pmr::memory_resource* resource, const Device& 
     return result;
 }
 
-inline std::string jsonData(std::string value) {
-    return "{\"code\":0,\"message\":\"ok\",\"data\":" +
-        std::move(value) + "}";
+template <typename Response, typename Data>
+std::string successJson(Data data, std::pmr::memory_resource* resource) {
+    Response response(ruvia::model_options{ .resource_ = resource });
+    response.template set<"code">(0).template set<"message">("ok").template set<"data">(std::move(data));
+    return service::message::rpc::encode(response, resource);
+}
+
+inline std::string operationJson(std::int64_t code, std::string_view message) {
+    service::message::gb28181::OperationResponse response;
+    response.set<"code">(code).set<"message">(message);
+    return service::message::rpc::encode(response, nullptr);
 }
 
 inline std::string jsonAction(bool sent, std::string_view deviceId = {}, std::string_view channelId = {}) {
-    std::string result = "{\"sent\":";
-    result += sent ? "true" : "false";
+    service::message::gb28181::Action action;
+    action.set<"sent">(sent);
     if (!deviceId.empty()) {
-        result += ",\"device_id\":" + service::utils::jsonQuoted(deviceId);
+        action.set<"deviceId">(deviceId);
     }
     if (!channelId.empty()) {
-        result += ",\"channel_id\":" + service::utils::jsonQuoted(channelId);
+        action.set<"channelId">(channelId);
     }
-    result.push_back('}');
-    return jsonData(std::move(result));
+    return successJson<service::message::gb28181::ActionResponse>(std::move(action), nullptr);
+}
+
+inline std::string jsonRecording(bool recording) {
+    service::message::gb28181::Action action;
+    action.set<"recording">(recording);
+    return successJson<service::message::gb28181::ActionResponse>(std::move(action), nullptr);
 }
 
 inline std::string jsonPreviewStart(const SipPreviewStartResult& value) {
-    std::string result = "{\"sent\":true,\"session_id\":" +
-        service::utils::jsonQuoted(value.sessionId) +
-        ",\"device_id\":" +
-        service::utils::jsonQuoted(value.deviceId) +
-        ",\"channel_id\":" +
-        service::utils::jsonQuoted(value.channelId) +
-        ",\"stream_id\":" +
-        service::utils::jsonQuoted(value.streamId) +
-        ",\"ssrc\":" +
-        service::utils::jsonQuoted(value.ssrc) +
-        ",\"rtp_port\":" + std::to_string(value.rtpPort) +
-        ",\"lease_timeout_seconds\":" +
-        std::to_string(value.leaseTimeoutSeconds) +
-        ",\"play_urls\":{\"http_flv\":" +
-        service::utils::jsonQuoted(value.playUrls.httpFlv) +
-        ",\"ws_flv\":" +
-        service::utils::jsonQuoted(value.playUrls.wsFlv) +
-        ",\"http_ts\":" +
-        service::utils::jsonQuoted(value.playUrls.httpTs) +
-        ",\"hls\":" +
-        service::utils::jsonQuoted(value.playUrls.hls) +
-        ",\"webrtc\":" +
-        service::utils::jsonQuoted(value.playUrls.webRtc) +
-        ",\"rtsp\":" +
-        service::utils::jsonQuoted(value.playUrls.rtsp) +
-        ",\"rtmp\":" +
-        service::utils::jsonQuoted(value.playUrls.rtmp) +
-        "}}";
-    return jsonData(std::move(result));
+    service::message::gb28181::PlayUrls urls;
+    urls.set<"httpFlv">(value.playUrls.httpFlv)
+        .set<"wsFlv">(value.playUrls.wsFlv)
+        .set<"httpTs">(value.playUrls.httpTs)
+        .set<"hls">(value.playUrls.hls)
+        .set<"webrtc">(value.playUrls.webRtc)
+        .set<"rtsp">(value.playUrls.rtsp)
+        .set<"rtmp">(value.playUrls.rtmp);
+    service::message::gb28181::PreviewStart preview;
+    preview.set<"sent">(true)
+        .set<"sessionId">(value.sessionId)
+        .set<"deviceId">(value.deviceId)
+        .set<"channelId">(value.channelId)
+        .set<"streamId">(value.streamId)
+        .set<"ssrc">(value.ssrc)
+        .set<"rtpPort">(value.rtpPort)
+        .set<"leaseTimeoutSeconds">(value.leaseTimeoutSeconds)
+        .set<"playUrls">(std::move(urls));
+    return successJson<service::message::gb28181::PreviewStartResponse>(std::move(preview), nullptr);
 }
 
 inline std::string jsonPreviewStop(const SipPreviewStopResult& value) {
-    return jsonData(
-        "{\"stopped\":true,\"session_id\":" +
-        service::utils::jsonQuoted(value.sessionId) + ",\"stream_id\":" +
-        service::utils::jsonQuoted(value.streamId) + ",\"bye_sent\":" +
-        (value.byeSent ? "true" : "false") +
-        ",\"rtp_server_closed\":" +
-        (value.rtpServerClosed ? "true" : "false") + "}"
-    );
+    service::message::gb28181::PreviewStop preview;
+    preview.set<"stopped">(true)
+        .set<"sessionId">(value.sessionId)
+        .set<"streamId">(value.streamId)
+        .set<"byeSent">(value.byeSent)
+        .set<"rtpServerClosed">(value.rtpServerClosed);
+    return successJson<service::message::gb28181::PreviewStopResponse>(std::move(preview), nullptr);
 }
 
 } // namespace service::gb28181::control_protocol

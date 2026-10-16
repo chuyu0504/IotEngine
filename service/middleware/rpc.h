@@ -22,19 +22,19 @@ class RpcRequestClient final {
   public:
     template <typename Context>
     static ruvia::task<std::string> call(Context& context, std::string_view component, std::string_view operation, std::string payload) {
-        if (payload.size() > Contract::maximumPayload) {
+        if (payload.size() > service::message::rpc::Contract::maximumPayload) {
             service::common::fail(10002, "RPC payload exceeds limit", 413);
         }
         const auto id = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        const auto replyKey = Contract::reply(id);
-        const auto deadline = Contract::now() +
-            std::chrono::duration_cast<std::chrono::milliseconds>(Contract::timeout).count();
+        const auto replyKey = service::message::rpc::Contract::reply(id);
+        const auto deadline = service::message::rpc::Contract::now() +
+            std::chrono::duration_cast<std::chrono::milliseconds>(service::message::rpc::Contract::timeout).count();
         auto subscription = service::live::bus().subscribe(context.worker(), replyKey);
         const auto requestStream =
-            Contract::requests(service::runtime::instanceId(), service::live::bus().workerIndex());
+            service::message::rpc::Contract::requests(service::runtime::instanceId(), service::live::bus().workerIndex());
         std::exception_ptr failure;
         try {
-            const std::vector<std::string> resultArguments{ "XADD", requestStream, "*", "version", std::string(Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
+            const std::vector<std::string> resultArguments{ "XADD", requestStream, "*", "version", std::string(service::message::rpc::Contract::version), "id", id, "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
             const auto result = co_await service::message::redis::command(context.redis(), resultArguments);
             if (result.kind() != ruvia::redis_value::kind_type::string) {
                 service::message::redis::throwValue("RPC enqueue", result);
@@ -51,7 +51,7 @@ class RpcRequestClient final {
                 if (reply.kind() == ruvia::redis_value::kind_type::error) {
                     service::message::redis::throwValue("RPC reply", reply);
                 }
-                const auto remaining = deadline - Contract::now();
+                const auto remaining = deadline - service::message::rpc::Contract::now();
                 if (remaining <= 0) {
                     service::common::fail(10004, "Background operation timed out", 504);
                 }
@@ -65,7 +65,7 @@ class RpcRequestClient final {
             failure = std::current_exception();
         }
         try {
-            const std::vector<std::string> setArguments{ "SET", Contract::cancelled(id), "1", "EX", std::string(Contract::replyLifetime) };
+            const std::vector<std::string> setArguments{ "SET", service::message::rpc::Contract::cancelled(id), "1", "EX", std::string(service::message::rpc::Contract::replyLifetime) };
             (void)co_await service::message::redis::command(context.redis(), setArguments);
         } catch (...) {
             // The persisted deadline also cancels work when the connection is gone.

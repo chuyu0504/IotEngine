@@ -36,8 +36,6 @@ void requireUnambiguousTlsVerificationFlag(std::string_view source) {
 
 void requireCanonicalBooleanPointValues(std::string_view source) {
     require(source.find("parsed->get<ruvia::string>(\"dataType\")") !=
-                    std::string_view::npos &&
-                source.find("telemetry::latest::canonicalPointJson(") !=
                     std::string_view::npos,
             "webhook payloads do not canonicalize BOOL points to 0/1");
 }

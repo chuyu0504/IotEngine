@@ -424,7 +424,7 @@ public:
 
     static ruvia::task<std::string> prepare(ruvia::web_worker_context& context,
                                            std::string_view payload) {
-        const auto request = ruvia::from_json<PrepareCommandBody>(payload, {.resource_ = context.pool()});
+        const auto request = ruvia::from_json<service::message::command::PrepareRequest>(payload, {.resource_ = context.pool()});
         if (!request) common::fail(18010, "Invalid command preparation request", 400);
         const auto id = request->get<"deviceId">().view();
         if (!common::isUuid(id)) common::fail(18010, "Invalid command preparation parameters", 400);
@@ -441,47 +441,45 @@ public:
         const std::string mqttMessageId = request->get<"mqttMessageId">() ? std::string(request->get<"mqttMessageId">()->view()) : "";
         const auto prepared = co_await compileDevice(context, id, std::move(requested), transaction, mqttMessageId);
         co_await transaction.commit();
-        co_return encode(prepared);
+        co_return encode(prepared, context.pool());
     }
 
 private:
-    static std::string encode(const Prepared& prepared) {
-        using service::utils::jsonQuoted;
-        std::string result = "{\"queue\":" + jsonQuoted(prepared.queue) +
-            ",\"kind\":" + jsonQuoted(prepared.kind == PendingQueueKind::List ? "list" : "stream") +
-            ",\"maximum\":" + std::to_string(prepared.maximum) +
-            ",\"nodeId\":" + jsonQuoted(prepared.nodeId) + ",\"commands\":[";
-        bool firstCommand = true;
+    static std::string encode(const Prepared& prepared, std::pmr::memory_resource* resource) {
+        const ruvia::model_options options{ .resource_ = resource };
+        ruvia::boxed_array<service::message::command::PreparedCommand> commands(options);
         for (const auto& dispatch : prepared.dispatches) {
-            if (!firstCommand) result += ',';
-            firstCommand = false;
             const auto& task = dispatch.task;
-            result += "{\"id\":" + jsonQuoted(task.messageId) +
-                ",\"deviceId\":" + jsonQuoted(task.deviceId) +
-                ",\"deviceCode\":" + jsonQuoted(task.deviceCode) +
-                ",\"protocol\":" + jsonQuoted(task.protocol) + ",\"elements\":[";
-            bool first = true;
+            ruvia::boxed_array<service::message::command::PreparedElement> elements(options);
             for (const auto& [id, value] : task.elements) {
-                if (!first) result += ',';
-                first = false;
-                result += "{\"elementId\":" + jsonQuoted(id) + ",\"value\":" + jsonQuoted(value) + "}";
+                elements.emplace().set<"elementId">(id).set<"value">(value);
             }
-            result += "],\"payload\":[";
+            ruvia::array<ruvia::string> payload(options);
             if (prepared.kind == PendingQueueKind::List) {
                 const auto* begin = reinterpret_cast<const std::uint8_t*>(dispatch.listPayload.data());
-                result += jsonQuoted(message::toHex(
+                payload.emplace_back(message::toHex(
                     std::vector<std::uint8_t>(begin, begin + dispatch.listPayload.size())));
             } else {
-                first = true;
                 for (const auto& field : dispatch.streamFields) {
-                    if (!first) result += ',';
-                    first = false;
-                    result += jsonQuoted(field.name) + ',' + jsonQuoted(field.value);
+                    payload.emplace_back(field.name);
+                    payload.emplace_back(field.value);
                 }
             }
-            result += "]}";
+            commands.emplace()
+                .set<"id">(task.messageId)
+                .set<"deviceId">(task.deviceId)
+                .set<"deviceCode">(task.deviceCode)
+                .set<"protocol">(task.protocol)
+                .set<"elements">(std::move(elements))
+                .set<"payload">(std::move(payload));
         }
-        return result + "]}";
+        service::message::command::PreparedBatch batch(options);
+        batch.set<"queue">(prepared.queue)
+            .set<"kind">(prepared.kind == PendingQueueKind::List ? "list" : "stream")
+            .set<"maximum">(static_cast<std::int64_t>(prepared.maximum))
+            .set<"nodeId">(prepared.nodeId)
+            .set<"commands">(std::move(commands));
+        return service::message::rpc::encode(batch, resource);
     }
     static ruvia::task<Prepared> compileDevice(ruvia::web_worker_context& context,
                   std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested,
@@ -609,7 +607,7 @@ private:
                       ruvia::db_transaction& transaction) {
         if (!remoteControl)
             service::common::fail(18005, "设备未开启远程控制", 403);
-        if (!co_await context.redis().get("iot:edge:session:" + std::string(nodeId)))
+        if (!co_await context.redis().get(service::message::edge::sessionKey(nodeId)))
             service::common::fail(18013, "边缘节点离线，无法下发设备命令", 409);
 
         service::collector::DeviceDefinition device;
@@ -672,7 +670,7 @@ private:
             dispatches.push_back(std::move(dispatch));
         }
         co_return Prepared{
-            .queue = "iot:v2:edge:commands:" + std::string(nodeId),
+            .queue = service::message::edge::commandQueueKey(nodeId),
             .kind = PendingQueueKind::List, .dispatches = std::move(dispatches),
             .maximum = 1024, .nodeId = std::string(nodeId)};
 

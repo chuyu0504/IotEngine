@@ -21,7 +21,6 @@
 
 namespace service::edge::session_state {
 
-inline constexpr std::string_view kChanges = "iot:live:changes";
 inline constexpr std::string_view kClaimScript = R"lua(
 local now=redis.call('TIME')
 redis.call('SET',KEYS[1],ARGV[1],'EX',930)
@@ -74,9 +73,9 @@ template <typename Redis>
 ruvia::task<bool> mutate(const Redis& redis, std::string_view script,
     std::string_view nodeId, std::uint64_t epoch, std::uint32_t protocolVersion,
     std::size_t workerIndex) {
-    const auto sessionKey=key(nodeId);
+    const auto sessionKey=service::message::edge::sessionKey(nodeId);
     const auto expected=value(epoch,protocolVersion,workerIndex,service::runtime::instanceId());
-    const std::string_view keys[]{sessionKey,kDeadlines,kChanges};
+    const std::string_view keys[]{sessionKey,kDeadlines,service::message::live::kChanges};
     const std::string_view args[]{expected};
     const auto reply=co_await redis.eval(script,keys,args);
     if(reply.kind()!=ruvia::redis_value::kind_type::integer)
@@ -108,7 +107,7 @@ ruvia::task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
     if (nodeId.empty()) {
         co_return;
     }
-    const auto session = co_await redis.get(session_state::key(nodeId));
+    const auto session = co_await redis.get(service::message::edge::sessionKey(nodeId));
     if (!session) {
         co_return;
     }
@@ -119,11 +118,11 @@ ruvia::task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
         co_return;
     }
     const std::vector<service::message::StreamField> fields{
-        { "kind", std::string(kNodeKind) }, { "node_id", std::string(nodeId) }
+        { "kind", std::string(service::message::edge::dispatch::kNodeKind) }, { "node_id", std::string(nodeId) }
     };
     (void)co_await service::message::redis::publish(
         redis,
-        stream(owner->workerIndex, owner->instanceId),
+        service::message::edge::dispatch::stream(owner->workerIndex, owner->instanceId),
         fields,
         10000
     );
@@ -136,7 +135,7 @@ ruvia::task<void> enqueue(const Redis& redis, std::string_view nodeId, std::stri
     if (nodeId.empty() || wire.empty()) {
         co_return;
     }
-    const auto key = "iot:edge:egress:" + std::string(nodeId);
+    const auto key = service::message::edge::egressKey(nodeId);
     (void)co_await redis.rpush(key, wire);
     (void)co_await redis.ltrim(key, -100, -1);
     co_await notifyNode(redis, nodeId);

@@ -196,7 +196,7 @@ CommandLineOptions parseCommandLine(int argc, char* argv[]) {
 }
 
 void validateEdgeConfiguration(const ruvia::env& env) {
-    const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId);
+    const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId);
     if (!service::edge::config::validPlatformId(platformId)) {
         throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
     }
@@ -335,7 +335,7 @@ void registerRpcHandlers(
     rpcConsumer->add("edge-terminal", service::edge::terminal_state::TerminalService::executeBrowserOperation);
     auto vpnControl = std::make_shared<service::vpn::VpnControlService>(
         vpnHubConfig(env),
-        std::string(env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId))
+        std::string(env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId))
     );
     rpcConsumer->add(
         "vpn",

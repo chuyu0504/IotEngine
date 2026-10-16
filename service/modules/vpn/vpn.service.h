@@ -560,7 +560,7 @@ class VpnService final {
             service::common::fail(21003, "VPN 自动映射只能保持启用的 NAT 模式", 409);
         }
         auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808068LL);
+        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
         ruvia::db_query conflictsQuery(c.pool());
         conflictsQuery
             .select({ conflictsQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"target_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()), conflictsQuery.column(std::tuple_element_t<service::vpn::entities::VpnRouteEntity::column_index<"virtual_cidr">(), service::vpn::entities::VpnRouteEntity::columns_type>::name.view()) })
@@ -728,7 +728,7 @@ class VpnService final {
         const auto status = publicKey.empty() ? "pending" : "active";
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
         auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808068LL);
+        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
         if (reusableEdgePeerId.empty()) {
             const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
             const auto assignedText = detail::hostText(*assigned);
@@ -817,7 +817,7 @@ class VpnService final {
         const auto edgeNodeId = detail::rowValue(rows.front(), 0);
         const auto networkId = detail::rowValue(rows.front(), 3);
         auto transaction = co_await c.db().begin_transaction();
-        co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808068LL);
+        co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnAddressAllocation);
         co_await syncEdgeBridgeRoutes(transaction, id, networkId, edgeNodeId, c.userId, *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
         co_await transaction.commit();
         co_await queueEdgeConfig(c, id);
@@ -904,7 +904,7 @@ ruvia::task<std::string> VpnService::ensureDefaultNetwork(Context& c) {
         std::string(c.env().get("VPN_HUB_ENDPOINT").value_or(""));
     const auto hubListenPort = c.env().template get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
     auto transaction = co_await c.db().begin_transaction();
-    co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808067LL);
+    co_await detail::advisoryLock(transaction, c.pool(), service::message::lock::kVpnDefaultNetwork);
     using Op = ruvia::db_binary_operator;
     ruvia::db_query existingQuery(c.pool());
     existingQuery
@@ -1048,7 +1048,7 @@ ruvia::task<std::string> VpnService::desktopDevices(Context& c) {
         }
         // Use the same live session source as EdgeService::fillNode. Database
         // telemetry timestamps do not represent the lifetime of a WebSocket.
-        const auto session = co_await c.redis().get("iot:edge:session:" + detail::rowValue(rows[index], 1));
+        const auto session = co_await c.redis().get(service::message::edge::sessionKey(detail::rowValue(rows[index], 1)));
         const auto device = detail::rowValue(rows[index], 0);
         result += std::string("{\"online\":") + (session.has_value() ? "true," : "false,") + device.substr(1);
     }
@@ -1067,7 +1067,7 @@ ruvia::task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesk
     auto tx = co_await c.db().begin_transaction();
     // Serialize allocation and the public-key retry lookup together. A lost POST
     // response can safely be retried with the locally persisted keypair.
-    co_await detail::advisoryLock(tx, c.pool(), 5282804697543808068LL);
+    co_await detail::advisoryLock(tx, c.pool(), service::message::lock::kVpnAddressAllocation);
     using Op = ruvia::db_binary_operator;
     ruvia::db_query existingQuery(c.pool());
     existingQuery
@@ -1282,7 +1282,7 @@ ruvia::task<void> VpnService::desktopDeletePeer(Context& c, std::string_view id)
 
 template <typename Context>
 ruvia::task<void> VpnService::queueEdgeConfig(Context& c, std::string_view peerId) {
-    (void)co_await control(c, "queue-edge-config", std::string(peerId) + "\n" + c.userId);
+    (void)co_await control(c, "queue-edge-config", service::message::rpc::encodeLinePair(peerId, c.userId));
 }
 
 template <typename Context>

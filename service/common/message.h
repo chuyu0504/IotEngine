@@ -13,6 +13,8 @@
 #include <set>
 #include <optional>
 #include <memory_resource>
+#include <ruvia/web/model.h>
+#include <ruvia/web/model_json.h>
 #include <ruvia/web/model_object.h>
 
 #include "service/common/uuid.h"
@@ -72,6 +74,47 @@ inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
 
 inline std::string authKey(std::string_view imei) {
     return "iot:edge:auth:" + std::string(imei);
+}
+
+// Node session lease written by the edge gateway and read by management modules.
+inline std::string sessionKey(std::string_view nodeId) {
+    return "iot:edge:session:" + std::string(nodeId);
+}
+
+inline std::string metadataKey(std::string_view nodeId) {
+    return "iot:edge:metadata:" + std::string(nodeId);
+}
+
+inline std::string egressKey(std::string_view nodeId) {
+    return "iot:edge:egress:" + std::string(nodeId);
+}
+
+inline std::string configKey(std::string_view nodeId) {
+    return "iot:edge:config:" + std::string(nodeId);
+}
+
+inline std::string configRevisionKey(std::string_view nodeId) {
+    return "iot:edge:config-revision:" + std::string(nodeId);
+}
+
+inline std::string commandQueueKey(std::string_view nodeId) {
+    return "iot:v2:edge:commands:" + std::string(nodeId);
+}
+
+inline std::string deviceStatusKey(std::string_view nodeId, std::string_view deviceId) {
+    return "iot:runtime:edge:" + std::string(nodeId) + ":device:" + std::string(deviceId);
+}
+
+inline std::string logResultKey(std::string_view requestId) {
+    return "iot:edge:logs:" + std::string(requestId);
+}
+
+inline std::string logSnapshotKey(std::string_view nodeId) {
+    return "iot:edge:logs:snapshot:" + std::string(nodeId);
+}
+
+inline std::string logLevelResultKey(std::string_view requestId) {
+    return "iot:edge:logs:level:" + std::string(requestId);
 }
 } // namespace edge
 
@@ -704,7 +747,7 @@ inline constexpr std::string_view kSchemaVersion{"1"};
 
 } // namespace service::message::live
 
-namespace service::rpc {
+namespace service::message::rpc {
 
 struct Contract final {
     static constexpr std::string_view version = "1";
@@ -738,7 +781,78 @@ struct Contract final {
     }
 };
 
-} // namespace service::rpc
+// Serializes an RPC request or reply model. Every JSON RPC payload is a model below.
+template <typename Model>
+std::string encode(const Model& model, std::pmr::memory_resource* resource) {
+    const auto encoded = ruvia::to_json(model, {.resource_ = resource});
+    return {encoded.data(), encoded.size()};
+}
+
+// Text payload "<first>\n<second>"; the first part never contains a newline.
+struct LinePair final {
+    std::string_view first;
+    std::string_view second;
+};
+
+inline std::string encodeLinePair(std::string_view first, std::string_view second) {
+    std::string result;
+    result.reserve(first.size() + second.size() + 1);
+    result.append(first).push_back('\n');
+    result.append(second);
+    return result;
+}
+
+inline std::optional<LinePair> decodeLinePair(std::string_view payload) {
+    const auto separator = payload.find('\n');
+    if (separator == std::string_view::npos)
+        return std::nullopt;
+    return LinePair{payload.substr(0, separator), payload.substr(separator + 1)};
+}
+
+} // namespace service::message::rpc
+
+namespace service::message::lock {
+
+// PostgreSQL advisory lock identities shared by every Service Worker and process.
+// Values are runtime contracts: changing one breaks mutual exclusion during upgrades.
+inline constexpr std::int64_t kConfigurationProjection{5282804697543808067};
+// Default VPN network row: Hub key initialization and default network provisioning.
+inline constexpr std::int64_t kVpnDefaultNetwork{5282804697543808073};
+inline constexpr std::int64_t kVpnAddressAllocation{5282804697543808068};
+inline constexpr std::int64_t kVpnReconciliation{5282804697543808071};
+inline constexpr std::int64_t kAccessSessionProjection{734622};
+inline constexpr std::int64_t kAlertMetadataProjection{734623};
+// Two-key form pg_advisory_xact_lock(int4, int4) guarding firmware storage.
+inline constexpr std::int32_t kFirmwareStorageClass{17011};
+inline constexpr std::int32_t kFirmwareStorageObject{1};
+// Seeds for hashtextextended(<resource>, seed), which derives per-resource lock keys.
+inline constexpr std::int64_t kVpnEdgeConfigSeed{5282804697543808072};
+inline constexpr std::int64_t kTelemetryDeviceSeed{734621};
+inline constexpr std::int64_t kGb28181OwnerSeed{28181};
+inline constexpr std::int64_t kCommandIdempotencySeed{0};
+
+} // namespace service::message::lock
+
+namespace service::message::configuration {
+
+inline std::string runtimeChangesStream() {
+    return "iot:channel:runtime:config-work";
+}
+
+} // namespace service::message::configuration
+
+namespace service::message::packet_log {
+
+// Bounded debug packet indexes written by the packet log feature and read by modules.
+inline std::string linkIndexKey(std::string_view linkId) {
+    return "iot:debug:v4:link:" + std::string(linkId);
+}
+
+inline std::string deviceIndexKey(std::string_view deviceId) {
+    return "iot:debug:v4:device:" + std::string(deviceId);
+}
+
+} // namespace service::message::packet_log
 
 namespace service::message::collector {
 
@@ -755,9 +869,14 @@ inline std::string linkOwnerKey(std::string_view linkId) {
     return std::string(kLinkOwnerPrefix) + std::string(linkId);
 }
 
+// Per-Worker link runtime snapshots: <prefix><instance>:<worker index>.
+inline std::string linkRuntimePrefix(std::string_view linkId) {
+    return "iot:runtime:link:" + std::string(linkId) + ":worker:";
+}
+
 } // namespace service::message::collector
 
-namespace service::telemetry::latest {
+namespace service::message::telemetry {
 
 inline std::string latestKey(std::string_view deviceId) {
     return "iot:v2:device:" + std::string(deviceId) + ":latest";
@@ -783,9 +902,9 @@ inline std::string canonicalPointJson(std::string_view value, std::string_view d
     return std::string(value);
 }
 
-} // namespace service::telemetry::latest
+} // namespace service::message::telemetry
 
-namespace service::access::session {
+namespace service::message::access::session {
 
 inline constexpr std::string_view kActiveVersionKey{"iot:open-access:session:active"};
 inline constexpr std::string_view kVersionPrefix{"iot:open-access:session:version:"};
@@ -860,7 +979,7 @@ inline bool expired(const Entry& entry, std::int64_t nowMs) noexcept {
     return entry.expiresAtMs > 0 && entry.expiresAtMs <= nowMs;
 }
 
-} // namespace session
+} // namespace service::message::access::session
 
 namespace service::message::realtime {
 
@@ -906,6 +1025,7 @@ inline std::optional<Point> decodePoint(std::string_view value) {
 
 namespace service::message::projection {
 inline constexpr std::string_view kRuntimeActiveVersionKey = "iot:config:runtime:active-version";
+inline constexpr std::string_view kRuntimeVersionsKey = "iot:config:runtime:versions";
 inline constexpr std::string_view kRuntimeVersionPrefix = "iot:config:runtime:";
 inline std::string realtimeDeviceKey(std::string_view version, std::string_view deviceId) {
     return std::string(kRuntimeVersionPrefix) + std::string(version) + ":realtime-device:" + std::string(deviceId);
@@ -981,7 +1101,7 @@ inline std::optional<WorkerStreamTask> workerStreamTask(std::string_view name) {
 
 } // namespace service::message
 
-namespace service::edge::dispatch {
+namespace service::message::edge::dispatch {
 
 inline constexpr std::string_view kGroup{ "iot-engine:edge-dispatch" };
 inline constexpr std::string_view kNodeKind{ "node" };
@@ -1002,9 +1122,9 @@ inline Event eventFrom(const service::message::StreamMessage& message) {
     };
 }
 
-} // namespace service::edge::dispatch
+} // namespace service::message::edge::dispatch
 
-namespace service::edge::terminal_state {
+namespace service::message::terminal {
 
 inline std::string terminalEventTopic(std::string_view nodeId, std::string_view terminalId) {
     return "edge-terminal:" + std::string(nodeId) + ":" + std::string(terminalId);
@@ -1020,9 +1140,9 @@ inline std::string terminalOutputKey(std::string_view nodeId, std::string_view t
         return "iot:edge:terminal:out:" + std::string(nodeId) + ":" +
             std::string(terminalId);
     }
-} // namespace service::edge::terminal_state
+} // namespace service::message::terminal
 
-namespace service::access::stream {
+namespace service::message::access::stream {
 
 inline constexpr std::string_view kEventBase{ "iot:channel:open-access:event" };
 inline constexpr std::string_view kAuditBase{ "iot:channel:open-access:audit" };
@@ -1056,9 +1176,9 @@ inline std::string sessionChanges() {
     return std::string(kSessionChangesBase);
 }
 
-} // namespace service::access::stream
+} // namespace service::message::access::stream
 
-namespace service::edge::projector_stream {
+namespace service::message::edge::projector_stream {
 
 inline constexpr std::string_view kIngressKind{ "ingress" };
 inline constexpr std::string_view kMetadataKind{ "metadata" };
@@ -1079,4 +1199,284 @@ inline std::string ownerToken(std::size_t workerIndex, std::string_view instance
     return std::string(instance) + ":" + std::to_string(workerIndex);
 }
 
-} // namespace service::edge::projector_stream
+} // namespace service::message::edge::projector_stream
+
+
+namespace service::message::command {
+
+// command.prepare: Service module request and feature reply.
+RUVIA_MODEL(PrepareRequest,
+    RUVIA_REQUIRED_FIELD(deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(elements, ruvia::array<ruvia::array<ruvia::string>>));
+
+RUVIA_MODEL(PreparedElement,
+    RUVIA_REQUIRED_FIELD(elementId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(value, ruvia::string));
+
+RUVIA_MODEL(PreparedCommand,
+    RUVIA_REQUIRED_FIELD(id, ruvia::string),
+    RUVIA_REQUIRED_FIELD(deviceId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(deviceCode, ruvia::string),
+    RUVIA_REQUIRED_FIELD(protocol, ruvia::string),
+    RUVIA_REQUIRED_FIELD(elements, ruvia::boxed_array<PreparedElement>),
+    RUVIA_REQUIRED_FIELD(payload, ruvia::array<ruvia::string>));
+
+RUVIA_MODEL(PreparedBatch,
+    RUVIA_REQUIRED_FIELD(queue, ruvia::string),
+    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
+    RUVIA_REQUIRED_FIELD(maximum, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(commands, ruvia::boxed_array<PreparedCommand>));
+
+} // namespace service::message::command
+
+namespace service::message::gb28181 {
+
+// The GB28181 module sends ControlRequest; the feature forwards it unchanged to the
+// owning Collector. Replies carry code, message and an operation-specific data model.
+RUVIA_MODEL(ControlRequest,
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(pan, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(tilt, ruvia::double_value),
+    RUVIA_OPTIONAL_FIELD(zoom, ruvia::double_value));
+
+RUVIA_MODEL(MediaPorts,
+    RUVIA_OPTIONAL_FIELD(http, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(https, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtsps, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtmps, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rtc, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(srt, ruvia::int64));
+
+RUVIA_MODEL(MediaCapabilities,
+    RUVIA_OPTIONAL_FIELD(faac, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(hls, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(mp4, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(srt, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(sctp, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(x264, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(tls, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
+
+RUVIA_MODEL(Health,
+    RUVIA_OPTIONAL_FIELD(status, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(service, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(started, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(error, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPorts),
+    RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilities));
+
+RUVIA_MODEL(Channel,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::bool_value));
+
+RUVIA_MODEL(Device,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(channels, ruvia::boxed_array<Channel>));
+
+RUVIA_MODEL(DeviceList, RUVIA_OPTIONAL_FIELD(items, ruvia::boxed_array<Device>));
+
+RUVIA_MODEL(PlayUrls,
+    RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(hls, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(webrtc, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::string));
+
+RUVIA_MODEL(PreviewStart,
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(ssrc, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrls));
+
+RUVIA_MODEL(PreviewStop,
+    RUVIA_OPTIONAL_FIELD(stopped, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::bool_value));
+
+RUVIA_MODEL(Action,
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
+
+RUVIA_MODEL(OperationResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string));
+
+RUVIA_MODEL(HealthResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(data, Health));
+
+RUVIA_MODEL(DeviceListResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(data, DeviceList));
+
+RUVIA_MODEL(PreviewStartResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(data, PreviewStart));
+
+RUVIA_MODEL(PreviewStopResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(data, PreviewStop));
+
+RUVIA_MODEL(ActionResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(data, Action));
+
+} // namespace service::message::gb28181
+
+namespace service::message::access {
+
+// access.audit: open-access request audit forwarded by the module to the feature.
+RUVIA_MODEL(AuditRequest,
+    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(method, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(target, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(requestIp, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(httpStatus, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(requestPayload, ruvia::json_value),
+    RUVIA_OPTIONAL_FIELD(responsePayload, ruvia::json_value));
+
+} // namespace service::message::access
+
+namespace service::message::serial_debug {
+
+// edge-serial: browser serial debug operations relayed by the edge node module.
+RUVIA_MODEL(Request,
+    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(userId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(connectionId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(sessionId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(path, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(after, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(command, ruvia::json_value));
+
+// The browser command carried in Request.command.
+RUVIA_MODEL(Command,
+    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(requestId, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(baudRate, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(dataBits, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(stopBits, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(parity, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(hex, ruvia::string));
+
+RUVIA_MODEL(OpenReply, RUVIA_REQUIRED_FIELD(id, ruvia::string));
+
+RUVIA_MODEL(Settings,
+    RUVIA_REQUIRED_FIELD(path, ruvia::string),
+    RUVIA_REQUIRED_FIELD(baudRate, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(dataBits, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(stopBits, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(parity, ruvia::string),
+    RUVIA_REQUIRED_FIELD(rs485, ruvia::bool_value));
+
+// One event stored in outputKey() and returned to the browser.
+RUVIA_MODEL(Event,
+    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
+    RUVIA_REQUIRED_FIELD(requestId, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(manual, ruvia::bool_value),
+    RUVIA_REQUIRED_FIELD(direction, ruvia::string),
+    RUVIA_REQUIRED_FIELD(hex, ruvia::string),
+    RUVIA_REQUIRED_FIELD(timestamp, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(sequence, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(droppedBytes, ruvia::int64),
+    RUVIA_REQUIRED_FIELD(message, ruvia::string),
+    RUVIA_REQUIRED_FIELD(settings, Settings));
+
+RUVIA_MODEL(EventsReply,
+    RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>),
+    RUVIA_REQUIRED_FIELD(cursor, ruvia::int64));
+
+} // namespace service::message::serial_debug
+
+namespace service::message::terminal {
+
+// edge-terminal: browser terminal operations relayed by the edge node module.
+RUVIA_MODEL(Request,
+    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(sessionId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(connectionId, ruvia::string),
+    RUVIA_REQUIRED_FIELD(userId, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(columns, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(rows, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(content, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64));
+
+RUVIA_MODEL(OpenReply,
+    RUVIA_REQUIRED_FIELD(id, ruvia::string),
+    RUVIA_REQUIRED_FIELD(protocolVersion, ruvia::int64));
+
+RUVIA_MODEL(Event,
+    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(content, ruvia::string),
+    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64));
+
+RUVIA_MODEL(EventsReply,
+    RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>),
+    RUVIA_REQUIRED_FIELD(more, ruvia::bool_value));
+
+RUVIA_MODEL(InputStatusReply, RUVIA_REQUIRED_FIELD(acknowledged, ruvia::bool_value));
+
+} // namespace service::message::terminal
+
+namespace service::message::vpn {
+
+// vpn.reconcile reply.
+RUVIA_MODEL(RuntimeStatus,
+    RUVIA_REQUIRED_FIELD(platformSupported, ruvia::bool_value),
+    RUVIA_REQUIRED_FIELD(configured, ruvia::bool_value),
+    RUVIA_REQUIRED_FIELD(code, ruvia::string),
+    RUVIA_REQUIRED_FIELD(message, ruvia::string),
+    RUVIA_REQUIRED_FIELD(runtimePeerCount, ruvia::int64));
+
+} // namespace service::message::vpn

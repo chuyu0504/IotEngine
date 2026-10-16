@@ -45,7 +45,7 @@ ruvia::task<std::string> field(const ruvia::redis_handle& redis,
 
 ruvia::task<std::pair<std::string, std::string>> readConnection(
         const ruvia::redis_handle& redis, std::string_view device) {
-    const auto runtime = service::telemetry::latest::runtimeKey(device);
+    const auto runtime = service::message::telemetry::runtimeKey(device);
     const auto route = service::message::collector::connectionKey(device);
     const std::string_view keys[]{runtime, route};
     const std::string_view args[]{service::message::collector::kLinkOwnerPrefix};
@@ -72,7 +72,7 @@ ruvia::task<void> seedRoute(const ruvia::redis_handle& redis, std::string_view d
 
 ruvia::task<void> verifyReadLease(const ruvia::redis_handle& redis, const ruvia::worker_handle& worker) {
     constexpr std::string_view device = "read-lease-device";
-    const auto runtime = service::telemetry::latest::runtimeKey(device);
+    const auto runtime = service::message::telemetry::runtimeKey(device);
     const auto route = service::message::collector::connectionKey(device);
     (void)co_await command(redis, {"HSET", runtime, "connection_id", "legacy-connection",
         "instance_id", "retired-instance", "worker_id", "0", "last_report_at_ms", "1700000000123"});
@@ -126,8 +126,8 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     constexpr std::string_view device = "route-identity-device";
     constexpr std::string_view link = "route-identity-link";
     const auto route = service::message::collector::connectionKey(device);
-    const auto runtime = service::telemetry::latest::runtimeKey(device);
-    const auto latest = service::telemetry::latest::latestKey(device);
+    const auto runtime = service::message::telemetry::runtimeKey(device);
+    const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
     const auto& instance = service::runtime::instanceId();
     (void)co_await command(redis, {"SET", owner, instance, "PX", "60000"});
@@ -220,8 +220,8 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
 ruvia::task<void> verifyLegacyCleanup(const ruvia::redis_handle& redis) {
     constexpr std::string_view device = "legacy-cleanup-device";
     constexpr std::string_view link = "legacy-cleanup-link";
-    const auto runtime = service::telemetry::latest::runtimeKey(device);
-    const auto latest = service::telemetry::latest::latestKey(device);
+    const auto runtime = service::message::telemetry::runtimeKey(device);
+    const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
     service::collector::RuntimeSnapshot snapshot;
     service::collector::DeviceDefinition definition;
@@ -287,8 +287,8 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     constexpr std::string_view link = "natural-expiry-link";
     constexpr std::size_t index = 9;
     const auto route = service::message::collector::connectionKey(device);
-    const auto runtime = service::telemetry::latest::runtimeKey(device);
-    const auto latest = service::telemetry::latest::latestKey(device);
+    const auto runtime = service::message::telemetry::runtimeKey(device);
+    const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
     const auto workerKey = service::collector::CollectorWorkerRecord::key(index, service::runtime::instanceId());
     const auto linkKey = service::collector::CollectorLinkRecord::key(link, index, service::runtime::instanceId());

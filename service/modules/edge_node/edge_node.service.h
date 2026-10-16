@@ -45,8 +45,6 @@ namespace module_pb = ::iot::edge::v1;
 
 namespace module_wire {
 
-using service::message::edge::authKey;
-
 using service::common::hexDigit;
 using service::common::uuidBytes;
 
@@ -64,7 +62,7 @@ ruvia::task<void> queueControl(Context& context, std::string_view nodeId, std::s
         context,
         "edge",
         operation,
-        std::string(nodeId) + "\n" + std::move(requestPayload)
+        service::message::rpc::encodeLinePair(nodeId, requestPayload)
     );
 }
 
@@ -229,7 +227,7 @@ class EdgeService {
             context,
             "edge",
             "queue-snapshot",
-            std::string(nodeId) + "\n" + std::string(userId)
+            service::message::rpc::encodeLinePair(nodeId, userId)
         );
         const auto parsed = service::utils::parseInt64(
             std::optional<std::string_view>(revision)
@@ -506,7 +504,7 @@ class EdgeService {
             if (updated.empty()) {
                 service::common::fail(17001, "边缘节点不存在", 404);
             }
-            const auto key = module_wire::authKey(
+            const auto key = service::message::edge::authKey(
                 updated.front()[0].value().value_or(std::string_view{})
             );
             const auto value = std::string(id) + "|" + status;
@@ -564,13 +562,13 @@ class EdgeService {
         }
 
         const std::array<std::string, 5> keys{
-            "iot:edge:session:" + std::string(id),
-            "iot:edge:metadata:" + std::string(id),
-            "iot:edge:egress:" + std::string(id),
-            "iot:edge:config:" + std::string(id),
-            "iot:edge:config-revision:" + std::string(id),
+            service::message::edge::sessionKey(id),
+            service::message::edge::metadataKey(id),
+            service::message::edge::egressKey(id),
+            service::message::edge::configKey(id),
+            service::message::edge::configRevisionKey(id),
         };
-        co_await c.redis().set(module_wire::authKey(imei), std::string(id) + "|pending");
+        co_await c.redis().set(service::message::edge::authKey(imei), std::string(id) + "|pending");
         for (const auto& key : keys) {
             (void)co_await c.redis().del(key);
         }
@@ -583,7 +581,7 @@ class EdgeService {
         if (removed.empty()) {
             service::common::fail(17021, "注册状态已变化，请刷新后重试", 409);
         }
-        (void)co_await c.redis().del(module_wire::authKey(imei));
+        (void)co_await c.redis().del(service::message::edge::authKey(imei));
     }
 
     template <typename Context>
@@ -827,7 +825,7 @@ class EdgeService {
         // 与后台回收使用同一事务锁；同一 Worker 只使用此事务的连接。
         ruvia::db_query lock;
         lock.select(lock.call("pg_advisory_xact_lock", {
-            lock.cast(lock.value(17011), Type::integer), lock.cast(lock.value(1), Type::integer)}));
+            lock.cast(lock.value(service::message::lock::kFirmwareStorageClass), Type::integer), lock.cast(lock.value(service::message::lock::kFirmwareStorageObject), Type::integer)}));
         (void)co_await transaction.query(lock);
     }
 
@@ -960,34 +958,38 @@ class EdgeService {
         if (rows.empty() || !rows.front()[0].template as<bool>().value_or(false)) {
             service::common::fail(17021, "节点串口不存在或不可用", 409);
         }
-        const auto result = co_await serialOperation(c, nodeId, requestedSessionId, connectionId, "serial-open", ",\"path\":" + service::utils::jsonQuoted(path));
-        const auto parsed = ruvia::json_value::parse(result);
-        const auto sessionId = parsed ? parsed->template get<ruvia::string>("id") : std::nullopt;
-        if (!sessionId || sessionId->view() != requestedSessionId) {
+        const auto result = co_await serialOperation(c, nodeId, requestedSessionId, connectionId, "serial-open", [&](service::message::serial_debug::Request& request) {
+            request.template set<"path">(path);
+        });
+        const auto parsed = ruvia::from_json<service::message::serial_debug::OpenReply>(result, { .resource_ = c.arena() });
+        if (!parsed || parsed->template get<"id">().view() != requestedSessionId) {
             service::common::fail(17021, "串口会话响应无效", 502);
         }
         co_return result;
     }
 
-    template <typename Context>
-    ruvia::task<std::string> serialOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, std::string fields = {}) {
+    template <typename Context, typename Fill = void (*)(service::message::serial_debug::Request&)>
+    ruvia::task<std::string> serialOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::serial_debug::Request&) {}) {
         if (!service::common::isUuid(connectionId) ||
             (!sessionId.empty() && !service::common::isUuid(sessionId))) {
             service::common::fail(17021, "串口会话身份无效", 400);
         }
-        const auto quote = service::utils::jsonQuoted;
-        co_return co_await service::rpc::call(c, "edge-serial", operation, "{\"nodeId\":" + quote(nodeId) + ",\"userId\":" + quote(c.userId) + ",\"connectionId\":" + quote(connectionId) + ",\"sessionId\":" + quote(sessionId) + fields + "}");
+        service::message::serial_debug::Request request(ruvia::model_options{ .resource_ = c.arena() });
+        request.template set<"nodeId">(nodeId).template set<"userId">(c.userId).template set<"connectionId">(connectionId).template set<"sessionId">(sessionId);
+        fill(request);
+        co_return co_await service::rpc::call(c, "edge-serial", operation, service::message::rpc::encode(request, c.arena()));
     }
 
     template <typename Context>
     ruvia::task<std::string> serialEvents(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::int64_t& cursor) {
-        const auto result = co_await serialOperation(c, nodeId, sessionId, connectionId, "serial-events", ",\"after\":" + std::to_string(cursor));
-        const auto parsed = ruvia::json_value::parse(result);
-        const auto next = parsed ? parsed->template get<ruvia::int64>("cursor") : std::nullopt;
-        if (!next || next->value_ < cursor) {
+        const auto result = co_await serialOperation(c, nodeId, sessionId, connectionId, "serial-events", [cursor](service::message::serial_debug::Request& request) {
+            request.template set<"after">(cursor);
+        });
+        const auto parsed = ruvia::from_json<service::message::serial_debug::EventsReply>(result, { .resource_ = c.arena() });
+        if (!parsed || parsed->template get<"cursor">().value_ < cursor) {
             service::common::fail(17021, "串口事件响应无效", 502);
         }
-        cursor = next->value_;
+        cursor = parsed->template get<"cursor">().value_;
         co_return result;
     }
 
@@ -1006,18 +1008,22 @@ class EdgeService {
             !nodes.front()[1].template as<bool>().value_or(false)) {
             service::common::fail(17018, "节点未检测到 ttyd", 409);
         }
-        const auto sessionKey = "iot:edge:session:" + std::string(nodeId);
+        const auto sessionKey = service::message::edge::sessionKey(nodeId);
         const auto session = co_await c.redis().get(sessionKey);
         if (!session) {
             service::common::fail(17019, "节点当前离线", 409);
         }
-        co_return co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-open", ",\"columns\":" + std::to_string(columns) + ",\"rows\":" + std::to_string(rows));
+        co_return co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-open", [columns, rows](service::message::terminal::Request& request) {
+            request.template set<"columns">(columns).template set<"rows">(rows);
+        });
     }
 
-    template <typename Context>
-    ruvia::task<std::string> terminalOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, std::string fields = {}) {
-        const auto quote = service::utils::jsonQuoted;
-        co_return co_await service::rpc::call(c, "edge-terminal", operation, "{\"nodeId\":" + quote(nodeId) + ",\"sessionId\":" + quote(sessionId) + ",\"connectionId\":" + quote(connectionId) + ",\"userId\":" + quote(c.userId) + fields + "}");
+    template <typename Context, typename Fill = void (*)(service::message::terminal::Request&)>
+    ruvia::task<std::string> terminalOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::terminal::Request&) {}) {
+        service::message::terminal::Request request(ruvia::model_options{ .resource_ = c.arena() });
+        request.template set<"nodeId">(nodeId).template set<"sessionId">(sessionId).template set<"connectionId">(connectionId).template set<"userId">(c.userId);
+        fill(request);
+        co_return co_await service::rpc::call(c, "edge-terminal", operation, service::message::rpc::encode(request, c.arena()));
     }
 
     template <typename Context>
@@ -1028,7 +1034,7 @@ class EdgeService {
         } catch (const service::utils::base64_decode_error&) {
             service::common::fail(17018, "终端输入编码无效", 400);
         }
-        const auto notification = service::live::bus().subscribe(c.worker(), service::edge::terminal_state::terminalAckTopic(nodeId, sessionId));
+        const auto notification = service::live::bus().subscribe(c.worker(), service::message::terminal::terminalAckTopic(nodeId, sessionId));
         for (std::size_t offset = 0; offset < bytes.size(); offset += 4096) {
             if (c.get_stop_token().stop_requested()) {
                 service::common::fail(17018, "终端输入已取消", 409);
@@ -1038,19 +1044,23 @@ class EdgeService {
             if (next > 9007199254740991ULL) {
                 service::common::fail(17018, "终端输入序号已耗尽", 409);
             }
-            (void)co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-write", ",\"content\":" + service::utils::jsonQuoted(service::utils::encode_base64(part)) + ",\"sequence\":" + std::to_string(next));
+            const auto content = service::utils::encode_base64(part);
+            (void)co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-write", [&content, next](service::message::terminal::Request& request) {
+                request.template set<"content">(content).template set<"sequence">(static_cast<std::int64_t>(next));
+            });
             if (protocolVersion < 5) {
                 continue;
             }
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
             for (;;) {
-                const auto reply = co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-input-status", ",\"sequence\":" + std::to_string(next));
-                const auto parsed = ruvia::json_value::parse(reply);
-                const auto acknowledged = parsed ? parsed->template get<ruvia::bool_value>("acknowledged") : std::nullopt;
+                const auto reply = co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-input-status", [next](service::message::terminal::Request& request) {
+                    request.template set<"sequence">(static_cast<std::int64_t>(next));
+                });
+                const auto acknowledged = ruvia::from_json<service::message::terminal::InputStatusReply>(reply, { .resource_ = c.arena() });
                 if (!acknowledged) {
                     service::common::fail(17018, "终端确认格式无效", 502);
                 }
-                if (acknowledged->value_) {
+                if (acknowledged->template get<"acknowledged">().value_) {
                     break;
                 }
                 const auto remaining = deadline - std::chrono::steady_clock::now();
@@ -1073,7 +1083,7 @@ class EdgeService {
         co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
         LogsDto output(ruvia::model_options{ .resource_ = c.arena() });
         ruvia::boxed_array<LogLineDto> lines(ruvia::model_options{ .resource_ = c.arena() });
-        const auto payload = co_await c.redis().get("iot:edge:logs:snapshot:" + std::string(nodeId));
+        const auto payload = co_await c.redis().get(service::message::edge::logSnapshotKey(nodeId));
         if (payload) {
             module_pb::LogResult result;
             if (!result.ParseFromArray(payload->data(), static_cast<int>(payload->size()))) {
@@ -1101,7 +1111,7 @@ class EdgeService {
     template <typename Context>
     ruvia::task<LogsDto> logs(Context& c, std::string_view nodeId, const LogsQuery& query) {
         co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
-        const auto session = co_await c.redis().get(sessionKey(nodeId));
+        const auto session = co_await c.redis().get(service::message::edge::sessionKey(nodeId));
         if (!session) {
             service::common::fail(17019, "节点当前离线", 409);
         }
@@ -1132,7 +1142,7 @@ class EdgeService {
             }
             request.set_source(sourceValue);
         }
-        const auto key = logResultKey(requestId);
+        const auto key = service::message::edge::logResultKey(requestId);
         const auto changed = service::live::bus().subscribe(c.worker(), key);
         co_await module_wire::queueControl(c, nodeId, "request-logs", request);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -1175,7 +1185,7 @@ class EdgeService {
     template <typename Context>
     ruvia::task<void> setLogLevel(Context& c, std::string_view nodeId, const LogLevelBody& body) {
         co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
-        const auto session = co_await c.redis().get(sessionKey(nodeId));
+        const auto session = co_await c.redis().get(service::message::edge::sessionKey(nodeId));
         if (!session) {
             service::common::fail(17019, "节点当前离线", 409);
         }
@@ -1196,7 +1206,7 @@ class EdgeService {
         }
         request.set_request_id(module_wire::bytes(bytes, sizeof(bytes)));
         request.set_level(level);
-        const auto key = logLevelResultKey(requestId);
+        const auto key = service::message::edge::logLevelResultKey(requestId);
         const auto changed = service::live::bus().subscribe(c.worker(), key);
         co_await module_wire::queueControl(c, nodeId, "set-log-level", request);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -1470,7 +1480,7 @@ class EdgeService {
         LogStatusDto log(ruvia::model_options{ .resource_ = c.arena() });
         log.template set<"level">(row[18].value().value_or(std::string_view{}));
         const auto session = co_await c.redis().get(
-            "iot:edge:session:" + std::string(row[0].value().value_or(std::string_view{}))
+            service::message::edge::sessionKey(row[0].value().value_or(std::string_view{}))
         );
         status.template set<"online">(row[8].value().value_or(std::string_view{}) == "approved" && session.has_value());
         status.template set<"lastSeenAt">(row[10].value().value_or(std::string_view{}));
@@ -1942,18 +1952,6 @@ class EdgeService {
         if (!rows.front()[1].template as<bool>().value_or(false)) {
             service::common::fail(17004, std::string(feature) + "不可用", 409);
         }
-    }
-
-    static std::string sessionKey(std::string_view nodeId) {
-        return "iot:edge:session:" + std::string(nodeId);
-    }
-
-    static std::string logResultKey(std::string_view requestId) {
-        return "iot:edge:logs:" + std::string(requestId);
-    }
-
-    static std::string logLevelResultKey(std::string_view requestId) {
-        return "iot:edge:logs:level:" + std::string(requestId);
     }
 
     template <typename Context, typename Request>

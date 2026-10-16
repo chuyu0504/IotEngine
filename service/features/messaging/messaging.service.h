@@ -21,14 +21,6 @@
 
 namespace service::message {
 
-inline std::string webhookCatalogChangesStream(std::size_t workerIndex) {
-    return service::access::stream::catalogChanges(workerIndex);
-}
-
-inline std::string runtimeConfigChangesStream() {
-    return "iot:channel:runtime:config-work";
-}
-
 template <typename Redis>
 ruvia::task<void> publishConfigEnvelope(
     const Redis& redis,
@@ -68,7 +60,7 @@ ruvia::task<void> publishConfigEnvelope(
     if (runtimeChange) {
         service::message::redis::queueAddAndWake(
             pipeline,
-            runtimeConfigChangesStream(),
+            service::message::configuration::runtimeChangesStream(),
             fields,
             std::nullopt,
             WorkerStreamTask::Reconciler,
@@ -82,7 +74,7 @@ ruvia::task<void> publishConfigEnvelope(
              ++workerIndex) {
             service::message::redis::queueAddAndWake(
                 pipeline,
-                webhookCatalogChangesStream(workerIndex),
+                service::message::access::stream::catalogChanges(workerIndex),
                 fields,
                 workerIndex,
                 WorkerStreamTask::Webhook,
@@ -93,7 +85,7 @@ ruvia::task<void> publishConfigEnvelope(
     if (accessSessionChange) {
         service::message::redis::queueAddAndWake(
             pipeline,
-            service::access::stream::sessionChanges(),
+            service::message::access::stream::sessionChanges(),
             fields,
             std::nullopt,
             WorkerStreamTask::Webhook,
@@ -377,13 +369,13 @@ class OutboxService {
         }
         observability_.setGauge("iot_engine_outbox_receipt_retention_days", policy_.receiptRetentionDays);
 
-        co_await collectStream(context, "runtime_config", runtimeConfigChangesStream(), "iot-engine:runtime-reconciler");
-        co_await collectStream(context, "access_session", service::access::stream::sessionChanges(), "iot-engine:open-webhook");
+        co_await collectStream(context, "runtime_config", service::message::configuration::runtimeChangesStream(), "iot-engine:runtime-reconciler");
+        co_await collectStream(context, "access_session", service::message::access::stream::sessionChanges(), "iot-engine:open-webhook");
         co_await collectStream(context, "telemetry", message::parsedStream(), "iot-engine:telemetry-persistence");
         co_await collectStream(context, "command_result", message::commandResultStream(), "iot-engine:command-result");
 
         for (std::size_t index = 0; index < serviceWorkerCount_; ++index) {
-            co_await collectStream(context, "webhook_config_" + std::to_string(index), webhookCatalogChangesStream(index), "iot-engine:open-webhook");
+            co_await collectStream(context, "webhook_config_" + std::to_string(index), service::message::access::stream::catalogChanges(index), "iot-engine:open-webhook");
         }
         for (std::size_t index = 0; index < collectorWorkerCount_; ++index) {
             const auto suffix = std::to_string(index);
@@ -471,20 +463,20 @@ class RpcReceiptService final {
   public:
     static ruvia::task<std::optional<RpcReplyRecord>> beginRequest(
         const ruvia::redis_handle& redis, const std::string& id) {
-        const std::vector<std::string> previousArguments{"GET", Contract::reply(id)};
+        const std::vector<std::string> previousArguments{"GET", service::message::rpc::Contract::reply(id)};
         const auto previous = co_await service::message::redis::command(redis, previousArguments);
         if (previous.kind() == ruvia::redis_value::kind_type::string)
             co_return RpcReplyRecord{std::string(previous.string())};
         if (previous.kind() == ruvia::redis_value::kind_type::error)
             service::message::redis::throwValue("RPC receipt", previous);
-        const std::vector<std::string> claimedArguments{"SET", Contract::claim(id), "1", "NX", "EX", "86400"};
+        const std::vector<std::string> claimedArguments{"SET", service::message::rpc::Contract::claim(id), "1", "NX", "EX", "86400"};
         const auto claimed = co_await service::message::redis::command(redis,
             claimedArguments);
         if (claimed.kind() == ruvia::redis_value::kind_type::error)
             service::message::redis::throwValue("RPC claim", claimed);
         if (claimed.kind() != ruvia::redis_value::kind_type::string)
             service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
-        const std::vector<std::string> cancelledArguments{"EXISTS", Contract::cancelled(id)};
+        const std::vector<std::string> cancelledArguments{"EXISTS", service::message::rpc::Contract::cancelled(id)};
         const auto cancelled = co_await service::message::redis::command(redis,
             cancelledArguments);
         if (cancelled.kind() == ruvia::redis_value::kind_type::error)
@@ -505,9 +497,9 @@ redis.call('XDEL', KEYS[3], ARGV[4])
 return 1
 )lua";
 
-                const auto replyKey = Contract::reply(id);
+                const auto replyKey = service::message::rpc::Contract::reply(id);
                 const std::string_view keys[]{replyKey, service::message::live::kChanges, stream};
-                const std::string_view args[]{record.payload, Contract::replyLifetime, group, messageId};
+                const std::string_view args[]{record.payload, service::message::rpc::Contract::replyLifetime, group, messageId};
                 const auto reply = co_await redis.eval(kReplyScript, keys, args);
                 if (reply.kind() == ruvia::redis_value::kind_type::error)
                     service::message::redis::throwValue("RPC persist reply", reply);

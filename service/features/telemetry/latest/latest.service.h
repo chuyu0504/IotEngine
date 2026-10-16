@@ -31,12 +31,10 @@ namespace service::telemetry::latest {
 
 inline constexpr std::string_view kOnlineDeadlinesBase =
     "iot:v2:schedule:device:online-deadlines";
-inline constexpr std::string_view kRealtimeChangesStream =
-    "iot:live:changes";
 
 template <typename Redis>
 ruvia::task<void> publishRealtimeChange(const Redis& redis) {
-    const std::vector<std::string> replyArguments{ "XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" };
+    const std::vector<std::string> replyArguments{ "XADD", std::string(service::message::live::kChanges), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" };
     const auto reply = co_await service::message::redis::command(
         redis,
         replyArguments
@@ -129,14 +127,14 @@ ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId
           { "state_reason", "no_connection" },
           { "updated_at_ms", now }
     };
-    co_await service::message::redis::setHash(redis, runtimeKey(deviceId), runtimeFields);
+    co_await service::message::redis::setHash(redis, service::message::telemetry::runtimeKey(deviceId), runtimeFields);
     const std::vector<message::StreamField> latestFields{
           { "_device_id", std::string(deviceId) },
           { "_device_code", std::string(deviceCode) },
           { "_state", stateJson("offline", "no_connection", {}, {}, now) },
           { "_updated_at_ms", now }
     };
-    co_await service::message::redis::setHash(redis, latestKey(deviceId), latestFields);
+    co_await service::message::redis::setHash(redis, service::message::telemetry::latestKey(deviceId), latestFields);
     co_await publishRealtimeChange(redis);
 }
 
@@ -152,8 +150,8 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
     if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
         service::message::redis::throwValue("erase device connection deadline", reply);
     }
-    co_await service::message::redis::eraseHash(redis, runtimeKey(deviceId));
-    co_await service::message::redis::eraseHash(redis, latestKey(deviceId));
+    co_await service::message::redis::eraseHash(redis, service::message::telemetry::runtimeKey(deviceId));
+    co_await service::message::redis::eraseHash(redis, service::message::telemetry::latestKey(deviceId));
     const std::vector<std::string> zremArguments{ "ZREM", onlineDeadlinesKey(), std::string(deviceId) };
     (void)co_await service::message::redis::command(
         redis,
@@ -306,7 +304,7 @@ return count
             "3",
             deadlinesKey,
             wakeStream,
-            kRealtimeChangesStream,
+            service::message::live::kChanges,
             parsed.deviceId,
             parsed.deviceCode,
             parsed.protocol,
@@ -404,7 +402,7 @@ return 0
             scriptSha,
             "2",
             deadlineKey,
-            kRealtimeChangesStream,
+            service::message::live::kChanges,
             code.string(),
             now
         };
@@ -531,12 +529,12 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
         existenceCommands.reserve(devices.size() * 2);
         for (const auto& row : devices) {
             existenceCommands.push_back(
-                { "HMGET", latestKey(row[0].value().value_or(std::string_view{})), "_device_id", "_element_ids" }
+                { "HMGET", service::message::telemetry::latestKey(row[0].value().value_or(std::string_view{})), "_device_id", "_element_ids" }
             );
             std::vector<std::string_view> views(existenceCommands.back().begin(), existenceCommands.back().end());
             existencePipeline.command(views);
             existenceCommands.push_back(
-                { "HMGET", runtimeKey(row[0].value().value_or(std::string_view{})), "device_id", "online_until_ms" }
+                { "HMGET", service::message::telemetry::runtimeKey(row[0].value().value_or(std::string_view{})), "device_id", "online_until_ms" }
             );
             std::vector<std::string_view> runtimeViews(existenceCommands.back().begin(), existenceCommands.back().end());
             existencePipeline.command(runtimeViews);
@@ -593,24 +591,24 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
         );
         elementIds.insert_or_assign(deviceId, std::vector<std::string>{});
         if (recoveryDeviceIds.contains(deviceId)) {
-            metaCommands.push_back({ "DEL", latestKey(deviceId) });
+            metaCommands.push_back({ "DEL", service::message::telemetry::latestKey(deviceId) });
             std::vector<std::string_view> views(metaCommands.back().begin(), metaCommands.back().end());
             metaPipeline.command(views);
-            metaCommands.push_back({ "DEL", runtimeKey(deviceId) });
+            metaCommands.push_back({ "DEL", service::message::telemetry::runtimeKey(deviceId) });
             std::vector<std::string_view> runtimeViews(metaCommands.back().begin(), metaCommands.back().end());
             metaPipeline.command(runtimeViews);
         }
-        metaCommands.push_back({ "HSET", latestKey(deviceId), "_device_id", deviceId, "_device_code", deviceCode, "_updated_at_ms", now });
+        metaCommands.push_back({ "HSET", service::message::telemetry::latestKey(deviceId), "_device_id", deviceId, "_device_code", deviceCode, "_updated_at_ms", now });
         {
             std::vector<std::string_view> views(metaCommands.back().begin(), metaCommands.back().end());
             metaPipeline.command(views);
         }
-        metaCommands.push_back({ "HSETNX", latestKey(deviceId), "_state", stateJson("offline", "no_data", {}, {}, now) });
+        metaCommands.push_back({ "HSETNX", service::message::telemetry::latestKey(deviceId), "_state", stateJson("offline", "no_data", {}, {}, now) });
         {
             std::vector<std::string_view> views(metaCommands.back().begin(), metaCommands.back().end());
             metaPipeline.command(views);
         }
-        metaCommands.push_back({ "HSET", runtimeKey(deviceId), "device_id", deviceId, "device_code", deviceCode, "updated_at_ms", now });
+        metaCommands.push_back({ "HSET", service::message::telemetry::runtimeKey(deviceId), "device_id", deviceId, "device_code", deviceCode, "updated_at_ms", now });
         if (resetRuntime || recoveryDeviceIds.contains(deviceId)) {
             metaCommands.back().push_back("state");
             metaCommands.back().push_back("offline");
@@ -788,7 +786,7 @@ return 1
         const std::string deviceId(row[0].value().value_or(std::string_view{}));
         const std::string elementId(row[3].value().value_or(std::string_view{}));
         elementIds[deviceId].push_back(elementId);
-        commands.push_back({ "EVAL", std::string(kRefreshElementMetadataScript), "1", latestKey(deviceId), elementId, std::string(row[13].value().value_or(std::string_view{})) });
+        commands.push_back({ "EVAL", std::string(kRefreshElementMetadataScript), "1", service::message::telemetry::latestKey(deviceId), elementId, std::string(row[13].value().value_or(std::string_view{})) });
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back()) {
@@ -806,7 +804,7 @@ return 1
         }
     }
     for (const auto& [deviceId, ids] : elementIds) {
-        commands.push_back({ "HSET", latestKey(deviceId), "_element_ids", jsonKeySet(ids) });
+        commands.push_back({ "HSET", service::message::telemetry::latestKey(deviceId), "_element_ids", jsonKeySet(ids) });
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back()) {
@@ -832,11 +830,11 @@ return 1
             const auto lastReportText = std::to_string(lastReport);
             const auto onlineUntilText = std::to_string(onlineUntil);
             reportCommands.push_back(
-                { "HSET", runtimeKey(deviceId), "last_report_at_ms", lastReportText, "online_until_ms", onlineUntilText, "state", std::string(state), "state_reason", std::string(reason), "updated_at_ms", now }
+                { "HSET", service::message::telemetry::runtimeKey(deviceId), "last_report_at_ms", lastReportText, "online_until_ms", onlineUntilText, "state", std::string(state), "state_reason", std::string(reason), "updated_at_ms", now }
             );
             std::vector<std::string_view> views(reportCommands.back().begin(), reportCommands.back().end());
             reportPipeline.command(views);
-            reportCommands.push_back({ "HSET", latestKey(deviceId), "_state", stateJson(state, reason, lastReportText, onlineUntilText, now), "_updated_at_ms", now });
+            reportCommands.push_back({ "HSET", service::message::telemetry::latestKey(deviceId), "_state", stateJson(state, reason, lastReportText, onlineUntilText, now), "_updated_at_ms", now });
             std::vector<std::string_view> latestViews(reportCommands.back().begin(), reportCommands.back().end());
             reportPipeline.command(latestViews);
             reportCommands.push_back({ "ZADD", onlineDeadlinesKey(), std::to_string(onlineUntil), deviceId });

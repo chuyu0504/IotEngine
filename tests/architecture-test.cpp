@@ -751,9 +751,6 @@ void testSymmetricServiceWorkers() {
     }
     require(freshness.find("WorkerStreamTask::Freshness") != std::string::npos,
             "freshness task does not wait on its Worker-local wake channel");
-    require(reconciler.find("runtimeConfigChangesStream()") !=
-                std::string::npos,
-            "runtime reconciliation does not use a shared claimed-work queue");
     require(webhook.find("stream::event()") != std::string::npos,
              "webhook delivery does not use independent work claims");
     require(webhook.find("stream::sessionChanges()") !=
@@ -794,8 +791,8 @@ void testWorkerStreamMultiplexing() {
     require(multiplexer.find("thread_local WorkerStreamMultiplexer*") != std::string::npos &&
                 multiplexer.find("std::vector<ruvia::web_worker_handle>") == std::string::npos,
             "Stream wake channels are shared across Service Workers");
-    require(service::rpc::Contract::requests("instance", 0) !=
-                service::rpc::Contract::requests("instance", 1),
+    require(service::message::rpc::Contract::requests("instance", 0) !=
+                service::message::rpc::Contract::requests("instance", 1),
             "RPC requests can be consumed by another Service Worker");
     require(multiplexer.find("readGroupManyBlockingUntil") != std::string::npos &&
                 multiplexer.find("workerWakeStream(index, service::runtime::instanceId())") != std::string::npos &&

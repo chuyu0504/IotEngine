@@ -9,6 +9,7 @@
 #include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
+#include "service/common/message.h"
 #include "service/middleware/rpc.h"
 #include "service/modules/gb28181/gb28181.types.h"
 
@@ -17,14 +18,13 @@ namespace service::gb28181 {
 namespace detail {
 
 template <typename Context>
-rpc_wire::ControlRequest controlRequest(Context& c) {
-    return rpc_wire::ControlRequest({ .resource_ = c.arena() });
+service::message::gb28181::ControlRequest controlRequest(Context& c) {
+    return service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
 }
 
 template <typename Context>
-std::string encodeRequest(Context& c, const rpc_wire::ControlRequest& request) {
-    const auto encoded = ruvia::to_json(request, { .resource_ = c.arena() });
-    return { encoded.data(), encoded.size() };
+std::string encodeRequest(Context& c, const service::message::gb28181::ControlRequest& request) {
+    return service::message::rpc::encode(request, c.arena());
 }
 
 template <typename Response, typename Context>
@@ -39,7 +39,7 @@ Response parseResponse(Context& c, std::string_view body) {
 
 template <typename Context>
 
-GbMediaPortsDto mediaPorts(Context& c, const rpc_wire::MediaPorts& value) {
+GbMediaPortsDto mediaPorts(Context& c, const service::message::gb28181::MediaPorts& value) {
     GbMediaPortsDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"http">()) {
         result.set<"http">(*field);
@@ -72,7 +72,7 @@ template <typename Context>
 
 GbMediaCapabilitiesDto mediaCapabilities(
     Context& c,
-    const rpc_wire::MediaCapabilities& value
+    const service::message::gb28181::MediaCapabilities& value
 ) {
     GbMediaCapabilitiesDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"faac">()) {
@@ -116,7 +116,7 @@ GbMediaCapabilitiesDto mediaCapabilities(
 
 template <typename Context>
 
-GbHealthDto health(Context& c, const rpc_wire::Health& value) {
+GbHealthDto health(Context& c, const service::message::gb28181::Health& value) {
     GbHealthDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"status">()) {
         result.set<"status">(field->view());
@@ -144,7 +144,7 @@ GbHealthDto health(Context& c, const rpc_wire::Health& value) {
 
 template <typename Context>
 
-GbChannelDto channel(Context& c, const rpc_wire::Channel& value) {
+GbChannelDto channel(Context& c, const service::message::gb28181::Channel& value) {
     GbChannelDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"id">()) {
         result.set<"id">(field->view());
@@ -175,7 +175,7 @@ GbChannelDto channel(Context& c, const rpc_wire::Channel& value) {
 
 template <typename Context>
 
-GbDeviceDto device(Context& c, const rpc_wire::Device& value) {
+GbDeviceDto device(Context& c, const service::message::gb28181::Device& value) {
     GbDeviceDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"id">()) {
         result.set<"id">(field->view());
@@ -225,7 +225,7 @@ GbDeviceDto device(Context& c, const rpc_wire::Device& value) {
 
 template <typename Context>
 
-GbPlayUrlsDto playUrls(Context& c, const rpc_wire::PlayUrls& value) {
+GbPlayUrlsDto playUrls(Context& c, const service::message::gb28181::PlayUrls& value) {
     GbPlayUrlsDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"httpFlv">()) {
         result.set<"httpFlv">(field->view());
@@ -253,7 +253,7 @@ GbPlayUrlsDto playUrls(Context& c, const rpc_wire::PlayUrls& value) {
 
 template <typename Context>
 
-GbPreviewStartDto previewStart(Context& c, const rpc_wire::PreviewStart& value) {
+GbPreviewStartDto previewStart(Context& c, const service::message::gb28181::PreviewStart& value) {
     GbPreviewStartDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"sent">()) {
         result.set<"sent">(*field);
@@ -287,7 +287,7 @@ GbPreviewStartDto previewStart(Context& c, const rpc_wire::PreviewStart& value) 
 
 template <typename Context>
 
-GbPreviewStopDto previewStop(Context& c, const rpc_wire::PreviewStop& value) {
+GbPreviewStopDto previewStop(Context& c, const service::message::gb28181::PreviewStop& value) {
     GbPreviewStopDto result(ruvia::model_options{ .resource_ = c.arena() });
     if (const auto& field = value.template get<"stopped">()) {
         result.set<"stopped">(*field);
@@ -314,7 +314,7 @@ class Gb28181Service final {
     template <typename Context>
     [[nodiscard]] ruvia::task<GbHealthDto> health(Context& c) const {
         const auto raw = co_await call(c, "health", "{}");
-        auto response = detail::parseResponse<rpc_wire::HealthResponse>(c, raw);
+        auto response = detail::parseResponse<service::message::gb28181::HealthResponse>(c, raw);
         co_return detail::health(c, *response.template get<"data">());
     }
 
@@ -323,7 +323,7 @@ class Gb28181Service final {
     [[nodiscard]] ruvia::task<GbDeviceListDto>
     devices(Context& c) const {
         const auto raw = co_await call(c, "devices", "{}");
-        auto response = detail::parseResponse<rpc_wire::DeviceListResponse>(c, raw);
+        auto response = detail::parseResponse<service::message::gb28181::DeviceListResponse>(c, raw);
         const auto& source = *response.template get<"data">();
         ruvia::boxed_array<GbDeviceDto> items(
             ruvia::model_options{ .resource_ = c.arena() }
@@ -403,7 +403,7 @@ class Gb28181Service final {
         const auto raw =
             co_await call(c, "preview.start", detail::encodeRequest(c, payload));
         auto response =
-            detail::parseResponse<rpc_wire::PreviewStartResponse>(c, raw);
+            detail::parseResponse<service::message::gb28181::PreviewStartResponse>(c, raw);
         co_return detail::previewStart(c, *response.template get<"data">());
     }
 
@@ -416,7 +416,7 @@ class Gb28181Service final {
         const auto raw =
             co_await call(c, "preview.stop", detail::encodeRequest(c, payload));
         auto response =
-            detail::parseResponse<rpc_wire::PreviewStopResponse>(c, raw);
+            detail::parseResponse<service::message::gb28181::PreviewStopResponse>(c, raw);
         co_return detail::previewStop(c, *response.template get<"data">());
     }
 
@@ -436,7 +436,7 @@ class Gb28181Service final {
         payload.template set<"streamId">(streamId);
         const auto raw =
             co_await call(c, "recording", detail::encodeRequest(c, payload));
-        auto response = detail::parseResponse<rpc_wire::ActionResponse>(c, raw);
+        auto response = detail::parseResponse<service::message::gb28181::ActionResponse>(c, raw);
         const auto& value = response.template get<"data">()->template get<"recording">();
         co_return value&& static_cast<bool>(*value);
     }

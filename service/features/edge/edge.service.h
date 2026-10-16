@@ -61,19 +61,19 @@ return id
 template <typename Redis>
 ruvia::task<bool> publishIngress(const Redis& redis, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs) {
     const auto instance = service::runtime::instanceId();
-    const auto lease = leaseKey(workerIndex, instance);
-    const auto streamName = stream(workerIndex, instance);
-    const auto registry = std::string(kStreamRegistry);
+    const auto lease = service::message::edge::projector_stream::leaseKey(workerIndex, instance);
+    const auto streamName = service::message::edge::projector_stream::stream(workerIndex, instance);
+    const auto registry = std::string(service::message::edge::projector_stream::kStreamRegistry);
     const auto wake = service::message::workerWakeStream(workerIndex, instance);
     const std::string maxLength = "100000";
     const std::string wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
     const std::string task(
         service::message::workerStreamTaskName(service::message::WorkerStreamTask::EdgeProjector)
     );
-    const auto token = ownerToken(workerIndex, instance);
+    const auto token = service::message::edge::projector_stream::ownerToken(workerIndex, instance);
     const std::string receivedAt = std::to_string(receivedAtMs);
     const std::string_view keys[]{ lease, streamName, registry, wake };
-    const std::string_view arguments[]{ token, maxLength, wakeCapacity, task, "kind", kIngressKind, "wire", wire, "received_at_ms", receivedAt };
+    const std::string_view arguments[]{ token, maxLength, wakeCapacity, task, "kind", service::message::edge::projector_stream::kIngressKind, "wire", wire, "received_at_ms", receivedAt };
     const auto reply = co_await redis.eval(kFencedPublishScript, keys, arguments);
     if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0) {
         co_return false;
@@ -86,18 +86,18 @@ ruvia::task<bool> publishIngress(const Redis& redis, std::size_t workerIndex, st
 
 template <typename Redis>
 ruvia::task<bool> publishMetadata(const Redis& redis, std::size_t workerIndex, std::string_view nodeId, std::string_view instance = service::runtime::instanceId()) {
-    const auto lease = leaseKey(workerIndex, instance);
-    const auto streamName = stream(workerIndex, instance);
-    const auto registry = std::string(kStreamRegistry);
+    const auto lease = service::message::edge::projector_stream::leaseKey(workerIndex, instance);
+    const auto streamName = service::message::edge::projector_stream::stream(workerIndex, instance);
+    const auto registry = std::string(service::message::edge::projector_stream::kStreamRegistry);
     const auto wake = service::message::workerWakeStream(workerIndex, instance);
     const std::string maxLength = "100000";
     const std::string wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
     const std::string task(
         service::message::workerStreamTaskName(service::message::WorkerStreamTask::EdgeProjector)
     );
-    const auto token = ownerToken(workerIndex, instance);
+    const auto token = service::message::edge::projector_stream::ownerToken(workerIndex, instance);
     const std::string_view keys[]{ lease, streamName, registry, wake };
-    const std::string_view arguments[]{ token, maxLength, wakeCapacity, task, "kind", kMetadataKind, "node_id", nodeId };
+    const std::string_view arguments[]{ token, maxLength, wakeCapacity, task, "kind", service::message::edge::projector_stream::kMetadataKind, "node_id", nodeId };
     const auto reply = co_await redis.eval(kFencedPublishScript, keys, arguments);
     if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0) {
         co_return false;
@@ -133,7 +133,7 @@ inline std::int64_t onlineWindowMilliseconds(std::string_view value,
 template <typename Pipeline>
 void queueStoreNode(Pipeline& pipeline, std::string_view nodeId,
                      const NodeSnapshot& snapshot) {
-    const std::vector<std::string> keys{key(nodeId)};
+    const std::vector<std::string> keys{service::message::edge::metadataKey(nodeId)};
     std::vector<std::string> arguments;
     arguments.reserve(snapshot.size() * 2);
     for (const auto& [deviceId, device] : snapshot) {
@@ -298,7 +298,7 @@ ruvia::task<Catalog> loadCatalogFromDatabase(Context& context) {
 template <typename Redis>
 ruvia::task<void> storeNode(const Redis& redis, std::string_view nodeId,
                              const NodeSnapshot& snapshot, bool notify) {
-    const std::vector<std::string> keyStore{key(nodeId)};
+    const std::vector<std::string> keyStore{service::message::edge::metadataKey(nodeId)};
     std::vector<std::string> argumentStore;
     argumentStore.reserve(snapshot.size() * 2);
     for (const auto& [deviceId, device] : snapshot) {
@@ -314,7 +314,7 @@ ruvia::task<void> storeNode(const Redis& redis, std::string_view nodeId,
         service::message::redis::throwValue("store edge metadata", reply);
     if (!notify)
         co_return;
-    const auto session = co_await redis.get(session_state::key(nodeId));
+    const auto session = co_await redis.get(service::message::edge::sessionKey(nodeId));
     if (!session)
         co_return;
     const auto owner = session_state::parse(
@@ -325,7 +325,7 @@ ruvia::task<void> storeNode(const Redis& redis, std::string_view nodeId,
 
 template <typename Redis>
 ruvia::task<NodeSnapshot> loadNode(const Redis& redis, std::string_view nodeId) {
-    const std::vector<std::string> replyArguments{"HGETALL", key(nodeId)};
+    const std::vector<std::string> replyArguments{"HGETALL", service::message::edge::metadataKey(nodeId)};
     const auto reply =
         co_await service::message::redis::command(redis, replyArguments);
     if (reply.kind() != ruvia::redis_value::kind_type::array)
@@ -1531,8 +1531,8 @@ class ConfigService final {
     static ruvia::task<void> replaceQueue(Context& c, std::string_view nodeId,
                                           std::uint64_t revision,
                                           const std::vector<std::string>& wires) {
-        const std::string key = "iot:edge:config:" + std::string(nodeId);
-        const std::string revisionKey = "iot:edge:config-revision:" + std::string(nodeId);
+        const std::string key = service::message::edge::configKey(nodeId);
+        const std::string revisionKey = service::message::edge::configRevisionKey(nodeId);
         const std::array<std::string_view, 2> keys{key, revisionKey};
         const auto revisionText = std::to_string(revision);
         std::vector<std::string_view> values;
@@ -1904,8 +1904,8 @@ class EdgeProjectionService {
     static ruvia::task<bool> claimFirmwareCleanup(Transaction& transaction) {
         ruvia::db_query lock;
         lock.select(lock.call("pg_try_advisory_xact_lock", {
-            lock.cast(lock.value(17011), ruvia::db_data_type::integer),
-            lock.cast(lock.value(1), ruvia::db_data_type::integer)}));
+            lock.cast(lock.value(service::message::lock::kFirmwareStorageClass), ruvia::db_data_type::integer),
+            lock.cast(lock.value(service::message::lock::kFirmwareStorageObject), ruvia::db_data_type::integer)}));
         const auto rows = co_await transaction.query(lock);
         co_return !rows.empty() && rows.front()[0].value().value_or(std::string_view{}) == "t";
     }
@@ -2972,7 +2972,7 @@ class EdgeProjectionService {
                     ruvia::db_query lock;
                     lock.select(lock.call(
                         "pg_advisory_xact_lock",
-                        {lock.cast(lock.value(std::int64_t{5282804697543808068LL}),
+                        {lock.cast(lock.value(service::message::lock::kVpnAddressAllocation),
                                    ruvia::db_data_type::big_int)}));
                     (void)co_await transaction.query(lock);
                     co_await service::vpn::feature::syncEdgeBridgeRoutes(
@@ -3707,11 +3707,6 @@ return 1
             service::message::WorkerStreamTask::CommandResult, 10000);
     }
 
-    static std::string deviceStatusKey(std::string_view nodeId, std::string_view deviceId) {
-        return "iot:runtime:edge:" + std::string(nodeId) + ":device:" +
-               std::string(deviceId);
-    }
-
     static ruvia::task<void> saveDeviceStatus(ruvia::web_worker_context& context,
                                                std::string_view nodeId,
                                                const pb::DeviceStatusReport& report) {
@@ -3726,7 +3721,7 @@ return 1
                     clients.push_back(',');
                 clients += client;
             }
-            const auto key = deviceStatusKey(nodeId, deviceId);
+            const auto key = service::message::edge::deviceStatusKey(nodeId, deviceId);
             co_await service::message::redis::eraseHash(context.redis(), key);
             const std::vector<message::StreamField> fields{
                  {"node_id", std::string(nodeId)},
@@ -3770,8 +3765,8 @@ return 1
 if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return 1 end
 return 0
 )lua";
-        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
-        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
+        const auto key = service::message::edge::projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = service::message::edge::projector_stream::ownerToken(index, service::runtime::instanceId());
         const auto ttl = std::to_string(projector_stream::kLeaseTtl.count());
         const std::string_view keys[]{ key };
         const std::string_view arguments[]{ token, ttl };
@@ -3816,8 +3811,8 @@ return 0
 
     template <typename Redis>
     static ruvia::task<bool> renewLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
-        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
+        const auto key = service::message::edge::projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = service::message::edge::projector_stream::ownerToken(index, service::runtime::instanceId());
         co_return co_await renewLeaseKey(redis, key, token);
     }
 
@@ -3838,14 +3833,14 @@ return redis.call('DEL', KEYS[1])
 
     template <typename Redis>
     static ruvia::task<bool> releaseLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
-        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
+        const auto key = service::message::edge::projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = service::message::edge::projector_stream::ownerToken(index, service::runtime::instanceId());
         co_return co_await releaseLeaseKey(redis, key, token);
     }
 
     template <typename Redis>
     static ruvia::task<void> registerStream(const Redis& redis, std::string_view streamName) {
-        const std::vector<std::string> replyArguments{ "SADD", std::string(projector_stream::kStreamRegistry), std::string(streamName) };
+        const std::vector<std::string> replyArguments{ "SADD", std::string(service::message::edge::projector_stream::kStreamRegistry), std::string(streamName) };
         const auto reply = co_await service::message::redis::command(
             redis,
             replyArguments
@@ -3858,10 +3853,10 @@ return redis.call('DEL', KEYS[1])
     static std::optional<std::pair<std::string, std::size_t>> ownerFromStream(
         std::string_view streamName
     ) {
-        if (!streamName.starts_with(projector_stream::kStreamPrefix)) {
+        if (!streamName.starts_with(service::message::edge::projector_stream::kStreamPrefix)) {
             return std::nullopt;
         }
-        const auto suffix = streamName.substr(projector_stream::kStreamPrefix.size());
+        const auto suffix = streamName.substr(service::message::edge::projector_stream::kStreamPrefix.size());
         const auto separator = suffix.rfind(':');
         if (separator == std::string_view::npos || separator == 0 ||
             separator + 1 >= suffix.size()) {
@@ -3916,7 +3911,7 @@ return 0
         std::map<std::string, ProjectorRecoveryStream, std::less<>> dead;
         const auto candidates = co_await service::message::redis::keysMatching(
             redis,
-            std::string(projector_stream::kStreamPrefix) + "*"
+            std::string(service::message::edge::projector_stream::kStreamPrefix) + "*"
         );
         for (const auto& candidate : candidates) {
             if (candidate == currentStream) {
@@ -3926,7 +3921,7 @@ return 0
             if (!owner) {
                 continue;
             }
-            const auto lease = projector_stream::leaseKey(owner->second, owner->first);
+            const auto lease = service::message::edge::projector_stream::leaseKey(owner->second, owner->first);
             const auto token = recoveryToken(workerIndex, *owner);
             const auto current = co_await redis.get(lease);
             if (current) {
@@ -3975,7 +3970,7 @@ redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[3], KEYS[2])
 return 1
 )lua";
-        const std::string registry(projector_stream::kStreamRegistry);
+        const std::string registry(service::message::edge::projector_stream::kStreamRegistry);
         const std::string_view keys[]{ deadStream.lease, deadStream.stream, registry };
         const std::string_view arguments[]{ deadStream.token };
         const auto reply = co_await redis.eval(script, keys, arguments);
@@ -4040,7 +4035,7 @@ if redis.call('EXISTS', KEYS[2]) == 0 then
 end
 return 0
 )lua";
-        const std::vector<std::string> replyArguments{ "SMEMBERS", std::string(projector_stream::kStreamRegistry) };
+        const std::vector<std::string> replyArguments{ "SMEMBERS", std::string(service::message::edge::projector_stream::kStreamRegistry) };
         const auto reply = co_await service::message::redis::command(
             redis,
             replyArguments
@@ -4060,7 +4055,7 @@ return 0
                 continue;
             }
             const auto streamName = std::string(value.string());
-            const std::string registry(projector_stream::kStreamRegistry);
+            const std::string registry(service::message::edge::projector_stream::kStreamRegistry);
             const std::string_view keys[]{ registry, streamName };
             const std::span<const std::string_view> arguments;
             const auto removed = co_await redis.eval(
@@ -4088,12 +4083,12 @@ class EdgeControlService final {
             service::common::fail(10004, "Edge operation cancelled", 503);
         }
         if (operation == "queue-snapshot") {
-            const auto separator = payload.find('\n');
-            if (separator == std::string_view::npos) {
+            const auto request = service::message::rpc::decodeLinePair(payload);
+            if (!request) {
                 service::common::fail(10002, "Invalid edge snapshot payload", 400);
             }
-            const auto nodeId = payload.substr(0, separator);
-            const auto actorId = payload.substr(separator + 1);
+            const auto nodeId = request->first;
+            const auto actorId = request->second;
             if (!service::common::isUuid(nodeId) || !service::common::isUuid(actorId)) {
                 service::common::fail(10002, "Invalid edge snapshot identifiers", 400);
             }
@@ -4105,12 +4100,12 @@ class EdgeControlService final {
             co_return std::to_string(revision);
         }
 
-        const auto separator = payload.find('\n');
-        if (separator == std::string_view::npos || !service::common::isUuid(payload.substr(0, separator))) {
+        const auto request = service::message::rpc::decodeLinePair(payload);
+        if (!request || !service::common::isUuid(request->first)) {
             service::common::fail(10002, "Invalid edge control payload", 400);
         }
-        const auto nodeId = payload.substr(0, separator);
-        const auto requestPayload = payload.substr(separator + 1);
+        const auto nodeId = request->first;
+        const auto requestPayload = request->second;
         if (requestPayload.empty()) {
             service::common::fail(10002, "Empty edge control request", 400);
         }

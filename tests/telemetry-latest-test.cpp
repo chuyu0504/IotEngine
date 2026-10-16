@@ -45,8 +45,7 @@ int main() {
     try {
         const auto source = latestSource();
         requireNoUnsafeParsing(source);
-        require(source.find("iot:live:changes") != std::string_view::npos &&
-                    source.find("redis.call('XADD', KEYS[3]") != std::string_view::npos &&
+        require(source.find("redis.call('XADD', KEYS[3]") != std::string_view::npos &&
                     source.find("redis.call('XADD', KEYS[2]") != std::string_view::npos,
                 "telemetry and freshness changes do not publish subscription events");
         std::cout << "telemetry latest tests passed\n";

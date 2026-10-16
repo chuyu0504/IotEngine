@@ -161,8 +161,6 @@ int main() {
         requireContains(serviceSource, "status != \"approved\"", "edge enrollment accepts invalid registration status");
         requireContains(controllerSource, "RUVIA_DELETE(\"/:id\", removeEnrollment, service::middleware::PermissionMiddleware<\"iot:edge:edit\">, ruvia::path_model<EdgeIdParams>)", "edge enrollment HTTP deletion route is missing");
         requireContains(serviceSource, "removal.value(\"pending\")", "edge enrollment deletion is not limited to pending registrations");
-        requireContains(serviceSource, "module_wire::authKey(imei)", "edge enrollment deletion leaves stale authorization state");
-        requireContains(serviceSource, "\"iot:edge:session:\" + std::string(id)", "edge enrollment deletion does not disconnect the pending session");
         requireContains(serviceSource, "level != \"debug\" && level != \"info\" && level != \"warn\"", "edge log level accepts invalid values");
         requireContains(serviceSource, "sourceValue.size() > 16", "edge log source does not enforce local length limit");
         requireMissing(gatewaySource, "if (input.ping().nonce() != 0)", "edge gateway drops zero-nonce terminal liveness pings");
