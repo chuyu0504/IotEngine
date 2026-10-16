@@ -70,16 +70,29 @@ int main() {
         require(service::message::supportedEvent("device.data.reported") &&
                     !service::message::supportedEvent("device.deleted"),
                 "event allowlist contract changed");
-        const auto dataPublication = service::access::event::publicationKey(
-            "019fd9f6-4be5-7272-a194-9e571bce848d", "device.data.reported");
+        const auto dataPublication = service::message::access::stream::eventPublicationKey(
+            "019fd9f6-4be5-7272-a194-9e571bce848d",
+            "device.data.reported"
+        );
         require(dataPublication ==
                     "iot:open-access:event:published:device.data.reported:"
                     "019fd9f6-4be5-7272-a194-9e571bce848d",
                 "open-access publication idempotency key changed");
-        require(dataPublication != service::access::event::publicationKey(
-                                       "019fd9f6-4be5-7272-a194-9e571bce848d",
-                                       "device.command.updated"),
-                "different event types incorrectly share an idempotency key");
+        require(dataPublication != service::message::access::stream::eventPublicationKey("019fd9f6-4be5-7272-a194-9e571bce848d", "device.command.updated"), "different event types incorrectly share an idempotency key");
+        const auto publication = service::message::access::stream::eventPublication(
+            "019fd9f6-4be5-7272-a194-9e571bce848d",
+            "device.command.updated",
+            "019fd9f6-4be5-7272-a194-9e571bce848e",
+            "DEV-1",
+            1700000000000LL,
+            R"({"commandId":"c"})",
+            "instance-a"
+        );
+        require(publication.keys[0] == "iot:channel:open-access:event" && publication.keys[1] == "iot:open-access:event:published:device.command.updated:"
+                                                                                                 "019fd9f6-4be5-7272-a194-9e571bce848d" &&
+                    publication.keys[2] == service::message::workerWakeStream(std::nullopt, "instance-a"),
+                "open-access event publication keys changed");
+        require(publication.arguments == std::array<std::string, 16>{ "100000", "604800", "100000", "webhook", "event_id", "019fd9f6-4be5-7272-a194-9e571bce848d", "event_type", "device.command.updated", "device_id", "019fd9f6-4be5-7272-a194-9e571bce848e", "device_code", "DEV-1", "occurred_at_ms", "1700000000000", "data_json", R"({"commandId":"c"})" }, "open-access event Stream fields changed");
         require(service::message::access::stream::event() ==
                         "iot:channel:open-access:event" &&
                     service::message::access::stream::deliveryResult() ==

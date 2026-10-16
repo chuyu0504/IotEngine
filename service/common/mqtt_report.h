@@ -1,9 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ruvia/web/model.h>
@@ -15,10 +21,8 @@
 
 namespace service::common {
 
-inline bool mqttReportTopicMatches(std::string filter, std::string_view topic, std::string_view code) {
-    constexpr std::string_view marker = "{deviceCode}";
-    for (auto index = filter.find(marker); index != std::string::npos; index = filter.find(marker, index + code.size()))
-        filter.replace(index, marker.size(), code);
+// MQTT 3.1.1 Topic 过滤器匹配；filter 中的 {deviceCode} 须已替换。
+inline bool mqttTopicMatches(std::string_view filter, std::string_view topic) {
     if (topic.starts_with('$') && !filter.starts_with('$')) return false;
     const auto pattern = utils::splitPayload(filter,"/"), levels = utils::splitPayload(topic,"/");
     std::size_t index = 0;
@@ -27,6 +31,14 @@ inline bool mqttReportTopicMatches(std::string filter, std::string_view topic, s
         if (index == levels.size() || (pattern[index] != "+" && pattern[index] != levels[index])) return false;
     }
     return index == levels.size();
+}
+
+inline bool mqttReportTopicMatches(std::string filter, std::string_view topic, std::string_view code) {
+    constexpr std::string_view marker = "{deviceCode}";
+    for (auto index = filter.find(marker); index != std::string::npos; index = filter.find(marker, index + code.size())) {
+        filter.replace(index, marker.size(), code);
+    }
+    return mqttTopicMatches(filter, topic);
 }
 
 inline bool mqttReportTopicsOverlap(std::string_view left, std::string_view right) {
@@ -124,6 +136,119 @@ inline std::vector<std::string> mqttReportConfigurations(const ruvia::json_value
             json += utils::jsonQuoted(name) + ':' + value;
         }
         result.push_back(json + '}');
+    }
+    return result;
+}
+
+// 上报消息中一个已绑定载荷字段的设备属性。
+struct MqttReportPoint {
+    std::string id, name, field, dataType, unit;
+    std::vector<std::pair<std::string, std::string>> enums;
+};
+
+// 单条上报消息的载荷解码参数，缺省值与实际接入一致。
+struct MqttReportLayout {
+    std::string format, delimiter, recordsPath, recordDelimiter, identitySource, deviceCodeField, timeField, timeFormat;
+    std::size_t topicDeviceSegment = 1, recordLength = 0;
+    std::vector<MqttReportPoint> points;
+};
+
+// 一条设备记录的解码结果；values 与 MqttReportLayout::points 同序，缺失或转换失败为空。
+struct MqttReportRecord {
+    std::string deviceCode;
+    std::int64_t occurredAtMs = 0;
+    bool timeValid = true;
+    std::vector<std::optional<utils::PayloadScalar>> values;
+};
+
+template <typename Points>
+void appendMqttReportPoints(std::vector<MqttReportPoint>& output, const Points& points) {
+    for (const auto& point : points) {
+        if (point.template get<"field">().view().empty()) {
+            continue;
+        }
+        const auto& unit = point.template get<"unit">();
+        auto& mapped = output.emplace_back(MqttReportPoint{ .id = std::string(point.template get<"id">().view()), .name = std::string(point.template get<"name">().view()), .field = std::string(point.template get<"field">().view()), .dataType = std::string(point.template get<"dataType">().view()), .unit = unit ? std::string(unit->view()) : std::string{} });
+        if (const auto& mappings = point.template get<"enumValues">(); mappings) {
+            for (const auto& mapping : *mappings) {
+                mapped.enums.emplace_back(mapping.template get<"input">().view(), mapping.template get<"output">().view());
+            }
+        }
+    }
+}
+
+template <typename Points>
+void appendMqttReportPoints(std::vector<MqttReportPoint>& output, const std::optional<Points>& points) {
+    if (points) {
+        appendMqttReportPoints(output, *points);
+    }
+}
+
+// 由 mqttReportConfigurations 投影出的单条上报配置模型构造解码参数。
+template <typename Config>
+MqttReportLayout mqttReportLayout(const Config& config) {
+    const auto option = [](const auto& value, std::string_view fallback) {
+        return value ? std::string(value->view()) : std::string(fallback);
+    };
+    MqttReportLayout layout;
+    layout.format = option(config.template get<"payloadFormat">(), "json");
+    layout.delimiter = option(config.template get<"delimiter">(), ",");
+    layout.recordsPath = option(config.template get<"recordsPath">(), "");
+    layout.recordDelimiter = option(config.template get<"recordDelimiter">(), "\n");
+    layout.deviceCodeField = option(config.template get<"deviceCodeField">(), "");
+    layout.identitySource = option(config.template get<"identitySource">(), layout.deviceCodeField.empty() ? "bound" : "payload");
+    layout.timeField = option(config.template get<"timeField">(), "");
+    layout.timeFormat = option(config.template get<"timeFormat">(), "unix_ms");
+    layout.topicDeviceSegment = static_cast<std::size_t>(config.template get<"topicDeviceSegment">().value_or(ruvia::int64{ 1 }).value_);
+    layout.recordLength = static_cast<std::size_t>(config.template get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);
+    appendMqttReportPoints(layout.points, config.template get<"points">());
+    return layout;
+}
+
+// identitySource=topic 时 Topic 指定层即设备编码；层不存在时为空。
+inline std::string_view mqttReportTopicDeviceCode(const MqttReportLayout& layout, std::string_view topic) {
+    const auto levels = utils::splitPayload(topic, "/");
+    return layout.topicDeviceSegment < levels.size() ? levels[layout.topicDeviceSegment] : std::string_view{};
+}
+
+// 按上报配置解码一条消息：拆分记录、提取设备编码、解析设备时间、映射枚举并转换类型。
+// boundDeviceCode 为 identitySource=bound 时的设备编码；记录无设备时间时使用 receivedAtMs，
+// 设备时间无效时 timeValid=false。载荷或字段选择器无效时抛出 std::invalid_argument。
+inline std::vector<MqttReportRecord> decodeMqttReport(const MqttReportLayout& layout, std::string_view topic, std::string_view payload, std::string_view boundDeviceCode, std::string_view timezone, std::int64_t receivedAtMs) {
+    const auto records = utils::payloadRecords(payload, layout.format, layout.recordsPath, layout.recordDelimiter, layout.recordLength);
+    std::vector<MqttReportRecord> result;
+    result.reserve(records.size());
+    for (const auto& input : records) {
+        const utils::PayloadRecord record(input, layout.format, layout.delimiter);
+        auto& decoded = result.emplace_back();
+        if (layout.identitySource == "payload") {
+            const auto code = record.field(layout.deviceCodeField);
+            decoded.deviceCode = code ? utils::payloadScalarText(*code) : std::string{};
+        } else {
+            decoded.deviceCode = layout.identitySource == "topic" ? mqttReportTopicDeviceCode(layout, topic) : boundDeviceCode;
+        }
+        decoded.occurredAtMs = receivedAtMs;
+        if (!layout.timeField.empty()) {
+            if (const auto time = record.field(layout.timeField)) {
+                const auto timestamp = utils::payloadTimestamp(*time, layout.timeFormat, timezone);
+                decoded.timeValid = timestamp.has_value();
+                if (timestamp) {
+                    decoded.occurredAtMs = *timestamp;
+                }
+            }
+        }
+        decoded.values.reserve(layout.points.size());
+        for (const auto& point : layout.points) {
+            auto value = record.field(point.field);
+            if (value && !point.enums.empty()) {
+                const auto key = utils::payloadScalarText(*value);
+                const auto found = std::find_if(point.enums.begin(), point.enums.end(), [&](const auto& mapping) {
+                    return mapping.first == key;
+                });
+                value = found == point.enums.end() ? std::nullopt : std::optional(utils::PayloadScalar{ found->second });
+            }
+            decoded.values.push_back(value ? utils::convertPayloadValue(*value, point.dataType) : std::nullopt);
+        }
     }
     return result;
 }

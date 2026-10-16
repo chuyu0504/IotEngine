@@ -26,8 +26,8 @@
 #include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
-#include <ruvia/web/web_worker.h>
 #include <ruvia/web/db/db.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -35,7 +35,6 @@
 #include "service/common/uuid.h"
 #include "service/features/access/access.service.h"
 #include "service/features/access/access.transport.h"
-#include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/utils/crypto.h"
@@ -238,7 +237,6 @@ class DeliveryRuntime final {
                 }
                 bool failed = false;
                 try {
-                    bool refreshSessions = false;
                     std::vector<message::StreamMessage> sessionMessages;
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
@@ -247,33 +245,8 @@ class DeliveryRuntime final {
                         }
                         sessionMessages.insert(sessionMessages.end(), batch.messages.begin(), batch.messages.end());
                     }
-                    const auto sessionEventIds =
-                        service::message::idempotency::eventIds(sessionMessages);
-                    const auto pendingSessionIds =
-                        co_await service::message::idempotency::pending(
-                            context,
-                            sessionReceiptConsumer,
-                            sessionEventIds
-                        );
-                    for (const auto& message : sessionMessages) {
-                        refreshSessions =
-                            refreshSessions ||
-                            (service::message::idempotency::shouldProcess(
-                                 message,
-                                 pendingSessionIds
-                             ) &&
-                             sessionChange(message));
-                    }
-                    if (refreshSessions) {
-                        co_await session::refresh(context);
-                    }
-                    co_await service::message::idempotency::markProcessed(
-                        context,
-                        sessionReceiptConsumer,
-                        sessionEventIds
-                    );
+                    co_await session::applyChanges(context, sessionReceiptConsumer, sessionMessages);
 
-                    bool reloadCatalog = true; // Each instance consumes shared data with current authorization.
                     std::vector<message::StreamMessage> catalogMessages;
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
@@ -282,30 +255,7 @@ class DeliveryRuntime final {
                         }
                         catalogMessages.insert(catalogMessages.end(), batch.messages.begin(), batch.messages.end());
                     }
-                    const auto catalogEventIds =
-                        service::message::idempotency::eventIds(catalogMessages);
-                    const auto pendingCatalogIds =
-                        co_await service::message::idempotency::pending(
-                            context,
-                            catalogReceiptConsumer,
-                            catalogEventIds
-                        );
-                    for (const auto& message : catalogMessages) {
-                        reloadCatalog = reloadCatalog ||
-                            (service::message::idempotency::shouldProcess(
-                                 message,
-                                 pendingCatalogIds
-                             ) &&
-                             catalogChange(message));
-                    }
-                    if (reloadCatalog) {
-                        catalog = co_await delivery::loadCatalog(context);
-                    }
-                    co_await service::message::idempotency::markProcessed(
-                        context,
-                        catalogReceiptConsumer,
-                        catalogEventIds
-                    );
+                    catalog = co_await delivery::reloadCatalog(context, catalogReceiptConsumer, catalogMessages);
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
                         if (kind != StreamKind::Catalog &&
@@ -368,17 +318,6 @@ class DeliveryRuntime final {
             stopped->set_value();
         } catch (...) {
         }
-    }
-
-    static bool catalogChange(const message::StreamMessage& message) {
-        const auto aggregate = message.get("aggregate");
-        return aggregate == "access_key" || aggregate == "webhook" || aggregate == "mqtt" ||
-            aggregate == "device" || aggregate == "protocol";
-    }
-
-    static bool sessionChange(const message::StreamMessage& message) {
-        const auto aggregate = message.get("aggregate");
-        return aggregate == "access_key" || aggregate == "device";
     }
 
     struct DeliveryAttempt final {

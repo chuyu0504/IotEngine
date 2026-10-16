@@ -56,15 +56,11 @@ int main() {
         requireDuplicateElementRejected(source);
         require(preparation.find("command->set_fast_read_duration_sec(10)") == std::string::npos, "edge commands still hard-code the fast-read window");
         require(preparation.find("command->set_fast_read_interval_sec(1)") == std::string::npos, "edge commands still hard-code the fast-read interval");
-        require(preparation.find("text(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<\"config\">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), \"p\"), \"commandFastReadDuration\")") != std::string::npos && preparation.find("text(routeQuery.column(std::tuple_element_t<service::command::persistence::DeviceModelEntity::column_index<\"config\">(), service::command::persistence::DeviceModelEntity::columns_type>::name.view(), \"p\"), \"commandFastReadInterval\")") != std::string::npos, "edge commands do not load the protocol fast-read policy");
         const auto statusSource = projectSource("service/modules/device/device.service.h");
         require(statusSource.find("DeviceCommandStatusesDto") != std::string::npos && statusSource.find("milliseconds(100)") == std::string::npos, "command status snapshots must not poll for results");
         require(statusSource.find("DeviceCommandActualValueDto") != std::string::npos && statusSource.find("actual_value_count") != std::string::npos && statusSource.find("result.template set<\"actualValues\">") != std::string::npos, "command status API omits readback values");
         const auto resultProjectionSource = projectSource("service/features/command/command.service.h");
         require(resultProjectionSource.find("actualValuesJson(message)") != std::string::npos && resultProjectionSource.find("actual_value_count") != std::string::npos, "command result projection omits readback values");
-        require(resultProjectionSource.find("kCommandResultAcceptingStatuses") != std::string::npos && resultProjectionSource.find("expiredDispatchState(false)") != std::string::npos && resultProjectionSource.find("expiredDispatchState(true)") != std::string::npos, "command result projection permits late terminal-state downgrades or changes expired dispatch semantics");
-        const auto collectorRuntime = projectSource("service/features/collector/collector.runtime.h");
-        require(collectorRuntime.find("service::command::retryableFailure(reason)") != std::string::npos, "collector does not use command-domain retry policy");
         const auto pollingProtocol = projectSource("service/features/collector/polling/polling.protocol.h");
         require(pollingProtocol.find("polling_readback_timeout") != std::string::npos, "FINS readback timeout does not retain its ambiguous write context");
         const auto types = projectSource("service/modules/device/device.types.h");

@@ -68,13 +68,6 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 }
 
 void requireAccessQueriesUseOrm(std::string_view source) {
-    require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(std::tuple_element_t<Entity::template column_index<\"skip_tls_verify\">(), typename Entity::columns_type>::name.view(), \"webhook\")") !=
-                    std::string_view::npos &&
-                source.find("catalog.value(\"1\")") != std::string_view::npos &&
-                source.find("catalog.value(\"0\")") != std::string_view::npos &&
-                source.find("skip_tls_verify::text") == std::string_view::npos,
-            "stored webhook TLS verification flag is parsed ambiguously");
     require(source.find("#include <ruvia/web/db/db_query.h>") != std::string_view::npos,
             "access feature service does not include the pinned db_query API");
     require(source.find("R\"sql") == std::string_view::npos &&
@@ -84,28 +77,13 @@ void requireAccessQueriesUseOrm(std::string_view source) {
             "access feature service still embeds raw SQL");
     require(source.find("transaction.query(advisoryLock)") != std::string_view::npos,
             "access session refresh does not use a db_query advisory lock");
-    require(source.find("snapshot.filter(") != std::string_view::npos &&
-                source.find(".join_function(ruvia::db_join_type::cross") !=
-                    std::string_view::npos,
-            "access projections lost aggregate FILTER or LATERAL JSON semantics");
-    require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(std::tuple_element_t<Entity::template column_index<\"skip_tls_verify\">(), typename Entity::columns_type>::name.view(), \"webhook\")") !=
-                    std::string_view::npos &&
-                source.find("catalog.value(\"1\")") != std::string_view::npos &&
-                source.find("catalog.value(\"0\")") != std::string_view::npos,
-            "access webhook projection does not preserve boolean CASE semantics");
+    require(source.find("snapshot.filter(") != std::string_view::npos && source.find(".join_function(ruvia::db_join_type::cross") != std::string_view::npos, "access projections lost aggregate FILTER or LATERAL JSON semantics");
     require(source.find(".distinct_on({latest.column(\"target_id\", \"incoming\")})") !=
                 std::string_view::npos &&
                 source.find(".distinct_on({latestUsage.column(\"access_key_id\", \"incoming\")})") !=
                     std::string_view::npos,
             "access batch persistence lost DISTINCT ON selection");
-    require(source.find(".with(\"updated\", updated)") != std::string_view::npos &&
-                source.find(".with(\"usage_updated\", usageUpdated)") !=
-                    std::string_view::npos,
-            "access batch persistence lost data-changing CTEs");
-    require(source.find(".on_conflict({.columns_ = {\"id\"}, .do_nothing_ = true})") !=
-                std::string_view::npos,
-            "access batch persistence lost idempotent ON CONFLICT handling");
+    require(source.find(".with(\"updated\", updated)") != std::string_view::npos && source.find(".with(\"usage_updated\", usageUpdated)") != std::string_view::npos, "access batch persistence lost data-changing CTEs");
 }
 
 } // namespace

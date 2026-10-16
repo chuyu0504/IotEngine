@@ -34,7 +34,7 @@ namespace service::collector {
 class TcpTransport final {
   public:
     using ConnectedHandler = std::function<void(ProtocolConnectionInfo)>;
-    using PacketHandler = std::function<void(message::IngressPacket)>;
+    using PacketHandler = std::function<void(IngressPacket)>;
     using DisconnectedHandler = std::function<void(std::string, std::string)>;
     using StateHandler = std::function<void(LinkState)>;
     using WriteHandler = std::function<void(bool)>;
@@ -811,15 +811,15 @@ class TcpTransport final {
                         client->second->lastActivityAtMs = activity;
                     }
                 }
-                message::IngressPacket packet{ .messageId = uuidGenerator_.next(),
-                                               .linkId = linkId,
-                                               .connectionId = std::string(currentId),
-                                               .remoteAddress = std::string(currentRemote),
-                                               .sessionEpoch = connectionEpochs_.at(
-                                                   std::string(currentId)
-                                               ),
-                                               .occurredAtMs = activity,
-                                               .payload = std::move(bytes) };
+                IngressPacket packet{ .messageId = uuidGenerator_.next(),
+                                      .linkId = linkId,
+                                      .connectionId = std::string(currentId),
+                                      .remoteAddress = std::string(currentRemote),
+                                      .sessionEpoch = connectionEpochs_.at(
+                                          std::string(currentId)
+                                      ),
+                                      .occurredAtMs = activity,
+                                      .payload = std::move(bytes) };
                 onPacket_(std::move(packet));
                 publish(linkId, definitions_[linkId].mode == "TCP Server" ? "listening" : "connected");
             },

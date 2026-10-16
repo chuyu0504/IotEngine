@@ -1,14 +1,19 @@
 #pragma once
 
-#include "service/features/collector/engine/engine.types.h"
-
+#include <algorithm>
 #include <map>
 #include <memory>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "service/features/collector/collector.protocol.h"
+#include "service/features/collector/collector.types.h"
+#include "service/features/collector/engine/engine.types.h"
 
 namespace service::collector {
 
@@ -42,58 +47,6 @@ class ProtocolSessionFactoryRegistry final {
   private:
     std::map<std::string, std::unique_ptr<ProtocolSessionFactory>, std::less<>> factories_;
 };
-
-} // namespace service::collector
-
-#include <algorithm>
-#include <set>
-#include <utility>
-#include <vector>
-
-#include "service/features/collector/collector.types.h"
-
-namespace service::collector {
-
-namespace detail {
-
-inline const LinkDefinition* findLink(
-    const std::map<std::string, LinkDefinition, std::less<>>& links,
-    std::string_view id) {
-    const auto current = links.find(id);
-    return current == links.end() ? nullptr : &current->second;
-}
-
-inline bool targetAllowsSessionRefresh(const RuntimeSnapshot& snapshot,
-                                       const ClientTargetKey& target, const ProtocolSessionFactoryRegistry& registry) {
-    return std::none_of(snapshot.devices.begin(), snapshot.devices.end(),
-                        [&target, &registry](const auto& device) {
-                            return device.linkId == target.first &&
-                                   device.targetId == target.second &&
-                                   !registry.require(device.protocol).canRefreshTransport(device);
-                        });
-}
-
-inline void addChangedDeviceTransport(
-    RuntimeReconcilePlan& plan,
-    const std::map<std::string, LinkDefinition, std::less<>>& links,
-    const DeviceDefinition& device, const ProtocolSessionFactoryRegistry& registry) {
-    plan.affectedLinks.insert(device.linkId);
-    const auto* link = findLink(links, device.linkId);
-    if (!link || link->mode != "TCP Client") {
-        plan.restartLinks.insert(device.linkId);
-        return;
-    }
-    if (device.targetId.empty()) {
-        plan.restartLinks.insert(device.linkId);
-        return;
-    }
-    if (registry.require(device.protocol).canRefreshTransport(device))
-        plan.refreshClientSessions.emplace(device.linkId, device.targetId);
-    else
-        plan.restartClientTargets.emplace(device.linkId, device.targetId);
-}
-
-} // namespace detail
 
 // Worker-affine protocol engine. It owns every socket's protocol session and is the only layer
 // shared by Modbus, S7 and SL651. Scheduling semantics remain inside each concrete session.
@@ -173,23 +126,24 @@ class ProtocolEngine final {
         for (const auto& [id, device] : previousDevices) {
             const auto current = nextDevices.find(id);
             if (current == nextDevices.end() || current->second != device) {
-                detail::addChangedDeviceTransport(plan, previousLinks, device, registry_);
+                addChangedDeviceTransport(plan, previousLinks, device);
                 if (current != nextDevices.end())
-                    detail::addChangedDeviceTransport(plan, nextLinks, current->second, registry_);
+                    addChangedDeviceTransport(plan, nextLinks, current->second);
             }
         }
         for (const auto& [id, device] : nextDevices) {
             if (!previousDevices.contains(id))
-                detail::addChangedDeviceTransport(plan, nextLinks, device, registry_);
+                addChangedDeviceTransport(plan, nextLinks, device);
         }
         for (auto current = plan.refreshClientSessions.begin();
              current != plan.refreshClientSessions.end();) {
-            if (!detail::targetAllowsSessionRefresh(previous, *current, registry_) ||
-                !detail::targetAllowsSessionRefresh(next, *current, registry_)) {
+            if (!targetAllowsSessionRefresh(previous, *current) ||
+                !targetAllowsSessionRefresh(next, *current)) {
                 plan.restartClientTargets.insert(*current);
                 current = plan.refreshClientSessions.erase(current);
-            } else
+            } else {
                 ++current;
+            }
         }
         return plan;
     }
@@ -261,7 +215,7 @@ class ProtocolEngine final {
         return actions;
     }
 
-    [[nodiscard]] std::vector<ProtocolAction> consume(const message::IngressPacket& packet) {
+    [[nodiscard]] std::vector<ProtocolAction> consume(const IngressPacket& packet) {
         const auto current = sessions_.find(packet.connectionId);
         if (current == sessions_.end())
             return {{.kind = ProtocolActionKind::Close,
@@ -345,6 +299,28 @@ class ProtocolEngine final {
         ProtocolConnectionInfo info;
         std::unique_ptr<ProtocolSession> session;
     };
+
+    [[nodiscard]] bool targetAllowsSessionRefresh(const RuntimeSnapshot& snapshot, const ClientTargetKey& target) const {
+        return std::none_of(snapshot.devices.begin(), snapshot.devices.end(), [&target, this](const auto& device) {
+            return device.linkId == target.first &&
+                device.targetId == target.second &&
+                !registry_.require(device.protocol).canRefreshTransport(device);
+        });
+    }
+
+    void addChangedDeviceTransport(RuntimeReconcilePlan& plan, const std::map<std::string, LinkDefinition, std::less<>>& links, const DeviceDefinition& device) const {
+        plan.affectedLinks.insert(device.linkId);
+        const auto link = links.find(device.linkId);
+        if (link == links.end() || link->second.mode != "TCP Client" || device.targetId.empty()) {
+            plan.restartLinks.insert(device.linkId);
+            return;
+        }
+        if (registry_.require(device.protocol).canRefreshTransport(device)) {
+            plan.refreshClientSessions.emplace(device.linkId, device.targetId);
+        } else {
+            plan.restartClientTargets.emplace(device.linkId, device.targetId);
+        }
+    }
 
     void replaceSnapshot(RuntimeSnapshot snapshot) {
         for (const auto& link : snapshot.links) {

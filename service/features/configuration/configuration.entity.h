@@ -3,10 +3,16 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+
 #include <ruvia/web/db/db_entity.h>
+#include <ruvia/web/db/db_predicate.h>
 
 namespace service::configuration::persistence {
 
+// features 层 device、link 与 device_model 视图的唯一映射；其他 feature 复用本文件实体。
+// protocol_address 为 NOT NULL 且无列默认值，由 BEFORE INSERT OR UPDATE 触发器 device_channel_binding
+// （函数 bind_device_channel）按链路协议与 protocol_params 计算写入（迁移 channels、mqtt、industrial_protocols、current_device_model）。
+// Ruvia 列选项只能描述列默认值与生成列，无法表达触发器填充；写入方不得提供该列，读取方可视为非空。
 RUVIA_DB_ENTITY(DeviceEntity, "device",
     RUVIA_DB_COLUMN(debug_enabled, bool, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}),
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -36,6 +42,7 @@ RUVIA_DB_ENTITY(DeviceEntity, "device",
     RUVIA_DB_COLUMN(protocol_address, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text}))
 
+// device_model 是 device JOIN protocol_config 的只读视图（迁移 current_device_model）；视图列由 PostgreSQL 报告为可空。
 RUVIA_DB_ENTITY(DeviceModelEntity, "device_model",
     RUVIA_DB_COLUMN(device_id, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),

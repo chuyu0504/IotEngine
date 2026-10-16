@@ -506,16 +506,15 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto nowMs = service::message::utcNowMilliseconds();
     const auto now = std::to_string(nowMs);
     ruvia::db_query deviceQuery;
-    const auto timeout = deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("online_timeout"));
+    const auto timeout = deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("online_timeout"));
     const auto parsedTimeout = deviceQuery.case_when({ { deviceQuery.binary(
         deviceQuery.coalesce({ timeout, deviceQuery.value("") }), Op::regex, deviceQuery.value("^-?[0-9]{1,18}$")),
         deviceQuery.cast(timeout, Type::big_int) } });
-    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
-        deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("device_code")),
-        deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::multiply, deviceQuery.value(1000)) })
-        .from(service::telemetry::latest::persistence::DeviceEntity::table_name(), "d")
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .and_where(selected(deviceQuery)).add_order_by(deviceQuery.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"));
+    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text), deviceQuery.binary(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, deviceQuery.value("device_code")), deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::multiply, deviceQuery.value(1000)) })
+        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
+        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        .and_where(selected(deviceQuery))
+        .add_order_by(deviceQuery.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"));
     const auto devices = co_await context.db().query(deviceQuery);
     if (devices.empty()) {
         co_return;
@@ -635,16 +634,17 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
 
     const auto configuredProtocol = [&](std::string_view protocol, std::string_view arrayKey, int order) {
         ruvia::db_query query;
-        query.from(service::telemetry::latest::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::telemetry::latest::persistence::DeviceModelEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"device_id">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
-            .and_where(query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"protocol">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d")))
+        query.from(service::configuration::persistence::DeviceEntity::table_name(), "d")
+            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+            .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
             .and_where(selected(query));
-        const auto entries = query.call("jsonb_array_elements", { query.coalesce({
-            query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"config">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
-        std::vector<ruvia::db_expression> columns{ query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"),
-            query.binary(query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"protocol_params">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, query.value("device_code")),
-            query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"protocol">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), query.column("element"), query.cast(query.value(order), Type::integer) };
+        const auto entries = query.call("jsonb_array_elements", { query.coalesce({ query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
+        std::vector<ruvia::db_expression> columns{ query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
+                                                   query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, query.value("device_code")),
+                                                   query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
+                                                   query.column("element"),
+                                                   query.cast(query.value(order), Type::integer) };
         if (protocol == "SL651" && arrayKey == "funcs") {
             query.join_function(ruvia::db_join_type::cross, entries, {}, "functions",
                 { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } });
@@ -663,7 +663,7 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
             columns.push_back(query.cast(query.value(0), Type::big_int));
         }
         const auto element = query.column("element");
-        const auto configuration = query.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceModelEntity::column_index<"config">(), service::telemetry::latest::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
+        const auto configuration = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
         const auto visibility = query.binary(query.binary(configuration, Op::json_get, query.value("pointVisibility")), Op::json_get,
             query.binary(element, Op::json_get_text, query.value("id")));
         auto writable = query.value(false);
@@ -873,11 +873,7 @@ inline ruvia::task<void> hydrate(ruvia::web_worker_context& context, std::size_t
     std::string cursor = "00000000-0000-0000-0000-000000000000";
     for (;;) {
         ruvia::db_query page;
-        page.select(page.cast(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_data_type::text)).from(service::telemetry::latest::persistence::DeviceEntity::table_name())
-            .and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"deleted_at">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view())))
-            .and_where(page.binary(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::greater,
-                page.cast(page.value(cursor), ruvia::db_data_type::uuid)))
-            .add_order_by(page.column(std::tuple_element_t<service::telemetry::latest::persistence::DeviceEntity::column_index<"id">(), service::telemetry::latest::persistence::DeviceEntity::columns_type>::name.view())).limit(kHydrationBatchSize);
+        page.select(page.cast(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_data_type::text)).from(service::configuration::persistence::DeviceEntity::table_name()).and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()))).and_where(page.binary(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::greater, page.cast(page.value(cursor), ruvia::db_data_type::uuid))).add_order_by(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view())).limit(kHydrationBatchSize);
         const auto devices = co_await context.db().query(page);
         if (devices.empty()) {
             break;

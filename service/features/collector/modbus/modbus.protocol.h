@@ -1,7 +1,5 @@
 #pragma once
 
-#include "service/features/collector/scheduling/scheduling.protocol.h"
-
 #include <algorithm>
 #include <bit>
 #include <charconv>
@@ -23,6 +21,8 @@
 
 #include "service/features/collector/collector.protocol.h"
 #include "service/features/collector/register_value/register_value.protocol.h"
+#include "service/features/collector/scheduling/scheduling.protocol.h"
+#include "service/utils/json.h"
 
 namespace service::collector::modbus {
 
@@ -50,18 +50,6 @@ inline bool validRtu(std::span<const std::uint8_t> frame) noexcept {
     const auto expected = crc16(frame.first(frame.size() - 2));
     return frame[frame.size() - 2] == static_cast<std::uint8_t>(expected & 0xFFU) &&
            frame.back() == static_cast<std::uint8_t>(expected >> 8U);
-}
-
-inline std::string jsonEscape(std::string_view value) {
-    std::string result;
-    result.reserve(value.size() + 8);
-    for (const auto character : value) {
-        if (character == '\\' || character == '"')
-            result.push_back('\\');
-        if (static_cast<unsigned char>(character) >= 0x20)
-            result.push_back(character);
-    }
-    return result;
 }
 
 } // namespace detail
@@ -1122,9 +1110,9 @@ class Session final : public ProtocolSession,
             if (!first)
                 json << ',';
             first = false;
-            json << '\"' << detail::jsonEscape(element.id) << "\":{\"name\":\""
-                 << detail::jsonEscape(element.name) << "\",\"value\":" << *numeric
-                 << ",\"unit\":\"" << detail::jsonEscape(element.unit) << "\"}";
+            json << '\"' << service::utils::jsonEscape(element.id) << "\":{\"name\":\""
+                 << service::utils::jsonEscape(element.name) << "\",\"value\":" << *numeric
+                 << ",\"unit\":\"" << service::utils::jsonEscape(element.unit) << "\"}";
         }
         json << "}}";
         return json.str();

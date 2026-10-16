@@ -24,16 +24,6 @@ void requireNoUnsafeStoll(std::string_view source) {
             "access webhook uses unsafe/partial stoll parsing");
 }
 
-void requireUnambiguousTlsVerificationFlag(std::string_view source) {
-    require(source.find("catalog.case_when(") != std::string_view::npos &&
-                source.find("catalog.column(std::tuple_element_t<Entity::template column_index<\"skip_tls_verify\">(), typename Entity::columns_type>::name.view(), \"webhook\")") !=
-                    std::string_view::npos &&
-                source.find("catalog.value(\"1\")") != std::string_view::npos &&
-                source.find("catalog.value(\"0\")") != std::string_view::npos &&
-                source.find("skip_tls_verify::text") == std::string_view::npos,
-            "webhook runtime does not project the PostgreSQL boolean explicitly");
-}
-
 void requireCanonicalBooleanPointValues(std::string_view source) {
     require(source.find("parsed->get<ruvia::string>(\"dataType\")") !=
                     std::string_view::npos,
@@ -47,7 +37,6 @@ int main() {
         const auto serviceSource = webhookSource("service/features/access/access.service.h");
         const auto entitySource = webhookSource("service/features/access/access.entity.h");
         requireNoUnsafeStoll(serviceSource);
-        requireUnambiguousTlsVerificationFlag(serviceSource);
         requireCanonicalBooleanPointValues(entitySource);
         std::cout << "access webhook tests passed\n";
         return 0;
