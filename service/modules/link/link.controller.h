@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <optional>
 #include <string>
 
@@ -59,7 +58,7 @@ class LinkController final {
         service::middleware::RequestContext access(c, service::middleware::requireAuth(c).userId);
         std::vector<service::live::SnapshotChannel> channels;
         channels.push_back({ "links", "link", [this, &c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:query");
+                                co_await service::middleware::requirePermission(request, "iot:link:query");
                                 co_return service::live::json(co_await queryList(c, request));
                             } });
         std::string debugId;
@@ -68,7 +67,7 @@ class LinkController final {
             debugId = std::string(value->view());
             channels.push_back({ "packets", "packet-debug", [this, &c, &debugAuthorized, linkId = debugId](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                                     debugAuthorized = false;
-                                    co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:edit");
+                                    co_await service::middleware::requirePermission(request, "iot:link:edit");
                                     const auto payload = service::live::json(co_await queryDebugPackets(c, request, linkId));
                                     debugAuthorized = true;
                                     co_return payload;
@@ -81,10 +80,8 @@ class LinkController final {
             [&c] { (void)service::middleware::requireAuth(c); },
             [&c, &debugAuthorized, debugId]() -> ruvia::task<void> {
                 if (!debugId.empty() && debugAuthorized) {
-                    (void)co_await c.redis().expire(service::debug_idle::leaseKey("link", debugId),
-                        std::chrono::duration_cast<std::chrono::seconds>(service::debug_idle::kIdle));
+                    co_await linkService().extendDebugLease(c, debugId);
                 }
-                co_return;
             });
     }
 

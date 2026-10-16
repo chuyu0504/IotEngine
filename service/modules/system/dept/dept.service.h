@@ -210,12 +210,12 @@ class DeptService {
             .where(entities::DeptEntity::column<"parent_id">() == currentId && entities::DeptEntity::column<"deleted_at">().is_null());
         auto recursive = departments.create_query_builder("d");
         recursive.select({ { "id" } })
-            .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(expressions.column("parent_id", "d"), db_binary_operator::equal, expressions.column("id", "x")))
+            .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(entities::DeptEntity::column<"parent_id">().expression(expressions, "d"), db_binary_operator::equal, entities::DeptEntity::column<"id">().expression(expressions, "x")))
             .where(entities::DeptEntity::column<"deleted_at">().is_null());
         seed.combine(db_set_operation::union_all, recursive);
         auto query = departments.create_query_builder("candidate");
         query.with("descendants", seed, { .recursive_ = true })
-            .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(expressions.column("id", "candidate"), db_binary_operator::equal, expressions.column("id", "x")))
+            .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(entities::DeptEntity::column<"id">().expression(expressions, "candidate"), db_binary_operator::equal, entities::DeptEntity::column<"id">().expression(expressions, "x")))
             .where(entities::DeptEntity::column<"id">() == parentId);
         return query;
     }
@@ -223,11 +223,13 @@ class DeptService {
     template <typename Context>
     static ruvia::db_query_builder<entities::DeptEntity, ruvia::db_handle> departmentSelect(Context& c) {
         using namespace ruvia;
+        using entities::DeptEntity;
+        using service::user::entities::UserEntity;
         db_query expressions(c.pool());
-        auto query = c.db().template get_repository<entities::DeptEntity>().create_query_builder("d");
-        query.select({ { "id", expressions.cast(expressions.column("id", "d"), db_data_type::text) }, { "name", expressions.column("name", "d") }, { "code", expressions.coalesce({ expressions.cast(expressions.column("code", "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(expressions.column("parent_id", "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(expressions.column("name", "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(expressions.column("leader_id", "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ expressions.column("nickname", "u"), expressions.column("username", "u"), expressions.value("") }) }, { "sort_order", expressions.column("sort_order", "d") }, { "status", expressions.column("status", "d") }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "d") }) } });
-        query.template join<entities::DeptEntity>(db_join_type::left, "parent", expressions.binary(expressions.column("id", "parent"), db_binary_operator::equal, expressions.column("parent_id", "d")))
-            .template join<service::user::entities::UserEntity>(db_join_type::left, "u", expressions.binary(expressions.binary(expressions.column("id", "u"), db_binary_operator::equal, expressions.column("leader_id", "d")), db_binary_operator::and_value, expressions.unary(db_unary_operator::is_null, expressions.column("deleted_at", "u"))));
+        auto query = c.db().template get_repository<DeptEntity>().create_query_builder("d");
+        query.select({ { "id", expressions.cast(DeptEntity::column<"id">().expression(expressions, "d"), db_data_type::text) }, { "name", DeptEntity::column<"name">().expression(expressions, "d") }, { "code", expressions.coalesce({ expressions.cast(DeptEntity::column<"code">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"parent_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"leader_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ UserEntity::column<"nickname">().expression(expressions, "u"), UserEntity::column<"username">().expression(expressions, "u"), expressions.value("") }) }, { "sort_order", DeptEntity::column<"sort_order">().expression(expressions, "d") }, { "status", DeptEntity::column<"status">().expression(expressions, "d") }, { "created_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"created_at">().expression(expressions, "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"updated_at">().expression(expressions, "d") }) } });
+        query.template join<DeptEntity>(db_join_type::left, "parent", expressions.binary(DeptEntity::column<"id">().expression(expressions, "parent"), db_binary_operator::equal, DeptEntity::column<"parent_id">().expression(expressions, "d")))
+            .template join<UserEntity>(db_join_type::left, "u", expressions.binary(expressions.binary(UserEntity::column<"id">().expression(expressions, "u"), db_binary_operator::equal, DeptEntity::column<"leader_id">().expression(expressions, "d")), db_binary_operator::and_value, expressions.unary(db_unary_operator::is_null, UserEntity::column<"deleted_at">().expression(expressions, "u"))));
         return query;
     }
 

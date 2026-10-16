@@ -338,6 +338,14 @@ iot_engine_add_test(mqtt-configuration LARGE
     SOURCES tests/mqtt-configuration-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto edgenode-protocol)
 
+iot_engine_add_test(protocol-expression LARGE
+    SOURCES tests/protocol-expression-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto edgenode-protocol)
+
+iot_engine_add_test(protocol-service LARGE
+    SOURCES tests/protocol-service-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto edgenode-protocol)
+
 iot_engine_add_test(context-operation-memory LARGE
     SOURCES tests/context-operation-memory-test.cpp
     LIBRARIES ruvia::web)
@@ -383,9 +391,9 @@ iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
-iot_engine_add_test(api-upload
+iot_engine_add_test(api-upload LARGE
     SOURCES tests/api-upload-test.cpp
-    LIBRARIES ruvia::web OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(firmware-download
     SOURCES tests/firmware-download-test.cpp
@@ -442,13 +450,18 @@ foreach(test_name
         configuration-service
         telemetry-latest
         telemetry-persistence
-        command-service
-        link-service
-        protocol-service
-        access-service)
+        command-service)
     iot_engine_add_test("${test_name}"
         SOURCES "tests/${test_name}-test.cpp")
 endforeach()
+
+iot_engine_add_test(access-service LARGE
+    SOURCES tests/access-service-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+
+iot_engine_add_test(link-service LARGE
+    SOURCES tests/link-service-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(link-public-ip LARGE
     SOURCES tests/link-public-ip-test.cpp

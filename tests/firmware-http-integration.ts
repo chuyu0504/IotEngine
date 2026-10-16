@@ -99,7 +99,10 @@ try {
     assert.equal((await db`SELECT count(*)::int AS count FROM edge_task WHERE node_id=${node} AND task_type='firmware'`)[0].count, 1);
 
     const directory=dirname(row.storage_path);
-    const staged=async()=> (await readdir(directory)).filter(name=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.upload$/i.test(name));
+    // 夹具目录由多个集成测试共享，其他测试留下的未加锁上传文件不属于本测试；上传恢复只在进程启动认领后执行一次。
+    const isStaged=(name:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.upload$/i.test(name);
+    const foreign=new Set((await readdir(directory)).filter(isStaged));
+    const staged=async()=> (await readdir(directory)).filter(name=>isStaged(name)&&!foreign.has(name));
     await upload('too-short.bin',new Uint8Array([1]),3,17017);
     await upload('too-long.bin',new Uint8Array([1,2,3,4]),3,17017);
     await upload('invalid.bin',new Uint8Array(),0,10001);

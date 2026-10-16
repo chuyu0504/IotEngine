@@ -52,11 +52,11 @@ class AlertController final {
     ruvia::task<void> alertEvents(ruvia::context& c) {
         std::vector<service::live::SnapshotChannel> channels{
             {"records", "alert", [&c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+                co_await service::middleware::requirePermission(request, "iot:alert:query");
                 co_return service::live::data(c, co_await alertService().listRecords(request, c.req().validated<AlertListQuery>()));
             }},
             {"stats", "alert", [&c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+                co_await service::middleware::requirePermission(request, "iot:alert:query");
                 co_return service::live::data(c, co_await alertService().stats(request));
             }}
         };

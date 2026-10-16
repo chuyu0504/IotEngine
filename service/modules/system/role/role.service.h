@@ -16,7 +16,6 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/role/role.types.h"
 #include "service/modules/system/user/user.entity.h"
-#include "service/utils/json.h"
 
 namespace service::role {
 
@@ -171,9 +170,9 @@ class RoleService {
         }
         ruvia::db_query expressions(c.pool());
         auto assigned = c.db().template get_repository<service::user::entities::UserRoleEntity>().create_query_builder("ur");
-        assigned.template join<service::user::entities::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(expressions.column("id", "u"), ruvia::db_binary_operator::equal, expressions.column("user_id", "ur")))
+        assigned.template join<service::user::entities::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(service::user::entities::UserEntity::column<"id">().expression(expressions, "u"), ruvia::db_binary_operator::equal, service::user::entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur")))
             .where(service::user::entities::UserRoleEntity::column<"role_id">() == id)
-            .and_where(expressions.unary(ruvia::db_unary_operator::is_null, expressions.column("deleted_at", "u")));
+            .and_where(expressions.unary(ruvia::db_unary_operator::is_null, service::user::entities::UserEntity::column<"deleted_at">().expression(expressions, "u")));
         if (co_await assigned.get_exists()) {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
@@ -190,7 +189,7 @@ class RoleService {
     static ruvia::db_query_builder<entities::RoleEntity, ruvia::db_handle> roleSelect(Context& c) {
         ruvia::db_query expressions(c.pool());
         auto roles = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
-        roles.select({ { "id" }, { "name" }, { "code" }, { "description", expressions.coalesce({ expressions.column("description", "role"), expressions.value("") }) }, { "status" }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "role") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "role") }) } });
+        roles.select({ { "id" }, { "name" }, { "code" }, { "description", expressions.coalesce({ entities::RoleEntity::column<"description">().expression(expressions, "role"), expressions.value("") }) }, { "status" }, { "created_at", expressions.call("iot_utc_timestamp", { entities::RoleEntity::column<"created_at">().expression(expressions, "role") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { entities::RoleEntity::column<"updated_at">().expression(expressions, "role") }) } });
         return roles;
     }
 
@@ -204,34 +203,12 @@ class RoleService {
         item.set<"updatedAt">(row.template get<"updated_at">());
     }
 
-    static std::string
-    permissionsJson(const std::optional<ruvia::array<ruvia::string>>& permissions) {
-        if (!permissions) {
-            return "[]";
-        }
-        std::string result{ "[" };
-        for (const auto& permission : *permissions) {
-            const auto value = permission.view();
-            if (value.empty() || value.size() > 128) {
-                service::common::fail(13005, "权限编码不能为空且不能超过 128 个字符", 400);
-            }
-            if (value.find(',') != std::string_view::npos) {
-                service::common::fail(13005, "权限编码不能包含逗号", 400);
-            }
-            if (result.size() > 1) {
-                result += ',';
-            }
-            result += service::utils::jsonQuoted(value);
-        }
-        return result + "]";
-    }
-
     template <typename Context>
     ruvia::task<ruvia::array<ruvia::string>> loadPermissions(Context& c, std::string_view id) {
         ruvia::db_query expressions(c.pool());
         auto query = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
         query.select({ { "permission", expressions.column("permission", "values") } })
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { expressions.column("permissions", "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
             .where(entities::RoleEntity::column<"id">() == id)
             .order_by(expressions.column("permission", "values"));
         const auto rows = co_await query.template get_many<entities::RolePermission>();

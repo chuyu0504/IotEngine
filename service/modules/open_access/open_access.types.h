@@ -5,6 +5,7 @@
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/common/message.h"
+#include "service/modules/device/device.types.h"
 #include <ruvia/web/validation.h>
 #include <ruvia/web/model_object.h>
 #include <algorithm>
@@ -30,6 +31,12 @@ inline constexpr std::string_view kScopeAlert = "alert:read";
 inline bool supportedScope(std::string_view value) {
     return value == kScopeRealtime || value == kScopeHistory || value == kScopeCommand || value == kScopeAlert;
 }
+
+// 第三方开放接口下发设备命令的请求体与响应，沿用设备命令契约。
+using PublicCommandBody = service::device::DeviceCommandBody;
+using PublicCommandResponse = service::device::DeviceCommandCreateResponse;
+using PublicCommandResult = service::device::DeviceCommandCreateDto;
+
 struct AccessSession final {
     std::string id;
     std::string name;

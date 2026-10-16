@@ -40,25 +40,12 @@ export function useProtocolExpressionTest() {
     return useMutation({ mutationFn: (data: ExpressionTestRequest) => api.testExpression(data) });
 }
 
-/**
- * 用服务端表达式解析器校验公式语法与变量绑定，失败时抛出服务端给出的原因。
- * 服务端先编译公式和全部单位条件，再计算公式并依次求值条件直到首个成立；
- * 待校验公式排在恒成立条件之后，只被编译不被求值，结果与测试值无关。
- */
+/** 用服务端表达式解析器校验公式语法与变量绑定，失败时抛出服务端给出的原因。 */
 export async function validateProtocolExpression(
     expression: string,
     aliases: readonly string[]
 ): Promise<void> {
-    const inputs = [...new Set(aliases.filter(Boolean))].map((alias) => ({ alias, value: 0 }));
-    await api.testExpression({
-        expression: '0',
-        inputs,
-        unit: '',
-        unitRules: [
-            { condition: '1', unit: '' },
-            { condition: expression, unit: '' },
-        ],
-    });
+    await api.validateExpression({ expression, variables: [...new Set(aliases.filter(Boolean))] });
 }
 
 export function protocolPointOptions(item: Protocol.Item): { value: string; label: string }[] {

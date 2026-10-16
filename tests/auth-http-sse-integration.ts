@@ -81,6 +81,20 @@ try {
     stream = undefined;
     await request('POST', '/v1/auth/logout', undefined, refreshed.token);
     console.log('PASS HTTP login/refresh/me/logout, shared user SSE channel snapshot and token expiry without heartbeat events');
+    // HTTP 认证先于权限：缺失、过期、伪造 Token 均为 401，且不会被权限校验改写为 403。
+    const anonymous = await fetch(apiBase + '/v1/users', { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+    assert.equal(anonymous.status, 401);
+    assert.equal((await anonymous.json()).code, 11004);
+    assert.equal((await request('GET', '/v1/users', undefined, token(user.id, -60), 401)).code, 11005);
+    const forged = token(user.id).replace(/\.[^.]+$/, `.${createHmac('sha256', 'forged-signing-secret-forged-signing-secret').update(tag).digest('base64url')}`);
+    assert.equal((await request('GET', '/v1/users', undefined, forged, 401)).code, 11006);
+    // 已认证但无权限为 403；授权后同一 Token 立即成功；撤销后再次 403。
+    assert.equal((await request('GET', '/v1/users', undefined, token(user.id), 403)).code, 11007);
+    await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query', 'system:user:query'] });
+    assert.equal((await request('GET', `/v1/users?keyword=${tag}`, undefined, token(user.id))).data.list[0].id, user.id);
+    await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
+    assert.equal((await request('GET', '/v1/users', undefined, token(user.id), 403)).code, 11007);
+    console.log('PASS HTTP authentication precedes permission: missing/expired/forged 401, denied 403, grant and revoke apply immediately');
 } finally {
     await stream?.close();
     await sql`DELETE FROM sys_user_role WHERE user_id IN (SELECT id FROM sys_user WHERE username=${tag})`;

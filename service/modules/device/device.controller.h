@@ -75,22 +75,22 @@ class DeviceController final {
 
         std::vector<service::live::SnapshotChannel> channels{
             { "devices", "device", [this, &c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:query");
+                 co_await service::middleware::requirePermission(request, "iot:device:query");
                  co_return service::live::json(co_await queryList(c, request));
              } },
             { "groups", "device", [this, &c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device-group:query");
+                 co_await service::middleware::requirePermission(request, "iot:device-group:query");
                  co_return service::live::json(co_await queryGroupTreeCount(c, request));
              } },
             { "realtime", "device.realtime", [this, &c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:query");
+                 co_await service::middleware::requirePermission(request, "iot:device:query");
                  co_return service::live::json(co_await queryRealtime(c, request));
              } }
         };
         const auto& debugDeviceId = c.req().validated<DeviceEventsQuery>().get<"debugDeviceId">();
         if (debugDeviceId) {
             channels.push_back({ "packets", "packet-debug", [this, deviceId = std::string(debugDeviceId->view())](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                                    co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:device:edit");
+                                    co_await service::middleware::requirePermission(request, "iot:device:edit");
                                     co_return service::live::json(co_await queryDebugPackets(request, deviceId));
                                 } });
         }
@@ -108,7 +108,7 @@ class DeviceController final {
             [&c] { (void)service::middleware::requireAuth(c); },
             [&c, debugId]() -> ruvia::task<void> {
                 if (!debugId.empty()) {
-                    co_await service::debug_idle::touch(c.redis(), "device", debugId);
+                    co_await DeviceService::touchDebug(c.redis(), debugId);
                 }
                 co_return;
             });

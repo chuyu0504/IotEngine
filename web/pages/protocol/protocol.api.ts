@@ -11,6 +11,7 @@ import type {
     Dlt645PointCreateDto,
     ExpressionTestRequest,
     ExpressionTestResult,
+    ExpressionValidateRequest,
     MqttPreviewRequest,
     MqttPreviewResult,
     Protocol,
@@ -47,6 +48,9 @@ export const testExpression = (data: ExpressionTestRequest) =>
     request.post<ExpressionTestResult>('/v1/protocol/configs/test-expression', data, {
         _silent: true,
     });
+
+export const validateExpression = (data: ExpressionValidateRequest) =>
+    request.post<void>('/v1/protocol/configs/validate-expression', data, { _silent: true });
 
 export const previewMqtt = (data: MqttPreviewRequest) =>
     request.post<MqttPreviewResult>('/v1/protocol/configs/preview-mqtt', data, { _silent: true });

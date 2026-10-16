@@ -29,6 +29,19 @@ if redis.call('GET', ARGV[1] .. route[6]) ~= route[2] then return {'', report, s
 return {route[1], report, state, reason}
 )lua";
 
+// 设备调试空闲租约/看守键；字符串值为外部契约，不可变更。
+inline std::string debugLeaseKey(std::string_view deviceId) {
+    std::string key = "iot:debug:lease:device:";
+    key.append(deviceId);
+    return key;
+}
+
+inline std::string debugWatchKey(std::string_view deviceId) {
+    std::string key = "iot:debug:watch:device:";
+    key.append(deviceId);
+    return key;
+}
+
 // protocol_address 为 NOT NULL 且没有列默认值：由 device_channel_binding 触发器（bind_device_channel，
 // service/config/channels.h）在 BEFORE INSERT/UPDATE 时按所属链路协议与 protocol_params 计算写入。
 // db_column_options 无法表达触发器生成值，写入路径不提交此列，读取时视为非空。

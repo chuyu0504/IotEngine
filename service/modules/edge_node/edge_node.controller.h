@@ -21,9 +21,9 @@
 #include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/http.h"
-#include "service/middleware/api_upload.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
+#include "service/middleware/log.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/request_context.h"
 #include "service/modules/edge_node/edge_node.types.h"
@@ -997,30 +997,38 @@ class EdgeManagementController final {
         }
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
         const auto& configuration = c.req().validated<FirmwareUploadBody>();
-        const auto directory = co_await edgeService().prepareFirmwareUpload(request, id);
-        service::channel::UploadedFile file(request.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
-        auto& reader = c.req().get_body_reader();
-        while (auto chunk = co_await reader.read()) {
-            auto remaining = *chunk;
-            while (!remaining.empty()) {
-                const auto bytes = remaining.first(std::min(remaining.size(), service::channel::UploadedFile::kChunkBytes));
-                try {
-                    file.appendBytes(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-                } catch (const std::invalid_argument&) {
-                    service::common::fail(17017, "固件内容超出声明大小", 400);
-                }
-                remaining = remaining.subspan(bytes.size());
-            }
-        }
-        std::string hash;
         try {
-            hash = file.finish();
-        } catch (const std::invalid_argument&) {
-            service::common::fail(17017, "固件上传尚未完成", 400);
+            const auto directory = co_await edgeService().prepareFirmwareUpload(request, id);
+            service::edge_node::FirmwareUpload file(request.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
+            auto& reader = c.req().get_body_reader();
+            while (auto chunk = co_await reader.read()) {
+                auto remaining = *chunk;
+                while (!remaining.empty()) {
+                    const auto bytes = remaining.first(std::min(remaining.size(), service::edge_node::FirmwareUpload::kChunkBytes));
+                    try {
+                        file.appendBytes(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+                    } catch (const std::invalid_argument&) {
+                        service::common::fail(17017, "固件内容超出声明大小", 400);
+                    }
+                    remaining = remaining.subspan(bytes.size());
+                }
+            }
+            std::string hash;
+            try {
+                hash = file.finish();
+            } catch (const std::invalid_argument&) {
+                service::common::fail(17017, "固件上传尚未完成", 400);
+            }
+            (void)service::middleware::requireAuth(c);
+            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:firmware");
+            co_await edgeService().finishFirmwareUpload(request, id, configuration, file.path, hash, static_cast<std::int64_t>(file.received));
+        } catch (const ruvia::http_error&) {
+            throw;
+        } catch (const std::exception& error) {
+            // 业务错误已映射为 http_error；其余异常以 500 返回，在请求边界记录原因。
+            LOG_ERROR << "edge firmware upload failed: node_id=" << id << " error=" << error.what();
+            throw;
         }
-        (void)service::middleware::requireAuth(c);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:firmware");
-        co_await edgeService().finishFirmwareUpload(request, id, configuration, file.path, hash, static_cast<std::int64_t>(file.received));
         co_return c.json(service::common::operation(c, "固件已上传，刷写任务已下发"));
     }
 

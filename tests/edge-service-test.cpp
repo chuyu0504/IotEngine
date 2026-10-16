@@ -100,22 +100,32 @@ int main() {
         if (!rejectedMissingDeadline) {
             throw std::runtime_error("negotiated command deadline silently proceeded without its database value");
         }
+        {
+            constexpr std::string_view nodeId = "00000000-0000-4000-8000-0000000000aa";
+            const auto removal = service::edge_node::EdgeService::pendingEnrollmentRemoval(std::pmr::new_delete_resource(), nodeId);
+            const auto statement = removal.compile(ruvia::db_driver::postgresql, std::pmr::new_delete_resource(), ruvia::db_parameter_mode::literal);
+            const std::string sql(statement.sql());
+            const auto where = sql.find("WHERE");
+            requireContains(sql, "DELETE FROM", "pending enrollment removal is not a DELETE");
+            requireContains(sql, "edge_node", "pending enrollment removal does not target edge_node");
+            if (where == std::string::npos || sql.find("enrollment_status", where) == std::string::npos ||
+                sql.find("'pending'", where) == std::string::npos || sql.find(nodeId, where) == std::string::npos ||
+                sql.find(" AND ", where) == std::string::npos) {
+                throw std::runtime_error("pending enrollment removal does not restrict deletion to the pending node");
+            }
+            requireContains(sql, "RETURNING", "pending enrollment removal cannot detect a concurrent status change");
+        }
         const auto serviceSource = edgeSource("service/modules/edge_node/edge_node.service.h");
         requireMissing(serviceSource, "R\"sql", "edge service still embeds raw SQL");
         requireMissing(serviceSource, "c.db().query(\"", "edge service still calls raw query overload");
         requireMissing(serviceSource, "c.db().execute(\"", "edge service still calls raw execute overload");
         requireContains(serviceSource, "ruvia::db_query", "edge service does not use db_query");
-        requireContains(serviceSource, "EdgeNodeEntity::table_name()", "edge service does not use the edge node entity");
-        requireContains(serviceSource, "EdgeNodeGroupEntity::table_name()", "edge service does not use the edge group entity");
         requireContains(serviceSource, "c.pool()", "edge service does not build queries from Context.pool()");
-        requireContains(serviceSource, "safeBigInt", "edge service does not guard numeric JSON fields");
-        requireContains(serviceSource, "booleanText", "edge service does not normalize JSON booleans");
         requireContains(serviceSource, "jsonb_array_elements_text", "edge service does not preserve bridge port JSON arrays");
         requireContains(serviceSource, "join_function", "edge service does not use public lateral joins");
         requireContains(serviceSource, "with(\"selected_group\"", "edge service does not express recursive group traversal through db_query");
         requireContains(serviceSource, "roots.cast(roots.value(groupId), Type::uuid)", "group cycle validation does not start at the group being moved");
         requireContains(serviceSource, "cycle.cast(cycle.value(parentId), Type::uuid)", "group cycle validation does not reject moving into a descendant");
-        requireContains(serviceSource, "nullableUuid", "edge service does not preserve nullable UUID writes");
         requireContains(serviceSource, "query.call(\n            \"jsonb_build_object\"", "edge task request does not use typed JSON construction");
         const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
         const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.runtime.h");

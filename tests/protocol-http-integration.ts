@@ -29,6 +29,7 @@ const config = {storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',re
 try {
     await request('GET','/v1/protocol/configs',undefined,11004);
     await request('POST','/v1/protocol/configs/test-expression',{},11004);
+    await request('POST','/v1/protocol/configs/validate-expression',{expression:'p',variables:['p']},11004);
     await request('POST','/v1/protocol/configs','{',11004,true);
     actor = admin;
     const probe = {expression:'if(p > 100, p / 1000, p)',inputs:[{alias:'p',value:2500}],unit:'kPa',unitRules:[{condition:'p > 100',unit:'MPa'}]};
@@ -44,6 +45,10 @@ try {
         {...probe,unitRules:[{condition:'p / 0',unit:'MPa'}]},
     ]) await request('POST','/v1/protocol/configs/test-expression',invalid,16004);
     await request('POST','/v1/protocol/configs/test-expression',{...probe,inputs:[{alias:'p',value:null}]},10001);
+    assert.equal(await request('POST','/v1/protocol/configs/validate-expression',{expression:'if(p > 100, p / 1000, q)',variables:['p','q']}),undefined);
+    assert.equal(await request('POST','/v1/protocol/configs/validate-expression',{expression:'p / 0',variables:['p']}),undefined);
+    for (const invalid of [{expression:'p +',variables:['p']},{expression:'p + unknown',variables:['p']}])
+        await request('POST','/v1/protocol/configs/validate-expression',invalid,16004);
     assert.equal((await db`SELECT count(*)::int AS count FROM protocol_config`)[0].count,beforeProbe,'manual validation saved a configuration');
 
     await request('POST','/v1/protocol/configs',{protocol:'Modbus',name:tag,config,remark:'original'});
@@ -142,6 +147,8 @@ try {
     await request('POST','/v1/protocol/configs','{',11007,true);
     await request('PUT',`/v1/protocol/configs/${id}`,{name:`${tag}_denied`},16007);
     await request('DELETE',`/v1/protocol/configs/${id}`,undefined,16007);
+    await db`UPDATE sys_role SET permissions='["iot:protocol:edit"]'::jsonb WHERE id=${role}`;
+    await request('POST','/v1/protocol/configs/validate-expression',{expression:'p',variables:['p']},11007);
     actor = admin;
     await request('DELETE',`/v1/protocol/configs/${id}`);
     await request('GET',`/v1/protocol/configs/${id}`,undefined,16001);

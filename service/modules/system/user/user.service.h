@@ -237,10 +237,12 @@ class UserService {
     template <typename Context>
     static ruvia::db_query_builder<entities::UserEntity, ruvia::db_handle> userSelect(Context& c) {
         using namespace ruvia;
+        using entities::UserEntity;
+        using service::dept::entities::DeptEntity;
         db_query expressions(c.pool());
-        auto query = c.db().template get_repository<entities::UserEntity>().create_query_builder("u");
-        query.select({ { "id", expressions.column("id", "u") }, { "username", expressions.column("username", "u") }, { "nickname", expressions.coalesce({ expressions.cast(expressions.column("nickname", "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(expressions.column("phone", "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(expressions.column("email", "u"), db_data_type::text), expressions.value("") }) }, { "status", expressions.column("status", "u") }, { "department_id", expressions.coalesce({ expressions.cast(expressions.column("department_id", "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(expressions.column("name", "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { expressions.column("created_at", "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { expressions.column("updated_at", "u") }) } });
-        query.template join<service::dept::entities::DeptEntity>(db_join_type::left, "d", expressions.binary(expressions.column("id", "d"), db_binary_operator::equal, expressions.column("department_id", "u")));
+        auto query = c.db().template get_repository<UserEntity>().create_query_builder("u");
+        query.select({ { "id", UserEntity::column<"id">().expression(expressions, "u") }, { "username", UserEntity::column<"username">().expression(expressions, "u") }, { "nickname", expressions.coalesce({ expressions.cast(UserEntity::column<"nickname">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(UserEntity::column<"phone">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(UserEntity::column<"email">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "status", UserEntity::column<"status">().expression(expressions, "u") }, { "department_id", expressions.coalesce({ expressions.cast(UserEntity::column<"department_id">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"created_at">().expression(expressions, "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"updated_at">().expression(expressions, "u") }) } });
+        query.template join<DeptEntity>(db_join_type::left, "d", expressions.binary(DeptEntity::column<"id">().expression(expressions, "d"), db_binary_operator::equal, UserEntity::column<"department_id">().expression(expressions, "u")));
         return query;
     }
 
@@ -263,8 +265,8 @@ class UserService {
         ruvia::db_query expressions(c.pool());
         auto query = c.db().template get_repository<service::role::entities::RoleEntity>().create_query_builder("r");
         query.select({ { "id" }, { "name" }, { "code" } })
-            .template join<entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(expressions.column("role_id", "ur"), ruvia::db_binary_operator::equal, expressions.column("id", "r")))
-            .where(expressions.binary(expressions.column("user_id", "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
+            .template join<entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
+            .where(expressions.binary(entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
             .and_where(service::role::entities::RoleEntity::column<"deleted_at">().is_null())
             .order_by("id");
         const auto rows = co_await query.get_many();

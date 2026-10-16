@@ -29,6 +29,19 @@ struct LinkRuntimeRecord {
     }
 };
 
+// 链路调试空闲租约与看守认领的 Redis 键，值为 "1"，过期由 DebugIdle 管理。
+inline std::string debugLeaseKey(std::string_view linkId) {
+    std::string key = "iot:debug:lease:link:";
+    key.append(linkId);
+    return key;
+}
+
+inline std::string debugWatchKey(std::string_view linkId) {
+    std::string key = "iot:debug:watch:link:";
+    key.append(linkId);
+    return key;
+}
+
 RUVIA_DB_ENTITY(LinkEntity, "link",
     RUVIA_DB_COLUMN(debug_enabled, bool,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}),

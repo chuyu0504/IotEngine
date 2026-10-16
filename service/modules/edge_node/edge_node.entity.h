@@ -3,10 +3,16 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
 
 namespace service::edge_node::entities {
+
+// 固件上传暂存目录恢复的 Redis 认领键（SET NX）：每个进程实例只由认领的 Service Worker 恢复一次。
+inline std::string firmwareUploadRecoveryKey(std::string_view instanceId) {
+    return "iot:edge:firmware:upload-recovery:" + std::string(instanceId);
+}
 
 RUVIA_DB_ENTITY(
     EdgeDtuEntity, "edge_dtu",
