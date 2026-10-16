@@ -43,6 +43,23 @@ describe('SSE query resource ownership', () => {
         expect(released).toBe(1);
     });
 
+    test('mapped streams receive complete snapshots instead of raw entity deltas', () => {
+        let observer!: SnapshotObserver<Array<{ id: string }>>;
+        const source = new SnapshotStream<Array<{ id: string }>>((sink) => {
+            observer = sink;
+            return () => {};
+        });
+        const counts: number[] = [];
+        source.map((rows) => rows.length).subscribe({
+            next: (value) => counts.push(value),
+            delta: () => { throw new Error('mapped values cannot apply row deltas'); },
+            error: (error) => { throw error; },
+        });
+        expect(observer.delta).toBeUndefined();
+        observer.next([{ id: 'a' }, { id: 'b' }]);
+        expect(counts).toEqual([2]);
+    });
+
     test('aborting a pending first snapshot releases its subscription', async () => {
         let released = 0;
         const source = new SnapshotStream<number>(() => () => { released++; });

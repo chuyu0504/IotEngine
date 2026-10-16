@@ -95,7 +95,7 @@ class DeliveryRuntime final {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Webhook
                                                 );
                                                 co_return;
@@ -227,7 +227,7 @@ class DeliveryRuntime final {
                     recovering = false;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Webhook,
                         context.get_stop_token(),

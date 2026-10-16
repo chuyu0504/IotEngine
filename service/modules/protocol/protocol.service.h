@@ -27,7 +27,7 @@
 #include "service/common/message.h"
 #include "service/common/mqtt_report.h"
 #include "service/common/uuid.h"
-#include "service/middleware/rpc.h"
+#include "service/utils/rpc_client.h"
 #include "service/modules/edge_node/edge_node.service.h"
 #include "service/modules/link/link.entity.h"
 #include "service/modules/protocol/protocol.entity.h"
@@ -1278,7 +1278,7 @@ class ProtocolService {
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "project-protocol", std::string(id));
+            (void)co_await service::utils::callRpc(c, "telemetry", "project-protocol", std::string(id));
         } catch (...) {
             // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
         }
@@ -1366,7 +1366,7 @@ class ProtocolService {
             c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
         try {
-            (void)co_await service::rpc::call(c, "telemetry", "project-protocol", std::string(id));
+            (void)co_await service::utils::callRpc(c, "telemetry", "project-protocol", std::string(id));
         } catch (...) {
             // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
         }

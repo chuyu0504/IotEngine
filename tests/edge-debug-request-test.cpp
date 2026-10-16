@@ -21,8 +21,8 @@ class EventProbe final {
     RUVIA_POST("/", probe);
 
     RUVIA_ROUTES_END
-    void registerEvents(service::edge::debug::EventRegistry& registry) {
-        registry.add<EventProbe, &EventProbe::echo, EchoBody>("echo.read", *this);
+    void registerEvents(service::edge::debug::EventRegistry<service::edge::debug::EventContext>& registry) {
+        registry.add("echo.read", this, &service::edge::debug::invokeEvent<EventProbe, &EventProbe::echo, EchoBody>);
     }
 
   private:
@@ -43,11 +43,12 @@ class EventProbe final {
         const auto wire = co_await c.req().text();
         auto request = service::edge::debug::Request::parse(wire);
         service::edge::debug::SessionIdentity identity{
-            c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()};
+            c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
+        };
         service::edge::debug::ConnectionResources resources;
         std::any state;
         service::edge::debug::EventContext context(c, identity, request, c.get_stop_token(), resources, state);
-        service::edge::debug::EventRegistry registry;
+        service::edge::debug::EventRegistry<service::edge::debug::EventContext> registry;
         registerEvents(registry);
         bool duplicate = false;
         try {
@@ -103,7 +104,10 @@ int main() {
         }
         ruvia::test_app app;
         app.use_worker_state<std::unique_ptr<service::common::UuidV7Generator>>(
-            [] { return std::make_unique<service::common::UuidV7Generator>(); });
+            [] {
+                return std::make_unique<service::common::UuidV7Generator>();
+            }
+        );
         const auto good = app.request(ruvia::test_request::post("/probe").json(wire));
         require(good.status().value() == 200 && good.body() == "\"typed\"", "typed event invocation failed");
         const auto invalid = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"x\"}}";

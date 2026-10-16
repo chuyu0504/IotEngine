@@ -84,7 +84,7 @@ class SessionDispatcher final {
         if (stopSource_) {
             stopSource_->request_stop();
         }
-        service::message::workerStreamMultiplexer().signal(
+        service::messaging::workerStreamMultiplexer().signal(
             service::message::WorkerStreamTask::EdgeDispatcher
         );
     }
@@ -164,7 +164,7 @@ class SessionDispatcher final {
                         continue;
                     }
                     if (messages.empty()) {
-                        co_await service::message::workerStreamMultiplexer().wait(
+                        co_await service::messaging::workerStreamMultiplexer().wait(
                             workerIndex,
                             service::message::WorkerStreamTask::EdgeDispatcher,
                             stopToken
@@ -397,7 +397,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::EdgeProjector
                                                 );
                                                 co_return;
@@ -443,7 +443,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             std::cerr << "edge worker-local session shutdown failed: unknown error\n";
         }
         try {
-            service::message::workerStreamMultiplexer().signal(
+            service::messaging::workerStreamMultiplexer().signal(
                 service::message::WorkerStreamTask::EdgeProjector
             );
         } catch (...) {
@@ -487,7 +487,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                     lostRecoveryLeases_.insert(key);
                 }
                 if (!lostRecoveryLeases.empty()) {
-                    service::message::workerStreamMultiplexer().signal(
+                    service::messaging::workerStreamMultiplexer().signal(
                         service::message::WorkerStreamTask::EdgeProjector
                     );
                 }
@@ -817,7 +817,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                         );
                         continue;
                     }
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::EdgeProjector,
                         context.get_stop_token(),
@@ -936,7 +936,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                             telemetry
                         );
                         co_await finishTelemetryUploads(redis, completedUploads);
-                        service::message::workerStreamMultiplexer().signalTelemetryConsumers();
+                        service::messaging::workerStreamMultiplexer().signalTelemetryConsumers();
                         if (leaseLost_.load()) {
                             break;
                         }

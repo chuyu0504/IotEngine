@@ -1,7 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -11,13 +17,19 @@
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/redis/redis_repository.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/uuid.h"
+#include "service/features/live/live.service.h"
+#include "service/features/messaging/messaging.config.h"
 #include "service/features/messaging/messaging.entity.h"
 #include "service/features/messaging/messaging.transport.h"
+#include "service/features/observability/observability.service.h"
+#include "service/middleware/log.h"
 
-namespace service::message {
+namespace service::messaging::outbox {
 
 template <typename Redis>
 ruvia::task<void> publishConfigEnvelope(
@@ -56,12 +68,12 @@ ruvia::task<void> publishConfigEnvelope(
     };
     auto pipeline = redis.pipeline();
     if (runtimeChange) {
-        service::message::redis::queueAddAndWake(
+        service::messaging::stream::queueAddAndWake(
             pipeline,
             service::message::configuration::runtimeChangesStream(),
             fields,
             std::nullopt,
-            WorkerStreamTask::Reconciler,
+            service::message::WorkerStreamTask::Reconciler,
             10000
         );
     }
@@ -70,23 +82,23 @@ ruvia::task<void> publishConfigEnvelope(
         // refresh event. Data events are claimed independently from their shared work queue.
         for (std::size_t workerIndex = 0; workerIndex < serviceWorkerCount;
              ++workerIndex) {
-            service::message::redis::queueAddAndWake(
+            service::messaging::stream::queueAddAndWake(
                 pipeline,
                 service::message::access::stream::catalogChanges(workerIndex),
                 fields,
                 workerIndex,
-                WorkerStreamTask::Webhook,
+                service::message::WorkerStreamTask::Webhook,
                 10000
             );
         }
     }
     if (accessSessionChange) {
-        service::message::redis::queueAddAndWake(
+        service::messaging::stream::queueAddAndWake(
             pipeline,
             service::message::access::stream::sessionChanges(),
             fields,
             std::nullopt,
-            WorkerStreamTask::Webhook,
+            service::message::WorkerStreamTask::Webhook,
             10000
         );
     }
@@ -95,15 +107,9 @@ ruvia::task<void> publishConfigEnvelope(
     co_return;
 }
 
-} // namespace service::message
+} // namespace service::messaging::outbox
 
-#include <set>
-
-#include <ruvia/web/web_worker.h>
-
-#include "service/common/uuid.h"
-
-namespace service::message::idempotency {
+namespace service::messaging::idempotency {
 
 inline std::vector<std::string>
 eventIds(const std::vector<service::message::StreamMessage>& messages) {
@@ -161,30 +167,9 @@ markProcessed(ruvia::web_worker_context& context, std::string_view consumer, con
     (void)co_await context.db().execute(receipts);
 }
 
-} // namespace service::message::idempotency
+} // namespace service::messaging::idempotency
 
-#include <algorithm>
-#include <atomic>
-#include <charconv>
-#include <chrono>
-#include <cstddef>
-#include <exception>
-#include <future>
-#include <iostream>
-#include <memory>
-#include <mutex>
-#include <optional>
-
-#include <ruvia/core/channel.h>
-#include <ruvia/core/stop_token.h>
-#include <ruvia/core/timer.h>
-
-#include "service/features/observability/observability.service.h"
-#include "service/features/messaging/postgres_notifier/postgres_notifier.transport.h"
-#include "service/features/live/live.service.h"
-#include "service/features/messaging/messaging.config.h"
-
-namespace service::message::outbox {
+namespace service::messaging::outbox {
 
 class OutboxService {
   protected:
@@ -276,7 +261,13 @@ class OutboxService {
             std::string publishError;
             try {
                 if (event.type == "query.changed") {
-                    co_await service::live::publish(context.redis(), event.aggregate);
+                    // Schema 2 rows carry the changed entity ids; older rows
+                    // carried table names and mean the whole topic changed.
+                    std::vector<std::string> ids;
+                    if (event.schemaVersion == "2") {
+                        for (const auto id : service::message::live::splitIds(event.aggregateId)) ids.emplace_back(id);
+                    }
+                    co_await service::live::publish(context.redis(), event.aggregate, ids);
                 } else if (event.aggregate == "command") {
                     const auto publication = service::message::access::stream::eventPublication(
                         event.id,
@@ -454,8 +445,8 @@ class OutboxService {
         const auto detail = "value=" + std::to_string(value) +
             ", threshold=" + std::to_string(threshold);
         if (observability_.setAlertState(name, active, detail)) {
-            std::cerr << "operational alert " << (active ? "active" : "cleared")
-                      << ": " << name << " (" << detail << ")\n";
+            LOG_WARN << "operational alert " << (active ? "active" : "cleared")
+                     << ": " << name << " (" << detail << ")";
         }
     }
 
@@ -465,55 +456,4 @@ class OutboxService {
     Policy policy_;
 };
 
-} // namespace service::message::outbox
-
-namespace service::rpc {
-
-class RpcReceiptService final {
-  public:
-    static ruvia::task<std::optional<RpcReplyRecord>> beginRequest(
-        const ruvia::redis_handle& redis, const std::string& id) {
-        const std::vector<std::string> previousArguments{"GET", service::message::rpc::Contract::reply(id)};
-        const auto previous = co_await service::message::redis::command(redis, previousArguments);
-        if (previous.kind() == ruvia::redis_value::kind_type::string)
-            co_return RpcReplyRecord{std::string(previous.string())};
-        if (previous.kind() == ruvia::redis_value::kind_type::error)
-            service::message::redis::throwValue("RPC receipt", previous);
-        const std::vector<std::string> claimedArguments{"SET", service::message::rpc::Contract::claim(id), "1", "NX", "EX", "86400"};
-        const auto claimed = co_await service::message::redis::command(redis,
-            claimedArguments);
-        if (claimed.kind() == ruvia::redis_value::kind_type::error)
-            service::message::redis::throwValue("RPC claim", claimed);
-        if (claimed.kind() != ruvia::redis_value::kind_type::string)
-            service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
-        const std::vector<std::string> cancelledArguments{"EXISTS", service::message::rpc::Contract::cancelled(id)};
-        const auto cancelled = co_await service::message::redis::command(redis,
-            cancelledArguments);
-        if (cancelled.kind() == ruvia::redis_value::kind_type::error)
-            service::message::redis::throwValue("RPC cancellation", cancelled);
-        if (cancelled.kind() == ruvia::redis_value::kind_type::integer && cancelled.integer() != 0)
-            service::common::fail(10004, "Background operation cancelled", 503);
-        co_return std::nullopt;
-    }
-
-    static ruvia::task<void> saveAndAcknowledge(const ruvia::redis_handle& redis,
-        const std::string& id, const std::string& stream, std::string_view group,
-        const std::string& messageId, const RpcReplyRecord& record) {
-    static constexpr std::string_view kReplyScript = R"lua(
-redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*', 'topic', KEYS[1], 'schema_version', '1')
-redis.call('XACK', KEYS[3], ARGV[3], ARGV[4])
-redis.call('XDEL', KEYS[3], ARGV[4])
-return 1
-)lua";
-
-                const auto replyKey = service::message::rpc::Contract::reply(id);
-                const std::string_view keys[]{replyKey, service::message::live::kChanges, stream};
-                const std::string_view args[]{record.payload, service::message::rpc::Contract::replyLifetime, group, messageId};
-                const auto reply = co_await redis.eval(kReplyScript, keys, args);
-                if (reply.kind() == ruvia::redis_value::kind_type::error)
-                    service::message::redis::throwValue("RPC persist reply", reply);
-    }
-};
-
-} // namespace service::rpc
+} // namespace service::messaging::outbox

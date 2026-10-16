@@ -52,11 +52,11 @@ class GatewayService final {
             ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = service::message::edge::logResultKey(id);
         co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publish(c.redis(), key);
+        co_await service::live::publishDirected(c.redis(), key);
         if (result.success()) {
             const auto snapshotKey = service::message::edge::logSnapshotKey(nodeId);
             co_await c.redis().set(snapshotKey, record.protobufBytes);
-            co_await service::live::publish(c.redis(), snapshotKey);
+            co_await service::live::publish(c.redis(), service::message::live::topic::kEdgeLogs, std::array{ std::string(nodeId) });
         }
     }
 
@@ -74,7 +74,7 @@ class GatewayService final {
             ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = service::message::edge::logLevelResultKey(id);
         co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publish(c.redis(), key);
+        co_await service::live::publishDirected(c.redis(), key);
     }
 
 

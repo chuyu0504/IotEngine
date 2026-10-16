@@ -80,7 +80,7 @@ class Reconciler final {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::message::workerStreamMultiplexer().signal(
+                                                service::messaging::workerStreamMultiplexer().signal(
                                                     service::message::WorkerStreamTask::Reconciler
                                                 );
                                                 co_return;
@@ -209,7 +209,7 @@ class Reconciler final {
                         );
                         timeout = std::min(*timeout, untilCleanup);
                     }
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Reconciler,
                         context.get_stop_token(),
@@ -255,6 +255,7 @@ class Reconciler final {
                         cleanupDeadline = std::chrono::steady_clock::now() +
                             std::chrono::milliseconds(service::collector::config::kSnapshotGraceMilliseconds);
                     }
+
                     for (const auto& batch : batches) {
                         co_await service::message::redis::acknowledgeAndDeleteMany(
                             redis,

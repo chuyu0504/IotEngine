@@ -30,19 +30,20 @@ return 1
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now, 'LIMIT', 0, 1000)
-local expired = 0
+local expired = {}
 for _, device_id in ipairs(due) do
   local ttl = redis.call('PTTL', ARGV[1] .. device_id)
   if ttl > 0 then
     redis.call('ZADD', KEYS[1], now + ttl, device_id)
   elseif redis.call('ZREM', KEYS[1], device_id) == 1 then
-    expired = expired + 1
+    expired[#expired + 1] = device_id
   end
 end
-if expired > 0 then
-  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
+if #expired > 0 then
+  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'schema_version', '2',
+             'topic', 'device.state', 'ids', table.concat(expired, ','))
 end
-return expired
+return #expired
 )lua";
 };
 

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { apiBase, databaseUrl } from './architecture-fixture';
+import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
 const admin = '00000000-0000-7000-8000-000000000002';
 const user = crypto.randomUUID(), role = crypto.randomUUID();
 const tag = `access_http_${crypto.randomUUID()}`;
@@ -64,6 +65,38 @@ async function publicStream(accessKey: string) {
         await reader?.cancel().catch(()=>{});
     }
 }
+// Raw SSE frames of one third-party stream, parsed into event/id/data.
+async function publicFrames(path: string, accessKey: string) {
+    const controller = new AbortController();
+    const response = await fetch(`${apiBase}${path}`, {headers:{'X-Access-Key':accessKey,Accept:'text/event-stream'},signal:controller.signal});
+    assert.equal(response.status,200);
+    assert(response.body);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    async function next(): Promise<{event:string;id:string;data:string}> {
+        const timer = setTimeout(() => controller.abort(),20000);
+        try {
+            for (;;) {
+                pending = pending.replaceAll('\r\n','\n');
+                const boundary = pending.indexOf('\n\n');
+                if (boundary >= 0) {
+                    const lines = pending.slice(0,boundary).split('\n');
+                    pending = pending.slice(boundary+2);
+                    const field = (name: string) => lines.filter(line=>line.startsWith(`${name}:`)).map(line=>line.slice(name.length+1).trimStart()).join('\n');
+                    if (lines.every(line=>line.startsWith(':'))) continue;
+                    return {event:field('event'),id:field('id'),data:field('data')};
+                }
+                const part = await reader.read();
+                assert(!part.done,'public SSE ended early');
+                pending += decoder.decode(part.value,{stream:true});
+            }
+        } finally { clearTimeout(timer); }
+    }
+    return {next,close:()=>{controller.abort();void reader.cancel().catch(()=>{});}};
+}
+const publishChange = (topic: string, ids: string[]) =>
+    redis.send('XADD',['iot:live:changes','MAXLEN','~','100000','*','schema_version','2','topic',topic,'ids',ids.join(',')]);
 try {
     await request('GET','/api/open-access-key',undefined,11004,null);
     await request('POST','/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[]}});
@@ -110,6 +143,26 @@ try {
     await publicList(created.accessKey, 401);
     assert.equal((await publicList(rotated.accessKey)).data.list[0].id, device);
     assert.equal((await publicStream(rotated.accessKey)).data.list[0].id, device);
+    // Entity-level trigger: a change of another device is not this key's
+    // snapshot; the next change of the requested device is revision 2. The
+    // realtime view reads the asynchronously published runtime projection.
+    const projected = Date.now() + 15000;
+    while ((await fetch(`${apiBase}/open-api/device/realtime?deviceId=${device}`,{headers:{'X-Access-Key':rotated.accessKey,Accept:'application/json'}})).status !== 200) {
+        assert(Date.now() < projected,'device realtime projection was not published');
+        await Bun.sleep(50);
+    }
+    const frames = await publicFrames(`/open-api/device/realtime?deviceId=${device}`,rotated.accessKey);
+    try {
+        const initial = await frames.next();
+        assert.equal(initial.event,'snapshot'); assert.equal(initial.id,'1');
+        await publishChange('device.realtime',[crypto.randomUUID()]);
+        await publishChange('device.state',[crypto.randomUUID()]);
+        await publishChange('device.realtime',[device]);
+        let frame = await frames.next();
+        while (frame.event === 'heartbeat') frame = await frames.next();
+        assert.equal(frame.event,'snapshot'); assert.equal(frame.id,'2','unrelated device changes must not resend the snapshot');
+        assert.equal(JSON.parse(frame.data).code,0);
+    } finally { frames.close(); }
     const webhooks = () => request('GET',`/api/open-webhook?accessKeyId=${key}`);
     assert.deepEqual(await webhooks(),[]);
     webhook = (await request('POST','/api/open-webhook', {accessKeyId:key,name:tag,url:'https://example.test/events',status:'disabled',timeoutSeconds:9,skipTlsVerify:true,headers:{'X-Trace':tag},eventTypes:['device.data.reported'],secret:'test-only-webhook-secret'})).id;
@@ -167,4 +220,5 @@ try {
     await db`DELETE FROM sys_role WHERE id=${role}`;
     await db`DELETE FROM sys_user WHERE id=${user}`;
     await db.close();
+    redis.close();
 }

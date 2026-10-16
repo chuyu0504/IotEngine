@@ -1,6 +1,7 @@
 import { HttpRequestError } from './http';
 import type { LiveContext, LiveSink, LiveTransport } from './live_subscriptions';
 import { consumeServerSentEvents } from './sse';
+import type { SnapshotDelta } from './snapshot_stream';
 
 /** One fetch-based SSE connection per URL; named events are the channels of that source. */
 export class SseTransport implements LiveTransport<string> {
@@ -79,9 +80,14 @@ export class SseTransport implements LiveTransport<string> {
                             sink.reject(event.event, error);
                             return;
                         }
-                        sink.next(event.event, result.data);
+                        if (result.delta !== undefined)
+                            sink.delta(event.event, readSnapshotDelta(result.delta));
+                        else sink.next(event.event, result.data);
                     },
-                    signal
+                    signal,
+                    // The server writes a keepalive comment every 15 s; three missed
+                    // ones mean the path is dead even if a proxy keeps it open.
+                    45000
                 );
                 if (signal.aborted) return;
                 throw new Error('实时连接已断开');
@@ -133,4 +139,18 @@ function waitBeforeReconnect(attempt: number, signal: AbortSignal): Promise<void
         signal.addEventListener('abort', abort, { once: true });
         if (signal.aborted) abort();
     });
+}
+
+/** Validates a `delta` frame body; a malformed frame is a protocol error that ends the source. */
+function readSnapshotDelta(value: unknown): SnapshotDelta {
+    if (typeof value === 'object' && value !== null) {
+        const { upsert, remove } = value as Record<string, unknown>;
+        if (
+            Array.isArray(upsert) &&
+            Array.isArray(remove) &&
+            remove.every((id) => typeof id === 'string')
+        )
+            return { upsert, remove };
+    }
+    throw new SyntaxError('实时增量格式无效');
 }

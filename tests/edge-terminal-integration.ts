@@ -77,8 +77,11 @@ try {
             });
             socket.send(envelope(26,field(4,1)));
             await until(async()=>(await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->>'terminal'='true'`).length>0,'terminal capability missing');
+            const changesBefore = (await redis.send('XREVRANGE', ['iot:live:changes', '+', '-', 'COUNT', '1']) as [string, string[]][])[0]?.[0] ?? '0-0';
             const opened=await channel.request<{id:string}>('edge.terminal.open',{id:node,columns:100,rows:30});
             const session={id:node,sessionId:opened.id};
+            const routes=[`iot:live:route:edge-terminal:${node}:${opened.id}`,`iot:live:route:edge-terminal:${node}:${opened.id}:input-ack`];
+            for(const route of routes)assert.match(String(await redis.send('GET',[route])),/^iot:live:worker:/,'terminal frames are not routed to the browser worker');
             await until(async()=>commands.some(c=>c.tag===70),'terminal open not delivered');
             const open=commands.find(c=>c.tag===70)!.fields;
             assert.equal(open.get(3),100n);assert.equal(open.get(4),30n);
@@ -132,6 +135,9 @@ try {
             await channel.request('edge.terminal.close',session);
             await channel.request('edge.terminal.close',session);
             await until(async()=>commands.some(c=>c.tag===73&&(c.fields.get(1) as Buffer).equals(bytes(opened.id))),'explicit close not delivered');
+            assert.equal(await redis.send('EXISTS',routes),0,'closed terminal kept its directed routes');
+            const broadcast=await redis.send('XRANGE',['iot:live:changes',`(${changesBefore}`,'+']) as [string,string[]][];
+            assert(!broadcast.some(([,fields])=>fields.some(field=>field.startsWith('edge-terminal:'))),'terminal frames reached the broadcast change stream');
             await rejected(channel.request('edge.terminal.write',{...session,content:'AA=='}),17018);
             const backlog=await channel.request<{id:string}>('edge.terminal.open',{id:node,columns:80,rows:24});
             if(version>=5)socket.send(envelope(76,field(1,bytes(backlog.id))));

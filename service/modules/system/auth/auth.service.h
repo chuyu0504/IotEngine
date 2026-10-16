@@ -187,24 +187,34 @@ class AuthService {
 
     template <typename Context>
     static ruvia::task<void> requirePermission(Context& c, std::string_view userId, std::string_view permission) {
-        ruvia::db_query expressions(c.pool());
-        auto query = enabledRoles(c, userId);
-        query.template join<service::user::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(expressions.column("id", "u"), ruvia::db_binary_operator::equal, expressions.column("user_id", "ur")))
-            .and_where(expressions.binary(
-                expressions.binary(expressions.column("status", "u"), ruvia::db_binary_operator::equal, expressions.value("enabled")),
-                ruvia::db_binary_operator::and_value,
-                expressions.unary(ruvia::db_unary_operator::is_null, expressions.column("deleted_at", "u"))
-            ))
-            .and_where(expressions.binary(
-                expressions.binary(expressions.column("code", "r"), ruvia::db_binary_operator::equal, expressions.value("superadmin")),
-                ruvia::db_binary_operator::or_value,
-                expressions.binary(
-                    expressions.binary(expressions.column("permissions", "r"), ruvia::db_binary_operator::json_has_key, expressions.value("*")),
+        auto granted = [&c, userId, permission]() -> ruvia::task<bool> {
+            ruvia::db_query expressions(c.pool());
+            auto query = enabledRoles(c, userId);
+            query.template join<service::user::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(expressions.column("id", "u"), ruvia::db_binary_operator::equal, expressions.column("user_id", "ur")))
+                .and_where(expressions.binary(
+                    expressions.binary(expressions.column("status", "u"), ruvia::db_binary_operator::equal, expressions.value("enabled")),
+                    ruvia::db_binary_operator::and_value,
+                    expressions.unary(ruvia::db_unary_operator::is_null, expressions.column("deleted_at", "u"))
+                ))
+                .and_where(expressions.binary(
+                    expressions.binary(expressions.column("code", "r"), ruvia::db_binary_operator::equal, expressions.value("superadmin")),
                     ruvia::db_binary_operator::or_value,
-                    expressions.binary(expressions.column("permissions", "r"), ruvia::db_binary_operator::json_has_key, expressions.value(permission))
-                )
-            ));
-        if (!co_await query.get_exists()) {
+                    expressions.binary(
+                        expressions.binary(expressions.column("permissions", "r"), ruvia::db_binary_operator::json_has_key, expressions.value("*")),
+                        ruvia::db_binary_operator::or_value,
+                        expressions.binary(expressions.column("permissions", "r"), ruvia::db_binary_operator::json_has_key, expressions.value(permission))
+                    )
+                ));
+            co_return co_await query.get_exists();
+        };
+        bool allowed = false;
+        // Live connections share the answer until the next authorization change.
+        if constexpr (requires { c.template authorization<bool>(std::string{}, granted); }) {
+            allowed = co_await c.template authorization<bool>("permission:" + std::string(userId) + ':' + std::string(permission), granted);
+        } else {
+            allowed = co_await granted();
+        }
+        if (!allowed) {
             service::common::fail(service::common::kPermissionDeniedErrorCode, "无权限", 403);
         }
     }

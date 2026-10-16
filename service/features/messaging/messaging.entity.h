@@ -2,7 +2,7 @@
 #include <ruvia/web/db/db_entity.h>
 #include <ruvia/web/redis/redis_entity.h>
 #include "service/common/message.h"
-namespace service::message {
+namespace service::messaging {
 RUVIA_REDIS_ENTITY(WorkerSnapshotEntity, service::message::worker_metrics::kSnapshotTable,
     RUVIA_REDIS_COLUMN(id, ruvia::string, ruvia::redis_column_options{.primary_key_ = true}),
     RUVIA_REDIS_COLUMN(metrics, ruvia::string),
@@ -49,11 +49,3 @@ RUVIA_DB_ENTITY(OutboxEventEntity, "outbox_event",
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}))
 
 } // namespace service::messaging::persistence
-
-namespace service::rpc {
-// RPC 结果以原始 JSON 存入固定 Redis String 键；与通知和消息确认原子写入。
-// Redis ORM 的自动键前缀不能表达既有 Contract::reply 键，service 使用此映射。
-struct RpcReplyRecord final {
-    std::string payload;
-};
-} // namespace service::rpc

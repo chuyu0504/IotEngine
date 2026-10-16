@@ -1378,7 +1378,7 @@ class CollectorWorker final {
                             action.parsed.source
                         );
                     }
-                    if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await message::redis::publishAndWake(
+                    if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await service::messaging::stream::publishAndWake(
                         redis_,
                         parsedStream(),
                         message::parsedFields(action.parsed),
@@ -1863,7 +1863,7 @@ class CollectorWorker final {
     ) {
         auto fields = deadLetterFields(streamMessage.fields, streamMessage.id, reason, detail, workerIndex_);
         const auto outputStream = deadLetterStream();
-        (void)co_await message::redis::publishAndAcknowledge(
+        (void)co_await service::messaging::stream::publishAndAcknowledge(
             redis_,
             outputStream,
             fields,

@@ -132,12 +132,23 @@ test('alert records and statistics share the filtered SSE connection and release
         await tick();
         expect(connections).toHaveLength(1);
         expect(connections[0].url).toBe('/v1/alert/events?page=1&pageSize=20&status=active');
+        const first = { id: 'record-1', status: 'active', level: 'warning' };
+        const second = { id: 'record-2', status: 'active', level: 'warning' };
         connections[0].writer.enqueue(new TextEncoder().encode(
-            'event: records\ndata: {"code":0,"data":{"list":[],"total":0}}\n\n' +
+            `event: records\ndata: ${JSON.stringify({ code: 0, data: { list: [first, second], total: 21 } })}\n\n` +
             'event: stats\ndata: {"code":0,"data":{"total":4}}\n\n' +
-            'event: stats\ndata: {"code":0,"data":{"total":5}}\n\n'));
+            'event: stats\ndata: {"code":0,"data":{"total":5}}\n\n' +
+            `event: records\ndata: ${JSON.stringify({ code: 0, message: 'ok', delta: { upsert: [{ ...second, level: 'critical' }], remove: [] } })}\n\n` +
+            `event: records\ndata: ${JSON.stringify({ code: 0, message: 'ok', delta: { upsert: [], remove: ['record-1'] } })}\n\n`));
         await tick();
-        expect(records).toEqual([{ list: [], total: 0 }]);
+        expect(records).toEqual([
+            { list: [first, second], total: 21 },
+            { list: [first, { ...second, level: 'critical' }], total: 21 },
+            { list: [{ ...second, level: 'critical' }], total: 20 },
+        ]);
+        const [initial, escalated] = records as Array<{ list: unknown[] }>;
+        expect(escalated.list[0]).toBe(initial.list[0]);
+        expect(await getRecords(params).first()).toEqual({ list: [{ ...second, level: 'critical' }], total: 20 });
         expect(stats).toEqual([{ total: 4 }, { total: 5 }]);
         releases.splice(0).forEach(release => release());
         await tick();

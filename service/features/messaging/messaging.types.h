@@ -7,18 +7,18 @@
 
 #include "service/common/message.h"
 
-namespace service::message::redis {
+namespace service::messaging::stream {
 
 struct StreamWake final {
     std::optional<std::size_t> workerIndex{};
-    WorkerStreamTask task{};
+    service::message::WorkerStreamTask task{};
 };
 
 struct StreamPublication {
     std::string_view stream;
-    std::span<const StreamField> fields;
+    std::span<const service::message::StreamField> fields;
     std::size_t maxLength = 0;
     std::optional<StreamWake> wake;
 };
 
-} // namespace service::message::redis
+} // namespace service::messaging::stream

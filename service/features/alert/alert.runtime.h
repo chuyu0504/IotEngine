@@ -83,8 +83,8 @@ class AlertRuntime final {
         if (worker_.valid()) {
             // A closed worker already propagates its stop token to these tasks.
             (void)worker_.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                             service::message::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::TelemetryAlerts);
-                             service::message::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::FreshnessAlerts);
+                             service::messaging::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::TelemetryAlerts);
+                             service::messaging::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::FreshnessAlerts);
                              co_return;
                          })
                 .accepted();
@@ -187,7 +187,7 @@ class AlertRuntime final {
                     continue;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         workerIndex_,
                         service::message::WorkerStreamTask::TelemetryAlerts,
                         context.get_stop_token(),
@@ -278,7 +278,7 @@ class AlertRuntime final {
                 if (changed || wait->count() == 0) {
                     continue;
                 }
-                co_await service::message::workerStreamMultiplexer().wait(
+                co_await service::messaging::workerStreamMultiplexer().wait(
                     workerIndex_,
                     service::message::WorkerStreamTask::FreshnessAlerts,
                     context.get_stop_token(),

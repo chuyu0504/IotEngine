@@ -29,7 +29,7 @@ async function clone(version: string) {
 async function activate(version: string, dropHint = false) {
     await redis.send('EVAL', [
         `redis.call('SET',KEYS[1],ARGV[1]);
-         local id=redis.call('XADD',KEYS[2],'*','topic','runtime-config');
+         local id=redis.call('XADD',KEYS[2],'*','schema_version','2','topic','runtime-config','ids','');
          if ARGV[2]=='1' then redis.call('XDEL',KEYS[2],id) end; return id`,
         '2', active, stream, version, dropHint ? '1' : '0']);
 }

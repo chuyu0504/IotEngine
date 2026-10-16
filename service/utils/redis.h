@@ -86,6 +86,103 @@ struct StreamBatch final {
     std::vector<service::message::StreamMessage> messages;
 };
 
+// Parses an XREAD/XREADGROUP array reply; a null reply is an empty batch list.
+inline std::vector<StreamBatch> parseStreamBatches(std::string_view operation, const ruvia::redis_value& reply) {
+    std::vector<StreamBatch> batches;
+    if (reply.null()) {
+        return batches;
+    }
+    if (reply.kind() != ruvia::redis_value::kind_type::array) {
+        throwValue(operation, reply);
+    }
+    for (const auto& streamReply : reply.array()) {
+        if (streamReply.kind() != ruvia::redis_value::kind_type::array ||
+            streamReply.array().size() != 2) {
+            continue;
+        }
+        const auto& streamName = streamReply.array()[0];
+        const auto& entries = streamReply.array()[1];
+        if (streamName.kind() != ruvia::redis_value::kind_type::string ||
+            entries.kind() != ruvia::redis_value::kind_type::array) {
+            continue;
+        }
+        StreamBatch batch;
+        batch.stream.assign(streamName.string());
+        batch.messages.reserve(entries.array().size());
+        for (const auto& entry : entries.array()) {
+            if (entry.kind() != ruvia::redis_value::kind_type::array || entry.array().size() != 2) {
+                continue;
+            }
+            const auto& entryId = entry.array()[0];
+            const auto& fieldArray = entry.array()[1];
+            if (entryId.kind() != ruvia::redis_value::kind_type::string ||
+                fieldArray.kind() != ruvia::redis_value::kind_type::array) {
+                continue;
+            }
+            service::message::StreamMessage message;
+            message.id.assign(entryId.string());
+            const auto fieldValues = fieldArray.array();
+            for (std::size_t index = 0; index + 1 < fieldValues.size(); index += 2) {
+                const auto& name = fieldValues[index];
+                const auto& value = fieldValues[index + 1];
+                if (name.kind() != ruvia::redis_value::kind_type::string ||
+                    value.kind() != ruvia::redis_value::kind_type::string) {
+                    continue;
+                }
+                message.fields.push_back(
+                    { std::string(name.string()), std::string(value.string()) }
+                );
+            }
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty()) {
+            batches.push_back(std::move(batch));
+        }
+    }
+    return batches;
+}
+
+// Plain XREAD without a consumer group: the caller owns one cursor per stream.
+// The blocking wait ends on new entries, the timeout, or the stop token.
+template <typename Redis>
+ruvia::task<std::vector<StreamBatch>>
+readStreamsBlocking(const Redis& redis, std::span<const std::string> streams, std::span<const std::string> cursors, ruvia::stop_token stopToken, std::chrono::milliseconds timeout, std::size_t count) {
+    if (streams.empty() || streams.size() != cursors.size()) {
+        throw std::invalid_argument("XREAD requires one cursor per stream");
+    }
+    std::vector<std::string_view> args{ "XREAD", "COUNT" };
+    const auto countText = std::to_string(count);
+    const auto blockText = std::to_string(std::max<std::int64_t>(1, timeout.count()));
+    args.push_back(countText);
+    args.push_back("BLOCK");
+    args.push_back(blockText);
+    args.push_back("STREAMS");
+    args.insert(args.end(), streams.begin(), streams.end());
+    args.insert(args.end(), cursors.begin(), cursors.end());
+    const auto reply = co_await redis.with_options({ .stop_token_ = std::move(stopToken) })
+                           .command(std::span<const std::string_view>(args));
+    co_return parseStreamBatches("XREAD", reply);
+}
+
+// Id of the newest entry of a stream, or "0-0" when it is empty or absent.
+template <typename Redis>
+ruvia::task<std::string> lastEntryId(const Redis& redis, std::string_view stream) {
+    const std::vector<std::string> args{ "XREVRANGE", std::string(stream), "+", "-", "COUNT", "1" };
+    const auto reply = co_await command(redis, args);
+    if (reply.kind() != ruvia::redis_value::kind_type::array) {
+        throwValue("XREVRANGE", reply);
+    }
+    if (reply.array().empty()) {
+        co_return "0-0";
+    }
+    const auto& entry = reply.array().front();
+    if (entry.kind() != ruvia::redis_value::kind_type::array || entry.array().empty() ||
+        entry.array().front().kind() != ruvia::redis_value::kind_type::string) {
+        throwValue("XREVRANGE", reply);
+    }
+    co_return std::string(entry.array().front().string());
+}
+
 template <typename Redis>
 ruvia::task<std::vector<StreamBatch>>
 readGroupManyImpl(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, std::string_view id, std::optional<std::chrono::milliseconds> block, std::size_t count);
@@ -178,58 +275,7 @@ readGroupManyImpl(const Redis& redis, std::span<const std::string> streams, std:
         args.emplace_back(id);
     }
     const auto reply = co_await command(redis, args);
-    std::vector<StreamBatch> batches;
-    if (reply.null()) {
-        co_return batches;
-    }
-    if (reply.kind() != ruvia::redis_value::kind_type::array) {
-        throwValue("XREADGROUP", reply);
-    }
-    for (const auto& streamReply : reply.array()) {
-        if (streamReply.kind() != ruvia::redis_value::kind_type::array ||
-            streamReply.array().size() != 2) {
-            continue;
-        }
-        const auto& streamName = streamReply.array()[0];
-        const auto& entries = streamReply.array()[1];
-        if (streamName.kind() != ruvia::redis_value::kind_type::string ||
-            entries.kind() != ruvia::redis_value::kind_type::array) {
-            continue;
-        }
-        StreamBatch batch;
-        batch.stream.assign(streamName.string());
-        batch.messages.reserve(entries.array().size());
-        for (const auto& entry : entries.array()) {
-            if (entry.kind() != ruvia::redis_value::kind_type::array || entry.array().size() != 2) {
-                continue;
-            }
-            const auto& entryId = entry.array()[0];
-            const auto& fieldArray = entry.array()[1];
-            if (entryId.kind() != ruvia::redis_value::kind_type::string ||
-                fieldArray.kind() != ruvia::redis_value::kind_type::array) {
-                continue;
-            }
-            service::message::StreamMessage message;
-            message.id.assign(entryId.string());
-            const auto fieldValues = fieldArray.array();
-            for (std::size_t index = 0; index + 1 < fieldValues.size(); index += 2) {
-                const auto& name = fieldValues[index];
-                const auto& value = fieldValues[index + 1];
-                if (name.kind() != ruvia::redis_value::kind_type::string ||
-                    value.kind() != ruvia::redis_value::kind_type::string) {
-                    continue;
-                }
-                message.fields.push_back(
-                    { std::string(name.string()), std::string(value.string()) }
-                );
-            }
-            batch.messages.push_back(std::move(message));
-        }
-        if (!batch.messages.empty()) {
-            batches.push_back(std::move(batch));
-        }
-    }
-    co_return batches;
+    co_return parseStreamBatches("XREADGROUP", reply);
 }
 
 template <typename Redis>

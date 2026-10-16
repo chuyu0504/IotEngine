@@ -10,6 +10,7 @@
 
 #include <ruvia/core/event_loop_pool.h>
 #include <ruvia/web/app.h>
+#include <ruvia/web/controller.h>
 #include <ruvia/web/http_client.h>
 
 #include "service/modules/gb28181/gb28181.service.h"

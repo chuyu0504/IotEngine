@@ -204,7 +204,7 @@ local now = redis.call('TIME')
 redis.call('ZADD', KEYS[5], tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000) + tonumber(ARGV[10]), ARGV[1])
 redis.call('HDEL', KEYS[2], 'instance_id', 'worker_id', 'worker_instance_id', 'connection_id', 'session_epoch', 'link_id')
 redis.call('HSET', KEYS[2], 'updated_at_ms', ARGV[6])
-if previous_connection ~= ARGV[4] then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
+if previous_connection ~= ARGV[4] then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'schema_version', '2', 'topic', 'device.state', 'ids', ARGV[1]) end
 return {previous_worker, previous_connection, previous_instance}
 )lua";
 
@@ -228,7 +228,7 @@ if not redis.call('HGET', KEYS[2], 'last_report_at_ms') then
   redis.call('HSET', KEYS[2], 'state', 'offline', 'state_reason', ARGV[6])
 end
 redis.call('HSET', KEYS[2], 'updated_at_ms', ARGV[7])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'schema_version', '2', 'topic', 'device.state', 'ids', ARGV[8])
 return 1
 )lua";
 
@@ -240,7 +240,7 @@ local link = redis.call('HGET', KEYS[1], 'link_id')
 if link and link ~= '' and link ~= ARGV[2] then return 0 end
 redis.call('HDEL', KEYS[1], 'instance_id', 'worker_id', 'worker_instance_id', 'connection_id', 'session_epoch', 'link_id')
 redis.call('HSET', KEYS[1], 'updated_at_ms', ARGV[3])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'schema_version', '2', 'topic', 'device.state', 'ids', ARGV[4])
 return 1
 )lua";
 };

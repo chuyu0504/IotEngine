@@ -615,7 +615,7 @@ class ConfigurationService final {
         auto version =
             co_await service::collector::config::project(context.redis(), snapshot, *context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
         if (notify)
-            co_await service::live::publish(context.redis(), "runtime-config");
+            co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
         co_await transaction.commit();
         co_return version;
     }
@@ -625,12 +625,12 @@ class ConfigurationService final {
     // 返回是否执行了投影；回执写入后才由调用方确认（XACK/XDEL）这些条目。
     template <typename Context>
     static ruvia::task<bool> applyRuntimeChanges(Context& context, std::string_view consumer, const std::vector<service::message::StreamMessage>& messages) {
-        const auto eventIds = service::message::idempotency::eventIds(messages);
-        const auto pendingIds = co_await service::message::idempotency::pending(context, consumer, eventIds);
+        const auto eventIds = service::messaging::idempotency::eventIds(messages);
+        const auto pendingIds = co_await service::messaging::idempotency::pending(context, consumer, eventIds);
         bool projectionRequired = false;
         bool deviceChanged = false;
         for (const auto& message : messages) {
-            if (!service::message::idempotency::shouldProcess(message, pendingIds)) {
+            if (!service::messaging::idempotency::shouldProcess(message, pendingIds)) {
                 continue;
             }
             const auto aggregate = message.get("aggregate");
@@ -642,9 +642,9 @@ class ConfigurationService final {
         }
         if (deviceChanged) {
             const std::vector<service::message::StreamField> fields{ { "aggregate", "device" } };
-            (void)co_await service::message::redis::publishAndWake(context.redis(), service::message::alert::kMetadataChangesStream, fields, std::nullopt, service::message::WorkerStreamTask::FreshnessAlerts);
+            (void)co_await service::messaging::stream::publishAndWake(context.redis(), service::message::alert::kMetadataChangesStream, fields, std::nullopt, service::message::WorkerStreamTask::FreshnessAlerts);
         }
-        co_await service::message::idempotency::markProcessed(context, consumer, eventIds);
+        co_await service::messaging::idempotency::markProcessed(context, consumer, eventIds);
         co_return projectionRequired;
     }
 };

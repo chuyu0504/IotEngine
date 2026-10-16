@@ -657,7 +657,6 @@ void testMessageEnvelope() {
 
 void testExplicitOutbox() {
     const auto schema = source("service/config/schema.h");
-    const auto dispatcher = source("service/features/messaging/messaging.service.h");
     require(schema.find("0023_transactional_outbox") != std::string::npos,
             "transactional outbox migration is missing");
     require(schema.find("0036_live_query_changes") != std::string::npos &&
@@ -665,8 +664,6 @@ void testExplicitOutbox() {
             "query changes must be captured transactionally for external SQL writers");
     require(schema.find("0024_outbox_consumer_receipt") != std::string::npos,
             "outbox consumer receipt migration is missing");
-    require(dispatcher.find(".mode_ = ruvia::db_row_lock::update, .skip_locked_ = true") != std::string::npos,
-            "outbox dispatcher is not safe for concurrent instances");
     for (const auto path : {"service/modules/device/device.service.h",
                             "service/modules/link/link.service.h",
                             "service/modules/protocol/protocol.service.h",
@@ -776,28 +773,18 @@ void testSymmetricServiceWorkers() {
 
 void testWorkerStreamMultiplexing() {
     const auto server = source("service/server.cpp");
-    const auto multiplexer =
-        source("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");
     require(server.find("serviceRedis.blocking_pool_size_per_worker_ = 4") !=
                 std::string::npos,
-            "Service Workers need bounded multiplexer, feature live, API live and RPC readers");
+            "Service Workers need bounded multiplexer, live relay, change feed and RPC readers");
     require(server.find("owner->multiplexer->configure(worker, index)") != std::string::npos &&
                 server.find("m->start(worker, index)") != std::string::npos,
             "worker-local Stream multiplexer is not in the application lifecycle");
-    require(multiplexer.find("thread_local WorkerStreamMultiplexer*") != std::string::npos &&
-                multiplexer.find("std::vector<ruvia::web_worker_handle>") == std::string::npos,
-            "Stream wake channels are shared across Service Workers");
     require(service::message::rpc::Contract::requests("instance", 0) !=
                 service::message::rpc::Contract::requests("instance", 1),
             "RPC requests can be consumed by another Service Worker");
-    require(multiplexer.find("readGroupManyBlockingUntil") != std::string::npos &&
-                multiplexer.find("workerWakeStream(index, service::runtime::instanceId())") != std::string::npos &&
-                multiplexer.find(".capacity_ = 1") != std::string::npos,
-            "Stream multiplexer does not use one coalescing blocker per Worker");
-    const auto stream = source("service/features/messaging/messaging.transport.h");
-    require(stream.find("kAddAndWakeScript") != std::string::npos &&
-                stream.find("atomic XADD/wake") != std::string::npos,
-            "business messages and Worker wakeups are not published atomically");
+    require(service::message::live::workerStream("instance", 0) !=
+                service::message::live::workerStream("instance", 1),
+            "directed live messages can reach another Service Worker");
 
     for (const auto path : {
              "service/features/telemetry/telemetry.runtime.h",

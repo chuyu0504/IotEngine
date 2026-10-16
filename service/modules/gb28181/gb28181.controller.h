@@ -38,15 +38,17 @@ class Gb28181Controller final {
     }
 
     ruvia::task<void> devicesEvents(ruvia::context& c) {
-        co_await service::live::serveSnapshots(c, "gb28181", service::middleware::requireAuth(c).userId, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
-            auto result = co_await gb28181Service().devices(request);
-            co_return service::live::json(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
-        },
-                                               [&c] {
-                                                   (void)service::middleware::requireAuth(c);
-                                               });
+        std::vector<service::middleware::LiveChannel> channels;
+        channels.push_back({ "snapshot", { std::string(service::message::live::topic::kGb28181) },
+            [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+                // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
+                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+                auto result = co_await gb28181Service().devices(request);
+                co_return service::middleware::modelJson(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
+            },
+            {} });
+        co_await service::middleware::serveLive(c, service::middleware::requireAuth(c).userId, std::move(channels),
+            [&c] { (void)service::middleware::requireAuth(c); });
     }
 
     ruvia::task<ruvia::http_response> recording(ruvia::context& c) {

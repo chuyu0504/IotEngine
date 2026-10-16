@@ -79,6 +79,23 @@ try {
     await until(() => published(immediate), 'committed event was not dispatched');
     console.log('PASS commit wakes dispatch; rollback does not publish');
 
+    // Schema 2 query changes carry entity ids into the live change; schema 1
+    // rows (table names in aggregate_id) publish the whole topic.
+    const liveChange = async (topic: string) => {
+        const entries = await redis.send('XREVRANGE', [liveStream, '+', '-', 'COUNT', '200']) as unknown as [string, string[]][];
+        const fields = entries.map(([, values]) => values).find((values) => values[values.indexOf('topic') + 1] === topic);
+        return fields && { version: fields[fields.indexOf('schema_version') + 1], ids: fields[fields.indexOf('ids') + 1] };
+    };
+    const entityTopic = `test-${crypto.randomUUID()}`, legacyTopic = `test-${crypto.randomUUID()}`;
+    const entityId = crypto.randomUUID(), legacyId = crypto.randomUUID();
+    ids.push(entityId, legacyId);
+    await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+        VALUES(${entityId},'query.changed',${entityTopic},'a,b','test',2),(${legacyId},'query.changed',${legacyTopic},'device','test',1)`;
+    await until(async () => (await published(entityId)) && (await published(legacyId)), 'query changes were not dispatched');
+    assert.deepEqual(await liveChange(entityTopic), { version: '2', ids: 'a,b' });
+    assert.deepEqual(await liveChange(legacyTopic), { version: '2', ids: '' });
+    console.log('PASS outbox query changes publish entity ids');
+
     const future = await insert(2);
     await Bun.sleep(500);
     assert.equal(await published(future), false, 'future event published before its deadline');

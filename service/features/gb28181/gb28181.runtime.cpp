@@ -206,7 +206,7 @@ GbProjectionRuntime::consume(ruvia::web_worker_context& context, const std::shar
             }
             // Projection publishers and new owner deadlines signal this task
             // through the worker's wake stream.
-            co_await service::message::workerStreamMultiplexer().wait(
+            co_await service::messaging::workerStreamMultiplexer().wait(
                 workerIndex_,
                 service::message::WorkerStreamTask::Gb28181Projector,
                 stop,

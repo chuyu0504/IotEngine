@@ -26,7 +26,7 @@
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
-#include "service/middleware/rpc.h"
+#include "service/utils/rpc_client.h"
 #include "service/modules/device/device.service.h"
 #include "service/modules/open_access/open_access.entity.h"
 #include "service/modules/open_access/open_access.types.h"
@@ -618,7 +618,7 @@ class AccessService final {
             if (auto value = ruvia::json_value::parse(responsePayload, { .resource_ = c.arena() })) {
                 payload.set<"responsePayload">(std::move(*value));
             }
-            (void)co_await service::rpc::call(c, "access", "audit", service::message::rpc::encode(payload, c.arena()));
+            (void)co_await service::utils::callRpc(c, "access", "audit", service::message::rpc::encode(payload, c.arena()));
         } catch (...) {
             // Open-access audit is best effort.
         }
@@ -890,7 +890,7 @@ class AccessService final {
 
     template <typename Context>
     static ruvia::task<void> refreshProjection(Context& c) {
-        (void)co_await service::rpc::call(c, "access", "refresh", "{}");
+        (void)co_await service::utils::callRpc(c, "access", "refresh", "{}");
     }
 
     static ruvia::task<std::optional<service::message::access::session::Entry>> loadSession(

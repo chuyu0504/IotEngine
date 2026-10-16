@@ -43,7 +43,7 @@ import {
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/form_modal';
 import type { GroupFormValues } from '@/components/group_form_modal';
 import { GroupTreePanel } from '@/components/group_tree_panel';
@@ -597,6 +597,102 @@ function buildNodeCardItems(
         },
     ];
 }
+/** One inventory card; memoized so a node delta re-renders only that node's card. */
+const EdgeNodeCard = memo(
+    ({
+        node,
+        operatorName,
+        onOpen,
+    }: {
+        node: Edge.Node;
+        operatorName: (value: string) => string;
+        onOpen: (node: Edge.Node) => void;
+    }) => {
+        const status = node.status;
+        const nodeTitle = node.name || node.hostname || '未命名节点';
+        const firmwareActive =
+            node.firmware.state === 'accepted' || node.firmware.state === 'running';
+        return (
+            <div className="flex flex-col">
+                <DeviceCard
+                    onClick={() => onOpen(node)}
+                    ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
+                    title={
+                        <div className="flex w-full min-w-0 flex-col gap-0.5">
+                            <Flex
+                                justify="space-between"
+                                align="start"
+                                gap={10}
+                                className="w-full min-w-0"
+                            >
+                                <Tooltip title={nodeTitle}>
+                                    <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
+                                        {nodeTitle}
+                                    </span>
+                                </Tooltip>
+                                <span className="flex shrink-0 items-center gap-1 [&_.ant-tag]:!m-0">
+                                    {statusTag(node.enrollmentStatus)}
+                                    <Tag
+                                        color={status.online ? 'success' : 'default'}
+                                        className="!mr-0 shrink-0 !rounded-md !px-2"
+                                    >
+                                        {status.online ? '在线' : '离线'}
+                                    </Tag>
+                                </span>
+                            </Flex>
+                            <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs font-normal leading-4 text-slate-400">
+                                <Tooltip title={node.imei}>
+                                    <span className="min-w-0 truncate text-left">
+                                        IMEI：{node.imei}
+                                    </span>
+                                </Tooltip>
+                                <span className="shrink-0 truncate">
+                                    上报：{formatDateTime(status.lastSeenAt)}
+                                </span>
+                            </div>
+                        </div>
+                    }
+                    subtitle={
+                        <span className="flex min-w-0 items-center gap-1">
+                            <Tag color="blue" className="!mr-0 !rounded-md">
+                                {node.model || '未知型号'}
+                            </Tag>
+                            <Tag color="purple" className="!mr-0 !rounded-md">
+                                {node.softwareVersion || '未知版本'}
+                            </Tag>
+                        </span>
+                    }
+                    items={buildNodeCardItems(node, operatorName)}
+                    column={2}
+                    extra={
+                        <div className="flex w-full flex-col gap-1.5">
+                            <Progress
+                                className={firmwareActive ? undefined : 'invisible'}
+                                percent={firmwareActive ? node.firmware.progressPercent : 0}
+                                size="small"
+                                status="active"
+                                format={() =>
+                                    firmwareActive
+                                        ? `${formatBytes(node.firmware.downloadedBytes)} / ${formatBytes(node.firmware.totalBytes)}`
+                                        : '\u00a0'
+                                }
+                            />
+                            <Flex
+                                align="center"
+                                justify="center"
+                                gap={6}
+                                className="w-full text-slate-500"
+                            >
+                                <EyeOutlined />
+                                <span>查看详情</span>
+                            </Flex>
+                        </div>
+                    }
+                />
+            </div>
+        );
+    }
+);
 export function SerialDebugModal({
     nodeId,
     path,
@@ -1130,6 +1226,11 @@ export function EdgeNodePage() {
     useEffect(() => {
         if (detail) setNodeLogLevel(detail.status.log?.level);
     }, [detail]);
+    const showDetail = useCallback((node: Edge.Node) => {
+        setDetailTab('networks');
+        setLogLevel(undefined);
+        setSelectedId(node.id);
+    }, []);
     if (!canQuery) {
         return (
             <PageContainer>
@@ -1242,11 +1343,6 @@ export function EdgeNodePage() {
     const showGroup = (node: Edge.Node) => {
         groupForm.setFieldsValue({ groupId: node.groupId || '' });
         setGroupingNode(node);
-    };
-    const showDetail = (node: Edge.Node) => {
-        setDetailTab('networks');
-        setLogLevel(undefined);
-        setSelectedId(node.id);
     };
     const showFirmware = (node: Edge.Node) => {
         firmwareUpgrade.reset();
@@ -1534,100 +1630,14 @@ export function EdgeNodePage() {
             estimateSize={420}
             className="mt-4"
         >
-            {(node) => {
-                const status = node.status;
-                const nodeTitle = node.name || node.hostname || '未命名节点';
-                return (
-                    <div key={node.id} className="flex flex-col">
-                        <DeviceCard
-                            onClick={() => showDetail(node)}
-                            ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
-                            title={
-                                <div className="flex w-full min-w-0 flex-col gap-0.5">
-                                    <Flex
-                                        justify="space-between"
-                                        align="start"
-                                        gap={10}
-                                        className="w-full min-w-0"
-                                    >
-                                        <Tooltip title={nodeTitle}>
-                                            <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
-                                                {nodeTitle}
-                                            </span>
-                                        </Tooltip>
-                                        <span className="flex shrink-0 items-center gap-1 [&_.ant-tag]:!m-0">
-                                            {statusTag(node.enrollmentStatus)}
-                                            <Tag
-                                                color={status.online ? 'success' : 'default'}
-                                                className="!mr-0 shrink-0 !rounded-md !px-2"
-                                            >
-                                                {status.online ? '在线' : '离线'}
-                                            </Tag>
-                                        </span>
-                                    </Flex>
-                                    <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs font-normal leading-4 text-slate-400">
-                                        <Tooltip title={node.imei}>
-                                            <span className="min-w-0 truncate text-left">
-                                                IMEI：{node.imei}
-                                            </span>
-                                        </Tooltip>
-                                        <span className="shrink-0 truncate">
-                                            上报：{formatDateTime(status.lastSeenAt)}
-                                        </span>
-                                    </div>
-                                </div>
-                            }
-                            subtitle={
-                                <span className="flex min-w-0 items-center gap-1">
-                                    <Tag color="blue" className="!mr-0 !rounded-md">
-                                        {node.model || '未知型号'}
-                                    </Tag>
-                                    <Tag color="purple" className="!mr-0 !rounded-md">
-                                        {node.softwareVersion || '未知版本'}
-                                    </Tag>
-                                </span>
-                            }
-                            items={buildNodeCardItems(node, operatorName)}
-                            column={2}
-                            extra={
-                                <div className="flex w-full flex-col gap-1.5">
-                                    <Progress
-                                        className={
-                                            node.firmware.state === 'accepted' ||
-                                            node.firmware.state === 'running'
-                                                ? undefined
-                                                : 'invisible'
-                                        }
-                                        percent={
-                                            node.firmware.state === 'accepted' ||
-                                            node.firmware.state === 'running'
-                                                ? node.firmware.progressPercent
-                                                : 0
-                                        }
-                                        size="small"
-                                        status="active"
-                                        format={() =>
-                                            node.firmware.state === 'accepted' ||
-                                            node.firmware.state === 'running'
-                                                ? `${formatBytes(node.firmware.downloadedBytes)} / ${formatBytes(node.firmware.totalBytes)}`
-                                                : '\u00a0'
-                                        }
-                                    />
-                                    <Flex
-                                        align="center"
-                                        justify="center"
-                                        gap={6}
-                                        className="w-full text-slate-500"
-                                    >
-                                        <EyeOutlined />
-                                        <span>查看详情</span>
-                                    </Flex>
-                                </div>
-                            }
-                        />
-                    </div>
-                );
-            }}
+            {(node) => (
+                <EdgeNodeCard
+                    key={node.id}
+                    node={node}
+                    operatorName={operatorName}
+                    onOpen={showDetail}
+                />
+            )}
         </VirtualGrid>
     );
     const renderSectionStats = (

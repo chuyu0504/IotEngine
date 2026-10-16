@@ -98,9 +98,9 @@ class PersistenceRuntime final : public TelemetryService {
             // A closed worker already propagates its stop token to these tasks.
             (void)worker_.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
                              for (const auto& route : kRoutes) {
-                                 message::workerStreamMultiplexer().signal(route.wake);
+                                 service::messaging::workerStreamMultiplexer().signal(route.wake);
                              }
-                             message::workerStreamMultiplexer().signal(message::WorkerStreamTask::Freshness);
+                             service::messaging::workerStreamMultiplexer().signal(message::WorkerStreamTask::Freshness);
                              co_return;
                          })
                 .accepted();
@@ -154,7 +154,7 @@ class PersistenceRuntime final : public TelemetryService {
                     if (wait.has_value() && wait->count() == 0) {
                         continue;
                     }
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         service::message::WorkerStreamTask::Freshness,
                         context.get_stop_token(),
@@ -270,7 +270,7 @@ class PersistenceRuntime final : public TelemetryService {
                     continue;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
+                    co_await service::messaging::workerStreamMultiplexer().wait(
                         index,
                         wakeTask,
                         context.get_stop_token(),
@@ -286,7 +286,7 @@ class PersistenceRuntime final : public TelemetryService {
                             // 本组件消费者在本 Worker 内唤醒；告警消费者由 kFanoutScript 经 Redis 唤醒流通知。
                             for (const auto& consumerRoute : kRoutes) {
                                 if (consumerRoute.consumer != Consumer::Dispatch) {
-                                    message::workerStreamMultiplexer().signal(consumerRoute.wake);
+                                    service::messaging::workerStreamMultiplexer().signal(consumerRoute.wake);
                                 }
                             }
                         }

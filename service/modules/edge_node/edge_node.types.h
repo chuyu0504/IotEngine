@@ -1,12 +1,23 @@
 #pragma once
 
+#include <any>
 #include <cctype>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+
+#include <ruvia/core/channel.h>
+#include <ruvia/core/stop_token.h>
+#include <ruvia/core/task.h>
+#include <ruvia/core/worker_handle.h>
+#include <ruvia/web/model_json.h>
+#include <ruvia/web/validation.h>
 
 #include "service/common/uuid.h"
-
-#include <string>
-
-#include <ruvia/web/validation.h>
 
 namespace service::edge {
 
@@ -81,18 +92,7 @@ RUVIA_MODEL(FirmwareDownloadQuery, RUVIA_REQUIRED_FIELD(token, ruvia::string, RU
 
 RUVIA_MODEL(LogsQuery, RUVIA_OPTIONAL_FIELD(limit, ruvia::int64, decltype(kDefaultLimit), RUVIA_MIN(1, "日志条数必须在 1 - 48 之间"), RUVIA_MAX(48, "日志条数必须在 1 - 48 之间")), RUVIA_OPTIONAL_FIELD(level, ruvia::string, RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")), RUVIA_OPTIONAL_FIELD(source, ruvia::string, RUVIA_MAX(16, "日志来源不能超过 16 个字符")));
 
-RUVIA_MODEL(DtuChannelBody,
-    RUVIA_REQUIRED_FIELD(channelId, ruvia::string, RUVIA_CUSTOM("通道 ID 无效", service::common::isUuidField)), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "请输入通道名称"), RUVIA_MAX(100, "通道名称过长")),
-    RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value), RUVIA_REQUIRED_FIELD(southMode, ruvia::string, RUVIA_ONE_OF("南向模式无效", "serial", "tcp_client", "tcp_server")),
-    RUVIA_OPTIONAL_FIELD(southHost, ruvia::string, RUVIA_MAX(253, "南向地址过长")), RUVIA_OPTIONAL_FIELD(southPort, ruvia::int64, RUVIA_MIN(1, "端口无效"), RUVIA_MAX(65535, "端口无效")),
-    RUVIA_REQUIRED_FIELD(northHost, ruvia::string, RUVIA_MIN(1, "请输入北向服务器"), RUVIA_MAX(253, "服务器地址过长")), RUVIA_REQUIRED_FIELD(northPort, ruvia::int64, RUVIA_MIN(1, "端口无效"), RUVIA_MAX(65535, "端口无效")),
-    RUVIA_OPTIONAL_FIELD(serialPath, ruvia::string, RUVIA_MAX(96, "串口路径过长")), RUVIA_OPTIONAL_FIELD(baudRate, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(dataBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(stopBits, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(parity, ruvia::string), RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(maxClients, ruvia::int64, RUVIA_MIN(1, "客户端数至少为 1"), RUVIA_MAX(16, "最多 16 个客户端")), RUVIA_REQUIRED_FIELD(queueBytes, ruvia::int64, RUVIA_MIN(4096, "缓冲至少 4096 字节"), RUVIA_MAX(65536, "缓冲最多 65536 字节")),
-    RUVIA_REQUIRED_FIELD(serialFrameMs, ruvia::int64, RUVIA_MIN(0, "组帧间隔无效"), RUVIA_MAX(1000, "组帧间隔最多 1000 ms")), RUVIA_OPTIONAL_FIELD(uplinkOnly, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(registrationHex, ruvia::string, RUVIA_MAX(512, "注册包最多 256 字节")), RUVIA_OPTIONAL_FIELD(debugEnabled, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(heartbeatHex, ruvia::string, RUVIA_MAX(512, "心跳包最多 256 字节")), RUVIA_OPTIONAL_FIELD(heartbeatIntervalSec, ruvia::int64, RUVIA_MIN(0, "心跳间隔无效"), RUVIA_MAX(86400, "心跳间隔最多 86400 秒")));
+RUVIA_MODEL(DtuChannelBody, RUVIA_REQUIRED_FIELD(channelId, ruvia::string, RUVIA_CUSTOM("通道 ID 无效", service::common::isUuidField)), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "请输入通道名称"), RUVIA_MAX(100, "通道名称过长")), RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value), RUVIA_REQUIRED_FIELD(southMode, ruvia::string, RUVIA_ONE_OF("南向模式无效", "serial", "tcp_client", "tcp_server")), RUVIA_OPTIONAL_FIELD(southHost, ruvia::string, RUVIA_MAX(253, "南向地址过长")), RUVIA_OPTIONAL_FIELD(southPort, ruvia::int64, RUVIA_MIN(1, "端口无效"), RUVIA_MAX(65535, "端口无效")), RUVIA_REQUIRED_FIELD(northHost, ruvia::string, RUVIA_MIN(1, "请输入北向服务器"), RUVIA_MAX(253, "服务器地址过长")), RUVIA_REQUIRED_FIELD(northPort, ruvia::int64, RUVIA_MIN(1, "端口无效"), RUVIA_MAX(65535, "端口无效")), RUVIA_OPTIONAL_FIELD(serialPath, ruvia::string, RUVIA_MAX(96, "串口路径过长")), RUVIA_OPTIONAL_FIELD(baudRate, ruvia::int64), RUVIA_OPTIONAL_FIELD(dataBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(stopBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(parity, ruvia::string), RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value), RUVIA_REQUIRED_FIELD(maxClients, ruvia::int64, RUVIA_MIN(1, "客户端数至少为 1"), RUVIA_MAX(16, "最多 16 个客户端")), RUVIA_REQUIRED_FIELD(queueBytes, ruvia::int64, RUVIA_MIN(4096, "缓冲至少 4096 字节"), RUVIA_MAX(65536, "缓冲最多 65536 字节")), RUVIA_REQUIRED_FIELD(serialFrameMs, ruvia::int64, RUVIA_MIN(0, "组帧间隔无效"), RUVIA_MAX(1000, "组帧间隔最多 1000 ms")), RUVIA_OPTIONAL_FIELD(uplinkOnly, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(registrationHex, ruvia::string, RUVIA_MAX(512, "注册包最多 256 字节")), RUVIA_OPTIONAL_FIELD(debugEnabled, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(heartbeatHex, ruvia::string, RUVIA_MAX(512, "心跳包最多 256 字节")), RUVIA_OPTIONAL_FIELD(heartbeatIntervalSec, ruvia::int64, RUVIA_MIN(0, "心跳间隔无效"), RUVIA_MAX(86400, "心跳间隔最多 86400 秒")));
 RUVIA_MODEL(DtuChannelParams, RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_CUSTOM("节点 ID 无效", service::common::isUuidField)), RUVIA_REQUIRED_FIELD(channelId, ruvia::string, RUVIA_CUSTOM("通道 ID 无效", service::common::isUuidField)));
 
 RUVIA_MODEL(LogLevelBody, RUVIA_REQUIRED_FIELD(level, ruvia::string, RUVIA_ONE_OF("日志级别无效", "silent", "debug", "info", "warn", "error")));
@@ -151,19 +151,170 @@ RUVIA_MODEL(LogLineDto, RUVIA_OPTIONAL_FIELD(time, ruvia::string), RUVIA_OPTIONA
 
 RUVIA_MODEL(LogsDto, RUVIA_OPTIONAL_FIELD(lines, ruvia::boxed_array<LogLineDto>));
 
-RUVIA_MODEL(EdgeGroupsResponse,
-    RUVIA_REQUIRED_FIELD(code, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(message, ruvia::string),
-    RUVIA_REQUIRED_FIELD(data, ruvia::boxed_array<EdgeGroupDto>));
+RUVIA_MODEL(EdgeGroupsResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, ruvia::boxed_array<EdgeGroupDto>));
 
-RUVIA_MODEL(EdgeNodeResponse,
-    RUVIA_REQUIRED_FIELD(code, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(message, ruvia::string),
-    RUVIA_REQUIRED_FIELD(data, EdgeNodeDto));
+RUVIA_MODEL(EdgeNodeResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, EdgeNodeDto));
 
-RUVIA_MODEL(EdgePageResponse,
-    RUVIA_REQUIRED_FIELD(code, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(message, ruvia::string),
-    RUVIA_REQUIRED_FIELD(data, EdgePageDto));
+RUVIA_MODEL(EdgePageResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, EdgePageDto));
 
 } // namespace service::edge
+
+// Edge debug WebSocket protocol: request envelope, per-connection state and
+// typed event dispatch. No I/O; the session loop lives in the service.
+namespace service::edge::debug {
+
+class EventError final : public std::runtime_error {
+  public:
+    EventError(std::int64_t code, std::string message)
+        : std::runtime_error(std::move(message)), code(code) {}
+
+    const std::int64_t code;
+};
+
+struct Request final {
+    std::string id;
+    std::string event;
+    std::string data;
+
+    static Request parse(std::string_view wire) {
+        if (wire.size() > 64U * 1024U) {
+            throw EventError(10002, "消息过大");
+        }
+        const auto value = ruvia::json_value::parse(wire);
+        if (!value || !value->is_object()) {
+            throw EventError(10002, "消息格式无效");
+        }
+        unsigned fields = 0;
+        const auto validFields = value->for_each_field([&](std::string_view key, const ruvia::json_value&) {
+            const unsigned bit = key == "id" ? 1U : key == "event" ? 2U
+                : key == "data"                                    ? 4U
+                                                                   : 0U;
+            if (!bit || (fields & bit)) {
+                return false;
+            }
+            fields |= bit;
+            return true;
+        });
+        const auto id = value->get<ruvia::string>("id");
+        const auto event = value->get<ruvia::string>("event");
+        const auto data = value->get<ruvia::json_value>("data");
+        if (!id || !service::common::isUuid(id->view()) || !event || event->empty() ||
+            event->view().size() > 128 || !data || !validFields || fields != 7U) {
+            throw EventError(10002, "事件编号、名称或参数无效");
+        }
+        for (const auto c : event->view()) {
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_')) {
+                throw EventError(10002, "事件名称无效");
+            }
+        }
+        return { std::string(id->view()), std::string(event->view()), std::string(data->view()) };
+    }
+};
+
+struct SessionIdentity final {
+    const std::string connectionId;
+    std::string accessToken;
+    std::uint64_t revision{};
+};
+
+class EventContext;
+
+// Resource implementations retain only state belonging to this connection.
+// Their close operation uses the accepting Worker's business context.
+class ConnectionResource {
+  public:
+    ConnectionResource(std::string owner, std::string permission)
+        : owner(std::move(owner)), permission(std::move(permission)) {}
+
+    virtual ~ConnectionResource() = default;
+    virtual ruvia::task<void> close(EventContext& context) = 0;
+    const std::string owner;
+    const std::string permission;
+    ruvia::stop_source lifetime;
+};
+
+using ConnectionResources = std::unordered_map<std::string, std::shared_ptr<ConnectionResource>>;
+
+struct EventResult final {
+    std::string data{ "null" };
+    // Directed live topic that re-invokes a subscription (empty: one reply).
+    std::string topic;
+    bool identityChanged{};
+    ruvia::stop_token lifetime;
+    bool more{};
+    bool incremental{};
+};
+
+struct EventPolicy final {
+    bool authenticated{ true };
+    std::string_view permission;
+};
+
+// One accepted request of a connection until it completes or is cancelled.
+struct Operation final {
+    explicit Operation(const ruvia::worker_handle& worker)
+        : completion(ruvia::make_channel<int>(worker, { .capacity_ = 1 })) {}
+
+    Request request;
+    ruvia::stop_source stop;
+    std::any state;
+    std::pair<ruvia::channel_sender<int>, ruvia::channel_receiver<int>> completion;
+};
+
+// Typed event table of one connection. `Context` is the per-invocation event
+// context (service::edge::debug::EventContext in production); `Invoker` is the
+// service adapter that decodes the body and runs the handler.
+template <typename Context>
+class EventRegistry final {
+  public:
+    using Invoker = ruvia::task<EventResult> (*)(void*, Context&);
+
+    void add(std::string_view name, void* handlers, Invoker invoke, EventPolicy policy = {}) {
+        if (sealed_) {
+            throw std::logic_error("event registration is sealed");
+        }
+        if (name.empty()) {
+            throw std::invalid_argument("empty event name");
+        }
+        if (!policy.authenticated && !policy.permission.empty()) {
+            throw std::logic_error("anonymous event cannot require a permission");
+        }
+        const auto [entry, inserted] = handlers_.emplace(std::string(name), Entry{ handlers, invoke, policy });
+        if (!inserted) {
+            throw std::logic_error("duplicate event: " + std::string(name));
+        }
+    }
+
+    void seal() noexcept { sealed_ = true; }
+
+    EventPolicy policy(std::string_view name) const {
+        const auto found = handlers_.find(std::string(name));
+        if (found == handlers_.end()) {
+            throw EventError(10003, "事件不存在");
+        }
+        return found->second.policy;
+    }
+
+    [[nodiscard]] ruvia::task<EventResult> invoke(Context& context) const {
+        if (!sealed_) {
+            throw std::logic_error("event registration is not sealed");
+        }
+        const auto found = handlers_.find(context.request.event);
+        if (found == handlers_.end()) {
+            throw EventError(10003, "事件不存在");
+        }
+        return found->second.invoke(found->second.handlers, context);
+    }
+
+  private:
+    struct Entry {
+        void* handlers;
+        Invoker invoke;
+        EventPolicy policy;
+    };
+
+    std::unordered_map<std::string, Entry> handlers_;
+    bool sealed_{};
+};
+
+} // namespace service::edge::debug

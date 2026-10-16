@@ -243,29 +243,8 @@ async function hasControlGroup(stream: string) {
 }
 
 async function liveGroupNames() {
+    if (Number(await redis.send('EXISTS', ['iot:live:changes'])) === 0) return [];
     const result = await redis.send('XINFO', ['GROUPS', 'iot:live:changes']);
-    const names: string[] = [];
-    const visit = (value: unknown) => {
-        if (Array.isArray(value)) {
-            for (let index = 0; index + 1 < value.length; index++) {
-                if (value[index] === 'name' && typeof value[index + 1] === 'string')
-                    names.push(value[index + 1]);
-            }
-            for (const child of value) visit(child);
-            return;
-        }
-        if (value && typeof value === 'object') {
-            const record = value as Record<string, unknown>;
-            if (typeof record.name === 'string') names.push(record.name);
-            for (const child of Object.values(record)) visit(child);
-        }
-    };
-    visit(result);
-    return [...new Set(names)];
-}
-
-async function liveConsumerNames(group: string) {
-    const result = await redis.send('XINFO', ['CONSUMERS', 'iot:live:changes', group]);
     const names: string[] = [];
     const visit = (value: unknown) => {
         if (Array.isArray(value)) {
@@ -865,34 +844,15 @@ try {
     liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
     liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
     await Promise.all(liveStreams.map((stream) => stream.next()));
-    const liveGroups = await liveGroupNames();
-    const apiGroups = liveGroups.filter((name) => name.startsWith('api-live:'));
-    assert(
-        apiGroups.length >= serviceWorkerCount,
-        `expected one API live consumer group per worker, got ${apiGroups.join(', ')}`
+    assert.deepEqual(
+        await liveGroupNames(),
+        [],
+        'iot:live:changes must be read with plain XREAD; no consumer group may remain'
     );
-    const featureGroups = liveGroups.filter((name) => /^live:[^:]+$/.test(name));
-    assert.equal(
-        featureGroups.length,
-        1,
-        `configuration fanout must use one shared live consumer group, got ${featureGroups.join(', ')}`
-    );
-    const featureGroup = featureGroups[0];
-    assert(featureGroup, 'shared live configuration group was not created');
-    const featureConsumers = await liveConsumerNames(featureGroup);
-    const expectedFeatureConsumers = Array.from(
-        { length: serviceWorkerCount },
-        (_, index) => `fanout:${featureGroup.slice('live:'.length)}:${index}`
-    );
-    for (const consumer of expectedFeatureConsumers)
-        assert(
-            featureConsumers.includes(consumer),
-            `shared live group is missing independent Service Worker consumer ${consumer}`
-        );
     const liveMarker = `rpc-live-worker-${id()}`;
     await db`UPDATE device SET protocol_params=jsonb_set(
         protocol_params, '{device_code}', to_jsonb(${liveMarker}::text)) WHERE id=${device}`;
-    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '1', 'topic', 'device']);
+    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', 'device', 'ids', device]);
     const liveSnapshots = await Promise.all(
         liveStreams.map((stream) =>
             stream.next((value) => JSON.stringify(value).includes(liveMarker))
@@ -907,24 +867,40 @@ try {
     liveStreams = [];
 
     const configStreams = await findConfigStreams(1);
-    const configLengths = await Promise.all(
-        configStreams.map(async (stream) => Number(await redis.send('XLEN', [stream])))
-    );
+    // Collector Workers delete acknowledged config entries, so count additions.
+    const entriesAdded = async (stream: string) => {
+        const info = (await redis.send('XINFO', ['STREAM', stream])) as unknown;
+        const fields = Array.isArray(info)
+            ? Object.fromEntries(
+                  Array.from({ length: info.length / 2 }, (_, index) => [info[index * 2], info[index * 2 + 1]])
+              )
+            : (info as Record<string, unknown>);
+        return Number(fields['entries-added']);
+    };
+    const configLengths = await Promise.all(configStreams.map(entriesAdded));
     await redis.send('XADD', [
         'iot:live:changes',
         '*',
         'schema_version',
-        '1',
+        '2',
         'topic',
         'runtime-config',
+        'ids',
+        '',
     ]);
     await until(async () => {
-        const lengths = await Promise.all(
-            configStreams.map(async (stream) => Number(await redis.send('XLEN', [stream])))
-        );
+        const lengths = await Promise.all(configStreams.map(entriesAdded));
         return lengths.every((length, index) => length > configLengths[index]);
     }, 'shared live configuration notification was not relayed to every Collector Worker');
-    console.log('PASS one shared live notification independently relays to every Collector Worker');
+    // Every Service Worker reads the entry; the per-instance claim lets exactly one relay it.
+    await Bun.sleep(500);
+    const relayedLengths = await Promise.all(configStreams.map(entriesAdded));
+    assert.deepEqual(
+        relayedLengths,
+        configLengths.map((length) => length + 1),
+        'one runtime-config change must be relayed exactly once per Collector Worker'
+    );
+    console.log('PASS one live notification is relayed exactly once to every Collector Worker');
 
     const sharedReleased = new Promise<void>((resolve) => {
         releaseShared = resolve;

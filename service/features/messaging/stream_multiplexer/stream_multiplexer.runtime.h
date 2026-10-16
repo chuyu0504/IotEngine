@@ -25,7 +25,7 @@
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/message.h"
 
-namespace service::message {
+namespace service::messaging {
 
 // Each Service Worker consumes one durable wake Stream. Wake entries carry only a
 // task name; business payload, consumer groups, pending recovery, and ACK semantics
@@ -58,7 +58,7 @@ class WorkerStreamMultiplexer final {
         completion.get();
     }
 
-    ruvia::task<void> wait(std::size_t workerIndex, WorkerStreamTask task, ruvia::stop_token stopToken, std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
+    ruvia::task<void> wait(std::size_t workerIndex, service::message::WorkerStreamTask task, ruvia::stop_token stopToken, std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
         const auto* receiver = &*requireSlot(workerIndex).receivers[taskIndex(task)];
         // The durable work streams remain authoritative when a wake is lost
         // during failover. This is a bounded recovery scan, not a one-second
@@ -78,15 +78,15 @@ class WorkerStreamMultiplexer final {
     }
 
     void signalTelemetryConsumers() noexcept {
-        for (const auto task : { WorkerStreamTask::TelemetryHistory,
-                                 WorkerStreamTask::TelemetryLatest,
-                                 WorkerStreamTask::TelemetryAlerts,
-                                 WorkerStreamTask::TelemetryDelivery }) {
+        for (const auto task : { service::message::WorkerStreamTask::TelemetryHistory,
+                                 service::message::WorkerStreamTask::TelemetryLatest,
+                                 service::message::WorkerStreamTask::TelemetryAlerts,
+                                 service::message::WorkerStreamTask::TelemetryDelivery }) {
             signal(task);
         }
     }
 
-    void signal(WorkerStreamTask task) noexcept {
+    void signal(service::message::WorkerStreamTask task) noexcept {
         if (localStreamMultiplexer == this && slot_) {
             (void)slot_->senders[taskIndex(task)].send(1);
         }
@@ -137,7 +137,7 @@ class WorkerStreamMultiplexer final {
 
   private:
     static constexpr std::size_t kTaskCount =
-        static_cast<std::size_t>(WorkerStreamTask::Count);
+        static_cast<std::size_t>(service::message::WorkerStreamTask::Count);
     static constexpr std::string_view kGroup{ "iot-engine:service-worker-wake" };
     static constexpr std::size_t kBatchSize = 256;
 
@@ -147,7 +147,7 @@ class WorkerStreamMultiplexer final {
             receivers;
     };
 
-    [[nodiscard]] static constexpr std::size_t taskIndex(WorkerStreamTask task) {
+    [[nodiscard]] static constexpr std::size_t taskIndex(service::message::WorkerStreamTask task) {
         return static_cast<std::size_t>(task);
     }
 
@@ -179,7 +179,7 @@ class WorkerStreamMultiplexer final {
         co_return;
     }
 
-    void signal(std::size_t workerIndex, WorkerStreamTask task) noexcept {
+    void signal(std::size_t workerIndex, service::message::WorkerStreamTask task) noexcept {
         if (workerIndex == index_) {
             signal(task);
         }
@@ -197,10 +197,10 @@ class WorkerStreamMultiplexer final {
         bool readySet = false;
         try {
             const auto redis = context.redis();
-            const auto wakeStream = workerWakeStream(index, service::runtime::instanceId());
+            const auto wakeStream = service::message::workerWakeStream(index, service::runtime::instanceId());
             const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             const auto group = std::string(kGroup) + ":" + std::to_string(index);
-            const std::vector<std::string> streams{ wakeStream, sharedWakeStream(service::runtime::instanceId()) };
+            const std::vector<std::string> streams{ wakeStream, service::message::sharedWakeStream(service::runtime::instanceId()) };
             for (const auto& stream : streams) {
                 co_await service::message::redis::ensureGroup(redis, stream, group);
             }
@@ -243,7 +243,7 @@ class WorkerStreamMultiplexer final {
                     }
                     for (const auto& batch : batches) {
                         for (const auto& message : batch.messages) {
-                            const auto task = workerStreamTask(message.get("task"));
+                            const auto task = service::message::workerStreamTask(message.get("task"));
                             if (task) {
                                 signal(index, *task);
                             } else {
@@ -314,4 +314,4 @@ inline WorkerStreamMultiplexer& workerStreamMultiplexer() {
     return *localStreamMultiplexer;
 }
 
-} // namespace service::message
+} // namespace service::messaging

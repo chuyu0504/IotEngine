@@ -1112,7 +1112,7 @@ class CollectorCommandService final {
             {},
             retryReason
         );
-        (void)co_await message::redis::publishAndAcknowledge(
+        (void)co_await service::messaging::stream::publishAndAcknowledge(
             redis_,
             stream,
             message::protocolTaskFields(task),
@@ -1146,7 +1146,7 @@ class CollectorCommandService final {
         auto results = resultFields(commandId, task, success, reason);
         const auto resultStream = message::commandResultStream();
         if (success) {
-            (void)co_await message::redis::publishAndAcknowledge(
+            (void)co_await service::messaging::stream::publishAndAcknowledge(
                 redis_,
                 resultStream,
                 results,
@@ -1155,7 +1155,7 @@ class CollectorCommandService final {
                 group_,
                 consumer_,
                 inputEntryId,
-                message::redis::StreamWake{ std::nullopt, message::WorkerStreamTask::CommandResult }
+                service::messaging::stream::StreamWake{ std::nullopt, message::WorkerStreamTask::CommandResult }
             );
             co_return;
         }
@@ -1169,14 +1169,14 @@ class CollectorCommandService final {
         );
         auto deadFields = deadLetterFields(message::protocolTaskFields(task), inputEntryId, reason, {}, workerIndex_);
         const std::array publications{
-            message::redis::StreamPublication{ deadLetterStream_, deadFields, kDeadLetterCapacity },
-            message::redis::StreamPublication{
+            service::messaging::stream::StreamPublication{ deadLetterStream_, deadFields, kDeadLetterCapacity },
+            service::messaging::stream::StreamPublication{
                 resultStream,
                 results,
                 kCommandResultCapacity,
-                message::redis::StreamWake{ std::nullopt, message::WorkerStreamTask::CommandResult } }
+                service::messaging::stream::StreamWake{ std::nullopt, message::WorkerStreamTask::CommandResult } }
         };
-        (void)co_await message::redis::publishAllAndAcknowledge(
+        (void)co_await service::messaging::stream::publishAllAndAcknowledge(
             redis_,
             publications,
             inputStream,
@@ -1334,7 +1334,7 @@ class CollectorStateService final {
             ? std::string(reply.array()[1].string())
             : std::string{};
         const auto oldInstance = std::string(reply.array()[2].string());
-        co_await message::redis::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness);
+        co_await service::messaging::stream::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness);
         co_return DeviceRouteOwner{oldWorker, oldConnection, oldInstance};
     }
 
@@ -1382,7 +1382,7 @@ class CollectorStateService final {
             const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);
             const std::string_view keys[]{key, owner, changes};
-            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now};
+            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now, device.id};
             const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseLegacyScript, keys, args);
             if (reply.kind() != ruvia::redis_value::kind_type::integer)
                 message::redis::throwValue("erase legacy device route", reply);

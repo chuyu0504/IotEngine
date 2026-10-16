@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
@@ -23,6 +24,7 @@
 #include "service/common/uuid.h"
 #include "service/features/access/access.service.h"
 #include "service/features/configuration/configuration.entity.h"
+#include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/latest/latest.entity.h"
 #include "service/features/telemetry/latest/latest.service.h"
@@ -187,10 +189,18 @@ class TelemetryService {
         }
         const auto redis = context.redis();
         switch (consumer) {
-            case Consumer::History:
+            case Consumer::History: {
                 co_await persist(context, parsedMessages);
-                co_await latest::publishRealtimeChange(redis);
+                std::vector<std::string> deviceIds;
+                deviceIds.reserve(parsedMessages.size());
+                for (const auto& parsed : parsedMessages) deviceIds.emplace_back(parsed.deviceId);
+                std::ranges::sort(deviceIds);
+                deviceIds.erase(std::unique(deviceIds.begin(), deviceIds.end()), deviceIds.end());
+                // Latest publishes device.realtime for the same samples; History
+                // only tells readers of persisted rows (open history stream).
+                co_await service::live::publish(redis, service::message::live::topic::kDeviceHistory, deviceIds);
                 break;
+            }
             case Consumer::Latest:
                 co_await latest::update(redis, parsedMessages);
                 break;

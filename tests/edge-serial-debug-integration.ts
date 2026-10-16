@@ -80,7 +80,35 @@ try {
     for (const event of ['auth.login', 'auth.refresh', 'auth.logout', 'auth.me.subscribe', 'device.create']) {
         await rejected(channel.request(event, {}), 10003);
     }
+    // Event table of the debug WebSocket: before authentication every edge debug
+    // event exists (authentication validates its body, the others require login);
+    // business events stay HTTP and are unknown here.
+    const anonymous = new WebSocket(apiBase.replace('http:', 'ws:') + '/v1/edge/debug');
+    const answers = new Map<string, number | undefined>();
+    anonymous.onmessage = event => {
+        const reply = JSON.parse(String(event.data)) as { id: string; error?: { code: number } };
+        answers.set(reply.id, reply.error?.code);
+    };
+    const opened = Promise.withResolvers<void>();
+    anonymous.onopen = () => opened.resolve();
+    anonymous.onerror = () => opened.reject(Error('debug WebSocket failed'));
+    await opened.promise;
+    const expected: Record<string, number> = { 'edge.debug.authenticate': 10001, 'device.list': 10003 };
+    for (const event of ['edge.serial.open', 'edge.serial.command', 'edge.serial.events.subscribe', 'edge.serial.close',
+        'edge.terminal.open', 'edge.terminal.events.subscribe', 'edge.terminal.write', 'edge.terminal.resize',
+        'edge.terminal.keepalive', 'edge.terminal.output.ack', 'edge.terminal.close']) expected[event] = 11004;
+    const sent: Record<string, string> = {};
+    for (const event of Object.keys(expected)) {
+        sent[event] = crypto.randomUUID();
+        anonymous.send(JSON.stringify({ id: sent[event], event, data: {} }));
+    }
+    await until(async () => answers.size === Object.keys(expected).length, 'debug events were not answered');
+    for (const [event, code] of Object.entries(expected)) assert.equal(answers.get(sent[event]), code, event);
+    anonymous.close();
+    const changesBefore = (await redis.send('XREVRANGE', ['iot:live:changes', '+', '-', 'COUNT', '1']) as [string, string[]][])[0]?.[0] ?? '0-0';
     const sessionId = (await channel.request<{id:string}>('edge.serial.open', {id:node,path:'/dev/ttyS1'})).id;
+    const route = `iot:live:route:edge-serial:${node}:${sessionId}`;
+    assert.match(String(await redis.send('GET', [route])), /^iot:live:worker:/, 'serial events are not routed to the browser worker');
     const session = {id:node,sessionId};
     const sendCommand = (command: unknown) => channel.request('edge.serial.command',{...session,command});
     const events: {kind: string; requestId?: number; hex?: string; manual?: boolean; sequence?: number}[] = [];
@@ -127,6 +155,9 @@ try {
     await until(async () => events.some(e => e.requestId === 4 && !e.manual), 'resume acknowledgement missing');
     release(); release = undefined; channel.reset();
     await until(async () => commands.some(c => (c.get(3) as Buffer).toString() === 'close'), 'browser disconnect did not close serial session');
+    await until(async () => !(await redis.send('EXISTS', [route])), 'closed serial session kept its event route');
+    const broadcast = await redis.send('XRANGE', ['iot:live:changes', `(${changesBefore}`, '+']) as [string, string[]][];
+    assert(!broadcast.some(([, fields]) => fields.some(field => field.startsWith('edge-serial:'))), 'serial events reached the broadcast change stream');
 
     const closed = (sessionId: string) => commands.some(command =>
         (command.get(1) as Buffer).equals(bytes(sessionId)) && (command.get(3) as Buffer).toString() === 'close');

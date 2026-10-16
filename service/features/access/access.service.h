@@ -130,17 +130,17 @@ template <typename Context> ruvia::task<void> ensure(Context& context) {
 
 // 消费访问会话变更：存在未处理且影响会话的事件（access_key、device）时重建会话投影，随后持久化消费回执。
 inline ruvia::task<void> applyChanges(ruvia::web_worker_context& context, std::string_view receiptConsumer, const std::vector<message::StreamMessage>& messages) {
-    const auto eventIds = service::message::idempotency::eventIds(messages);
-    const auto pendingIds = co_await service::message::idempotency::pending(context, receiptConsumer, eventIds);
+    const auto eventIds = service::messaging::idempotency::eventIds(messages);
+    const auto pendingIds = co_await service::messaging::idempotency::pending(context, receiptConsumer, eventIds);
     const bool changed = std::ranges::any_of(messages, [&pendingIds](const message::StreamMessage& message) {
         const auto aggregate = message.get("aggregate");
-        return service::message::idempotency::shouldProcess(message, pendingIds) &&
+        return service::messaging::idempotency::shouldProcess(message, pendingIds) &&
             (aggregate == "access_key" || aggregate == "device");
     });
     if (changed) {
         co_await refresh(context);
     }
-    co_await service::message::idempotency::markProcessed(context, receiptConsumer, eventIds);
+    co_await service::messaging::idempotency::markProcessed(context, receiptConsumer, eventIds);
 }
 
 } // namespace service::access::session
@@ -252,9 +252,9 @@ inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
 
 // 每批消费都按当前授权重新加载投递目录（各实例独立消费共享数据），随后持久化目录变更事件的消费回执。
 inline ruvia::task<Catalog> reloadCatalog(ruvia::web_worker_context& context, std::string_view receiptConsumer, const std::vector<message::StreamMessage>& messages) {
-    const auto eventIds = service::message::idempotency::eventIds(messages);
+    const auto eventIds = service::messaging::idempotency::eventIds(messages);
     auto catalog = co_await loadCatalog(context);
-    co_await service::message::idempotency::markProcessed(context, receiptConsumer, eventIds);
+    co_await service::messaging::idempotency::markProcessed(context, receiptConsumer, eventIds);
     co_return catalog;
 }
 
@@ -788,7 +788,7 @@ ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::strin
         { "response_payload", std::string(responsePayload) },
         { "used_at_ms", std::to_string(service::message::utcNowMilliseconds()) },
     };
-    (void)co_await service::message::redis::addAndWake(
+    (void)co_await service::messaging::stream::addAndWake(
         redis,
         service::message::access::stream::audit(),
         fields,

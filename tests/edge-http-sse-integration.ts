@@ -112,13 +112,29 @@ try {
     const inventoryReply = JSON.parse(inventoryEvent.data); assert.equal(inventoryReply.code, 0);
     const inventoryIds = new Set(inventoryReply.data.map((item: {id:string}) => item.id));
     for (const item of inventoryNodes) assert(inventoryIds.has(item.id), 'inventory must include nodes beyond the first HTTP page');
+    const nextNodes = async () => { for (;;) { const event = await inventory.next(); assert.notEqual(event.event, 'error', event.data); if (event.event === 'nodes') return JSON.parse(event.data); } };
     const commentsBefore = inventory.commentCount;
-    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'edge']);
+    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', 'edge', 'ids', inventoryNodes[0].id]);
     await inventory.expectQuiet(300);
     assert.equal(inventory.commentCount, commentsBefore, 'unchanged notification must not send a heartbeat');
+    const [renamedNode, removedNode] = inventoryNodes;
+    await request('PUT', `/v1/edge/${renamedNode.id}/name`, { name: `${tag}_inventory_renamed` });
+    const renamedDelta = await nextNodes();
+    assert.equal(renamedDelta.data, undefined, 'entity change must not resend the inventory');
+    assert.deepEqual(renamedDelta.delta.remove, []);
+    assert.deepEqual(renamedDelta.delta.upsert.map((item: {id:string}) => item.id), [renamedNode.id]);
+    assert.equal(renamedDelta.delta.upsert[0].name, `${tag}_inventory_renamed`);
+    assert.deepEqual(Object.keys(renamedDelta.delta.upsert[0]).sort(), Object.keys(inventoryReply.data.find((item: {id:string}) => item.id === renamedNode.id)).sort(), 'delta rows keep the snapshot row shape');
+    await db`DELETE FROM edge_node WHERE id=${removedNode.id}`;
+    assert.deepEqual(await nextNodes(), { code: 0, message: 'ok', delta: { upsert: [], remove: [removedNode.id] } });
+    const addedNode = { id: crypto.randomUUID(), imei: imei() };
+    await db`INSERT INTO edge_node(id,platform_id,imei,name,enrollment_status,capability) VALUES(${addedNode.id},${platform},${addedNode.imei},${tag + '_inventory'},'approved','{}'::jsonb)`;
+    const added = await nextNodes();
+    assert(added.data.some((item: {id:string}) => item.id === addedNode.id), 'a new node resends the complete inventory');
+    assert(!added.data.some((item: {id:string}) => item.id === removedNode.id));
     await inventory.close();
-    await db`DELETE FROM edge_node WHERE name=${tag + '_inventory'}`;
-    console.log('PASS 201 additional nodes share one complete inventory; duplicate notification stays quiet');
+    await db`DELETE FROM edge_node WHERE name LIKE ${tag + '_inventory%'}`;
+    console.log('PASS 201 additional nodes share one complete inventory; unchanged ids stay quiet, changes and removals are entity deltas');
 
 
     for (const [method,path,data] of [
@@ -234,7 +250,7 @@ try {
     await db`DELETE FROM sys_user_role WHERE user_id=${user}`;
     await db`DELETE FROM sys_role WHERE id=${role}`;
     await db`DELETE FROM sys_user WHERE id=${user}`;
-    await db`DELETE FROM edge_node WHERE name=${tag + '_inventory'}`;
+    await db`DELETE FROM edge_node WHERE name LIKE ${tag + '_inventory%'}`;
     await db`DELETE FROM edge_node WHERE id IN (${node},${pending})`;
     for (const id of groups.reverse()) await db`DELETE FROM edge_node_group WHERE id=${id}`;
     await redis.send('DEL', [`iot:edge:auth:${identity}`, `iot:edge:auth:${pendingIdentity}`, `iot:edge:logs:snapshot:${node}`]);

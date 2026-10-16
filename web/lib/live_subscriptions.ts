@@ -1,4 +1,9 @@
-import { type SnapshotObserver, SnapshotStream } from './snapshot_stream';
+import {
+    applySnapshotDelta,
+    type SnapshotDelta,
+    type SnapshotObserver,
+    SnapshotStream,
+} from './snapshot_stream';
 
 export interface LiveSession {
     token: string | null;
@@ -15,6 +20,8 @@ export interface LiveContext {
 /** Delivery callbacks of one opened source; calls after it was closed are ignored. */
 export interface LiveSink {
     next(channel: string, value: unknown): void;
+    /** Entity delta against the channel's latest full value. */
+    delta(channel: string, delta: SnapshotDelta): void;
     /** One channel was rejected; the other channels of the source stay live. */
     reject(channel: string, error: Error): void;
     /** The source ended. `unauthorized` asks the registry to refresh the session once. */
@@ -41,6 +48,7 @@ interface Entry<Target> {
     observers: Map<SnapshotObserver<unknown>, string>;
     run?: Run;
     failure?: Error;
+    /** Latest full value per channel; deltas are merged into it for late readers. */
     values: Map<string, unknown>;
     errors: Map<string, Error>;
     /** A session refresh was spent since the last delivered value. */
@@ -209,6 +217,9 @@ export class LiveSubscriptions<Target> {
                 next: (channel, value) => {
                     if (current()) this.deliver(entry, channel, value);
                 },
+                delta: (channel, delta) => {
+                    if (current()) this.applyDelta(entry, channel, delta);
+                },
                 reject: (channel, error) => {
                     if (current()) this.reject(entry, channel, error);
                 },
@@ -231,7 +242,7 @@ export class LiveSubscriptions<Target> {
         run.close();
     }
 
-    private deliver(entry: Entry<Target>, channel: string, value: unknown) {
+    private deliver(entry: Entry<Target>, channel: string, value: unknown, delta?: SnapshotDelta) {
         entry.refreshed = false;
         entry.errors.delete(channel);
         entry.values.set(channel, value);
@@ -239,7 +250,8 @@ export class LiveSubscriptions<Target> {
         for (const [observer, name] of [...entry.observers]) {
             if (name !== channel) continue;
             try {
-                observer.next(value);
+                if (delta && observer.delta) observer.delta(delta, value);
+                else observer.next(value);
             } catch (error) {
                 entry.observers.delete(observer);
                 reportError(observer, error instanceof Error ? error : new Error(String(error)));
@@ -250,6 +262,23 @@ export class LiveSubscriptions<Target> {
             this.close(entry);
             queueMicrotask(() => this.syncShared());
         }
+    }
+
+    private applyDelta(entry: Entry<Target>, channel: string, delta: SnapshotDelta) {
+        if (!entry.values.has(channel)) {
+            this.reject(entry, channel, new Error('实时增量缺少基准快照'));
+            return;
+        }
+        const previous = entry.values.get(channel);
+        let value: unknown;
+        try {
+            value = applySnapshotDelta(previous, delta);
+        } catch (error) {
+            this.reject(entry, channel, error instanceof Error ? error : new Error(String(error)));
+            return;
+        }
+        entry.refreshed = false;
+        if (value !== previous) this.deliver(entry, channel, value, delta);
     }
 
     private reject(entry: Entry<Target>, channel: string, error: Error) {
@@ -334,9 +363,13 @@ export class LiveSubscriptions<Target> {
 }
 
 function untypedObserver<T>(observer: SnapshotObserver<T>): SnapshotObserver<unknown> {
+    const delta = observer.delta;
     return {
         next: (value) => observer.next(value as T),
         error: (error) => observer.error(error),
+        ...(delta
+            ? { delta: (change: SnapshotDelta, value: unknown) => delta(change, value as T) }
+            : {}),
     };
 }
 

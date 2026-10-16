@@ -22,7 +22,8 @@ function token(user = admin) {
 }
 const wait = (milliseconds: number) => Bun.sleep(milliseconds);
 interface LinkItem { id: string; name: string; debug_enabled: boolean; endpoint?: { targets?: { name: string }[] } }
-interface LinkSnapshot { code: number; data?: { list?: LinkItem[] } }
+// A frame is either the full page or an entity delta of rows on that page.
+interface LinkSnapshot { code: number; data?: { list?: LinkItem[] }; delta?: { upsert: LinkItem[]; remove: string[] } }
 interface SnapshotStream { next(): Promise<LinkSnapshot>; close(): Promise<void> }
 interface PausedStream { readLatest(latest: (item: LinkItem) => boolean): Promise<{ snapshot: LinkSnapshot; bytes: number }>; close(): void }
 const frame = (text: string): { value: LinkSnapshot | undefined; rest: string } | undefined => {
@@ -96,7 +97,7 @@ async function rawPaused(port: number, path: string): Promise<PausedStream> {
                         const parsed = frame(pending);
                         if (!parsed) break;
                         pending = parsed.rest;
-                        if (parsed.value?.data?.list?.some(latest)) return { snapshot: parsed.value, bytes };
+                        if ((parsed.value?.data?.list ?? parsed.value?.delta?.upsert)?.some(latest)) return { snapshot: parsed.value, bytes };
                     }
                 }
                 throw new Error('SSE ended before the latest complete snapshot');
@@ -115,10 +116,10 @@ async function api(port: number, method: string, path: string, body: unknown) {
 }
 const linkView = (snapshot: LinkSnapshot) => {
     assert.equal(snapshot?.code, 0, JSON.stringify(snapshot).slice(0, 500));
-    return snapshot.data?.list?.find((item) => item.id === linkId);
+    return (snapshot.data?.list ?? snapshot.delta?.upsert)?.find((item) => item.id === linkId);
 };
-// Link list SSE: snapshots follow committed business writes published through
-// the outbox and the shared live change stream to every API instance.
+// Link list SSE: a committed write to one link reaches every API instance as an
+// entity delta of that row, published through the outbox and the live stream.
 const linkId = crypto.randomUUID();
 const marker = `multi-instance-${crypto.randomUUID()}`;
 const eventsPath = `/v1/link/events?page=1&pageSize=10&keyword=${encodeURIComponent(marker)}`;
