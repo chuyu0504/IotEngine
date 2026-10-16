@@ -1,8 +1,9 @@
 // 仅在一次性测试数据库中执行；独立 schema 和全部数据均回滚。
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { databaseUrl } from './architecture-fixture';
 
-const db = new Bun.SQL(process.env.ARCHITECTURE_DATABASE_URL ?? 'postgres://architecture_test@127.0.0.1:55439/iot_architecture');
+const db = new Bun.SQL(databaseUrl);
 const migration = async (path: string) => (await Bun.file(path).text()).split('R"sql(')[1].split(')sql"')[0];
 const historical = await migration('service/config/model-revisions.h');
 const current = await migration('service/config/current_device_model.h');

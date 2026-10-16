@@ -209,9 +209,9 @@ Topic 层号、文本列号、二进制偏移均从 `0` 开始。`+` 独占一�
 
 后端测试 `mqtt-protocol`、`mqtt-transport`、`mqtt-configuration` 覆盖帧、QoS、设备路由、配置、预览、三种负载格式、指令编码、真实 TCP Broker、重连、域名和连接归属。
 
-`tests/mqtt-integration.ts` 在独立本地 PostgreSQL/TimescaleDB、Redis 和 API 实例中验证管理接口、预览鉴权、两设备共享 Topic、批量遥测、设备时间、原始值及派生值换算、多点模板合并为一条消息与一个命令记录，以及 Broker 确认；连接参数使用 `architecture-fixture.ts` 的本地环境变量契约。
+`tests/mqtt-integration.ts` 在 CTest `api` fixture 启动的本地 PostgreSQL/TimescaleDB、Redis 和 API 实例中验证管理接口、预览鉴权、两设备共享 Topic、批量遥测、设备时间、原始值及派生值换算、多点模板合并为一条消息与一个命令记录，以及 Broker 确认；运行方式见 `docs/build.md` 的集成测试（`ctest -L integration`）。
 
-`tests/mqtt-migration-integration.ts` 按迁移测试约定运行各阶段，验证 `0052_mqtt_client` 的新库、重启、旧库升级、重复执行、漂移拒绝和失败回滚，仅用于已停止业务进程的可丢弃本地数据库。
+`tests/mqtt-migration-integration.ts` 由 CTest `migration` fixture 依次驱动新库、重启、旧库升级、漂移拒绝、失败回滚、恢复与重复启动各阶段，验证 `0052_mqtt_client`，每次运行使用新建的可丢弃本地数据库。
 
 
 ### 多条上报消息

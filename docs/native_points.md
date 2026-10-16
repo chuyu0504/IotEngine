@@ -18,4 +18,4 @@ MQTT 页面与 Modbus、S7、SL651、MC、FINS、DLT645 页面提供同一派生
 
 ## 验证
 
-`tests/native-points-migration-integration.ts` 在事务临时表中验证 UUID 保留、表达式、小数舍入、MQTT 模板、重复转换、数据库约束及失败保护；`tests/mqtt-integration.ts` 验证原始 MQTT 采集值、派生值入库、原始控制值及设备回执。原生解码和协议帧继续由 CTest 覆盖。
+`tests/native-points-migration-integration.ts` 在事务临时表中验证 UUID 保留、表达式、小数舍入、MQTT 模板、重复转换、数据库约束及失败保护；`tests/mqtt-integration.ts` 验证原始 MQTT 采集值、派生值入库、原始控制值及设备回执。两者由 `ctest -L integration` 运行（见 `docs/build.md`）。原生解码和协议帧继续由 CTest 覆盖。

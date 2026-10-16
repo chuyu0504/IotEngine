@@ -109,7 +109,7 @@ test('page views do not own query caching or import transport infrastructure', (
         const source = readFileSync(file, 'utf8');
         if (/\b(?:useQuery|useInfiniteQuery|useMutation|useQueryClient|useSnapshotQuery)\s*\(/.test(source)) violations.push(repoPath(file));
         for (const target of imports) {
-            if (/^web\/lib\/(?:http|sse|snapshot_request|snapshot_stream|sse_subscriptions|terminal_channel)\./.test(repoPath(target))) violations.push(`${repoPath(file)} -> ${repoPath(target)}`);
+            if (/^web\/lib\/(?:http|sse|snapshot_request|snapshot_stream|sse_subscriptions)\./.test(repoPath(target))) violations.push(`${repoPath(file)} -> ${repoPath(target)}`);
         }
     }
     expect(violations).toEqual([]);

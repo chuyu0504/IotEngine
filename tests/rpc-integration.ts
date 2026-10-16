@@ -575,9 +575,8 @@ try {
         VALUES(${device},${device},${link},${protocol},
             '{"device_code":"0000000001","modbus_mode":"TCP","remote_control":true}'::jsonb,
             ${admin})`;
-    // Seed the minimum latest metadata before installing the synthetic
-    // collector route. A recovery projection preserves a complete runtime
-    // hash, while an incomplete latest projection quite correctly removes it.
+    // Seed the minimum latest metadata and the synthetic collector connection
+    // lease that the command route lookup validates against the link owner.
     await redis.send('HSET', [
         `iot:v2:device:${device}:latest`,
         '_device_id',
@@ -587,22 +586,23 @@ try {
     ]);
     await redis.send('SET', [`iot:v2:owner:link:${link}`, instance, 'PX', '120000']);
     await redis.send('HSET', [
-        `iot:v2:runtime:device:${device}`,
+        `iot:v3:device:connection:${device}`,
         'device_id',
         device,
-        'device_code',
-        '0000000001',
         'link_id',
         link,
         'instance_id',
         instance,
         'worker_id',
         '0',
+        'worker_instance_id',
+        id(),
         'connection_id',
         'rpc-integration-connection',
         'session_epoch',
         '1',
     ]);
+    await redis.send('PEXPIRE', [`iot:v3:device:connection:${device}`, '120000']);
 
     const firstKey = id();
     idempotencyKeys.push(firstKey);
@@ -1013,7 +1013,7 @@ try {
             await db`DELETE FROM command_request WHERE idempotency_key IN ${db(idempotencyKeys)}`;
         await redis.send('DEL', [
             `iot:v2:owner:link:${link}`,
-            `iot:v2:runtime:device:${device}`,
+            `iot:v3:device:connection:${device}`,
             `iot:v2:device:${device}:latest`,
             `iot:channel:command:worker:${instance}:0:high`,
             ...rpcStreams,

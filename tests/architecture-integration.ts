@@ -105,27 +105,29 @@ try {
     console.log('PASS same address across links; duplicate on same link rejected');
 
     // Preserve the synthetic route across recovery projection, just as a fully
-    // initialized collector connection does.
+    // initialized collector connection does: the connection lease plus the link
+    // owner that the command route lookup validates.
     await redis.send('HSET', [`iot:v2:device:${device}:latest`, '_device_id', device,
         '_element_ids', JSON.stringify({ [point]: true })]);
     await redis.send('SET', [`iot:v2:owner:link:${link}`, instance, 'PX', '120000']);
     await redis.send('HSET', [
-        `iot:v2:runtime:device:${device}`,
+        `iot:v3:device:connection:${device}`,
         'device_id',
         device,
-        'device_code',
-        '0000000001',
         'link_id',
         link,
         'instance_id',
         instance,
         'worker_id',
         '0',
+        'worker_instance_id',
+        id(),
         'connection_id',
         'isolated-test-connection',
         'session_epoch',
         '1',
     ]);
+    await redis.send('PEXPIRE', [`iot:v3:device:connection:${device}`, '120000']);
     const request = { idempotency_key: id(), elements: [{ elementId: point, value: '1' }] };
     const responses = await Promise.all(
         Array.from({ length: 8 }, () => api(`/v1/device/${device}/commands`, request))

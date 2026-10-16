@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
+import { apiBase as base, redisUrl } from './architecture-fixture';
 
 // Run this script only while the disposable iot-engine application fixture is
 // running. It inserts one unknown-kind entry, so the real Projector can test
 // pending recovery, fencing, ACK, and cleanup without requiring a device row.
-const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL ?? Bun.env.REDIS_URL;
-assert(redisUrl, 'ARCHITECTURE_REDIS_URL or REDIS_URL is required');
 const redis = new Bun.RedisClient(redisUrl);
 const suffix = crypto.randomUUID().replaceAll('-', '');
 const instance = `edge-fixture-${suffix}`;
@@ -25,8 +24,6 @@ async function until(check: () => Promise<boolean>, message: string, timeout = 4
 }
 
 try {
-    const base = Bun.env.TEST_BASE_URL;
-    assert(base, 'TEST_BASE_URL is required for the lease-loss readiness check');
     const candidates = await redis.send('KEYS', ['iot:v3:edge:projector:lease:*']) as string[];
     const liveLeases: Array<{ key: string; token: string }> = [];
     for (const key of candidates) {

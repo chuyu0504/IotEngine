@@ -1,6 +1,7 @@
 // Transactional checks in the disposable architecture fixture only.
 import assert from 'node:assert/strict';
-const db=new Bun.SQL(process.env.ARCHITECTURE_DATABASE_URL ?? 'postgres://architecture_test@127.0.0.1:55439/iot_architecture');
+import { databaseUrl } from './architecture-fixture';
+const db=new Bun.SQL(databaseUrl);
 const admin='00000000-0000-7000-8000-000000000002',platform='00000000-0000-7000-8000-000000000001';
 const id=()=>crypto.randomUUID();const rollback=new Error('fixture rollback');
 try { await db.begin(async tx=>{
