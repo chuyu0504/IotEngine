@@ -5,7 +5,7 @@ import { apiBase as base } from './architecture-fixture';
 const health = await fetch(`${base}/internal/health/ready`, { signal: AbortSignal.timeout(5000) });
 assert.equal(health.status, 200, 'Single process is not ready');
 const state = await health.json();
-for (const component of ['collector', 'telemetry', 'edge-projector', 'outbox', 'gb28181', 'vpn']) {
+for (const component of ['collector', 'telemetry', 'edge-projector', 'outbox', 'gb28181-projector', 'vpn']) {
     assert.equal(state.components?.[component]?.state, 'ready', `${component} must run in the same process`);
 }
 for (const path of ['/v1/device', '/v1/gb28181/health', '/v1/vpn/networks']) {

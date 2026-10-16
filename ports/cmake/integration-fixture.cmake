@@ -131,7 +131,7 @@ function(fixture_write_configuration index)
             "ZLM_HTTP_PORT=0"
             "ZLM_RTSP_PORT=0"
             "ZLM_RTMP_PORT=0"
-            "ZLM_RTC_PORT=0"
+            "ZLM_RTC_PORT=${rtc_port}"
             "ZLM_SRT_PORT=0")
     endif()
     list(APPEND values ${SETTINGS})
@@ -372,6 +372,9 @@ endfunction()
 
 # --- Actions ----------------------------------------------------------------
 
+# WebRTC binds UDP and then TCP on the same port; with port 0 the UDP ephemeral
+# port can already be held by another TCP socket, so it gets a fixed block port.
+math(EXPR rtc_port "${API_PORT} + 8")
 math(EXPR sip_port "${API_PORT} + 9")
 if(NOT INSTANCES)
     set(INSTANCES 1)

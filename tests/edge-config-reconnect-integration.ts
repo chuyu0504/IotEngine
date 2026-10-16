@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
 
-// 只连接本地隔离服务。模拟节点 Hello，不发送心跳、采集数据或写入指令。
+// 只连接本地隔离服务。模拟节点 Hello 与能力上报，不发送心跳、采集数据或写入指令。
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001';
@@ -75,9 +75,7 @@ async function reconnect(applied: bigint, desired: bigint, expectConfig: boolean
         socket.binaryType = 'arraybuffer';
         const seen: number[] = [];
         const result = new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => expectConfig
-                ? reject(new Error('stale configuration waited for heartbeat'))
-                : resolve(), expectConfig ? 5000 : 750);
+            let timeout: Timer | undefined;
             socket!.onerror = () => { clearTimeout(timeout); reject(new Error('edge WebSocket failed')); };
             socket!.onclose = () => { clearTimeout(timeout); reject(new Error('edge WebSocket closed')); };
             socket!.onopen = () => {
@@ -88,6 +86,16 @@ async function reconnect(applied: bigint, desired: bigint, expectConfig: boolean
             };
             socket!.onmessage = event => {
                 const message = decode(Buffer.from(event.data as ArrayBuffer));
+                if (message.has(21)) {
+                    // Restoration follows the capability report (80a3426) so the
+                    // configuration is validated against the reported protocol set.
+                    socket!.send(Buffer.concat([field(1, 6), field(2, bytes(uuid())), field(3, bytes(node)),
+                        field(4, bytes(platform)), field(5, message.get(5) as bigint), field(6, Date.now()),
+                        field(8, 2), field(26, Buffer.alloc(0))]));
+                    timeout = setTimeout(() => expectConfig
+                        ? reject(new Error('stale configuration waited for heartbeat'))
+                        : resolve(), expectConfig ? 5000 : 750);
+                }
                 if (message.has(30) || message.has(32)) seen.push(message.has(30) ? 30 : 32);
                 if (expectConfig && seen.includes(30) && seen.includes(32)) {
                     clearTimeout(timeout);
@@ -121,7 +129,7 @@ try {
     await reconnect(revision, revision, false);
     await reconnect(revision + 1n, revision, false);
     await reconnect(0n, revision, false, false);
-    console.log('PASS Hello version reconciles stale config without heartbeat; current/newer and unsupported nodes do not replay');
+    console.log('PASS capability report after Hello reconciles stale config without heartbeat; current/newer and unsupported nodes do not replay');
 } finally {
     await db.close();
     redis.close();

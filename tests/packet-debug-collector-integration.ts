@@ -66,16 +66,17 @@ try {
     await toggle('device',device1,true);
     await until(async()=>await length('device',device1)>=2,'device debug did not capture direct TX/RX');
     assert.equal(await length('device',device2),0,'device debug leaked sibling traffic');
-    const readRows = async () => {
-        const rounds = await redis.send('ZRANGE', [`iot:debug:v4:device:${device1}`,'0','-1']) as string[];
-        const ids = (await Promise.all(rounds.map(round => redis.send('ZRANGE',[`iot:debug:v4:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
-        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v4:packet:'+id])] as const));
+    const rounds = (scope:string,id:string) => redis.send('ZRANGE', [`iot:debug:v4:${scope}:${id}`,'0','-1']) as Promise<string[]>;
+    const roundsSince = (scope:string,id:string,since:number) => redis.send('ZCOUNT',[`iot:debug:v4:${scope}:${id}`,`(${since}`,'+inf']).then(Number);
+    const readRows = async (scope='device', id:string=device1) => {
+        const ids = (await Promise.all((await rounds(scope,id)).map(round => redis.send('ZRANGE',[`iot:debug:v4:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
+        return await Promise.all(ids.map(async packetId=>[packetId,await redis.send('HGETALL',['iot:debug:v4:packet:'+packetId])] as const));
     };
     const rows=await readRows();
     assert(rows.some(([,fields])=>fields.direction==='RX'));
     assert(rows.some(([,fields])=>fields.direction==='TX'));
     for(const [,fields] of rows) assert.equal(fields.payload_hex.slice(12,14),'01');
-    const events = async () => (await readRows())
+    const events = async (scope='device', id:string=device1) => (await readRows(scope,id))
         .map(([,fields]) => fields);
     await until(async()=>(await events()).some(row=>row.response_status==='success'), 'matched response did not finalize TX');
     await until(async()=>(await events()).filter(row=>row.direction==='RX' && row.parsed_json).length>=2, 'response parsing missing');
@@ -101,31 +102,41 @@ try {
     for (const packet of round.packets) assert.equal(packet.address,`127.0.0.1:${server.port}`);
     assert.equal(round.packets.filter((packet: {direction:string})=>packet.direction==='RX').length, 2);
     const range=new URLSearchParams({page:'1',pageSize:'20',startTime:new Date(Date.now()-3600000).toISOString(),endTime:new Date(Date.now()+60000).toISOString()});
-    const historyPage=await snapshot(`/v1/device/${device1}/history?${range}`);
+    const historyResponse=await fetch(`${apiBase}/v1/device/${device1}/history?${range}`,{headers:{Authorization:`Bearer ${token}`,Accept:'application/json'},signal:AbortSignal.timeout(15000)});
+    const historyBody=await historyResponse.json();
+    assert.equal(historyResponse.status,200,JSON.stringify(historyBody));
+    assert.equal(historyBody.code,0,JSON.stringify(historyBody));
+    const historyPage=historyBody.data;
     assert(historyPage.list.length && historyPage.list.every((record: {rawPayloadHex:unknown})=>Array.isArray(record.rawPayloadHex)), 'history API omitted raw payload arrays');
     responseMode='exception';
     await until(async()=>(await events()).some(row=>row.response_status==='failed' && row.reason==='modbus_exception_response'), 'exception response was not failure');
     responseMode='normal';
     const opened=connections;
     await toggle('link',link,true);
-    await until(async()=>await length('device',device2)>=2,'link debug did not cover sibling');
+    // Link and device switches are independent (88858f3): link debug indexes every device's rounds under the link only.
+    const linkDevices = async () => new Set(await Promise.all((await rounds('link',link)).map(round => redis.send('HGET',[`iot:debug:v4:acquisition:${round}`,'device_id']))));
+    await until(async()=>{const devices=await linkDevices();return devices.has(device1) && devices.has(device2);},'link debug did not cover sibling');
+    assert.equal(await length('device',device2),0,'link debug created sibling device rounds');
     await toggle('device',device1,false);
-    const before=await length('device',device1);
-    await until(async()=>await length('device',device1)>before,'closing device suppressed active link debug');
+    const settle=requests+8;
+    await until(async()=>requests>=settle,'collection stopped after device debug was disabled');
+    const deviceClosed=Date.now();
+    await until(async()=>await roundsSince('link',link,deviceClosed)>=4,'closing device suppressed active link debug');
+    assert.equal(await roundsSince('device',device1,deviceClosed),0,'closed device debug kept recording device rounds');
     assert.equal(connections,opened,'debug toggle reopened TCP connection');
     responseMode='silent';
-    await until(async()=>(await events()).some(row=>row.response_status==='failed' && /timeout/.test(row.reason)), 'response timeout did not become failure');
+    await until(async()=>(await events('link',link)).some(row=>row.response_status==='failed' && /timeout/.test(row.reason)), 'response timeout did not become failure');
     responseMode='normal';
     await toggle('link',link,false);
     const requestBarrier=requests+8;
     await until(async()=>requests>=requestBarrier,'collection stopped after debug was disabled');
-    const stopped=await length('link',link), secondBarrier=requests+4;
+    const stopped=Date.now(), secondBarrier=requests+4;
     await until(async()=>requests>=secondBarrier,'normal sampling stopped');
-    assert.equal(await length('link',link),stopped,'packets continued after both switches closed');
+    assert.equal(await roundsSince('link',link,stopped),0,'packets continued after both switches closed');
     assert((await db`SELECT 1 FROM device_data WHERE device_id=${device1} LIMIT 1`).length,'debug switch broke history persistence');
     const denied=await fetch(`${apiBase}/v1/device/events?debugDeviceId=${device1}`,{headers:{Accept:'text/event-stream'}});
     assert.equal(denied.status,401);
-    console.log('PASS direct Modbus: TX/RX, sibling isolation, link override, manual close, connection continuity and unchanged history');
+    console.log('PASS direct Modbus: TX/RX, sibling isolation, independent link/device switches, manual close, connection continuity and unchanged history');
 } finally {
     server.stop(true);
     await db`UPDATE device SET deleted_at=NOW() WHERE id IN (${device1},${device2})`;

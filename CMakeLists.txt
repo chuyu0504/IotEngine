@@ -548,7 +548,6 @@ foreach(test_name
         edge-dtu-integration
         edge-firmware-integration
         edge-http-sse-integration
-        edge-liveness-integration
         edge-recovery-integration
         edge-serial-debug-integration
         edge-session-integration
@@ -565,7 +564,6 @@ foreach(test_name
         link-http-sse-integration
         mqtt-integration
         native-points-migration-integration
-        outbox-notification-integration
         packet-debug-collector-integration
         packet-debug-storage-integration
         protocol-http-integration
@@ -580,6 +578,16 @@ foreach(test_name
     iot_engine_add_integration("${test_name}" FIXTURE api)
 endforeach()
 iot_engine_add_integration(open-access-mqtt-integration FIXTURE api MQTT)
+# Crosses the real 300s probe and 900s status-reporting intervals (~905s of
+# sleeps); its own fixture keeps the serialized `api` fixture tests running.
+iot_engine_add_integration_fixture(edge-liveness)
+iot_engine_add_integration(edge-liveness-integration FIXTURE edge-liveness TIMEOUT 1200)
+
+# Asserts that an idle process performs no outbox dispatch; delayed work left
+# by earlier tests in the shared `api` fixture (e.g. command updates at attempt
+# deadlines) would publish inside that quiet window.
+iot_engine_add_integration_fixture(outbox-notification)
+iot_engine_add_integration(outbox-notification-integration FIXTURE outbox-notification)
 
 if(WIN32)
     # The probe comes from the Windows client build (clients/windows).

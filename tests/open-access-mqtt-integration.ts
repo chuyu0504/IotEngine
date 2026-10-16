@@ -33,6 +33,50 @@ function text(value: string) {
     size.writeUInt16BE(bytes.length);
     return Buffer.concat([size, bytes]);
 }
+function frame(bytes: Buffer) {
+    let length = 0, offset = 1, multiplier = 1;
+    while (offset < bytes.length && offset <= 4) {
+        const byte = bytes[offset++]; length += (byte & 127) * multiplier; multiplier *= 128;
+        if (!(byte & 128)) return bytes.length < offset + length ? undefined : { header: bytes[0], body: bytes.subarray(offset, offset + length), size: offset + length };
+    }
+}
+function connectCredentials(body: Buffer) {
+    let offset = 0;
+    const field = () => { const size = body.readUInt16BE(offset), value = body.subarray(offset + 2, offset + 2 + size).toString(); offset += 2 + size; return value; };
+    field();
+    const flags = body[offset + 1];
+    offset += 4;
+    field();
+    if (flags & 4) { field(); field(); }
+    return { username: flags & 0x80 ? field() : undefined, password: flags & 0x40 ? field() : undefined };
+}
+// CI 的匿名 Broker 接受任意凭据；明文 Broker 前置此网关，按配置凭据校验 CONNECT，错误时回 CONNACK=5，正确时透传到真实 Broker。
+const gated = brokerUrl.startsWith('mqtt://');
+let rejectedConnects = 0;
+const gate = Bun.listen<{ pending: Buffer; connecting: boolean; upstream?: Bun.Socket }>({ hostname: '127.0.0.1', port: 0, socket: {
+    open(client) { client.data = { pending: Buffer.alloc(0), connecting: false }; },
+    data(client, chunk) {
+        const state = client.data;
+        if (state.upstream) { state.upstream.write(chunk); return; }
+        state.pending = Buffer.concat([state.pending, Buffer.from(chunk)]);
+        const connect = state.connecting ? undefined : frame(state.pending);
+        if (!connect) return;
+        const credentials = connect.header === 0x10 ? connectCredentials(connect.body) : undefined;
+        if (credentials?.username !== 'integration' || credentials.password !== 'mqtt-fixture-password') {
+            rejectedConnects++;
+            client.end(packet(0x20, Buffer.from([0, 5])));
+            return;
+        }
+        state.connecting = true;
+        Bun.connect({ hostname: '127.0.0.1', port, socket: {
+            open(upstream) { upstream.write(state.pending); state.upstream = upstream; },
+            data(_, bytes) { client.write(bytes); },
+            close() { client.end(); },
+            error() { client.end(); },
+        } }).catch(() => client.end());
+    },
+    close(client) { client.data.upstream?.end(); },
+} });
 function token(id: string) {
     const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
     const now = Math.floor(Date.now() / 1000);
@@ -70,15 +114,9 @@ try {
         },
         data(socket, data) {
             buffer = Buffer.concat([buffer, Buffer.from(data)]);
-            while (buffer.length >= 2) {
-                let length = 0, offset = 1, multiplier = 1, complete = false;
-                while (offset < buffer.length && offset <= 4) {
-                    const byte = buffer[offset++]; length += (byte & 127) * multiplier; multiplier *= 128;
-                    if (!(byte & 128)) { complete = true; break; }
-                }
-                if (!complete || buffer.length < offset + length) break;
-                const header = buffer[0], body = buffer.subarray(offset, offset + length);
-                buffer = buffer.subarray(offset + length);
+            for (let next = frame(buffer); next; next = frame(buffer)) {
+                const { header, body } = next;
+                buffer = buffer.subarray(next.size);
                 if (header === 0x20) {
                     assert.equal(body[1], 0);
                     socket.write(packet(0x82, Buffer.concat([Buffer.from([0, 1]), text(`iot/${device}`), Buffer.from([1])])));
@@ -115,7 +153,7 @@ try {
     await db`INSERT INTO sys_user(id,username,password_hash) VALUES(${user},${user},'test-unused')`;
     await request('POST', '/api/open-mqtt', {}, 403, user);
     key = (await request('POST', '/api/open-access-key', { name, scopes: ['device:realtime','device:command','alert:read'], deviceIds: [device] })).id;
-    const config = { accessKeyId: key, name, brokerUrl,
+    const config = { accessKeyId: key, name, brokerUrl: gated ? `mqtt://127.0.0.1:${gate.port}` : brokerUrl,
         status: 'enabled', timeoutSeconds: 2, username: 'integration', password: 'mqtt-fixture-password',
         eventTypes: ['device.data.reported','device.alert.triggered','device.command.updated'] };
     await request('POST', '/api/open-mqtt', { ...config, brokerUrl: 'http://example.com' }, 400);
@@ -150,8 +188,9 @@ try {
     assert.equal(messages.find((row) => row.body.deliveryId === command)!.body.data.command.status, 'SUCCEEDED');
     await request('PUT', `/api/open-mqtt/${destination}`, { ...config, password: 'wrong-password' });
     const retry = await publish('device.data.reported');
-    await until(async () => (await db`SELECT 1 FROM open_access_log WHERE mqtt_id=${destination} AND status='failed'`).length > 0, 'authentication failure was not recorded');
+    await until(async () => (await db`SELECT 1 FROM open_access_log WHERE mqtt_id=${destination} AND status='failed' AND message LIKE '%CONNACK=%'`).length > 0, 'authentication failure was not recorded');
     assert(!messages.some((row) => row.body.deliveryId === retry));
+    if (gated) assert(rejectedConnects > 0, 'wrong credentials did not reach the authenticating gate');
     await request('PUT', `/api/open-mqtt/${destination}`, config);
     await until(() => messages.some((row) => row.body.deliveryId === retry), 'pending delivery did not recover after credentials were fixed');
     if (Bun.env.OPEN_MQTT_VERIFY_HOSTNAME === '1') {
@@ -181,13 +220,16 @@ try {
 } finally {
     subscriber?.end();
     receiver.stop(true);
+    gate.stop(true);
     if (key) await db`DELETE FROM open_access_log WHERE access_key_id=${key}`;
-    if (webhook) await db`DELETE FROM open_webhook WHERE id=${webhook}`;
-    if (destination) await db`DELETE FROM open_mqtt WHERE id=${destination}`;
-    if (key) { await db`DELETE FROM open_access_key_device WHERE access_key_id=${key}`; await db`DELETE FROM open_access_key WHERE id=${key}`; }
-    await db`DELETE FROM device WHERE id=${device}`;
-    await db`DELETE FROM link WHERE id=${link}`;
-    await db`DELETE FROM protocol_config WHERE id=${model}`;
+    // Soft-delete like the API: late access audits and delivery results still
+    // reference these rows, and a missing row would fail their persistence.
+    if (webhook) await db`UPDATE open_webhook SET deleted_at=NOW() WHERE id=${webhook}`;
+    if (destination) await db`UPDATE open_mqtt SET deleted_at=NOW() WHERE id=${destination}`;
+    if (key) { await db`DELETE FROM open_access_key_device WHERE access_key_id=${key}`; await db`UPDATE open_access_key SET deleted_at=NOW() WHERE id=${key}`; }
+    await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
+    await db`UPDATE link SET status='disabled',deleted_at=NOW() WHERE id=${link}`;
+    await db`UPDATE protocol_config SET deleted_at=NOW() WHERE id=${model}`;
     await db`DELETE FROM sys_user WHERE id=${user}`;
     await redis.send('DEL', [`iot:v2:device:${device}:latest`]);
     redis.close();
