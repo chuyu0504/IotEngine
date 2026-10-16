@@ -1065,6 +1065,7 @@ enum class WorkerStreamTask : std::uint8_t {
     Reconciler,
     EdgeProjector,
     EdgeDispatcher,
+    Gb28181Projector,
     Count,
 };
 
@@ -1084,7 +1085,7 @@ inline std::string workerWakeStream(std::optional<std::size_t> workerIndex, std:
 }
 
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(WorkerStreamTask::Count)>
-    kWorkerStreamTaskNames{ "telemetry", "telemetry-history", "telemetry-latest", "telemetry-alerts", "telemetry-delivery", "freshness", "freshness-alerts", "command-result", "webhook", "reconciler", "edge-projector", "edge-dispatcher" };
+    kWorkerStreamTaskNames{ "telemetry", "telemetry-history", "telemetry-latest", "telemetry-alerts", "telemetry-delivery", "freshness", "freshness-alerts", "command-result", "webhook", "reconciler", "edge-projector", "edge-dispatcher", "gb28181-projector" };
 
 inline constexpr std::string_view workerStreamTaskName(WorkerStreamTask task) {
     return kWorkerStreamTaskNames.at(static_cast<std::size_t>(task));
@@ -1232,6 +1233,15 @@ RUVIA_MODEL(PreparedBatch,
 } // namespace service::message::command
 
 namespace service::message::gb28181 {
+
+// Fixed Hash written by every Collector at startup. Service Workers read the
+// enabled flag and media health from it; the gb28181 module reads media_started
+// before proxying /media requests to the process-local ZLMediaKit listener.
+inline constexpr std::string_view kStateKey{ "iot:state:gb28181:config" };
+inline constexpr std::string_view kStateEnabledField{ "enabled" };
+inline constexpr std::string_view kStateMediaStartedField{ "media_started" };
+inline constexpr std::string_view kStateMediaPortsField{ "media_ports" };
+inline constexpr std::string_view kStateMediaCapabilitiesField{ "media_capabilities" };
 
 // The GB28181 module sends ControlRequest; the feature forwards it unchanged to the
 // owning Collector. Replies carry code, message and an operation-specific data model.

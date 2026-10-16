@@ -2,9 +2,9 @@
 
 #include <algorithm>
 
-void StreamRegistry::updateStreamChanged(const std::string& app, const std::string& stream,
-                                         const std::string& schema, bool online,
-                                         int readerCount) {
+namespace service::gb28181::media {
+
+void StreamRegistry::updateStreamChanged(const std::string& app, const std::string& stream, const std::string& schema, bool online, int readerCount) {
     if (!online) {
         readerCount = 0;
         viewerCounts_.erase(stream);
@@ -19,24 +19,28 @@ void StreamRegistry::updateStreamChanged(const std::string& app, const std::stri
     status.schema = schema;
     status.online = online;
     status.readerCount = readerCount;
-    if (observer_)
+    if (observer_) {
         observer_(status);
+    }
 }
 
 void StreamRegistry::updateViewerCount(const std::string& stream, int viewerCount) {
     viewerCount = std::max(0, viewerCount);
-    if (viewerCount > 0)
+    if (viewerCount > 0) {
         viewerCounts_.insert_or_assign(stream, viewerCount);
-    else
+    } else {
         viewerCounts_.erase(stream);
+    }
 
     for (auto& [_, status] : streams_) {
         if (!status.online || status.stream != stream ||
-            status.readerCount == viewerCount)
+            status.readerCount == viewerCount) {
             continue;
+        }
         status.readerCount = viewerCount;
-        if (observer_)
+        if (observer_) {
             observer_(status);
+        }
     }
 }
 
@@ -56,7 +60,9 @@ std::string StreamRegistry::keyFor(const std::string& app, const std::string& st
 void StreamRegistry::replace(std::vector<StreamStatus> streams) {
     streams_.clear();
     viewerCounts_.clear();
-    for (auto& stream : streams)
-        streams_.emplace(keyFor(stream.app, stream.stream, stream.schema),
-                         std::move(stream));
+    for (auto& stream : streams) {
+        streams_.emplace(keyFor(stream.app, stream.stream, stream.schema), std::move(stream));
+    }
 }
+
+} // namespace service::gb28181::media

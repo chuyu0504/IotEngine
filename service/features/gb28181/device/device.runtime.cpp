@@ -4,6 +4,8 @@
 #include <chrono>
 #include <utility>
 
+namespace service::gb28181::device {
+
 void DeviceRegistry::upsertRegistration(const std::string& deviceId, const std::string& remoteAddress, const std::string& source) {
     const auto existing = devices_.find(deviceId);
     const bool newSession =
@@ -161,3 +163,5 @@ void DeviceRegistry::notify(const Device& device, DeviceChange change) const {
         observer_(device, change);
     }
 }
+
+} // namespace service::gb28181::device

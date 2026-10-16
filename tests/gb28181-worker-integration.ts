@@ -87,6 +87,16 @@ try {
     const ownerKey = `iot:gb28181:owner:${device}`;
     const owner = await redis.get(ownerKey);
     assert(owner?.includes(':session:'));
+    const ownerMatch = /^(.*):collector:(\d+):session:/.exec(owner);
+    assert(ownerMatch);
+    // Entries written straight into the projection stream need the same wake the
+    // production publication script emits; consumers do not poll the stream.
+    const wakeStream = `iot:service:${ownerMatch[1]}:work-available`;
+    async function appendProjection(fields: string[]) {
+        const entry = await redis.send('XADD', ['iot:gb28181:projection', '*', ...fields]) as string;
+        await redis.send('XADD', [wakeStream, 'MAXLEN', '~', '1000', '*', 'task', 'gb28181-projector']);
+        return entry;
+    }
     console.log('PASS REGISTER 200 follows DB commit and preserves preexisting metadata');
 
     const health = await request('GET','/v1/gb28181/health');
@@ -132,7 +142,7 @@ try {
     // Exercise the actual nonempty batch SQL and retry acknowledgement path.
     async function projectList(change: string, fields: string[]) {
         const projection = randomUUID();
-        await redis.send('XADD',['iot:gb28181:projection','*',
+        await appendProjection([
             'projection_id',projection,'owner_token',owner!, 'schema_version','1',
             'event_type','gb28181.device','change',change,'device_id',device,
             'name','Camera','online','1','last_seen_at',new Date().toISOString(),...fields]);
@@ -153,7 +163,7 @@ try {
     assert.equal(channels[0].name,'Updated channel');
     assert.equal(channels[0].custom_name,'Operator name');
     const retiredProjection = randomUUID();
-    await redis.send('XADD',['iot:gb28181:projection','*',
+    await appendProjection([
         'projection_id',retiredProjection,'owner_token',owner!, 'schema_version','1',
         'event_type','gb28181.device','change','records','device_id',device,
         'name','Camera','online','1','last_seen_at',new Date().toISOString(),'channel_count','0']);
@@ -162,8 +172,6 @@ try {
         'retired records projection must be acknowledged'), '0', 'retired records projection must not be applied');
     console.log('PASS nonempty catalog projections commit, remove stale channels and preserve operator names; retired change kinds are dropped');
 
-    const ownerMatch = /^(.*):collector:(\d+):session:/.exec(owner!);
-    assert(ownerMatch);
     const wrongStream = controls.find(key => key !== `iot:gb28181:control:worker:${ownerMatch[1]}:${ownerMatch[2]}`);
     assert(wrongStream);
     const requestId = randomUUID();
@@ -212,7 +220,7 @@ try {
     // a newer projection has already committed before this older entry resumes.
     await db.begin(async transaction => {
         await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${device},28181))`;
-        const entry = await redis.send('XADD', ['iot:gb28181:projection','*',
+        const entry = await appendProjection([
             'projection_id',projectionId,'owner_token',owner!,
             'schema_version','1','event_type','gb28181.device','change','device_name',
             'device_id',device,'name',device,'custom_name','Stale retried name',
@@ -232,16 +240,16 @@ try {
     const receiptKey = `iot:gb28181:projection:done:${projectionId}`;
     await redis.del(receiptKey);
     const serviceSource = await Bun.file('service/features/gb28181/gb28181.service.h').text();
-    const publishLua = serviceSource.slice(serviceSource.indexOf('publishProjection('))
-        .match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
+    const publishLua = serviceSource.match(/\bkPublishProjectionScript\s*=\s*R"lua\(([\s\S]*?)\)lua"/)?.[1];
     assert(publishLua, 'production projection publication Lua must be available');
     const replayFields = [
         'projection_id',projectionId,'owner_token',owner!,
         'schema_version','1','event_type','gb28181.device','change','device_name',
         'device_id',device,'name',device,'custom_name','Expired receipt stale replay',
         'online','1','last_seen_at',new Date().toISOString(),'channel_count','0'];
-    const replay = await redis.send('EVAL', [publishLua,'2','iot:gb28181:projection',
-        `iot:gb28181:projection:sent:${projectionId}`,originalOrder,originalOrder,...replayFields]) as string[];
+    const replay = await redis.send('EVAL', [publishLua,'3','iot:gb28181:projection',
+        `iot:gb28181:projection:sent:${projectionId}`,wakeStream,originalOrder,originalOrder,
+        'gb28181-projector','1000',...replayFields]) as string[];
     assert.equal(replay[0], originalOrder);
     assert.notEqual(replay[1], originalOrder);
     assert.equal(await until(async () => (await redis.get(receiptKey)) ?? undefined,
@@ -253,7 +261,7 @@ try {
     const invalidProjection = randomUUID();
     const invalidFields = [...replayFields];
     invalidFields[1] = invalidProjection;
-    await redis.send('XADD',['iot:gb28181:projection','*',...invalidFields,
+    await appendProjection([...invalidFields,
         'projection_order','18446744073709551616-0']);
     assert.equal(await until(async () =>
         (await redis.get(`iot:gb28181:projection:done:${invalidProjection}`)) ?? undefined,
@@ -261,10 +269,12 @@ try {
 
     const probeStream = `fixture:gb-projection:${randomUUID()}`;
     const probeSent = `${probeStream}:sent`;
+    const probeWake = `${probeStream}:wake`;
     const probeProjection = randomUUID();
     try {
         const publish = (order = '', current = '') => redis.send('EVAL',
-            [publishLua,'2',probeStream,probeSent,order,current,'projection_id',probeProjection]) as Promise<string[]>;
+            [publishLua,'3',probeStream,probeSent,probeWake,order,current,'gb28181-projector','1000',
+                'projection_id',probeProjection]) as Promise<string[]>;
         const first = await publish();
         // Lost first response: retry with no local IDs must recover the marker.
         assert.deepEqual(await publish(), first);
@@ -286,7 +296,7 @@ try {
         assert.equal(fields[fields.indexOf('projection_order')+1], first[0]);
         console.log('PASS production publication recovers lost receipts and expired dedup markers');
     } finally {
-        await redis.send('DEL',[probeStream,probeSent]);
+        await redis.send('DEL',[probeStream,probeSent,probeWake]);
     }
 
     const controlKey = `iot:gb28181:control:worker:${ownerMatch[1]}:${ownerMatch[2]}`;

@@ -1,4 +1,6 @@
 #include <array>
+#include <asio/ip/tcp.hpp>
+#include <asio/ip/udp.hpp>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -15,9 +17,9 @@
 #include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/uuid.h"
-#include "service/middleware/log.h"
-#include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/gb28181/media/media.transport.h"
+#include "service/features/packet_log/packet_log.transport.h"
+#include "service/middleware/log.h"
 
 namespace {
 
@@ -36,65 +38,116 @@ bool waitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
     return predicate();
 }
 
-ruvia::task<OpenRtpServerResult> openOwnedRtp(std::size_t owner) {
+// ZLMediaKit binds RTC UDP on a random port and then TCP on the same number,
+// which can already be taken; give it a port free for both protocols.
+std::uint16_t reserveRtcPort() {
+    asio::io_context context;
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        std::error_code error;
+        asio::ip::udp::socket udp(context);
+        udp.open(asio::ip::udp::v4(), error);
+        if (!error) {
+            udp.bind(asio::ip::udp::endpoint(asio::ip::address_v4::any(), 0), error);
+        }
+        if (error) {
+            continue;
+        }
+        const auto port = udp.local_endpoint().port();
+        asio::ip::tcp::acceptor tcp(context);
+        tcp.open(asio::ip::tcp::v4(), error);
+        if (!error) {
+            tcp.bind(asio::ip::tcp::endpoint(asio::ip::address_v4::any(), port), error);
+        }
+        if (!error) {
+            return port;
+        }
+    }
+    throw std::runtime_error("could not reserve a shared TCP/UDP RTC port");
+}
+
+using service::gb28181::MediaConfig;
+using service::gb28181::media::OpenRtpServerResult;
+using service::gb28181::media::SdkSupervisor;
+using service::gb28181::media::sdkSupervisor;
+using service::gb28181::media::ZlmSdk;
+
+using MediaHandle = std::unique_ptr<std::remove_pointer_t<mk_media>, decltype(&mk_media_release)>;
+
+MediaHandle publishPcm(const char* app, const std::string& stream) {
+    MediaHandle media(mk_media_create("__defaultVhost__", app, stream.c_str(), 0, 0, 0), &mk_media_release);
+    require(media != nullptr, "callback media source was not created");
+    require(mk_media_init_audio(media.get(), MKCodecAAC, 8000, 1, 16) == 1, "callback media audio initialization failed");
+    mk_media_init_complete(media.get());
+    std::array<std::int16_t, 1024> pcm{};
+    for (std::uint64_t frame = 0; frame < 8; ++frame) {
+        (void)mk_media_input_pcm(media.get(), pcm.data(), static_cast<int>(pcm.size() * sizeof(pcm[0])), frame * 128 + 1);
+    }
+    return media;
+}
+
+ruvia::task<OpenRtpServerResult> openOwnedRtp(std::shared_ptr<ZlmSdk> sdk, std::size_t owner) {
     service::common::UuidV7Generator uuidGenerator;
     ZlmSdk::OwnerScope scope(owner);
-    auto result = sdkSupervisor().sdk().openRtpServer("callback-device", "channel", "2000000001", uuidGenerator.next());
+    auto result = sdk->openRtpServer("callback-device", "channel", "2000000001", uuidGenerator.next());
     require(result.has_value(), "owned callback test RTP server did not open");
     co_return std::move(*result);
 }
 
-ruvia::task<void> closeOwnedRtp(std::size_t owner, std::string stream) {
+ruvia::task<void> closeOwnedRtp(std::shared_ptr<ZlmSdk> sdk, std::size_t owner, std::string stream) {
     ZlmSdk::OwnerScope scope(owner);
-    (void)sdkSupervisor().sdk().closeRtpServer(stream);
+    (void)sdk->closeRtpServer(stream);
     sdkSupervisor().unregisterCollector(owner);
     co_return;
 }
 
+// Every SDK callback carries the owner recorded when its stream was opened and
+// is delivered only on that Collector's loop; unowned streams reach no Collector.
 void verifySdkCallbackOwners(const MediaConfig& config) {
     std::array<std::atomic_int, 2> received{};
     std::atomic_int crossed{ 0 };
+    std::array<std::string, 2> expected;
     ruvia::event_loop_pool pool({ .loop_count_ = 2, .queue_capacity_ = 64 });
     sdkSupervisor().configure(config);
     sdkSupervisor().start();
     pool.start();
     try {
-        std::array<OpenRtpServerResult, 2> opened;
-        using MediaHandle = std::unique_ptr<std::remove_pointer_t<mk_media>, decltype(&mk_media_release)>;
-        std::vector<MediaHandle> sources;
+        std::array<std::shared_ptr<ZlmSdk>, 2> handles;
         for (std::size_t index = 0; index < 2; ++index) {
             const auto loop = pool.loop(index);
-            opened[index] = loop.start(openOwnedRtp(index)).get();
             SdkSupervisor::CollectorCallbacks callbacks;
-            callbacks.onStreamChanged = [&, index, loop, expected = opened[index].streamId](std::string, std::string stream, std::string, bool online, int) {
-                if (!loop.is_current() || stream != expected) {
+            callbacks.onStreamChanged = [&, index, loop](std::string, std::string stream, std::string, bool online, int) {
+                if (!loop.is_current() || stream != expected[index]) {
                     ++crossed;
                 }
                 if (online) {
                     ++received[index];
                 }
             };
-            sdkSupervisor().registerCollector(index, loop, std::move(callbacks));
-            MediaHandle media(mk_media_create("__defaultVhost__", "rtp", opened[index].streamId.c_str(), 0, 0, 0), &mk_media_release);
-            require(media != nullptr, "owned media callback source was not created");
-            require(mk_media_init_audio(media.get(), MKCodecAAC, 8000, 1, 16) == 1, "owned media callback audio initialization failed");
-            mk_media_init_complete(media.get());
-            std::array<std::int16_t, 1024> pcm{};
-            for (std::uint64_t frame = 0; frame < 8; ++frame) {
-                (void)mk_media_input_pcm(media.get(), pcm.data(), static_cast<int>(pcm.size() * sizeof(pcm[0])), frame * 128 + 1);
-            }
-            sources.push_back(std::move(media));
+            handles[index] = sdkSupervisor().registerCollector(index, loop, std::move(callbacks));
+            require(handles[index] && handles[index]->started(), "registered Collector did not receive a started SDK handle");
+        }
+        std::array<OpenRtpServerResult, 2> opened;
+        for (std::size_t index = 0; index < 2; ++index) {
+            opened[index] = pool.loop(index).start(openOwnedRtp(handles[index], index)).get();
+            expected[index] = opened[index].streamId;
+        }
+        std::vector<MediaHandle> sources;
+        sources.push_back(publishPcm("rtp", "unowned-callback-stream"));
+        for (std::size_t index = 0; index < 2; ++index) {
+            sources.push_back(publishPcm("rtp", opened[index].streamId));
         }
         require(waitUntil([&] {
                     return received[0].load() > 0 && received[1].load() > 0;
                 }),
                 "SDK callbacks did not return to both originating Collectors");
-        require(crossed.load() == 0, "SDK callback crossed Collector ownership");
+        require(crossed.load() == 0, "SDK callback crossed Collector ownership or delivered an unowned stream");
         sources.clear();
         for (std::size_t index = 0; index < 2; ++index) {
-            pool.loop(index).start(closeOwnedRtp(index, opened[index].streamId)).get();
+            pool.loop(index).start(closeOwnedRtp(handles[index], index, opened[index].streamId)).get();
         }
         sdkSupervisor().stop();
+        require(!handles[0]->started(), "SDK handle still reports started after supervisor stop");
+        require(!handles[0]->openRtpServer("after-stop", "channel", "2000000001", "session").has_value(), "stopped SDK handle still opened an RTP server");
         pool.stop();
         pool.join();
     } catch (...) {
@@ -124,15 +177,6 @@ int main() {
         // logger; GB startup logs immediately after this lifecycle transition.
         LOG_INFO << "packet logger lifecycle retained the application logger";
 
-        require(service::gb28181::media_proxy_detail::allowedTarget("GET", "/rtp/stream.live.flv"), "media proxy rejected an HTTP-FLV target");
-        require(service::gb28181::media_proxy_detail::allowedTarget("POST", "/index/api/webrtc"), "media proxy rejected WebRTC signaling");
-        require(!service::gb28181::media_proxy_detail::allowedTarget("GET", "/index/api/getServerConfig"), "media proxy exposed an internal ZLM API");
-        require(!service::gb28181::media_proxy_detail::allowedTarget("GET", "/rtp/../index/api/getServerConfig"), "media proxy accepted a traversal target");
-        require(!service::gb28181::media_proxy_detail::allowedTarget("GET", "/rtp/%2e%2e/index/api/getServerConfig") && !service::gb28181::media_proxy_detail::allowedTarget("GET", "/rtp/..\\index\\api\\getServerConfig"), "media proxy accepted an encoded traversal target");
-        require(service::gb28181::media_proxy_detail::rewriteHlsPlaylist("#EXTM3U\nsegment-1.ts\nsegment-2.ts?part=1\n", "token=x&expires=1") == "#EXTM3U\nsegment-1.ts?token=x&expires=1\n"
-                                                                                                                                                 "segment-2.ts?part=1&token=x&expires=1\n",
-                "HLS proxy did not preserve playback authorization on child requests");
-
         MediaConfig config;
         config.rtpPublicIp = "127.0.0.1";
         config.playTokenSecret = "gb28181-media-test-secret";
@@ -141,7 +185,7 @@ int main() {
         config.httpPort = 0;
         config.rtspPort = 0;
         config.rtmpPort = 0;
-        config.rtcPort = 0;
+        config.rtcPort = reserveRtcPort();
         config.srtPort = 0;
         config.rtpPortRangeStart = 0;
         config.rtpPortRangeEnd = 0;
@@ -149,11 +193,15 @@ int main() {
         std::atomic_int pcmRegistered{ 0 };
         std::atomic_int pcmDeregistered{ 0 };
         std::atomic_int invalidDeregisteredReaderCount{ 0 };
+        std::atomic_int unexpectedOwner{ 0 };
         ZlmSdk::Callbacks callbacks;
         callbacks.onStreamChanged =
-            [&pcmRegistered, &pcmDeregistered, &invalidDeregisteredReaderCount](const std::string&, const std::string& stream, const std::string&, bool online, int readerCount) {
+            [&pcmRegistered, &pcmDeregistered, &invalidDeregisteredReaderCount, &unexpectedOwner](std::string, std::string stream, std::string, bool online, int readerCount, ZlmSdk::OwnerIndex owner) {
                 if (stream != "pcm-aac") {
                     return;
+                }
+                if (owner != ZlmSdk::kUnassignedOwner) {
+                    ++unexpectedOwner;
                 }
                 if (online) {
                     ++pcmRegistered;
@@ -198,6 +246,7 @@ int main() {
                 }) &&
                     invalidDeregisteredReaderCount.load() == 0,
                 "embedded ZLM media deregistration queried an unsafe reader count");
+        require(unexpectedOwner.load() == 0, "a stream no Collector opened reported an owner");
 
         const auto sessionId = uuidGenerator.next();
         const auto opened = sdk.openRtpServer("34020000002000000001", "34020000001320000001", "2000000001", sessionId);
@@ -240,6 +289,7 @@ int main() {
 
         sdk.stop();
         require(!sdk.started(), "embedded ZLM runtime did not stop");
+        config.rtcPort = reserveRtcPort();
         verifySdkCallbackOwners(config);
         std::cout << "gb28181 media sdk tests passed\n";
         return 0;

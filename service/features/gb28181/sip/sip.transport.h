@@ -29,12 +29,14 @@
 #undef GetMessage
 #endif
 
+namespace service::gb28181::sip {
+
 class SipServer : public std::enable_shared_from_this<SipServer> {
   public:
     using ViewerCountObserver =
         std::function<void(const std::string& streamId, unsigned int viewerCount)>;
 
-    SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver = {}, ZlmSdk::OwnerIndex owner = ZlmSdk::kUnassignedOwner);
+    SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, device::DeviceRegistry& deviceRegistry, std::shared_ptr<media::ZlmSdk> zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver = {}, media::ZlmSdk::OwnerIndex owner = media::ZlmSdk::kUnassignedOwner);
     ~SipServer();
 
     void start();
@@ -140,7 +142,7 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
         std::string ssrc;
         unsigned int inviteCseq{ 0 };
         uint16_t rtpPort{ 0 };
-        PlayUrls playUrls;
+        media::PlayUrls playUrls;
         SipPeer remote;
         bool established{ false };
         bool mediaOnline{ false };
@@ -150,10 +152,10 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
     service::common::UuidV7Generator& uuidGenerator_;
     SipConfig sipConfig_;
     MediaConfig mediaConfig_;
-    DeviceRegistry& deviceRegistry_;
-    ZlmSdk& zlmSdk_;
+    device::DeviceRegistry& deviceRegistry_;
+    std::shared_ptr<media::ZlmSdk> zlmSdk_;
     ViewerCountObserver viewerCountObserver_;
-    ZlmSdk::OwnerIndex owner_{ ZlmSdk::kUnassignedOwner };
+    media::ZlmSdk::OwnerIndex owner_{ media::ZlmSdk::kUnassignedOwner };
     std::atomic_bool running_{ false };
     ruvia::event_loop ioLoop_;
     std::unique_ptr<asio::ip::udp::socket> udpSocket_;
@@ -207,3 +209,5 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
     std::function<void(const std::string& sessionId)> previewClosedHandler_;
     std::function<void(const std::string& streamId)> streamClosedHandler_;
 };
+
+} // namespace service::gb28181::sip

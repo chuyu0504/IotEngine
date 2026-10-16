@@ -485,11 +485,8 @@ iot_engine_add_test(gb28181-request LARGE
     LIBRARIES ruvia::web)
 
 iot_engine_add_test(gb28181-media-proxy
-    SOURCES
-        tests/gb28181-media-proxy-test.cpp
-        service/features/packet_log/packet_log.transport.cpp
-        service/features/gb28181/media/media.transport.cpp
-    LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
+    SOURCES tests/gb28181-media-proxy-test.cpp
+    LIBRARIES ruvia::web spdlog::spdlog
     MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
 
 iot_engine_add_test(gb28181-projector LARGE

@@ -7,8 +7,8 @@
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
-#include "service/modules/gb28181/gb28181.types.h"
 #include "service/modules/gb28181/gb28181.service.h"
+#include "service/modules/gb28181/gb28181.types.h"
 
 namespace service::gb28181 {
 class Gb28181Controller final {
@@ -38,19 +38,20 @@ class Gb28181Controller final {
     }
 
     ruvia::task<void> devicesEvents(ruvia::context& c) {
-        co_await service::live::serveSnapshots(c, "gb28181", service::middleware::requireAuth(c).userId,
-            [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
-                auto result = co_await gb28181Service().devices(request);
-                co_return service::live::json(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
-            },
-            [&c] { (void)service::middleware::requireAuth(c); });
+        co_await service::live::serveSnapshots(c, "gb28181", service::middleware::requireAuth(c).userId, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+            // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
+            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+            auto result = co_await gb28181Service().devices(request);
+            co_return service::live::json(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
+        },
+                                               [&c] {
+                                                   (void)service::middleware::requireAuth(c);
+                                               });
     }
 
     ruvia::task<ruvia::http_response> recording(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"recording">(co_await gb28181Service().recording(request, std::string(c.req().validated<GbStreamParams>().get<"streamId">().view())));
         co_return c.json(service::common::ok<GbActionResponse>(request, std::move(result)));
     }
@@ -59,7 +60,7 @@ class Gb28181Controller final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& params = c.req().validated<GbDeviceParams>();
         co_await gb28181Service().queryCatalog(request, std::string(params.get<"deviceId">().view()));
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"sent">(true);
         result.set<"deviceId">(params.get<"deviceId">().view());
         co_return c.json(service::common::ok<GbActionResponse>(request, std::move(result)));
@@ -94,7 +95,7 @@ class Gb28181Controller final {
     ruvia::task<ruvia::http_response> heartbeatPreview(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await gb28181Service().renewPreview(request, std::string(c.req().validated<GbSessionParams>().get<"sessionId">().view()));
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"sent">(true);
         result.set<"action">("heartbeat");
         co_return c.json(service::common::ok<GbActionResponse>(request, std::move(result)));
@@ -105,7 +106,7 @@ class Gb28181Controller final {
         const auto& params = c.req().validated<GbChannelParams>();
         const auto& body = c.req().validated<GbPositionBody>();
         co_await gb28181Service().ptzPosition(request, std::string(params.get<"deviceId">().view()), std::string(params.get<"channelId">().view()), body.get<"pan">().value_, body.get<"tilt">().value_, body.get<"zoom">().value_);
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"pan">(body.get<"pan">());
         result.set<"tilt">(body.get<"tilt">());
         result.set<"zoom">(body.get<"zoom">());
@@ -116,9 +117,9 @@ class Gb28181Controller final {
     ruvia::task<ruvia::http_response> ptz(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& params = c.req().validated<GbPtzParams>();
-        const auto speed = static_cast<std::uint8_t>(c.req().validated<GbPtzBody>().get<"speed">().value_or(ruvia::int64{80}).value_);
+        const auto speed = static_cast<std::uint8_t>(c.req().validated<GbPtzBody>().get<"speed">().value_or(ruvia::int64{ 80 }).value_);
         co_await gb28181Service().ptz(request, std::string(params.get<"deviceId">().view()), std::string(params.get<"channelId">().view()), std::string(params.get<"action">().view()), speed);
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"deviceId">(params.get<"deviceId">().view());
         result.set<"channelId">(params.get<"channelId">().view());
         result.set<"action">(params.get<"action">().view());
@@ -130,7 +131,7 @@ class Gb28181Controller final {
     ruvia::task<ruvia::http_response> startRecording(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await gb28181Service().startRecording(request, std::string(c.req().validated<GbStreamParams>().get<"streamId">().view()));
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"recording">(true);
         co_return c.json(service::common::ok<GbActionResponse>(request, std::move(result)));
     }
@@ -138,9 +139,37 @@ class Gb28181Controller final {
     ruvia::task<ruvia::http_response> stopRecording(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await gb28181Service().stopRecording(request, std::string(c.req().validated<GbStreamParams>().get<"streamId">().view()));
-        GbActionDto result(ruvia::model_options{.resource_ = request.arena()});
+        GbActionDto result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"recording">(false);
         co_return c.json(service::common::ok<GbActionResponse>(request, std::move(result)));
+    }
+};
+
+// Player URLs embed a signed play token instead of a session, so the media
+// routes carry no authentication middleware; ZLMediaKit rejects unsigned or
+// expired playback.
+class MediaProxyController final {
+  public:
+    RUVIA_CONTROLLER_GROUP("/media")
+    RUVIA_ROUTES_BEGIN(MediaProxyController)
+    RUVIA_GET_STREAM("/*", proxy);
+    ruvia_controller_access_type::add_response_stream_route(
+        ruvia_route_scope,
+        ruvia::http_known_method::post,
+        "/*",
+        ruvia_controller_access_type::template bind_stream<&ruvia_controller_type::proxy>(
+            this
+        ),
+        ruvia_controller_access_type::template make_middlewares<>()
+    );
+    RUVIA_ROUTES_END
+
+  private:
+    ruvia::task<void> proxy(ruvia::context& c) {
+        if (!(co_await MediaProxyService::mediaStarted(c))) {
+            service::common::fail(10002, "GB28181 媒体服务未启用", 503);
+        }
+        co_await MediaProxyService::forward(c);
     }
 };
 } // namespace service::gb28181

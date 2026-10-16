@@ -2,24 +2,43 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cmath>
 #include <exception>
 #include <memory_resource>
-#include <set>
 #include <stdexcept>
+#include <utility>
+
+#include <ruvia/web/error.h>
 
 #include "service/common/http.h"
-#include "service/middleware/log.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/features/gb28181/gb28181.protocol.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/middleware/log.h"
 #include "service/utils/redis.h"
 
 namespace service::gb28181 {
 
+namespace {
 
+// The publishing Collector Worker is encoded in the owner token; its receipt
+// stream belongs to that worker's process incarnation.
+std::string receiptStreamFor(std::string_view ownerToken) {
+    const auto owner = control_protocol::stream::ownerIndex(ownerToken);
+    const auto instance = control_protocol::stream::ownerInstance(ownerToken);
+    if (!owner || !instance) {
+        throw std::runtime_error("GB28181 projection owner token has no Collector Worker");
+    }
+    return control_protocol::stream::projectionReceipts(*owner, *instance);
+}
 
-void GbProjectionRuntime::start(ruvia::web_worker_handle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
+bool groupMissing(std::string_view error) {
+    return error.find("NOGROUP") != std::string_view::npos;
+}
+
+} // namespace
+
+void GbProjectionRuntime::start(ruvia::web_worker_handle worker, OwnerIndex workerIndex) {
     {
         std::lock_guard lock(lifecycleMutex_);
         if (running_.load()) {
@@ -30,15 +49,13 @@ void GbProjectionRuntime::start(ruvia::web_worker_handle worker, OwnerIndex work
             }
             return;
         }
-        if (!worker.valid() || serviceWorkerCount == 0 ||
-            workerIndex >= serviceWorkerCount) {
+        if (!worker.valid()) {
             throw std::runtime_error(
                 "GB28181 projection runtime requires a valid Service Worker"
             );
         }
         worker_ = std::move(worker);
         workerIndex_ = workerIndex;
-        serviceWorkerCount_ = serviceWorkerCount;
         state_ = std::make_shared<State>();
         running_.store(true);
     }
@@ -66,18 +83,13 @@ void GbProjectionRuntime::start(ruvia::web_worker_handle worker, OwnerIndex work
                 co_await consume(context, state);
             } catch (...) {
                 if (!readySet) {
-                    try {
-                        ready->set_exception(std::current_exception());
-                    } catch (...) {
-                    }
+                    ready->set_exception(std::current_exception());
                 } else {
-                    LOG_WARN << "[GB28181][GbProjectionRuntime] consumer stopped";
+                    LOG_WARN << "[GB28181][GbProjectionRuntime] consumer stopped: "
+                             << ruvia::exception_text(std::current_exception());
                 }
             }
-            try {
-                stopped->set_value();
-            } catch (...) {
-            }
+            stopped->set_value();
             co_return;
         }
     );
@@ -120,6 +132,7 @@ void GbProjectionRuntime::stop() noexcept {
         state = state_;
         stopped = stopped_;
     }
+    // The stop token also ends the consumer's multiplexer wait.
     if (state) {
         state->stop.request_stop();
     }
@@ -142,216 +155,194 @@ GbProjectionRuntime::consume(ruvia::web_worker_context& context, const std::shar
     const auto consumer = service::runtime::instanceId() + ":service:" +
         std::to_string(workerIndex_);
     const std::vector<std::string> streams{ stream };
-    auto nextReconcile = std::chrono::steady_clock::now();
+    bool seeded = false;
+    bool recovering = true;
+    bool checkOwners = true;
+    auto nextRecovery = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> ownerDeadline;
 
     while (!stop.stop_requested()) {
-        bool retry = false;
         std::string failure;
         try {
-            co_await service::message::redis::ensureGroup(redis, stream, group);
-            if (std::chrono::steady_clock::now() >= nextReconcile) {
-                co_await reconcileExpiredOwners(context);
-                nextReconcile = std::chrono::steady_clock::now() +
-                    std::chrono::seconds(5);
+            if (!seeded) {
+                co_await seedOwnerDeadlines(context);
+                seeded = true;
             }
-            auto batches = co_await service::message::redis::claimGroupMany(
-                redis,
-                streams,
-                group,
-                consumer,
-                64
-            );
+            if (checkOwners) {
+                const auto wait = co_await expireDueOwners(context);
+                ownerDeadline = wait ? std::optional(std::chrono::steady_clock::now() + *wait) : std::nullopt;
+                checkOwners = false;
+            }
+            std::vector<service::message::redis::StreamBatch> batches;
+            if (recovering || std::chrono::steady_clock::now() >= nextRecovery) {
+                // Pending entries of this consumer, and entries a stopped
+                // consumer left idle, are claimed explicitly; ordinary reads
+                // never fall back to a claim.
+                batches = co_await service::message::redis::claimGroupMany(redis, streams, group, consumer, kBatchSize);
+                nextRecovery = std::chrono::steady_clock::now() + kPendingRecovery;
+                recovering = !batches.empty();
+            }
             if (batches.empty()) {
-                batches = co_await service::message::redis::readGroupMany(redis, streams, group, consumer, ">", 64);
-            }
-            if (batches.empty()) {
-                (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(100), stop);
-                continue;
-            }
-            for (const auto& batch : batches) {
-                for (const auto& message : batch.messages) {
-                    if (stop.stop_requested()) {
-                        break;
-                    }
-                    const auto projectionId = message.get("projection_id");
-                    const auto ownerToken = message.get("owner_token");
-                    if (!service::common::isUuid(projectionId) || !control_protocol::stream::completeOwnerToken(ownerToken)) {
-                        LOG_WARN << "[GB28181] invalid projection identity: " << message.id;
-                        co_await service::message::redis::acknowledgeAndDelete(redis, batch.stream, group, message.id);
-                        continue;
-                    }
-                    const auto projectionOrder = message.get("projection_order");
-                    std::string cursorId(message.id);
-                    if (!projectionOrder.empty()) {
-                        if (!control_protocol::validProjectionStreamId(projectionOrder)) {
-                            LOG_WARN << "[GB28181] invalid projection order: "
-                                     << message.id;
-                            co_await GbControlService::markProjectionDoneAndAcknowledge(
-                                redis,
-                                batch.stream,
-                                group,
-                                message.id,
-                                projectionId,
-                                false
-                            );
-                            continue;
-                        }
-                        cursorId = std::string(projectionOrder);
-                    } else if (!control_protocol::validProjectionStreamId(cursorId)) {
-                        LOG_WARN << "[GB28181] invalid projection stream ID: "
-                                 << message.id;
-                        co_await service::message::redis::acknowledgeAndDelete(
-                            redis,
-                            batch.stream,
-                            group,
-                            message.id
-                        );
-                        continue;
-                    }
-                    const auto eventType = message.get("event_type");
-                    std::optional<Device> device;
-                    std::optional<StreamStatus> streamStatus;
-                    std::optional<DeviceChange> deviceChange;
-                    std::string parseError;
-                    try {
-                        if (eventType == "gb28181.device") {
-                            deviceChange =
-                                projection_protocol::projectionDeviceChange(message.get("change"));
-                            if (!deviceChange) {
-                                throw std::runtime_error(
-                                    "GB28181 device projection has no valid change"
-                                );
-                            }
-                            device = projection_protocol::deviceFromProjection(message);
-                        } else if (eventType == "gb28181.stream") {
-                            streamStatus = projection_protocol::streamFromProjection(message);
-                        } else {
-                            throw std::runtime_error(
-                                "unsupported GB28181 projection event type"
-                            );
-                        }
-                    } catch (const std::exception& error) {
-                        parseError = error.what();
-                    }
-                    if (!parseError.empty()) {
-                        LOG_WARN << "[GB28181][GbProjectionRuntime] dropping malformed projection: "
-                                 << parseError;
-                        co_await GbControlService::markProjectionDoneAndAcknowledge(
-                            redis,
-                            batch.stream,
-                            group,
-                            message.id,
-                            projectionId,
-                            false
-                        );
-                        continue;
-                    }
-                    bool applied = false;
-                    if (device) {
-                        if (co_await GbProjectionService::projectionOwnerMatches(
-                                redis,
-                                device->id,
-                                device->online,
-                                ownerToken
-                            )) {
-                            applied = co_await applyDeviceProjection(
-                                context,
-                                *device,
-                                *deviceChange,
-                                control_protocol::stream::owner(device->id),
-                                std::string(ownerToken),
-                                cursorId
-                            );
-                        }
-                    } else if (streamStatus) {
-                        const auto identity = StreamStatus::identity(
-                            streamStatus->app,
-                            streamStatus->stream,
-                            streamStatus->schema
-                        );
-                        if (co_await GbProjectionService::projectionOwnerMatches(
-                                redis,
-                                identity,
-                                streamStatus->online,
-                                ownerToken
-                            )) {
-                            applied = co_await applyStreamProjection(
-                                context,
-                                *streamStatus,
-                                control_protocol::stream::owner(identity),
-                                std::string(ownerToken),
-                                cursorId
-                            );
-                        }
-                    }
-                    co_await GbControlService::markProjectionDoneAndAcknowledge(
-                        redis,
-                        batch.stream,
-                        group,
-                        message.id,
-                        projectionId,
-                        applied
-                    );
+                auto messages = co_await service::message::redis::readGroup(redis, stream, group, consumer, ">", std::chrono::milliseconds(0), kBatchSize);
+                if (!messages.empty()) {
+                    batches.push_back({ stream, std::move(messages) });
                 }
             }
+            if (!batches.empty()) {
+                for (const auto& batch : batches) {
+                    for (const auto& message : batch.messages) {
+                        if (stop.stop_requested()) {
+                            break;
+                        }
+                        co_await project(context, redis, batch.stream, message);
+                    }
+                }
+                continue;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            auto until = nextRecovery;
+            if (ownerDeadline && *ownerDeadline < until) {
+                until = *ownerDeadline;
+            }
+            // Projection publishers and new owner deadlines signal this task
+            // through the worker's wake stream.
+            co_await service::message::workerStreamMultiplexer().wait(
+                workerIndex_,
+                service::message::WorkerStreamTask::Gb28181Projector,
+                stop,
+                std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(until - now))
+            );
+            checkOwners = true;
         } catch (const std::exception& error) {
             if (stop.stop_requested()) {
                 break;
             }
-            retry = true;
             failure = error.what();
-        } catch (...) {
-            if (stop.stop_requested()) {
-                break;
-            }
-            retry = true;
         }
-        if (retry && !stop.stop_requested()) {
-            if (!failure.empty()) {
-                LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: "
-                         << failure;
-            }
-            (void)co_await ruvia::sleep_for(
-                context.worker(),
-                std::chrono::milliseconds(250),
-                stop
-            );
+        if (failure.empty()) {
+            continue;
         }
+        LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: " << failure;
+        recovering = true;
+        checkOwners = true;
+        if (groupMissing(failure)) {
+            try {
+                co_await service::message::redis::ensureGroup(redis, stream, group);
+            } catch (const std::exception& error) {
+                LOG_WARN << "[GB28181][GbProjectionRuntime] projection group recovery failed: " << error.what();
+            }
+        }
+        (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250), stop);
     }
     co_return;
 }
 
-CollectorRuntime::CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, AppConfig config, ruvia::event_loop loop, ruvia::redis_handle redis, OwnerIndex index, OwnerIndex count)
+ruvia::task<void> GbProjectionRuntime::project(ruvia::web_worker_context& context, const ruvia::redis_handle& redis, std::string_view stream, const service::message::StreamMessage& message) {
+    const auto group = control_protocol::stream::kProjectionGroup;
+    const auto projectionId = message.get("projection_id");
+    const auto ownerToken = message.get("owner_token");
+    if (!service::common::isUuid(projectionId) || !control_protocol::stream::completeOwnerToken(ownerToken)) {
+        LOG_WARN << "[GB28181] invalid projection identity: " << message.id;
+        co_await service::message::redis::acknowledgeAndDelete(redis, stream, group, message.id);
+        co_return;
+    }
+    const auto receiptStream = receiptStreamFor(ownerToken);
+    const auto projectionOrder = message.get("projection_order");
+    std::string cursorId(message.id);
+    if (!projectionOrder.empty()) {
+        if (!control_protocol::validProjectionStreamId(projectionOrder)) {
+            LOG_WARN << "[GB28181] invalid projection order: " << message.id;
+            co_await GbControlService::markProjectionDoneAndAcknowledge(redis, stream, group, message.id, projectionId, receiptStream, false);
+            co_return;
+        }
+        cursorId = std::string(projectionOrder);
+    } else if (!control_protocol::validProjectionStreamId(cursorId)) {
+        LOG_WARN << "[GB28181] invalid projection stream ID: " << message.id;
+        co_await service::message::redis::acknowledgeAndDelete(redis, stream, group, message.id);
+        co_return;
+    }
+    const auto eventType = message.get("event_type");
+    std::optional<device::Device> device;
+    std::optional<media::StreamStatus> streamStatus;
+    std::optional<device::DeviceChangeSet> deviceChanges;
+    std::string parseError;
+    try {
+        if (eventType == "gb28181.device") {
+            deviceChanges = projection_protocol::projectionDeviceChanges(message.get("change"));
+            if (!deviceChanges) {
+                throw std::runtime_error("GB28181 device projection has no valid change");
+            }
+            device = projection_protocol::deviceFromProjection(message);
+        } else if (eventType == "gb28181.stream") {
+            streamStatus = projection_protocol::streamFromProjection(message);
+        } else {
+            throw std::runtime_error("unsupported GB28181 projection event type");
+        }
+    } catch (const std::exception& error) {
+        parseError = error.what();
+    }
+    if (!parseError.empty()) {
+        LOG_WARN << "[GB28181][GbProjectionRuntime] dropping malformed projection: " << parseError;
+        co_await GbControlService::markProjectionDoneAndAcknowledge(redis, stream, group, message.id, projectionId, receiptStream, false);
+        co_return;
+    }
+    bool applied = false;
+    if (device) {
+        if (co_await projectionOwnerMatches(redis, device->id, device->online, ownerToken)) {
+            applied = co_await applyDeviceProjection(
+                context,
+                *device,
+                *deviceChanges,
+                control_protocol::stream::owner(device->id),
+                std::string(ownerToken),
+                cursorId
+            );
+        }
+    } else if (streamStatus) {
+        const auto identity = media::StreamStatus::identity(streamStatus->app, streamStatus->stream, streamStatus->schema);
+        if (co_await projectionOwnerMatches(redis, identity, streamStatus->online, ownerToken)) {
+            applied = co_await applyStreamProjection(
+                context,
+                *streamStatus,
+                control_protocol::stream::owner(identity),
+                std::string(ownerToken),
+                cursorId
+            );
+        }
+    }
+    co_await GbControlService::markProjectionDoneAndAcknowledge(redis, stream, group, message.id, projectionId, receiptStream, applied);
+}
+
+CollectorRuntime::CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, Config config, ruvia::event_loop loop, ruvia::redis_handle redis, OwnerIndex index, OwnerIndex count)
     : uuidGenerator_(uuidGenerator), config_(std::move(config)),
       loop_(std::move(loop)),
       worker_(loop_.handle()),
       redis_(std::move(redis)),
       index_(index),
-      count_(count),
       scope_(worker_),
       projectionScope_(worker_),
-      ownerToken_(service::runtime::instanceId() + ":collector:" + std::to_string(index_)),
-      devices_([this](const Device& device, DeviceChange change) {
+      devices_([this](const device::Device& device, device::DeviceChange change) {
           enqueueDeviceProjection(device, change);
       }),
-      streams_([this](const StreamStatus& stream) {
+      streams_([this](const media::StreamStatus& stream) {
           enqueueStreamProjection(stream);
-      }) {
-    if (count_ == 0 || index_ >= count_) {
+      }),
+      ownerToken_(service::runtime::instanceId() + ":collector:" + std::to_string(index_)) {
+    if (count == 0 || index_ >= count) {
         throw std::invalid_argument(
             "GB28181 Collector owner index is outside worker count"
         );
     }
 }
 
-std::string CollectorRuntime::deviceOwnerToken(const Device& device) const {
+std::string CollectorRuntime::deviceOwnerToken(const device::Device& device) const {
     return ownerToken_ + ":session:" +
         std::to_string(device.sessionGeneration);
 }
 
-std::string CollectorRuntime::streamOwnerToken(const StreamStatus& stream) {
+std::string CollectorRuntime::streamOwnerToken(const media::StreamStatus& stream) {
     const auto identity =
-        StreamStatus::identity(stream.app, stream.stream, stream.schema);
+        media::StreamStatus::identity(stream.app, stream.stream, stream.schema);
     auto& generation = streamGenerations_[identity];
     const auto previous = streamOnline_.find(identity);
     if (stream.online && (previous == streamOnline_.end() || !previous->second)) {
@@ -365,7 +356,7 @@ CollectorRuntime::~CollectorRuntime() {
     // A task_scope owns coroutine frames that capture this object.  Releasing
     // the object while they are still active would turn a failed shutdown
     // into a use-after-free, so make lifecycle misuse fail closed.
-    if (started_.load() || sdkRegistered_ || scope_.size() != 0 || projectionScope_.size() != 0) {
+    if (started_.load() || sdk_ || scope_.size() != 0 || projectionScope_.size() != 0) {
         std::terminate();
     }
 }
@@ -376,18 +367,15 @@ void CollectorRuntime::requireCurrentLoop() const {
             "GB28181 CollectorRuntime operation must run on its owning loop"
         );
     }
-    if (count_ == 0 || index_ >= count_) {
-        throw std::logic_error("GB28181 CollectorRuntime owner is invalid");
-    }
 }
 
 void CollectorRuntime::registerSdkRoute() {
     requireCurrentLoop();
-    if (sdkRegistered_) {
+    if (sdk_) {
         return;
     }
 
-    SdkSupervisor::CollectorCallbacks callbacks;
+    media::SdkSupervisor::CollectorCallbacks callbacks;
     callbacks.onStreamChanged =
         [this](std::string app, std::string stream, std::string schema, bool online, int readerCount) {
             if (stopping_.load()) {
@@ -408,16 +396,17 @@ void CollectorRuntime::registerSdkRoute() {
         // owner for their entire lifetime.
         (void)sip_->stopPreviewByStream(stream);
     };
-    sdkSupervisor().registerCollector(index_, loop_, std::move(callbacks));
-    sdkRegistered_ = true;
+    // The supervisor hands this actor a lifetime-bound SDK handle together with
+    // the callback route; it stays valid until the route is unregistered.
+    sdk_ = media::sdkSupervisor().registerCollector(index_, loop_, std::move(callbacks));
 }
 
 void CollectorRuntime::unregisterSdkRoute() noexcept {
-    if (!sdkRegistered_) {
+    if (!sdk_) {
         return;
     }
-    sdkSupervisor().unregisterCollector(index_);
-    sdkRegistered_ = false;
+    media::sdkSupervisor().unregisterCollector(index_);
+    sdk_.reset();
 }
 
 ruvia::task<void> CollectorRuntime::initialize() {
@@ -429,7 +418,7 @@ ruvia::task<void> CollectorRuntime::initialize() {
         throw std::logic_error("GB28181 CollectorRuntime cannot restart");
     }
     if (!config_.enabled) {
-        co_await GbProjectionService::publishConfig(redis_, config_);
+        co_await GbProjectionService::publishConfig(redis_, config_, media::MediaStatus{});
         co_return;
     }
 
@@ -455,7 +444,7 @@ ruvia::task<void> CollectorRuntime::initialize() {
     if (config_.media.logLevel < 0 || config_.media.logLevel > 4) {
         throw std::runtime_error("ZLM log level must be between 0 and 4");
     }
-    if (!sdkSupervisor().started()) {
+    if (!media::sdkSupervisor().started()) {
         throw std::runtime_error(
             "ZLMediaKit SDK supervisor must start before GB28181 Collector"
         );
@@ -464,12 +453,19 @@ ruvia::task<void> CollectorRuntime::initialize() {
     std::exception_ptr startupFailure;
     try {
         registerSdkRoute();
-        sip_ = std::make_shared<SipServer>(
+        // Receipts are directed to this stream; it must exist before the first
+        // projection can be published.
+        co_await GbControlService::ensureCollectorStream(
+            redis_,
+            control_protocol::stream::projectionReceipts(index_, service::runtime::instanceId()),
+            control_protocol::stream::kControlGroup
+        );
+        sip_ = std::make_shared<sip::SipServer>(
             uuidGenerator_,
             config_.sip,
             config_.media,
             devices_,
-            sdkSupervisor().sdk(),
+            sdk_,
             loop_,
             [this](const std::string& stream, unsigned int viewerCount) {
                 if (!stopping_.load()) {
@@ -480,7 +476,7 @@ ruvia::task<void> CollectorRuntime::initialize() {
         );
         sip_->setAcknowledgementHandler([this](ProjectionCompletion completion) {
             enqueueBarrier(std::move(completion), lastSipBarrierSequence_);
-            lastSipBarrierSequence_ = projectionSequence_;
+            lastSipBarrierSequence_ = projectionQueue_.sequence();
         });
         sip_->setStreamClosedHandler([this](const std::string& streamId) {
             for (const auto& stream : streams_.listStreams()) {
@@ -494,9 +490,15 @@ ruvia::task<void> CollectorRuntime::initialize() {
                 projectionScope_.spawn(releasePreview(sessionId));
             }
         });
+        // Projection receipts must keep flowing while shutdown drains the queue.
+        projectionScope_.spawn(receiptLoop());
         sip_->start();
         started_.store(true);
-        co_await GbProjectionService::publishConfig(redis_, config_);
+        co_await GbProjectionService::publishConfig(
+            redis_,
+            config_,
+            media::MediaStatus{ .started = sdk_->started(), .ports = sdk_->ports(), .capabilities = sdk_->capabilities() }
+        );
         scope_.spawn(controlLoop());
         scope_.spawn(refreshOwnerLeases());
     } catch (...) {
@@ -540,44 +542,44 @@ ruvia::task<void> CollectorRuntime::shutdown() {
     projectionScope_.request_stop();
     try {
         co_await projectionScope_.join();
-    } catch (...) {
+    } catch (const std::exception& error) {
+        LOG_WARN << "[GB28181] projection shutdown: " << error.what();
     }
     // No producer or renewal coroutine can recreate an owner after this point.
     co_await clearOwnerLeases();
-    for (auto& event : projectionQueue_) {
-        if (auto* completion = std::get_if<ProjectionBarrier>(&event)) {
-            completion->complete(false);
-        }
-    }
     if (!projectionQueue_.empty()) {
         LOG_WARN << "[GB28181] stopped with unconfirmed projections; no positive SIP acknowledgement was issued";
     }
-    projectionQueue_.clear();
+    for (auto& barrier : projectionQueue_.clear()) {
+        barrier.complete(false);
+    }
+    projectionReceipts_.clear();
     scopeJoined_ = true;
     sip_.reset();
     co_return;
 }
 
-void CollectorRuntime::enqueueDeviceProjection(const Device& device, DeviceChange change) {
-    if (!acceptingProjection_) {
-        return;
-    }
-    projectionQueue_.push_back(DeviceProjection{ device, change, deviceOwnerToken(device), uuidGenerator_.next(), ++projectionSequence_ });
+void CollectorRuntime::startProjectionDrain() {
     if (!projectionDrainRunning_) {
         projectionDrainRunning_ = true;
         projectionScope_.spawn(drainProjection());
     }
 }
 
-void CollectorRuntime::enqueueStreamProjection(const StreamStatus& stream) {
+void CollectorRuntime::enqueueDeviceProjection(const device::Device& device, device::DeviceChange change) {
     if (!acceptingProjection_) {
         return;
     }
-    projectionQueue_.push_back(StreamProjection{ stream, streamOwnerToken(stream), uuidGenerator_.next(), ++projectionSequence_ });
-    if (!projectionDrainRunning_) {
-        projectionDrainRunning_ = true;
-        projectionScope_.spawn(drainProjection());
+    projectionQueue_.pushDevice(device, change, deviceOwnerToken(device), uuidGenerator_.next());
+    startProjectionDrain();
+}
+
+void CollectorRuntime::enqueueStreamProjection(const media::StreamStatus& stream) {
+    if (!acceptingProjection_) {
+        return;
     }
+    projectionQueue_.pushStream(stream, streamOwnerToken(stream), uuidGenerator_.next());
+    startProjectionDrain();
 }
 
 void CollectorRuntime::enqueueBarrier(ProjectionCompletion completion, std::uint64_t after) {
@@ -585,11 +587,23 @@ void CollectorRuntime::enqueueBarrier(ProjectionCompletion completion, std::uint
         completion(false);
         return;
     }
-    projectionQueue_.push_back(ProjectionBarrier{ std::move(completion), after, projectionSequence_ });
-    if (!projectionDrainRunning_) {
-        projectionDrainRunning_ = true;
-        projectionScope_.spawn(drainProjection());
+    if (projectionQueue_.barriersFull()) {
+        // Backpressure: the waiting SIP transaction or control command fails
+        // now and its sender retries; queued state projections are kept.
+        if (!projectionBackpressure_) {
+            projectionBackpressure_ = true;
+            LOG_WARN << "[GB28181] projection backlog reached " << kProjectionBarrierCapacity
+                     << " pending acknowledgements; refusing new ones until it drains";
+        }
+        completion(false);
+        return;
     }
+    if (projectionBackpressure_) {
+        projectionBackpressure_ = false;
+        LOG_INFO << "[GB28181] projection backlog drained; accepting acknowledgements";
+    }
+    projectionQueue_.pushBarrier(std::move(completion), after);
+    startProjectionDrain();
 }
 
 ruvia::task<bool> CollectorRuntime::waitForProjection(ruvia::stop_token stop, std::uint64_t after) {
@@ -612,13 +626,25 @@ ruvia::task<bool> CollectorRuntime::persistProjection(
     std::string projectionOrder;
     std::string currentEntryId;
     while (!projectionScope_.stop_requested()) {
-        bool retry = false;
         std::string failure;
         try {
-            const auto done = co_await GbControlService::projectionReceipt(redis, projectionId);
-            if (done) co_return *done;
+            if (!projectionOrder.empty()) {
+                // The directed receipt did not arrive in time; the durable
+                // receipt is authoritative before any repair.
+                if (const auto done = co_await GbControlService::projectionReceipt(redis, projectionId)) {
+                    projectionReceipts_.erase(projectionId);
+                    co_return *done;
+                }
+            }
+            auto [completion, receiver] = ruvia::make_one_shot<bool>(worker_);
+            projectionReceipts_.insert_or_assign(projectionId, std::move(completion));
             const auto result = co_await GbControlService::publishProjection(
-                redis, projectionId, projectionOrder, currentEntryId, fields);
+                redis,
+                projectionId,
+                projectionOrder,
+                currentEntryId,
+                fields
+            );
             if (!projectionOrder.empty() &&
                 projectionOrder != result.order) {
                 throw std::runtime_error(
@@ -627,74 +653,79 @@ ruvia::task<bool> CollectorRuntime::persistProjection(
             }
             projectionOrder = result.order;
             currentEntryId = result.current;
-        } catch (const std::exception& error) {
-            retry = true;
-            failure = error.what();
-        } catch (...) {
-            retry = true;
-        }
-        if (retry) {
-            // Keep the ordering IDs in this coroutine across Redis transport
-            // failures.  In particular, an XADD may have committed while its
-            // response was lost; the sent marker or the local IDs then make
-            // the next attempt recoverable without a duplicate event.
-            if (!projectionScope_.stop_requested()) {
-                if (!failure.empty()) {
-                    LOG_WARN << "[GB28181] projection awaits durable storage: "
-                             << failure;
-                }
-                (void)co_await ruvia::sleep_for(
-                    worker_,
-                    std::chrono::milliseconds(250),
-                    projectionScope_.get_stop_token()
-                );
+            // Incremental projections must remain in actor order: the next
+            // snapshot is published only after this one has a definitive
+            // receipt (or loses ownership).
+            auto receipt = co_await receiver.wait_for(kProjectionReceiptRecheck, projectionScope_.get_stop_token());
+            projectionReceipts_.erase(projectionId);
+            if (receipt.has_value()) {
+                co_return std::move(receipt).take_value();
             }
             continue;
+        } catch (const std::exception& error) {
+            failure = error.what();
         }
-        // Incremental projections must remain in actor order. A caller may
-        // time out, but this queue cannot publish the next snapshot until the
-        // preceding DB commit has a definitive receipt (or loses ownership).
-        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(20), projectionScope_.get_stop_token());
+        projectionReceipts_.erase(projectionId);
+        // Keep the ordering IDs in this coroutine across Redis transport
+        // failures.  In particular, an XADD may have committed while its
+        // response was lost; the sent marker or the local IDs then make the
+        // next attempt recoverable without a duplicate event.
+        if (!projectionScope_.stop_requested()) {
+            LOG_WARN << "[GB28181] projection awaits durable storage: " << failure;
+            (void)co_await ruvia::sleep_for(
+                worker_,
+                std::chrono::milliseconds(250),
+                projectionScope_.get_stop_token()
+            );
+        }
     }
+    projectionReceipts_.erase(projectionId);
     co_return false;
 }
 
-ruvia::task<void> CollectorRuntime::publishDevice(const Device& device, DeviceChange change, std::string_view ownerToken, std::string_view projectionId) {
+ruvia::task<bool> CollectorRuntime::publishDevice(const DeviceProjection& projection) {
+    const auto& device = projection.device;
     const auto key = control_protocol::stream::owner(device.id);
     const auto current = devices_.findDevice(device.id);
     if (current && (current->sessionGeneration != device.sessionGeneration || (device.online && !current->online))) {
-        currentProjectionSucceeded_ = false;
-        co_return;
+        co_return false;
     }
-    if (device.online && !(co_await retainOwner(key, std::string(ownerToken), device.id))) {
-        currentProjectionSucceeded_ = false;
-        co_return;
+    if (device.online && !(co_await retainOwner(key, projection.ownerToken, device.id))) {
+        co_return false;
     }
     const auto persisted = co_await persistProjection(
-        projection_protocol::deviceProjectionFields(device, change, index_, ownerToken),
-        std::string(projectionId)
+        projection_protocol::deviceProjectionFields(device, projection.changes, index_, projection.ownerToken),
+        projection.projectionId
     );
-    currentProjectionSucceeded_ = currentProjectionSucceeded_ && persisted;
     if (!device.online) {
-        co_await releaseOwner(key, std::string(ownerToken));
+        co_await releaseOwner(
+            key,
+            projection.ownerToken,
+            persisted ? control_protocol::stream::ownerDeadlineMember(control_protocol::stream::kDeviceDeadlineKind, device.id) : std::string{}
+        );
     }
+    co_return persisted;
 }
 
-ruvia::task<void> CollectorRuntime::publishStream(const StreamStatus& stream, std::string_view ownerToken, std::string_view projectionId) {
-    const auto identity = StreamStatus::identity(stream.app, stream.stream, stream.schema);
+ruvia::task<bool> CollectorRuntime::publishStream(const StreamProjection& projection) {
+    const auto& stream = projection.stream;
+    const auto identity = media::StreamStatus::identity(stream.app, stream.stream, stream.schema);
     const auto key = control_protocol::stream::owner(identity);
-    if (stream.online && !(co_await retainOwner(key, std::string(ownerToken), {}, stream.stream))) {
-        currentProjectionSucceeded_ = false;
-        co_return;
+    if (stream.online && !(co_await retainOwner(key, projection.ownerToken, {}, stream.stream))) {
+        co_return false;
     }
     const auto persisted = co_await persistProjection(
-        projection_protocol::streamProjectionFields(stream, index_, ownerToken),
-        std::string(projectionId)
+        projection_protocol::streamProjectionFields(stream, index_, projection.ownerToken),
+        projection.projectionId
     );
-    currentProjectionSucceeded_ = currentProjectionSucceeded_ && persisted;
     if (!stream.online) {
-        co_await releaseOwner(key, std::string(ownerToken));
+        co_await releaseOwner(
+            key,
+            projection.ownerToken,
+            persisted ? control_protocol::stream::ownerDeadlineMember(control_protocol::stream::kStreamDeadlineKind, identity) : std::string{}
+        );
     }
+    co_return persisted;
 }
 
 ruvia::task<void> CollectorRuntime::refreshOwnerLeases() {
@@ -786,6 +817,14 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
     constexpr auto kLocalLease = std::chrono::seconds(12);
     const auto operationStarted = std::chrono::steady_clock::now();
     const auto localDeadline = operationStarted + kLocalLease;
+    // Device and stream owners are tracked in the owner deadline set; preview
+    // session owners have no durable aggregate.
+    const auto deadlineMember = key.starts_with(control_protocol::stream::kOwnerPrefix)
+        ? control_protocol::stream::ownerDeadlineMember(
+              deviceId.empty() ? control_protocol::stream::kStreamDeadlineKind : control_protocol::stream::kDeviceDeadlineKind,
+              std::string_view(key).substr(control_protocol::stream::kOwnerPrefix.size())
+          )
+        : std::string{};
 
     const auto local = ownerLeases_.find(key);
     const bool hasLocal = local != ownerLeases_.end();
@@ -798,8 +837,8 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
     bool retained = false;
     try {
         retained = hasLocal && previousToken == token
-            ? co_await GbControlService::renewOwnerLease(redis_, key, token)
-            : co_await GbControlService::claimOwnerLease(redis_, key, token, previousToken);
+            ? co_await GbControlService::renewOwnerLease(redis_, key, token, deadlineMember)
+            : co_await GbControlService::claimOwnerLease(redis_, key, token, previousToken, deadlineMember);
     } catch (const std::exception& error) {
         LOG_WARN << "[GB28181][Collector] owner lease claim failed: "
                  << error.what();
@@ -822,7 +861,8 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
         }
         try {
             co_await releaseOwner(key, token);
-        } catch (...) {
+        } catch (const std::exception& error) {
+            LOG_WARN << "[GB28181][Collector] lost owner cleanup failed: " << error.what();
         }
         co_return false;
     }
@@ -832,7 +872,8 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
         (!hasLocal || current->second.token != previousToken)) {
         try {
             co_await releaseOwner(key, token);
-        } catch (...) {
+        } catch (const std::exception& error) {
+            LOG_WARN << "[GB28181][Collector] superseded owner cleanup failed: " << error.what();
         }
         if (sip_ && !stopping_.load()) {
             invalidateOwnerTarget(key, token, deviceId, streamId);
@@ -844,7 +885,8 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
     if (deadline <= now) {
         try {
             co_await releaseOwner(key, token);
-        } catch (...) {
+        } catch (const std::exception& error) {
+            LOG_WARN << "[GB28181][Collector] late owner cleanup failed: " << error.what();
         }
         if (sip_ && !stopping_.load()) {
             invalidateOwnerTarget(key, token, deviceId, streamId);
@@ -864,6 +906,7 @@ ruvia::task<bool> CollectorRuntime::retainOwner(
         lease.token = token;
         lease.deviceId = std::move(deviceId);
         lease.streamId = std::move(streamId);
+        lease.deadlineMember = deadlineMember;
         lease.expiresAt = deadline;
         current = ownerLeases_.emplace(std::move(key), std::move(lease)).first;
     } else {
@@ -889,7 +932,7 @@ bool CollectorRuntime::ownsLocal(std::string_view key, std::string_view token) c
         found->second.expiresAt > std::chrono::steady_clock::now();
 }
 
-ruvia::task<void> CollectorRuntime::releaseOwner(std::string key, std::string token) {
+ruvia::task<void> CollectorRuntime::releaseOwner(std::string key, std::string token, std::string settledMember) {
     requireCurrentLoop();
     if (key.empty() || token.empty()) {
         co_return;
@@ -903,7 +946,7 @@ ruvia::task<void> CollectorRuntime::releaseOwner(std::string key, std::string to
         ownerLeases_.erase(found);
     }
 
-    co_await GbControlService::releaseOwnerLease(redis_, key, token);
+    co_await GbControlService::releaseOwnerLease(redis_, key, token, settledMember);
     co_return;
 }
 
@@ -922,7 +965,7 @@ ruvia::task<void> CollectorRuntime::renewOwnerLease(std::string key, std::string
 
     bool renewed = false;
     try {
-        renewed = co_await GbControlService::renewOwnerLease(redis_, key, token);
+        renewed = co_await GbControlService::renewOwnerLease(redis_, key, token, found->second.deadlineMember);
     } catch (const std::exception& error) {
         LOG_WARN << "[GB28181][Collector] owner lease renewal failed: "
                  << error.what();
@@ -1032,51 +1075,33 @@ void CollectorRuntime::invalidateOwnerTarget(const std::string& key, const std::
 ruvia::task<void> CollectorRuntime::drainProjection() {
     requireCurrentLoop();
     while (!projectionQueue_.empty() && !projectionScope_.stop_requested()) {
-        auto event = std::move(projectionQueue_.front());
-        projectionQueue_.pop_front();
+        auto event = projectionQueue_.pop();
         bool retry = false;
-        currentProjectionSucceeded_ = true;
-        std::uint64_t eventSequence = 0;
-        if (auto* device = std::get_if<DeviceProjection>(&event)) {
-            eventSequence = device->sequence;
-        }
-        if (auto* stream = std::get_if<StreamProjection>(&event)) {
-            eventSequence = stream->sequence;
-        }
+        bool succeeded = true;
+        std::optional<ProjectionSequenceRange> sequences;
         try {
-            if (auto* device = std::get_if<DeviceProjection>(&event)) {
-                co_await publishDevice(device->device, device->change, device->ownerToken, device->projectionId);
-            } else if (auto* stream = std::get_if<StreamProjection>(&event)) {
-                co_await publishStream(stream->stream, stream->ownerToken, stream->projectionId);
+            if (const auto* device = std::get_if<DeviceProjection>(&event)) {
+                sequences = device->sequences;
+                succeeded = co_await publishDevice(*device);
+            } else if (const auto* stream = std::get_if<StreamProjection>(&event)) {
+                sequences = stream->sequences;
+                succeeded = co_await publishStream(*stream);
             } else {
                 const auto& barrier = std::get<ProjectionBarrier>(event);
-                const bool failed = std::any_of(projectionFailures_.begin(), projectionFailures_.end(), [&](const auto& failure) {
-                    return failure > barrier.after && failure <= barrier.through;
-                });
-                barrier.complete(!failed);
+                barrier.complete(!projectionQueue_.failedBetween(barrier.after, barrier.through));
             }
         } catch (const std::exception& error) {
             retry = true;
             if (!projectionScope_.stop_requested()) {
                 LOG_WARN << "[GB28181] projection awaits durable storage: " << error.what();
             }
-        } catch (...) {
-            retry = true;
         }
-        if (!retry && eventSequence && !currentProjectionSucceeded_) {
-            projectionFailures_.push_back(eventSequence);
+        if (!retry && sequences && !succeeded) {
+            projectionQueue_.recordFailure(*sequences);
         }
-        auto oldestNeeded = std::min(lastSipBarrierSequence_, activeControlProjection_.value_or(projectionSequence_));
-        for (const auto& queued : projectionQueue_) {
-            if (const auto* barrier = std::get_if<ProjectionBarrier>(&queued)) {
-                oldestNeeded = std::min(oldestNeeded, barrier->after);
-            }
-        }
-        while (!projectionFailures_.empty() && projectionFailures_.front() <= oldestNeeded) {
-            projectionFailures_.pop_front();
-        }
+        projectionQueue_.pruneFailures(std::min(lastSipBarrierSequence_, activeControlProjection_.value_or(projectionQueue_.sequence())));
         if (retry) {
-            projectionQueue_.push_front(std::move(event));
+            projectionQueue_.retry(std::move(event));
             (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), projectionScope_.get_stop_token());
         }
     }
@@ -1089,60 +1114,101 @@ ruvia::task<void> CollectorRuntime::controlLoop() {
     const auto group = control_protocol::stream::kControlGroup;
     const auto consumer = ownerToken_;
     const auto redis = redis_.with_options({ .stop_token_ = scope_.get_stop_token() });
-    const std::vector<std::string> streams{ stream };
+    bool groupReady = false;
+    bool recovering = true;
     while (!scope_.stop_requested()) {
-        bool failed = false;
+        std::string failure;
         try {
-            static constexpr std::string_view groupScript = R"lua(
-local created=redis.pcall('XGROUP','CREATE',KEYS[1],ARGV[1],'0','MKSTREAM')
-if type(created)=='table' and created.err and not string.find(created.err,'BUSYGROUP',1,true) then
- return redis.error_reply(created.err)
-end
-redis.call('EXPIRE',KEYS[1],600)
-return 1
-)lua";
-            const std::string_view groupKeys[]{ stream };
-            const std::string_view groupArgs[]{ group };
-            const auto initialized = co_await redis.eval(groupScript, groupKeys, groupArgs);
-            if (initialized.kind() != ruvia::redis_value::kind_type::integer) {
-                service::message::redis::throwValue("GB28181 control group", initialized);
+            if (!groupReady) {
+                co_await GbControlService::ensureCollectorStream(redis, stream, group);
+                groupReady = true;
             }
-
-            // This stream is exclusive to this process incarnation and owner.
-            const auto pending = co_await service::message::redis::claimGroupMany(
-                redis,
-                streams,
-                group,
-                consumer,
-                32,
-                std::chrono::milliseconds(0)
-            );
-            for (const auto& batch : pending) {
-                for (const auto& message : batch.messages) {
-                    co_await handleControl(message);
+            std::vector<service::message::StreamMessage> messages;
+            if (recovering) {
+                // This stream is exclusive to this process incarnation and
+                // owner; replay only its own pending commands after a failure.
+                messages = co_await service::message::redis::readGroup(redis, stream, group, consumer, "0", std::chrono::milliseconds(0), 32);
+                recovering = !messages.empty();
+            } else {
+                messages = co_await service::message::redis::readGroupBlockingUntil(
+                    redis,
+                    stream,
+                    group,
+                    consumer,
+                    scope_.get_stop_token(),
+                    kCollectorStreamRefresh,
+                    32
+                );
+                if (messages.empty()) {
+                    co_await GbControlService::refreshCollectorStream(redis, stream);
                 }
+            }
+            for (const auto& message : messages) {
+                co_await handleControl(message);
+            }
+        } catch (const std::exception& error) {
+            if (!scope_.stop_requested()) {
+                failure = error.what();
+            }
+        }
+        if (failure.empty()) {
+            continue;
+        }
+        LOG_WARN << "[GB28181] control consumer: " << failure;
+        groupReady = failure.find("NOGROUP") == std::string::npos;
+        recovering = true;
+        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), scope_.get_stop_token());
+    }
+}
+
+ruvia::task<void> CollectorRuntime::receiptLoop() {
+    requireCurrentLoop();
+    const auto stream = control_protocol::stream::projectionReceipts(index_, service::runtime::instanceId());
+    const auto group = control_protocol::stream::kControlGroup;
+    const auto consumer = ownerToken_;
+    const auto redis = redis_.with_options({ .stop_token_ = projectionScope_.get_stop_token() });
+    bool groupReady = true;
+    while (!projectionScope_.stop_requested()) {
+        std::string failure;
+        try {
+            if (!groupReady) {
+                co_await GbControlService::ensureCollectorStream(redis, stream, group);
+                groupReady = true;
             }
             const auto messages = co_await service::message::redis::readGroupBlockingUntil(
                 redis,
                 stream,
                 group,
                 consumer,
-                scope_.get_stop_token(),
-                std::chrono::milliseconds(1000),
-                32
+                projectionScope_.get_stop_token(),
+                kCollectorStreamRefresh,
+                64
             );
+            if (messages.empty()) {
+                co_await GbControlService::refreshCollectorStream(redis, stream);
+                continue;
+            }
             for (const auto& message : messages) {
-                co_await handleControl(message);
+                // A receipt without a waiter belongs to a wait that already
+                // re-checked the durable receipt.
+                if (const auto waiter = projectionReceipts_.find(std::string(message.get("projection_id")));
+                    waiter != projectionReceipts_.end()) {
+                    (void)waiter->second.complete(message.get("applied") == "1");
+                    projectionReceipts_.erase(waiter);
+                }
             }
+            co_await service::message::redis::acknowledgeAndDeleteMany(redis, stream, group, messages);
         } catch (const std::exception& error) {
-            failed = true;
-            if (!scope_.stop_requested()) {
-                LOG_WARN << "[GB28181] control consumer: " << error.what();
+            if (!projectionScope_.stop_requested()) {
+                failure = error.what();
             }
         }
-        if (failed) {
-            (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), scope_.get_stop_token());
+        if (failure.empty()) {
+            continue;
         }
+        LOG_WARN << "[GB28181] projection receipt consumer: " << failure;
+        groupReady = failure.find("NOGROUP") == std::string::npos;
+        (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), projectionScope_.get_stop_token());
     }
 }
 
@@ -1193,7 +1259,13 @@ ruvia::task<void> CollectorRuntime::handleControl(
         fail(409, "stale GB28181 connection owner");
     } else {
         const auto claimed = co_await GbControlService::claimControlExecution(
-            redis, key, claimKey, cancelKey, token, deadlineText);
+            redis,
+            key,
+            claimKey,
+            cancelKey,
+            token,
+            deadlineText
+        );
         if (claimed != ControlClaimResult::kClaimed) {
             fail(409, claimed == ControlClaimResult::kAlreadyClaimed ? "previous execution outcome is unknown; command will not be replayed" : "GB28181 command expired, cancelled or lost its owner");
         } else {
@@ -1203,7 +1275,7 @@ ruvia::task<void> CollectorRuntime::handleControl(
                 fail(408, "GB28181 command cancelled or ownership expired while claiming");
             } else {
                 try {
-                    const auto beforeProjection = projectionSequence_;
+                    const auto beforeProjection = projectionQueue_.sequence();
                     activeControlProjection_ = beforeProjection;
                     result = co_await execute(operation, payload, scope_.get_stop_token());
                     if (!(co_await waitForProjection(scope_.get_stop_token(), beforeProjection))) {
@@ -1238,7 +1310,7 @@ ruvia::task<void> CollectorRuntime::handleControl(
     }
 }
 
-ruvia::task<void> CollectorRuntime::retainPreview(const SipPreviewStartResult& preview) {
+ruvia::task<void> CollectorRuntime::retainPreview(const sip::SipPreviewStartResult& preview) {
     const auto device = devices_.findDevice(preview.deviceId);
     if (!device || !device->online) {
         (void)sip_->stopPreview(preview.sessionId);
@@ -1377,14 +1449,16 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
         operation == control_protocol::kRecordingStartOperation ||
         operation == control_protocol::kRecordingStopOperation) {
         const auto streamId = control_protocol::requiredText(input.get<"streamId">(), "流编号不能为空");
-        ZlmSdk::OwnerScope owner(index_);
-        auto& sdk = sdkSupervisor().sdk();
+        if (!sdk_) {
+            throw std::runtime_error("ZLMediaKit SDK is unavailable");
+        }
+        media::ZlmSdk::OwnerScope owner(index_);
         if (operation == control_protocol::kRecordingOperation) {
-            co_return control_protocol::jsonRecording(sdk.isMp4Recording(streamId));
+            co_return control_protocol::jsonRecording(sdk_->isMp4Recording(streamId));
         }
         const auto changed = operation == control_protocol::kRecordingStartOperation
-            ? sdk.startMp4Recording(streamId)
-            : sdk.stopMp4Recording(streamId);
+            ? sdk_->startMp4Recording(streamId)
+            : sdk_->stopMp4Recording(streamId);
         co_return control_protocol::jsonAction(changed);
     }
     if (operation == control_protocol::kHealthOperation ||

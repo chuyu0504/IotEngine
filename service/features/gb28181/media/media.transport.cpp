@@ -13,13 +13,15 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <variant>
+#include <vector>
 
-#include <ruvia/web/http_client_handle.h>
-#include <ruvia/web/streaming.h>
+#include <ruvia/core/worker_post_types.h>
 #include <ruvia/web/model_json.h>
 
-#include "service/common/http.h"
 #include "service/middleware/log.h"
+
+namespace service::gb28181::media {
 
 namespace {
 
@@ -175,139 +177,147 @@ struct SdkSupervisor::Route final
         : loop(std::move(value)), callbacks(std::move(valueCallbacks)) {}
 
     void streamChanged(std::string app, std::string stream, std::string schema, bool online, int readerCount) {
-        auto self = shared_from_this();
-        {
-            std::lock_guard lock(mutex);
-            if (!active.load()) {
-                return;
-            }
-            ++pending;
-        }
-        auto dispatch =
-            [self, app = std::move(app), stream = std::move(stream), schema = std::move(schema), online, readerCount]() mutable {
-                try {
-                    if (self->active.load() && self->callbacks.onStreamChanged) {
-                        self->callbacks.onStreamChanged(
-                            std::move(app),
-                            std::move(stream),
-                            std::move(schema),
-                            online,
-                            readerCount
-                        );
-                    }
-                } catch (const std::exception& error) {
-                    LOG_ERROR << "[GB28181][ZLM SDK] Collector stream callback "
-                              << "failed: " << error.what();
-                } catch (...) {
-                    LOG_ERROR << "[GB28181][ZLM SDK] Collector stream callback "
-                              << "failed";
-                }
-                self->finish();
-            };
-        const auto posted = loop.post(dispatch);
-        if (!posted.accepted()) {
-            // A full worker mailbox must not silently discard an SDK event.
-            // The owning event_loop executor has its own queue and is still
-            // the same worker, so use it as a lossless fallback while the
-            // worker is accepting work.  During teardown, deactivate() owns
-            // the dropped event and wakes waitForPending().
-            if (loop.accepting()) {
-                try {
-                    asio::post(loop.executor(), std::move(dispatch));
-                    return;
-                } catch (...) {
-                    LOG_ERROR << "[GB28181][ZLM SDK] Collector stream callback "
-                              << "could not be queued on its owner loop";
-                }
-            } else {
-                LOG_WARN << "[GB28181][ZLM SDK] Dropping stream callback after "
-                         << "owner loop stopped";
-            }
-            self->finish();
-        }
+        auto key = "change\n" + StreamStatus::identity(app, stream, schema);
+        enqueue(std::move(key), StreamChange{ std::move(app), std::move(stream), std::move(schema), online, readerCount });
     }
 
     void rtpDetached(std::string stream) {
-        auto self = shared_from_this();
-        {
-            std::lock_guard lock(mutex);
-            if (!active.load()) {
-                return;
-            }
-            ++pending;
-        }
-        auto dispatch = [self, stream = std::move(stream)]() mutable {
-            try {
-                if (self->active.load() && self->callbacks.onRtpDetached) {
-                    self->callbacks.onRtpDetached(std::move(stream));
-                }
-            } catch (const std::exception& error) {
-                LOG_ERROR << "[GB28181][ZLM SDK] Collector RTP detach callback "
-                          << "failed: " << error.what();
-            } catch (...) {
-                LOG_ERROR << "[GB28181][ZLM SDK] Collector RTP detach callback "
-                          << "failed";
-            }
-            self->finish();
-        };
-        const auto posted = loop.post(dispatch);
-        if (!posted.accepted()) {
-            if (loop.accepting()) {
-                try {
-                    asio::post(loop.executor(), std::move(dispatch));
-                    return;
-                } catch (...) {
-                    LOG_ERROR << "[GB28181][ZLM SDK] Collector RTP detach "
-                              << "could not be queued on its owner loop";
-                }
-            } else {
-                LOG_WARN << "[GB28181][ZLM SDK] Dropping RTP detach callback "
-                         << "after owner loop stopped";
-            }
-            self->finish();
-        }
+        auto key = "detach\n" + stream;
+        enqueue(std::move(key), RtpDetach{ std::move(stream) });
     }
 
     void deactivate() noexcept {
         std::lock_guard lock(mutex);
         active.store(false);
+        pending.clear();
+        pendingIndex.clear();
         if (!loop.accepting()) {
-            pending = 0;
+            scheduled = false;
         }
-        if (pending == 0) {
+        if (!scheduled) {
             completed.notify_all();
         }
     }
 
     void waitForPending() noexcept {
+        std::unique_lock lock(mutex);
         if (loop.is_current() || !loop.accepting()) {
-            std::lock_guard lock(mutex);
-            pending = 0;
+            // A delivery still queued on this loop observes the inactive route
+            // and returns without invoking the Collector.
             return;
         }
-        std::unique_lock lock(mutex);
         completed.wait(lock, [this] {
-            return pending == 0;
+            return !scheduled;
         });
+    }
+
+  private:
+    struct StreamChange final {
+        std::string app;
+        std::string stream;
+        std::string schema;
+        bool online{ false };
+        int readerCount{ 0 };
+    };
+
+    struct RtpDetach final {
+        std::string stream;
+    };
+
+    using Event = std::variant<StreamChange, RtpDetach>;
+
+    // The latest state of a stream replaces its queued predecessor in place.
+    void enqueue(std::string key, Event event) {
+        std::lock_guard lock(mutex);
+        if (!active.load()) {
+            return;
+        }
+        if (const auto found = pendingIndex.find(key); found != pendingIndex.end()) {
+            pending[found->second] = std::move(event);
+        } else {
+            pendingIndex.emplace(std::move(key), pending.size());
+            pending.push_back(std::move(event));
+        }
+        scheduleLocked();
+    }
+
+    void scheduleLocked() {
+        if (scheduled) {
+            return;
+        }
+        auto delivery = [self = shared_from_this()] {
+            self->deliver();
+        };
+        const auto posted = loop.post(delivery);
+        if (posted.accepted()) {
+            scheduled = true;
+            return;
+        }
+        if (posted.status() == ruvia::post_status::queue_full && loop.accepting()) {
+            // Backpressure: the owner's mailbox is full.  The coalesced set is
+            // bounded by the streams this Collector owns, so its single
+            // delivery is scheduled on the same owner executor instead of
+            // dropping a stream state change.
+            LOG_WARN << "[GB28181][ZLM SDK] Collector mailbox full; coalesced "
+                     << pending.size() << " SDK event(s) for one delivery";
+            try {
+                asio::post(loop.executor(), std::move(delivery));
+                scheduled = true;
+                return;
+            } catch (const std::exception& error) {
+                LOG_ERROR << "[GB28181][ZLM SDK] SDK events could not be queued on their owner loop: "
+                          << error.what();
+            }
+        } else {
+            LOG_WARN << "[GB28181][ZLM SDK] Dropping " << pending.size()
+                     << " SDK event(s) after the owner loop stopped";
+        }
+        pending.clear();
+        pendingIndex.clear();
+        completed.notify_all();
+    }
+
+    void deliver() {
+        std::vector<Event> events;
+        {
+            std::lock_guard lock(mutex);
+            events.swap(pending);
+            pendingIndex.clear();
+        }
+        for (auto& event : events) {
+            if (!active.load()) {
+                break;
+            }
+            try {
+                if (auto* change = std::get_if<StreamChange>(&event)) {
+                    if (callbacks.onStreamChanged) {
+                        callbacks.onStreamChanged(std::move(change->app), std::move(change->stream), std::move(change->schema), change->online, change->readerCount);
+                    }
+                } else if (callbacks.onRtpDetached) {
+                    callbacks.onRtpDetached(std::move(std::get<RtpDetach>(event).stream));
+                }
+            } catch (const std::exception& error) {
+                LOG_ERROR << "[GB28181][ZLM SDK] Collector callback failed: " << error.what();
+            }
+        }
+        std::lock_guard lock(mutex);
+        scheduled = false;
+        if (active.load() && !pending.empty()) {
+            scheduleLocked();
+        }
+        if (!scheduled) {
+            completed.notify_all();
+        }
     }
 
     ruvia::event_loop loop;
     CollectorCallbacks callbacks;
     std::mutex mutex;
     std::condition_variable completed;
-    std::size_t pending{ 0 };
+    std::vector<Event> pending;
+    std::unordered_map<std::string, std::size_t> pendingIndex;
+    bool scheduled{ false };
     std::atomic_bool active{ true };
-
-  private:
-    void finish() noexcept {
-        std::lock_guard lock(mutex);
-        if (pending != 0) {
-            --pending;
-        }
-        if (pending == 0) {
-            completed.notify_all();
-        }
-    }
 };
 
 SdkSupervisor& SdkSupervisor::instance() {
@@ -319,28 +329,21 @@ SdkSupervisor& sdkSupervisor() {
     return SdkSupervisor::instance();
 }
 
-bool SdkSupervisor::enabled() const noexcept {
-    std::lock_guard lock(mutex_);
-    return configured_;
-}
-
-std::unique_ptr<ZlmSdk> SdkSupervisor::makeSdk() const {
+std::shared_ptr<ZlmSdk> SdkSupervisor::makeSdk() const {
     ZlmSdk::Callbacks callbacks;
-    callbacks.onStreamChangedOwned =
+    callbacks.onStreamChanged =
         [this](std::string app, std::string stream, std::string schema, bool online, int readerCount, OwnerIndex owner) {
-            const auto route = routeFor(owner);
-            if (route) {
+            if (const auto route = routeFor(owner)) {
                 route->streamChanged(std::move(app), std::move(stream), std::move(schema), online, readerCount);
             }
         };
-    callbacks.onRtpDetachedOwned =
+    callbacks.onRtpDetached =
         [this](std::string stream, OwnerIndex owner) {
-            const auto route = routeFor(owner);
-            if (route) {
+            if (const auto route = routeFor(owner)) {
                 route->rtpDetached(std::move(stream));
             }
         };
-    return std::make_unique<ZlmSdk>(config_, std::move(callbacks));
+    return std::make_shared<ZlmSdk>(config_, std::move(callbacks));
 }
 
 void SdkSupervisor::configure(MediaConfig config) {
@@ -365,7 +368,7 @@ void SdkSupervisor::configure(MediaConfig config) {
 
 void SdkSupervisor::start() {
     std::lock_guard lifecycleLock(lifecycleMutex_);
-    ZlmSdk* sdk = nullptr;
+    std::shared_ptr<ZlmSdk> sdk;
     {
         std::lock_guard lock(mutex_);
         if (!configured_) {
@@ -374,14 +377,14 @@ void SdkSupervisor::start() {
         if (!sdk_) {
             sdk_ = makeSdk();
         }
-        sdk = sdk_.get();
+        sdk = sdk_;
     }
     sdk->start();
 }
 
 void SdkSupervisor::stop() noexcept {
     std::lock_guard lifecycleLock(lifecycleMutex_);
-    std::unique_ptr<ZlmSdk> sdk;
+    std::shared_ptr<ZlmSdk> sdk;
     std::vector<std::shared_ptr<Route>> routes;
     {
         std::lock_guard lock(mutex_);
@@ -393,6 +396,8 @@ void SdkSupervisor::stop() noexcept {
         routes_.clear();
         sdk = std::move(sdk_);
     }
+    // Collector handles keep the adapter object alive; once stopped it
+    // refuses SDK operations instead of dangling.
     if (sdk) {
         sdk->stop();
     }
@@ -406,15 +411,8 @@ bool SdkSupervisor::started() const noexcept {
     return sdk_ && sdk_->started();
 }
 
-ZlmSdk& SdkSupervisor::sdk() {
-    std::lock_guard lock(mutex_);
-    if (!sdk_ || !sdk_->started()) {
-        throw std::runtime_error("ZLMediaKit SDK supervisor is not started");
-    }
-    return *sdk_;
-}
-
-void SdkSupervisor::registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks) {
+std::shared_ptr<ZlmSdk>
+SdkSupervisor::registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks) {
     if (!loop.valid() || !loop.handle().valid()) {
         throw std::invalid_argument(
             "ZLMediaKit SDK collector route requires a valid EventLoop"
@@ -436,6 +434,7 @@ void SdkSupervisor::registerCollector(OwnerIndex owner, ruvia::event_loop loop, 
     if (!routes_.emplace(owner, std::move(route)).second) {
         throw std::logic_error("ZLMediaKit SDK collector owner is already registered");
     }
+    return sdk_;
 }
 
 void SdkSupervisor::unregisterCollector(OwnerIndex owner) noexcept {
@@ -467,17 +466,6 @@ SdkSupervisor::routeFor(OwnerIndex owner) const {
 MediaServerPorts SdkSupervisor::ports() const noexcept {
     std::lock_guard lock(mutex_);
     return sdk_ ? sdk_->ports() : MediaServerPorts{};
-}
-
-MediaCapabilities SdkSupervisor::capabilities() const noexcept {
-    std::lock_guard lock(mutex_);
-    if (sdk_) {
-        return sdk_->capabilities();
-    }
-    MediaCapabilities result;
-    result.tls = config_.tlsEnabled;
-    result.recording = config_.recordingEnabled;
-    return result;
 }
 
 ZlmSdk::OwnerScope::OwnerScope(std::optional<OwnerIndex> owner) noexcept
@@ -700,10 +688,6 @@ ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId,
                              << "owner record, stream=" << streamId;
                     return std::nullopt;
                 }
-                if (callbacks_->callbacks.onStreamOwner &&
-                    owner != kUnassignedOwner) {
-                    callbacks_->callbacks.onStreamOwner(streamId, owner);
-                }
             }
 
             LOG_INFO << "[GB28181][ZLM SDK] RTP server opened, stream=" << streamId
@@ -922,9 +906,7 @@ void API_CALL ZlmSdk::handleMediaChanged(int registered, const mk_media_source s
         return;
     }
     std::lock_guard invocationLock(state->invocationMutex);
-    if (!state->active.load() ||
-        (!state->callbacks.onStreamChanged &&
-         !state->callbacks.onStreamChangedOwned)) {
+    if (!state->active.load() || !state->callbacks.onStreamChanged) {
         return;
     }
     const auto online = registered != 0;
@@ -936,18 +918,14 @@ void API_CALL ZlmSdk::handleMediaChanged(int registered, const mk_media_source s
         return found == state->streamOwners.end() ? kUnassignedOwner
                                                   : found->second;
     }();
-    if (state->callbacks.onStreamChangedOwned) {
-        state->callbacks.onStreamChangedOwned(
-            app,
-            stream,
-            schema,
-            online,
-            online ? mk_media_source_get_total_reader_count(source) : 0,
-            owner
-        );
-    } else {
-        state->callbacks.onStreamChanged(app, stream, schema, online, online ? mk_media_source_get_total_reader_count(source) : 0);
-    }
+    state->callbacks.onStreamChanged(
+        app,
+        stream,
+        schema,
+        online,
+        online ? mk_media_source_get_total_reader_count(source) : 0,
+        owner
+    );
 }
 
 void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser, const mk_http_response_invoker invoker, int* consumed, const mk_sock_info) {
@@ -1025,10 +1003,8 @@ void API_CALL ZlmSdk::handleRtpDetached(void* userData) {
     if (!state->active.load()) {
         return;
     }
-    if (state->callbacks.onRtpDetachedOwned) {
-        state->callbacks.onRtpDetachedOwned(detached->stream, detached->owner);
-    } else if (state->callbacks.onRtpDetached) {
-        state->callbacks.onRtpDetached(detached->stream);
+    if (state->callbacks.onRtpDetached) {
+        state->callbacks.onRtpDetached(detached->stream, detached->owner);
     }
 }
 
@@ -1036,166 +1012,4 @@ void API_CALL ZlmSdk::releaseRtpCallback(void* userData) {
     delete static_cast<RtpCallbackState*>(userData);
 }
 
-#include <cctype>
-
-namespace service::gb28181 {
-namespace {
-std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-bool forwardedResponseHeader(std::string_view name) noexcept {
-    return name == "content-type" || name == "cache-control" ||
-        name == "content-range" || name == "accept-ranges" || name == "etag" ||
-        name == "last-modified" || name == "access-control-allow-origin" ||
-        name == "access-control-expose-headers";
-}
-} // namespace
-
-namespace media_proxy_detail {
-
-bool allowedTarget(std::string_view method, std::string_view path) noexcept {
-    if (method == "POST") {
-        return path == "/index/api/webrtc";
-    }
-    if (method != "GET" || !path.starts_with("/rtp/") ||
-        path.find("..") != std::string_view::npos) {
-        return false;
-    }
-    return std::ranges::none_of(path, [](unsigned char character) {
-        return character <= 0x20U || character == 0x7FU || character == '\\' ||
-            character == '%' || character == '?' || character == '#';
-    });
-}
-
-std::string rewriteHlsPlaylist(std::string_view playlist, std::string_view query) {
-    if (query.empty()) {
-        return std::string(playlist);
-    }
-    std::string output;
-    output.reserve(playlist.size() + query.size() * 8U);
-    while (!playlist.empty()) {
-        const auto end = playlist.find('\n');
-        auto line =
-            end == std::string_view::npos ? playlist : playlist.substr(0, end);
-        const auto carriage = line.ends_with('\r');
-        if (carriage) {
-            line.remove_suffix(1);
-        }
-        if (!line.empty() && !line.starts_with('#')) {
-            output.append(line);
-            output.push_back(line.find('?') == std::string_view::npos ? '?' : '&');
-            output.append(query);
-        } else {
-            output.append(line);
-        }
-        if (carriage) {
-            output.push_back('\r');
-        }
-        if (end == std::string_view::npos) {
-            break;
-        }
-        output.push_back('\n');
-        playlist.remove_prefix(end + 1);
-    }
-    return output;
-}
-
-} // namespace media_proxy_detail
-
-std::string MediaProxyController::percentEncode(std::string_view value) {
-    static constexpr char digits[] = "0123456789ABCDEF";
-    std::string result;
-    result.reserve(value.size());
-    for (const auto ch : value) {
-        const auto byte = static_cast<unsigned char>(ch);
-        if (std::isalnum(byte) != 0 || ch == '-' || ch == '_' || ch == '.' ||
-            ch == '~') {
-            result.push_back(ch);
-        } else {
-            result.push_back('%');
-            result.push_back(digits[byte >> 4U]);
-            result.push_back(digits[byte & 0x0FU]);
-        }
-    }
-    return result;
-}
-
-std::string
-MediaProxyController::queryString(const ruvia::context_request& request) {
-    std::string result;
-    for (const auto& field : request.query_fields()) {
-        if (!result.empty()) {
-            result.push_back('&');
-        }
-        result.append(percentEncode(field.name()));
-        result.push_back('=');
-        result.append(percentEncode(field.value()));
-    }
-    return result;
-}
-
-ruvia::task<void> MediaProxyController::proxy(ruvia::context& context) {
-    if (!sdkSupervisor().started()) {
-        service::common::fail(10002, "GB28181 媒体服务未启用", 503);
-    }
-
-    const auto request = context.req();
-    const auto path = request.path();
-    if (!path.starts_with("/media")) {
-        service::common::fail(10001, "媒体代理路径无效", 400);
-    }
-    const auto upstreamPath = path.substr(6);
-    if (!media_proxy_detail::allowedTarget(request.method(), upstreamPath)) {
-        service::common::fail(10003, "媒体资源不存在", 404);
-    }
-
-    const auto query = queryString(request);
-    std::string target(upstreamPath);
-    if (!query.empty()) {
-        target += '?' + query;
-    }
-    std::vector<ruvia::http_header_view> headers;
-    for (const auto name : { "Content-Type", "Accept", "Range" }) {
-        if (const auto value = request.header(name)) {
-            headers.emplace_back(name, *value);
-        }
-    }
-    std::string body;
-    if (request.method() == "POST") {
-        body.assign(co_await request.text());
-    }
-    const auto content = request.method() == "POST"
-        ? ruvia::http_client_request_content_view::bytes(body)
-        : ruvia::http_client_request_content_view::none();
-    // The registered client, upstream socket, and response body all belong to
-    // the accepting Service Worker. Ruvia supplies cancellation and backpressure.
-    auto upstream = co_await context.get_http_client("gb-media").send({ .method_ = request.method(), .target_ = target, .headers_ = headers, .content_ = content });
-    if (upstream.status().value() < 200 || upstream.status().value() > 599) {
-        service::common::fail(10002, "媒体服务返回了无效状态", 502);
-    }
-    context.status(upstream.status());
-    for (const auto& header : upstream.headers()) {
-        if (forwardedResponseHeader(lower(std::string(header.name())))) {
-            context.header(header.name(), header.value());
-        }
-    }
-
-    auto& writer = context.stream();
-    if (upstreamPath.ends_with(".m3u8")) {
-        const auto playlist = co_await upstream.body().read_all(2U * 1024U * 1024U);
-        const std::string_view playlistText(reinterpret_cast<const char*>(playlist.bytes().data()), playlist.size());
-        const auto rewritten = media_proxy_detail::rewriteHlsPlaylist(playlistText, query);
-        co_await writer.write(rewritten);
-    } else {
-        co_await upstream.body().pipe_to(writer);
-    }
-    if (!writer.aborted()) {
-        co_await writer.end();
-    }
-}
-
-} // namespace service::gb28181
+} // namespace service::gb28181::media

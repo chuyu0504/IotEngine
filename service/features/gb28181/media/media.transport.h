@@ -13,14 +13,13 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
-#include <vector>
 
 #include <ruvia/core/event_loop.h>
-#include <ruvia/web/context_request.h>
-#include <ruvia/web/controller.h>
 
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/media/media.types.h"
+
+namespace service::gb28181::media {
 
 class ZlmSdk final {
   public:
@@ -30,7 +29,7 @@ class ZlmSdk final {
 
     // ZLMediaKit invokes callbacks from its own worker threads.  The SIP
     // actor installs this scope while it services a request so a newly
-    // created media session can retain the caller's Service Worker owner.
+    // created media session can retain the caller's Collector owner.
     class OwnerScope final {
       public:
         explicit OwnerScope(std::optional<OwnerIndex> owner) noexcept;
@@ -43,16 +42,12 @@ class ZlmSdk final {
         OwnerIndex previous_{ kUnassignedOwner };
     };
 
+    // Every callback carries the Collector owner recorded when the stream was
+    // opened, or kUnassignedOwner for a stream no Collector opened.
     struct Callbacks {
-        std::function<void(std::string app, std::string stream, std::string schema, bool online, int readerCount)>
-            onStreamChanged;
-        std::function<void(std::string stream)> onRtpDetached;
         std::function<void(std::string app, std::string stream, std::string schema, bool online, int readerCount, OwnerIndex owner)>
-            onStreamChangedOwned;
-        std::function<void(std::string stream, OwnerIndex owner)>
-            onRtpDetachedOwned;
-        std::function<void(std::string stream, OwnerIndex owner)>
-            onStreamOwner;
+            onStreamChanged;
+        std::function<void(std::string stream, OwnerIndex owner)> onRtpDetached;
     };
 
     explicit ZlmSdk(MediaConfig config, Callbacks callbacks = {});
@@ -136,6 +131,11 @@ class ZlmSdk final {
 // The SDK is therefore kept behind one explicit adapter supervisor.  Business
 // state never lives here: a registered Collector only supplies callbacks that
 // are posted back to the Collector's own Ruvia event loop.
+//
+// SDK events are coalesced per stream before they are posted, so a Collector
+// mailbox holds at most one pending delivery per route.  When the mailbox is
+// full that single delivery is scheduled on the owner's executor; the pending
+// set is bounded by the streams the Collector owns and no state change is lost.
 class SdkSupervisor final {
   public:
     using OwnerIndex = ZlmSdk::OwnerIndex;
@@ -154,18 +154,16 @@ class SdkSupervisor final {
     void start();
     void stop() noexcept;
 
-    [[nodiscard]] bool enabled() const noexcept;
     [[nodiscard]] bool started() const noexcept;
 
-    [[nodiscard]] const MediaConfig& config() const noexcept { return config_; }
-
-    [[nodiscard]] ZlmSdk& sdk();
-
-    void registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks);
+    // Registers the Collector's callback route and returns its SDK handle.
+    // The handle keeps the adapter object alive; after stop() it reports the
+    // SDK as stopped instead of dangling.
+    [[nodiscard]] std::shared_ptr<ZlmSdk>
+    registerCollector(OwnerIndex owner, ruvia::event_loop loop, CollectorCallbacks callbacks);
     void unregisterCollector(OwnerIndex owner) noexcept;
 
     [[nodiscard]] MediaServerPorts ports() const noexcept;
-    [[nodiscard]] MediaCapabilities capabilities() const noexcept;
 
   private:
     struct Route;
@@ -182,11 +180,11 @@ class SdkSupervisor final {
     mutable std::mutex lifecycleMutex_;
     mutable std::mutex mutex_;
     MediaConfig config_;
-    std::unique_ptr<ZlmSdk> sdk_;
+    std::shared_ptr<ZlmSdk> sdk_;
     std::unordered_map<OwnerIndex, std::shared_ptr<Route>> routes_;
     bool configured_{ false };
 
-    [[nodiscard]] std::unique_ptr<ZlmSdk> makeSdk() const;
+    [[nodiscard]] std::shared_ptr<ZlmSdk> makeSdk() const;
 };
 
 // There is one SDK adapter because ZLMediaKit exposes one process-global
@@ -194,42 +192,4 @@ class SdkSupervisor final {
 // transport; Collector protocol and session state remains per Collector.
 SdkSupervisor& sdkSupervisor();
 
-#include <utility>
-#include <vector>
-
-#include <ruvia/core/event_loop_pool.h>
-#include <ruvia/core/task.h>
-#include <ruvia/core/worker_handle.h>
-
-namespace service::gb28181 {
-
-namespace media_proxy_detail {
-
-[[nodiscard]] bool allowedTarget(std::string_view method, std::string_view path) noexcept;
-[[nodiscard]] std::string rewriteHlsPlaylist(std::string_view playlist, std::string_view query);
-
-} // namespace media_proxy_detail
-
-class MediaProxyController final {
-  public:
-    RUVIA_CONTROLLER_GROUP("/media")
-    RUVIA_ROUTES_BEGIN(MediaProxyController)
-    RUVIA_GET_STREAM("/*", proxy);
-    ruvia_controller_access_type::add_response_stream_route(
-        ruvia_route_scope,
-        ruvia::http_known_method::post,
-        "/*",
-        ruvia_controller_access_type::template bind_stream<&ruvia_controller_type::proxy>(
-            this
-        ),
-        ruvia_controller_access_type::template make_middlewares<>()
-    );
-    RUVIA_ROUTES_END
-
-  private:
-    static std::string percentEncode(std::string_view value);
-    static std::string queryString(const ruvia::context_request& request);
-    ruvia::task<void> proxy(ruvia::context& context);
-};
-
-} // namespace service::gb28181
+} // namespace service::gb28181::media

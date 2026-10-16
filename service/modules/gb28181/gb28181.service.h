@@ -1,16 +1,23 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <ruvia/web/context.h>
+#include <ruvia/web/context_request.h>
+#include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/model_json.h>
+#include <ruvia/web/streaming.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/middleware/rpc.h"
+#include "service/modules/gb28181/gb28181.entity.h"
 #include "service/modules/gb28181/gb28181.types.h"
 
 namespace service::gb28181 {
@@ -470,5 +477,167 @@ inline Gb28181Service& gb28181Service() {
     static thread_local Gb28181Service value;
     return value;
 }
+
+// Proxies player requests under /media to the process-local ZLMediaKit HTTP
+// listener through the worker's "gb-media" client.  Playback is authorized by
+// the signed play token, which ZLMediaKit verifies for every play request.
+class MediaProxyService final {
+  public:
+    // Media readiness is published by the Collector that holds the SDK handle.
+    static ruvia::task<bool> mediaStarted(ruvia::context& c) {
+        const auto started = co_await c.redis().hget(MediaStateRecord::kKey, MediaStateRecord::kStartedField);
+        co_return started&& MediaStateRecord::started(std::string_view(*started));
+    }
+
+    static bool allowedTarget(std::string_view method, std::string_view path) noexcept {
+        if (method == "POST") {
+            return path == "/index/api/webrtc";
+        }
+        if (method != "GET" || !path.starts_with("/rtp/") ||
+            path.find("..") != std::string_view::npos) {
+            return false;
+        }
+        return std::ranges::none_of(path, [](unsigned char character) {
+            return character <= 0x20U || character == 0x7FU || character == '\\' ||
+                character == '%' || character == '?' || character == '#';
+        });
+    }
+
+    // HLS child URLs carry the playlist's play token.
+    static std::string rewriteHlsPlaylist(std::string_view playlist, std::string_view query) {
+        if (query.empty()) {
+            return std::string(playlist);
+        }
+        std::string output;
+        output.reserve(playlist.size() + query.size() * 8U);
+        while (!playlist.empty()) {
+            const auto end = playlist.find('\n');
+            auto line =
+                end == std::string_view::npos ? playlist : playlist.substr(0, end);
+            const auto carriage = line.ends_with('\r');
+            if (carriage) {
+                line.remove_suffix(1);
+            }
+            if (!line.empty() && !line.starts_with('#')) {
+                output.append(line);
+                output.push_back(line.find('?') == std::string_view::npos ? '?' : '&');
+                output.append(query);
+            } else {
+                output.append(line);
+            }
+            if (carriage) {
+                output.push_back('\r');
+            }
+            if (end == std::string_view::npos) {
+                break;
+            }
+            output.push_back('\n');
+            playlist.remove_prefix(end + 1);
+        }
+        return output;
+    }
+
+    static ruvia::task<void> forward(ruvia::context& context) {
+        const auto request = context.req();
+        const auto path = request.path();
+        if (!path.starts_with("/media")) {
+            service::common::fail(10001, "媒体代理路径无效", 400);
+        }
+        const auto upstreamPath = path.substr(6);
+        if (!allowedTarget(request.method(), upstreamPath)) {
+            service::common::fail(10003, "媒体资源不存在", 404);
+        }
+
+        const auto query = queryString(request);
+        std::string target(upstreamPath);
+        if (!query.empty()) {
+            target += '?' + query;
+        }
+        std::vector<ruvia::http_header_view> headers;
+        for (const auto name : { "Content-Type", "Accept", "Range" }) {
+            if (const auto value = request.header(name)) {
+                headers.emplace_back(name, *value);
+            }
+        }
+        std::string body;
+        if (request.method() == "POST") {
+            body.assign(co_await request.text());
+        }
+        const auto content = request.method() == "POST"
+            ? ruvia::http_client_request_content_view::bytes(body)
+            : ruvia::http_client_request_content_view::none();
+        // The registered client, upstream socket, and response body all belong to
+        // the accepting Service Worker. Ruvia supplies cancellation and backpressure.
+        auto upstream = co_await context.get_http_client("gb-media").send({ .method_ = request.method(), .target_ = target, .headers_ = headers, .content_ = content });
+        if (upstream.status().value() < 200 || upstream.status().value() > 599) {
+            service::common::fail(10002, "媒体服务返回了无效状态", 502);
+        }
+        context.status(upstream.status());
+        for (const auto& header : upstream.headers()) {
+            if (forwardedResponseHeader(lower(std::string(header.name())))) {
+                context.header(header.name(), header.value());
+            }
+        }
+
+        auto& writer = context.stream();
+        if (upstreamPath.ends_with(".m3u8")) {
+            const auto playlist = co_await upstream.body().read_all(2U * 1024U * 1024U);
+            const std::string_view playlistText(reinterpret_cast<const char*>(playlist.bytes().data()), playlist.size());
+            const auto rewritten = rewriteHlsPlaylist(playlistText, query);
+            co_await writer.write(rewritten);
+        } else {
+            co_await upstream.body().pipe_to(writer);
+        }
+        if (!writer.aborted()) {
+            co_await writer.end();
+        }
+    }
+
+  private:
+    static std::string lower(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }
+
+    static bool forwardedResponseHeader(std::string_view name) noexcept {
+        return name == "content-type" || name == "cache-control" ||
+            name == "content-range" || name == "accept-ranges" || name == "etag" ||
+            name == "last-modified" || name == "access-control-allow-origin" ||
+            name == "access-control-expose-headers";
+    }
+
+    static std::string percentEncode(std::string_view value) {
+        static constexpr char digits[] = "0123456789ABCDEF";
+        std::string result;
+        result.reserve(value.size());
+        for (const auto ch : value) {
+            const auto byte = static_cast<unsigned char>(ch);
+            if (std::isalnum(byte) != 0 || ch == '-' || ch == '_' || ch == '.' ||
+                ch == '~') {
+                result.push_back(ch);
+            } else {
+                result.push_back('%');
+                result.push_back(digits[byte >> 4U]);
+                result.push_back(digits[byte & 0x0FU]);
+            }
+        }
+        return result;
+    }
+
+    static std::string queryString(const ruvia::context_request& request) {
+        std::string result;
+        for (const auto& field : request.query_fields()) {
+            if (!result.empty()) {
+                result.push_back('&');
+            }
+            result.append(percentEncode(field.name()));
+            result.push_back('=');
+            result.append(percentEncode(field.value()));
+        }
+        return result;
+    }
+};
 
 } // namespace service::gb28181

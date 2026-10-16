@@ -51,13 +51,13 @@ namespace service::collector {
 
 class CollectorWorker final {
   public:
-    CollectorWorker(ruvia::event_loop loop, std::unique_ptr<ruvia::redis_client> redisClient, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
+    CollectorWorker(ruvia::event_loop loop, std::unique_ptr<ruvia::redis_client> redisClient, std::size_t workerIndex, std::size_t workerCount, service::gb28181::Config gb28181)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
           scope_(workerHandle_, ruvia::task_scope_options{ .resource_ = &resource_ }),
           scheduler_(loop_.io_context()),
           redisClient_(std::move(redisClient)),
           redisBlocking_(redisClient_->handle()),
-          redis_(redisClient_->with_options({.timeout_ = std::chrono::seconds(30)})),
+          redis_(redisClient_->with_options({ .timeout_ = std::chrono::seconds(30) })),
           engine_(protocols()),
           tcp_(
               uuidGenerator_,
@@ -2231,7 +2231,7 @@ class CollectorWorkerPool final {
 
     ~CollectorWorkerPool() { stop(); }
 
-    void start(ruvia::redis_config redisConfig, std::size_t workerCount, AppConfig gb28181) {
+    void start(ruvia::redis_config redisConfig, std::size_t workerCount, service::gb28181::Config gb28181) {
         if (running_.exchange(true)) {
             return;
         }
@@ -2305,7 +2305,7 @@ class CollectorWorkerPool final {
     }
 
   private:
-    static ruvia::task<std::unique_ptr<CollectorWorker>> createWorker(ruvia::event_loop loop, ruvia::redis_config config, std::size_t index, std::size_t count, AppConfig gb28181) {
+    static ruvia::task<std::unique_ptr<CollectorWorker>> createWorker(ruvia::event_loop loop, ruvia::redis_config config, std::size_t index, std::size_t count, service::gb28181::Config gb28181) {
         auto redis = std::make_unique<ruvia::redis_client>(loop, config);
         co_await redis->connect();
         co_return std::make_unique<CollectorWorker>(std::move(loop), std::move(redis), index, count, std::move(gb28181));

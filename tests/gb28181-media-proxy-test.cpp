@@ -12,9 +12,10 @@
 #include <ruvia/web/app.h>
 #include <ruvia/web/http_client.h>
 
-#include "service/features/gb28181/media/media.transport.h"
+#include "service/modules/gb28181/gb28181.service.h"
 
 using namespace std::chrono_literals;
+using service::gb28181::MediaProxyService;
 
 namespace {
 void require(bool value, const char* message) {
@@ -118,6 +119,31 @@ class Origin final {
     std::jthread thread_;
 };
 
+void verifyTargets() {
+    require(MediaProxyService::allowedTarget("GET", "/rtp/stream.live.flv"), "media proxy rejected an HTTP-FLV target");
+    require(MediaProxyService::allowedTarget("POST", "/index/api/webrtc"), "media proxy rejected WebRTC signaling");
+    require(!MediaProxyService::allowedTarget("GET", "/index/api/getServerConfig"), "media proxy exposed an internal ZLM API");
+    require(!MediaProxyService::allowedTarget("POST", "/rtp/stream.live.flv"), "media proxy accepted a media POST");
+    require(!MediaProxyService::allowedTarget("GET", "/rtp/../index/api/getServerConfig"), "media proxy accepted a traversal target");
+    require(!MediaProxyService::allowedTarget("GET", "/rtp/%2e%2e/index/api/getServerConfig") && !MediaProxyService::allowedTarget("GET", "/rtp/..\\index\\api\\getServerConfig"), "media proxy accepted an encoded traversal target");
+    require(MediaProxyService::rewriteHlsPlaylist("#EXTM3U\nsegment-1.ts\nsegment-2.ts?part=1\n", "token=x&expires=1") == "#EXTM3U\nsegment-1.ts?token=x&expires=1\nsegment-2.ts?part=1&token=x&expires=1\n", "HLS proxy did not preserve playback authorization on child requests");
+    require(MediaProxyService::rewriteHlsPlaylist("#EXTM3U\r\nsegment.ts\r\n", "token=x") == "#EXTM3U\r\nsegment.ts?token=x\r\n", "HLS proxy broke CRLF playlists");
+    require(MediaProxyService::rewriteHlsPlaylist("#EXTM3U\nsegment.ts\n", "") == "#EXTM3U\nsegment.ts\n", "HLS proxy rewrote a playlist without a play token");
+}
+
+// The production controller first checks the Collector-published media state
+// in Redis; this test drives the forwarding service against a local origin.
+class TestMediaProxyController final {
+  public:
+    RUVIA_CONTROLLER_GROUP("/media")
+    RUVIA_ROUTES_BEGIN(TestMediaProxyController)
+    RUVIA_GET_STREAM("/*", proxy);
+    RUVIA_ROUTES_END
+
+  private:
+    ruvia::task<void> proxy(ruvia::context& c) { co_await MediaProxyService::forward(c); }
+};
+
 ruvia::task<void> verifyProxy(ruvia::event_loop loop, std::uint16_t port) {
     ruvia::http_client client(loop, { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s, .max_response_bytes_ = 4U * 1024U * 1024U });
     {
@@ -148,14 +174,8 @@ int main() {
     std::thread serving;
     std::exception_ptr serverError;
     try {
+        verifyTargets();
         Origin origin;
-        MediaConfig media;
-        media.playTokenSecret = "media-proxy-test-only-secret";
-        media.rtpPublicIp = "127.0.0.1";
-        media.logLevel = 4;
-        media.httpPort = media.rtspPort = media.rtmpPort = media.rtcPort = media.srtPort = 0;
-        sdkSupervisor().configure(media);
-        sdkSupervisor().start();
         asio::io_context reserveIo;
         asio::ip::tcp::acceptor reservation(reserveIo, { asio::ip::address_v4::loopback(), 0 });
         const auto port = reservation.local_endpoint().port();
@@ -193,7 +213,6 @@ int main() {
         if (serverError) {
             std::rethrow_exception(serverError);
         }
-        sdkSupervisor().stop();
         std::cout << "media proxy HLS, long stream, and cancellation tests passed\n";
         return 0;
     } catch (const std::exception& error) {
@@ -201,7 +220,6 @@ int main() {
         if (serving.joinable()) {
             serving.join();
         }
-        sdkSupervisor().stop();
         std::cerr << error.what() << '\n';
         return 1;
     }
