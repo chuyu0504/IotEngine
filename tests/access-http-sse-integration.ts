@@ -31,6 +31,14 @@ async function publicList(accessKey: string, status = 200) {
     assert.equal(response.status, status);
     return response.json();
 }
+async function publicSseError(path: string, accessKey: string | undefined, status: number, code: number) {
+    const headers = new Headers({Accept:'text/event-stream'});
+    if (accessKey !== undefined) headers.set('X-Access-Key',accessKey);
+    const response = await fetch(apiBase+path,{headers,signal:AbortSignal.timeout(10000)});
+    assert.equal(response.status,status,`initial public SSE failure changed HTTP status: ${path}`);
+    assert(response.headers.get('content-type')?.includes('application/json'),'initial denial must be a JSON HTTP response, not an SSE frame');
+    assert.equal((await response.json()).code,code);
+}
 async function publicStream(accessKey: string) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(),10000);
@@ -99,6 +107,8 @@ const publishChange = (topic: string, ids: string[]) =>
     redis.send('PUBLISH',[`iot:live:topic:${topic}`,ids.join(',')]);
 try {
     await request('GET','/api/open-access-key',undefined,11004,null);
+    await publicSseError('/open-api/device/list',undefined,401,19010);
+    await publicSseError('/open-api/device/list','ak_invalid',401,19010);
     await request('POST','/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[]}});
     model = (await db`SELECT id FROM protocol_config WHERE name=${tag}`)[0].id;
     await request('POST','/v1/link', {execution:'collector',name:tag,protocol:'Modbus',endpoint:{transport:'tcp',mode:'TCP Server',ip:'0.0.0.0',port:59963,targets:[]},status:'disabled'});
@@ -143,6 +153,30 @@ try {
     await publicList(created.accessKey, 401);
     assert.equal((await publicList(rotated.accessKey)).data.list[0].id, device);
     assert.equal((await publicStream(rotated.accessKey)).data.list[0].id, device);
+    await publicSseError(`/open-api/device/history?deviceId=${device}`,rotated.accessKey,403,19011);
+    await publicSseError(`/open-api/device/realtime?deviceId=${crypto.randomUUID()}`,rotated.accessKey,403,19011);
+    const revoking = await publicFrames('/open-api/device/list',rotated.accessKey);
+    try {
+        const first = await revoking.next();
+        assert.equal(first.event,'snapshot');
+        assert.equal(JSON.parse(first.data).code,0);
+        await request('PUT',`/api/open-access-key/${key}`,{status:'disabled'});
+        let denial = await revoking.next();
+        while (denial.event === 'snapshot') denial = await revoking.next();
+        assert.equal(denial.event,'error','an admitted stream must report later revocation as SSE error');
+        assert.equal(JSON.parse(denial.data).code,19011);
+    } finally { revoking.close(); }
+    await publicSseError('/open-api/device/list',rotated.accessKey,403,19011);
+    await request('PUT',`/api/open-access-key/${key}`,{status:'enabled'});
+    const enabledDeadline = Date.now()+10000;
+    for (;;) {
+        const response = await fetch(`${apiBase}/open-api/device/list`,{headers:{'X-Access-Key':rotated.accessKey,Accept:'application/json'}});
+        const ready = response.status === 200;
+        await response.arrayBuffer();
+        if (ready) break;
+        assert(Date.now()<enabledDeadline,'enabled AccessKey projection did not recover');
+        await Bun.sleep(25);
+    }
     // Entity-level trigger: a change of another device is not this key's
     // snapshot; the next change of the requested device is revision 2. The
     // realtime view reads the asynchronously published runtime projection.

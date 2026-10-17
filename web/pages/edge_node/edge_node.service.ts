@@ -753,7 +753,7 @@ const TERMINAL_CHUNK_BYTES = 16384;
 
 /**
  * Web terminal session on `screen`: open, 20s keepalive, serialized resize, 8ms input batching,
- * in-order output with acknowledgement after rendering, and close.
+ * in-order output rendered once across resubscription, acknowledged only after rendering, and close.
  */
 export function useTerminalSession(nodeId: string | undefined, screen: Edge.TerminalScreen | null) {
     const [state, setState] = useState('正在连接…');
@@ -781,7 +781,9 @@ export function useTerminalSession(nodeId: string | undefined, screen: Edge.Term
         let lastSize = '';
         let resizing = false;
         let pendingSize: { columns: number; rows: number } | undefined;
-        let lastOutputSequence = 0;
+        let lastReceivedSequence = 0;
+        let lastRenderedSequence = 0;
+        let lastConfirmedSequence = 0;
         let pendingCloseReason: string | undefined;
         let sending = false;
         let rendering = false;
@@ -848,6 +850,24 @@ export function useTerminalSession(nodeId: string | undefined, screen: Edge.Term
                 sending = false;
             }
         }
+        function acknowledgeOutput(sequence: number) {
+            if (disposed || finished || !sessionId) return;
+            void acknowledgeTerminalOutput(targetNodeId, sessionId, sequence)
+                .then(
+                    () => {
+                        if (disposed || finished || sequence <= lastConfirmedSequence) return;
+                        // A replay ACK can finish a lost original request. Resume only once;
+                        // its late reply must not release a newer frame's pending render.
+                        lastConfirmedSequence = sequence;
+                        rendering = false;
+                        renderOutput();
+                    },
+                    (error: unknown) => {
+                        if (sequence > lastConfirmedSequence) fail(error);
+                    }
+                )
+                .catch(fail);
+        }
         function renderOutput() {
             if (disposed || finished || rendering) return;
             if (outputQueue.length === 0) {
@@ -863,16 +883,17 @@ export function useTerminalSession(nodeId: string | undefined, screen: Edge.Term
                     return;
                 }
                 outputBytes -= item.bytes.length;
-                const confirmation =
-                    item.sequence > 0
-                        ? acknowledgeTerminalOutput(targetNodeId, sessionId, item.sequence)
-                        : Promise.resolve();
-                void confirmation
-                    .then(() => {
-                        rendering = false;
-                        renderOutput();
-                    })
-                    .catch(fail);
+                if (item.sequence > 0) {
+                    lastRenderedSequence = item.sequence;
+                    acknowledgeOutput(item.sequence);
+                } else {
+                    void Promise.resolve()
+                        .then(() => {
+                            rendering = false;
+                            renderOutput();
+                        })
+                        .catch(fail);
+                }
             });
         }
         function receive(value: unknown) {
@@ -899,10 +920,19 @@ export function useTerminalSession(nodeId: string | undefined, screen: Edge.Term
                         );
                         if (
                             bytes.length > TERMINAL_CHUNK_BYTES ||
-                            (event.sequence > 0 && event.sequence !== lastOutputSequence + 1)
+                            (event.sequence > 0 && event.sequence > lastReceivedSequence + 1)
                         )
                             throw new Error('终端数据顺序无效，请重新连接');
-                        if (event.sequence > 0) lastOutputSequence = event.sequence;
+                        if (event.sequence > 0) {
+                            if (event.sequence <= lastReceivedSequence) {
+                                // A resubscription replays retained frames, including pending writes.
+                                // Only completed renders can safely repeat the cumulative ACK.
+                                if (event.sequence <= lastRenderedSequence)
+                                    acknowledgeOutput(lastRenderedSequence);
+                                continue;
+                            }
+                            lastReceivedSequence = event.sequence;
+                        }
                         if (outputBytes + bytes.length > TERMINAL_OUTPUT_LIMIT)
                             throw new Error('终端输出超过处理能力，连接已关闭，请重新连接');
                         outputQueue.push({ bytes, sequence: event.sequence });

@@ -565,7 +565,6 @@ foreach(test_name
         access-http-sse-integration
         alert-orm-integration
         architecture-integration
-        auth-http-sse-integration
         auth-rate-limit-integration
         business-orm-integration
         channel-model-integration
@@ -621,6 +620,12 @@ iot_engine_add_integration(edge-liveness-integration FIXTURE edge-liveness TIMEO
 # deadlines) would publish inside that quiet window.
 iot_engine_add_integration_fixture(outbox-notification)
 iot_engine_add_integration(outbox-notification-integration FIXTURE outbox-notification)
+
+# Redis CLIENT PAUSE is a server-wide fault; isolate the auth race and serialize it.
+iot_engine_add_integration_fixture(auth-recovery)
+iot_engine_add_integration(auth-http-sse-integration FIXTURE auth-recovery RUN_SERIAL)
+iot_engine_add_integration_fixture(rpc-startup-lease MANAGED)
+iot_engine_add_integration(rpc-startup-lease-integration FIXTURE rpc-startup-lease)
 
 if(WIN32)
     # The probe comes from the Windows client build (clients/windows).
