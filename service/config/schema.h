@@ -8,7 +8,7 @@
 #include "service/utils/crypto.h"
 #include <ruvia/web/db/db_migration.h>
 #include <utility>
-#include "service/config/model-revisions.h"
+#include "service/config/model_revisions.h"
 #include "service/config/current_device_model.h"
 #include "service/config/native_points.h"
 #include "service/config/device_parameters.h"
