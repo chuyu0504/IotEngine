@@ -152,22 +152,22 @@ class DeptService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append("name", query.value(body.get<"name">()->view()));
+            append(entities::DeptEntity::column<"name">().name(), query.value(body.get<"name">()->view()));
         }
         if (body.get<"code">()) {
-            append("code", query.null_if(query.value(body.get<"code">()->view()), query.value("")));
+            append(entities::DeptEntity::column<"code">().name(), query.null_if(query.value(body.get<"code">()->view()), query.value("")));
         }
         if (body.get<"parentId">()) {
-            append("parent_id", query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column<"parent_id">().name(), query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"leaderId">()) {
-            append("leader_id", query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column<"leader_id">().name(), query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"sortOrder">()) {
-            append("sort_order", query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
+            append(entities::DeptEntity::column<"sort_order">().name(), query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
         }
         if (body.get<"status">()) {
-            append("status", query.value(body.get<"status">()->view()));
+            append(entities::DeptEntity::column<"status">().name(), query.value(body.get<"status">()->view()));
         }
         if (!changed) {
             co_return;

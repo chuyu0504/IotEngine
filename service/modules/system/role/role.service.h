@@ -134,16 +134,16 @@ class RoleService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append("name", body.get<"name">()->view());
+            append(entities::RoleEntity::column<"name">().name(), body.get<"name">()->view());
         }
         if (body.get<"code">()) {
-            append("code", body.get<"code">()->view());
+            append(entities::RoleEntity::column<"code">().name(), body.get<"code">()->view());
         }
         if (body.get<"description">()) {
-            append("description", body.get<"description">()->view());
+            append(entities::RoleEntity::column<"description">().name(), body.get<"description">()->view());
         }
         if (body.get<"status">()) {
-            append("status", body.get<"status">()->view());
+            append(entities::RoleEntity::column<"status">().name(), body.get<"status">()->view());
         }
         if (body.get<"permissions">()) {
             changes.push_back({ entities::RoleEntity::column<"permissions">().name(), query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::db_data_type::jsonb) });

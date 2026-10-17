@@ -181,19 +181,19 @@ class UserService {
             changed = true;
         };
         if (body.get<"nickname">()) {
-            append("nickname", body.get<"nickname">()->view());
+            append(entities::UserEntity::column<"nickname">().name(), body.get<"nickname">()->view());
         }
         if (body.get<"phone">()) {
-            append("phone", body.get<"phone">()->view());
+            append(entities::UserEntity::column<"phone">().name(), body.get<"phone">()->view());
         }
         if (body.get<"email">()) {
-            append("email", body.get<"email">()->view());
+            append(entities::UserEntity::column<"email">().name(), body.get<"email">()->view());
         }
         if (body.get<"status">()) {
-            append("status", body.get<"status">()->view());
+            append(entities::UserEntity::column<"status">().name(), body.get<"status">()->view());
         }
         if (body.get<"password">()) {
-            append("password_hash", service::utils::hashPassword(body.get<"password">()->view()));
+            append(entities::UserEntity::column<"password_hash">().name(), service::utils::hashPassword(body.get<"password">()->view()));
         }
         if (body.get<"departmentId">()) {
             changes.push_back({ entities::UserEntity::column<"department_id">().name(), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
