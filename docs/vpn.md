@@ -35,3 +35,9 @@ WireGuard 接口（`VPN_HUB_INTERFACE`）和 nftables 表 `inet iot_vpn` 都属�
 - 漂移校正和到期处理的异常通过 `LOG_ERROR` 记录，调度继续。
 - 持有到期跟踪的 Worker 或实例退出后，其他实例的漂移认领者会重新计算截止时间并接管，最长延迟 5 分钟。
 - 移除 Peer 时只做格式校验（`validKey`），这样接口上任何已存在的密钥都能被移除。授予访问时要求 `validManagedKey`：全零密钥是低阶点，永远无法完成握手；全零私钥是公开已知的，因此 Hub 私钥同样拒绝全零值。
+
+## 管理模块的数据访问边界
+
+- `modules/vpn/vpn.service.h` 的实体列保持通过所属实体的 `column_index<"...">()`、`columns_type` 与列描述 `name.view()` 引用；这是实体类型化，不是裸列名，并保持既有 MSVC 协程编译兼容性。派生查询中的 `route` 是计算结果列，使用具名常量，不伪装成实体字段。系统管理模块的排序和更新赋值同样引用实体列。
+- 网络地址解析直接使用 `service::utils::network`，共享 VPN 网段直接使用 `service::message::vpn`，不经本地别名或再导出。
+- Controller 的权限复核通过 middleware 的 Worker 认证端口；Service 之间仅调用同层公开业务接口。第三方命令直接使用 device 所属命令请求和响应类型，不另设相同类型的别名。

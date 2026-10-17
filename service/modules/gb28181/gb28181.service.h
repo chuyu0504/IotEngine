@@ -17,22 +17,12 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/modules/gb28181/gb28181.entity.h"
-#include "service/utils/rpc_client.h"
 #include "service/modules/gb28181/gb28181.types.h"
+#include "service/utils/rpc_client.h"
 
 namespace service::gb28181 {
 
 namespace detail {
-
-template <typename Context>
-service::message::gb28181::ControlRequest controlRequest(Context& c) {
-    return service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
-}
-
-template <typename Context>
-std::string encodeRequest(Context& c, const service::message::gb28181::ControlRequest& request) {
-    return service::message::rpc::encode(request, c.arena());
-}
 
 template <typename Response, typename Context>
 Response parseResponse(Context& c, std::string_view body) {
@@ -348,55 +338,55 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::task<void> queryCatalog(Context& c, std::string deviceId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
-        (void)co_await call(c, "catalog", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "catalog", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<void> renameDevice(Context& c, std::string deviceId, std::string name) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
         payload.template set<"name">(name);
-        (void)co_await call(c, "rename_device", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "rename_device", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<void> renameChannel(Context& c, std::string deviceId, std::string channelId, std::string name) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
         payload.template set<"name">(name);
-        (void)co_await call(c, "rename_channel", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "rename_channel", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<void> ptz(Context& c, std::string deviceId, std::string channelId, std::string action, std::uint8_t speed) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
         payload.template set<"action">(action);
         payload.template set<"speed">(speed);
-        (void)co_await call(c, "ptz", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "ptz", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<void> ptzPosition(Context& c, std::string deviceId, std::string channelId, double pan, double tilt, double zoom) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
         payload.template set<"pan">(pan);
         payload.template set<"tilt">(tilt);
         payload.template set<"zoom">(zoom);
-        (void)co_await call(c, "ptz.position", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "ptz.position", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
@@ -404,11 +394,11 @@ class Gb28181Service final {
 
     ruvia::task<GbPreviewStartDto>
     startPreview(Context& c, std::string deviceId, std::string channelId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"deviceId">(deviceId);
         payload.template set<"channelId">(channelId);
         const auto raw =
-            co_await call(c, "preview.start", detail::encodeRequest(c, payload));
+            co_await call(c, "preview.start", service::message::rpc::encode(payload, c.arena()));
         auto response =
             detail::parseResponse<service::message::gb28181::PreviewStartResponse>(c, raw);
         co_return detail::previewStart(c, *response.template get<"data">());
@@ -418,10 +408,10 @@ class Gb28181Service final {
 
     ruvia::task<GbPreviewStopDto>
     stopPreview(Context& c, std::string sessionId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"sessionId">(sessionId);
         const auto raw =
-            co_await call(c, "preview.stop", detail::encodeRequest(c, payload));
+            co_await call(c, "preview.stop", service::message::rpc::encode(payload, c.arena()));
         auto response =
             detail::parseResponse<service::message::gb28181::PreviewStopResponse>(c, raw);
         co_return detail::previewStop(c, *response.template get<"data">());
@@ -430,19 +420,19 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::task<void> renewPreview(Context& c, std::string sessionId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"sessionId">(sessionId);
-        (void)co_await call(c, "preview.heartbeat", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "preview.heartbeat", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<bool> recording(Context& c, std::string streamId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"streamId">(streamId);
         const auto raw =
-            co_await call(c, "recording", detail::encodeRequest(c, payload));
+            co_await call(c, "recording", service::message::rpc::encode(payload, c.arena()));
         auto response = detail::parseResponse<service::message::gb28181::ActionResponse>(c, raw);
         const auto& value = response.template get<"data">()->template get<"recording">();
         co_return value&& static_cast<bool>(*value);
@@ -451,18 +441,18 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::task<void> startRecording(Context& c, std::string streamId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"streamId">(streamId);
-        (void)co_await call(c, "recording.start", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "recording.start", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::task<void> stopRecording(Context& c, std::string streamId) const {
-        auto payload = detail::controlRequest(c);
+        auto payload = service::message::gb28181::ControlRequest({ .resource_ = c.arena() });
         payload.template set<"streamId">(streamId);
-        (void)co_await call(c, "recording.stop", detail::encodeRequest(c, payload));
+        (void)co_await call(c, "recording.stop", service::message::rpc::encode(payload, c.arena()));
         co_return;
     }
 

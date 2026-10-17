@@ -4,14 +4,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+
 #include <ruvia/web/controller.h>
+
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/validation.h"
-#include "service/modules/protocol/protocol.types.h"
 #include "service/modules/protocol/protocol.service.h"
+#include "service/modules/protocol/protocol.types.h"
 
 namespace service::protocol {
 
@@ -41,7 +43,7 @@ class ProtocolController final {
         const auto& query = c.req().validated<ProtocolListQuery>();
         const auto& protocolValue = query.get<"protocol">();
         const auto protocol = protocolValue ? std::optional<std::string>(protocolValue->view()) : std::nullopt;
-        const auto data = co_await protocolService().list(request, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), protocol);
+        const auto data = co_await ProtocolService::instance().list(request, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), protocol);
         c.header("Content-Type", "application/json");
         const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
@@ -51,8 +53,10 @@ class ProtocolController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& query = c.req().validated<ProtocolListQuery>();
         const auto& protocol = query.get<"protocol">();
-        if (!protocol) service::common::fail(16003, "protocol 不能为空", 400);
-        const auto data = co_await protocolService().options(request, std::string(protocol->view()), static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()));
+        if (!protocol) {
+            service::common::fail(16003, "protocol 不能为空", 400);
+        }
+        const auto data = co_await ProtocolService::instance().options(request, std::string(protocol->view()), static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()));
         c.header("Content-Type", "application/json");
         const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
@@ -60,7 +64,7 @@ class ProtocolController final {
 
     ruvia::task<ruvia::http_response> detail(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto data = co_await protocolService().detail(request, id(c));
+        const auto data = co_await ProtocolService::instance().detail(request, id(c));
         c.header("Content-Type", "application/json");
         const auto payload = service::middleware::dataJson(data);
         co_return c.body(std::string_view(payload));
@@ -83,25 +87,25 @@ class ProtocolController final {
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await protocolService().create(request, c.req().validated<CreateProtocolBody>());
+        co_await ProtocolService::instance().create(request, c.req().validated<CreateProtocolBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> createDlt645Point(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await protocolService().createDlt645Point(request, id(c), c.req().validated<CreateDlt645PointBody>());
+        co_await ProtocolService::instance().createDlt645Point(request, id(c), c.req().validated<CreateDlt645PointBody>());
         co_return c.json(service::common::operation(c, "点位已添加"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await protocolService().update(request, id(c), c.req().validated<UpdateProtocolBody>());
+        co_await ProtocolService::instance().update(request, id(c), c.req().validated<UpdateProtocolBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await protocolService().remove(request, id(c));
+        co_await ProtocolService::instance().remove(request, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

@@ -20,18 +20,6 @@ namespace service::vpn {
 inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
 inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
 
-namespace module {
-using service::message::vpn::kVirtualLanPool;
-using service::message::vpn::mappedVirtualCidr;
-using service::utils::network::hostAddress;
-using service::utils::network::Ipv4Cidr;
-using service::utils::network::isPrivateIpv4;
-using service::utils::network::networkCidr;
-using service::utils::network::parseCidr;
-using service::utils::network::parseIpv4;
-
-} // namespace module
-
 inline bool validVpnNodeSelection(const ruvia::array<ruvia::string>& values) {
     std::unordered_set<std::string> unique;
     for (const auto& value : values) {

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,7 +47,7 @@ class RoleService {
         );
         auto query = roleSelect(c);
         query.where(countOptions.where_)
-            .order_by("id", ruvia::db_order_direction::desc)
+            .order_by(entities::RoleEntity::column<"id">().name(), ruvia::db_order_direction::desc)
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.get_many();
@@ -134,25 +134,25 @@ class RoleService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append("name", body.get<"name">()->view());
+            append(entities::RoleEntity::column<"name">().name(), body.get<"name">()->view());
         }
         if (body.get<"code">()) {
-            append("code", body.get<"code">()->view());
+            append(entities::RoleEntity::column<"code">().name(), body.get<"code">()->view());
         }
         if (body.get<"description">()) {
-            append("description", body.get<"description">()->view());
+            append(entities::RoleEntity::column<"description">().name(), body.get<"description">()->view());
         }
         if (body.get<"status">()) {
-            append("status", body.get<"status">()->view());
+            append(entities::RoleEntity::column<"status">().name(), body.get<"status">()->view());
         }
         if (body.get<"permissions">()) {
-            changes.push_back({ "permissions", query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::db_data_type::jsonb) });
+            changes.push_back({ std::string(entities::RoleEntity::column<"permissions">().name()), query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::db_data_type::jsonb) });
             changed = true;
         }
         if (!changed) {
             co_return;
         }
-        changes.push_back({ "updated_at", query.call("now") });
+        changes.push_back({ std::string(entities::RoleEntity::column<"updated_at">().name()), query.call("now") });
         (void)co_await c.db().template get_repository<entities::RoleEntity>().update(entities::RoleEntity::column<"id">() == id, changes);
     }
 
@@ -177,10 +177,12 @@ class RoleService {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
         const ruvia::db_assignment deletionChanges[]{
-            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+            { std::string(entities::RoleEntity::column<"deleted_at">().name()), expressions.call("now") },
+            { std::string(entities::RoleEntity::column<"updated_at">().name()), expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::RoleEntity>().update(
-            entities::RoleEntity::column<"id">() == id, deletionChanges
+            entities::RoleEntity::column<"id">() == id,
+            deletionChanges
         );
     }
 
@@ -206,11 +208,12 @@ class RoleService {
     template <typename Context>
     ruvia::task<ruvia::array<ruvia::string>> loadPermissions(Context& c, std::string_view id) {
         ruvia::db_query expressions(c.pool());
+        constexpr char kPermissionColumn[] = "permission";
         auto query = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
-        query.select({ { "permission", expressions.column("permission", "values") } })
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
+        query.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "values") } })
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
             .where(entities::RoleEntity::column<"id">() == id)
-            .order_by(expressions.column("permission", "values"));
+            .order_by(expressions.column(kPermissionColumn, "values"));
         const auto rows = co_await query.template get_many<entities::RolePermission>();
         ruvia::array<ruvia::string> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
@@ -231,9 +234,5 @@ class RoleService {
         }
     }
 };
-
-inline RoleService& roleService() {
-    return RoleService::instance();
-}
 
 } // namespace service::role
