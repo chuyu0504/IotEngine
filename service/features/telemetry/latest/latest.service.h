@@ -25,6 +25,7 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/worker.h"
 #include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/utils/json.h"
@@ -160,16 +161,17 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
 }
 
 template <typename Redis>
-ruvia::task<void> signalFreshness(const Redis& redis) {
+ruvia::task<void> signalFreshness(const Redis& redis, std::string_view instance) {
     co_await service::messaging::stream::wakeWorker(
         redis,
         std::nullopt,
-        service::message::WorkerStreamTask::Freshness
+        service::message::WorkerStreamTask::Freshness,
+        instance
     );
 }
 
 // Applies one parsed message to the device's latest/runtime hashes.
-// KEYS: online deadlines, freshness wake stream. ARGV: device id, code,
+// KEYS: online deadlines, freshness wake stream, wake input channel. ARGV: device id, code,
 // protocol, observed at, updated at, source, online window, values JSON.
 // Returns 1 when the device's realtime view changed, else 0; the caller
 // publishes one device.realtime change for the whole batch.
@@ -232,8 +234,9 @@ if ARGV[6] ~= 'derived' and observed_at >= current_report then
     '_state', state_json, '_updated_at_ms', ARGV[5])
   redis.call('ZADD', deadlines_key, online_until, ARGV[1])
   if wake then
-    redis.call('XADD', KEYS[2],
-               'MAXLEN', '~', '100000', '*', 'task', 'freshness')
+    local id = redis.call('XADD', KEYS[2],
+                          'MAXLEN', '~', '100000', '*', 'task', 'freshness')
+    redis.call('PUBLISH', KEYS[3], id)
   end
 end
 local count = 0
@@ -291,19 +294,21 @@ return 0
 )lua";
 
 template <typename Redis>
-ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages) {
+ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages, std::string_view instance) {
     if (messages.empty()) {
         co_return;
     }
     thread_local std::string sha;
     const auto deadlinesKey = onlineDeadlinesKey();
-    const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt, instance);
+    const auto inputChannel = service::message::consumer::inputChannel(wakeStream);
     std::vector<std::vector<std::string>> calls;
     calls.reserve(messages.size());
     for (const auto& parsed : messages) {
         calls.push_back({
             deadlinesKey,
             wakeStream,
+            inputChannel,
             parsed.deviceId,
             parsed.deviceCode,
             parsed.protocol,
@@ -314,7 +319,7 @@ ruvia::task<void> update(const Redis& redis, const std::vector<service::message:
             parsed.valuesJson
         });
     }
-    const auto touched = co_await evalBatch(redis, kUpdateLatestScript, sha, 2, calls, "device latest update");
+    const auto touched = co_await evalBatch(redis, kUpdateLatestScript, sha, 3, calls, "device latest update");
     std::set<std::string, std::less<>> deviceIds;
     for (std::size_t index = 0; index < messages.size(); ++index) {
         if (touched[index] == 1) deviceIds.emplace(messages[index].deviceId);
@@ -419,8 +424,9 @@ ruvia::task<void> expireStale(const Redis& redis) {
 template <typename Redis>
 ruvia::task<void> expireConnections(const Redis& redis) {
     const auto deadlines = persistence::DeviceConnectionDeadline::key();
+    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceState);
     const std::array<std::string_view, 2> keys{
-        deadlines, service::message::live::kChanges
+        deadlines, channel
     };
     const std::array<std::string_view, 1> arguments{
         service::message::collector::kConnectionPrefix
@@ -838,7 +844,7 @@ return 1
         }
         co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
-    co_await signalFreshness(redis);
+    co_await signalFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
     std::vector<std::string> projectedIds;
     projectedIds.reserve(devices.size());
     for (const auto& row : devices) {

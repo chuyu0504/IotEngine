@@ -52,6 +52,12 @@ const localPortNumbers = new Map<number, number>();
 let nextSocketNumber = 1;
 let readinessBackups: Array<{ key: string; value: string[]; pttl: number }> = [];
 
+function productionScript(source: string, name: string) {
+    const body = source.match(new RegExp(`\\b${name}\\s*=\\s*R"lua\\(([\\s\\S]*?)\\)lua"`))?.[1];
+    assert(body, `missing production ${name}`);
+    return body;
+}
+
 async function until(
     check: () => Promise<boolean>,
     message: string,
@@ -242,29 +248,6 @@ async function hasControlGroup(stream: string) {
     }
 }
 
-async function liveGroupNames() {
-    if (Number(await redis.send('EXISTS', ['iot:live:changes'])) === 0) return [];
-    const result = await redis.send('XINFO', ['GROUPS', 'iot:live:changes']);
-    const names: string[] = [];
-    const visit = (value: unknown) => {
-        if (Array.isArray(value)) {
-            for (let index = 0; index + 1 < value.length; index++) {
-                if (value[index] === 'name' && typeof value[index + 1] === 'string')
-                    names.push(value[index + 1]);
-            }
-            for (const child of value) visit(child);
-            return;
-        }
-        if (value && typeof value === 'object') {
-            const record = value as Record<string, unknown>;
-            if (typeof record.name === 'string') names.push(record.name);
-            for (const child of Object.values(record)) visit(child);
-        }
-    };
-    visit(result);
-    return [...new Set(names)];
-}
-
 async function findConfigStreams(expected: number) {
     let streams: string[] = [];
     await until(async () => {
@@ -378,38 +361,37 @@ function openRedisMonitor() {
 async function callPrepareRpc(stream: string) {
     const requestId = id();
     const replyKey = `iot:rpc:reply:${requestId}`;
+    const subscriber = new Bun.RedisClient(redisUrl);
     const payload = JSON.stringify({ deviceId: device, elements: [[point, '1']] });
     const deadline = String(Date.now() + 30000);
-    const entry = await redis.send('XADD', [
-        stream,
-        '*',
-        'version',
-        '1',
-        'id',
-        requestId,
-        'component',
-        'command',
-        'operation',
-        'prepare',
-        'payload',
-        payload,
-        'deadline',
-        deadline,
-    ]);
-    assert.equal(typeof entry, 'string', 'RPC request was not appended to its stream');
+    let notify!: (message: string) => void;
+    const notified = new Promise<string>(resolve => { notify = resolve; });
     try {
-        let response = '';
-        await until(
-            async () => {
-                const value = await redis.send('GET', [replyKey]);
-                if (typeof value !== 'string') return false;
-                response = value;
-                return true;
-            },
-            'RPC prepare did not publish a reply',
-            10000,
-            25
-        );
+        assert.equal(await subscriber.subscribe(replyKey, (message, channel) => {
+            assert.equal(channel, replyKey);
+            notify(message);
+        }), 1, 'RPC reply subscription must be confirmed before sending the request');
+        const enqueueSource = await Bun.file('service/utils/rpc_client.h').text();
+        const entry = await redis.send('EVAL', [
+            productionScript(enqueueSource, 'kEnqueueRpcScript'),
+            '2', stream, `iot:consumer:input:${stream}`,
+            'version',
+            '1',
+            'id',
+            requestId,
+            'component',
+            'command',
+            'operation',
+            'prepare',
+            'payload',
+            payload,
+            'deadline',
+            deadline,
+        ]);
+        assert.equal(typeof entry, 'string', 'RPC request was not appended to its stream');
+        assert.equal(await waitFor(notified, 'RPC prepare did not publish a wakeup'), '');
+        const response = await redis.send('GET', [replyKey]);
+        assert(typeof response === 'string', 'RPC wakeup preceded durable result persistence');
         assert(response.startsWith('OK\n'), `RPC prepare failed: ${response}`);
         const prepared = JSON.parse(response.slice(3));
         assert.equal(prepared.kind, 'stream');
@@ -417,6 +399,7 @@ async function callPrepareRpc(stream: string) {
         assert.equal(prepared.commands[0].deviceId, device);
         return prepared;
     } finally {
+        subscriber.close();
         await redis.send('DEL', [
             replyKey,
             `iot:rpc:claim:${requestId}`,
@@ -486,16 +469,9 @@ async function verifyCollectorLeaseFencing() {
     const source = await Bun.file(
         new URL('../service/features/collector/collector.service.h', import.meta.url)
     ).text();
-    const script = (name: string) => {
-        const marker = source.indexOf(`${name}(const Redis&`);
-        assert(marker >= 0, `missing production ownership operation ${name}`);
-        const body = source.slice(marker).match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
-        assert(body, `missing production lease Lua for ${name}`);
-        return body;
-    };
-    const claim = script('retainTarget');
-    const renew = script('renewTarget');
-    const release = script('releaseTarget');
+    const claim = productionScript(source, 'kRetainTargetScript');
+    const renew = productionScript(source, 'kRenewTargetScript');
+    const release = productionScript(source, 'kReleaseTargetScript');
     const key = `iot:v2:owner:target:${id()}:${id()}`;
     const first = `worker:0:${id()}`;
     const replacement = `worker:0:${id()}`;
@@ -746,6 +722,18 @@ try {
         Array.from({ length: serviceWorkerCount }, (_, index) => index),
         'metrics endpoint did not aggregate every worker snapshot'
     );
+    const ageKey = metricKeys[0];
+    const oldestBefore = await redis.send('HGET', [ageKey, 'outbox_oldest_at_ms']);
+    assert.notEqual(oldestBefore, null, 'worker snapshot has no persisted oldest-outbox timestamp');
+    try {
+        await redis.send('HSET', [ageKey, 'outbox_oldest_at_ms', String(Date.now() - 120000)]);
+        const sampled = await internalResponse('/internal/metrics');
+        assert.equal(sampled.status, 200, sampled.text);
+        const age = sampled.text.match(/^iot_engine_outbox_oldest_age_ms\{worker="0"\}\s+(\d+)$/m);
+        assert(age && Number(age[1]) >= 120000, 'metrics age did not advance from its persisted timestamp on demand');
+    } finally {
+        await redis.send('HSET', [ageKey, 'outbox_oldest_at_ms', String(oldestBefore)]);
+    }
     const metricTypes = [...metricsFirst.text.matchAll(/^# TYPE (.+)$/gm)].map((match) => match[1]);
     assert.equal(
         new Set(metricTypes).size,
@@ -844,25 +832,32 @@ try {
     liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
     liveStreams.push(await openLiveStream('/v1/device/events', 'devices'));
     await Promise.all(liveStreams.map((stream) => stream.next()));
-    assert.deepEqual(
-        await liveGroupNames(),
-        [],
-        'iot:live:changes must be read with plain XREAD; no consumer group may remain'
-    );
-    const liveMarker = `rpc-live-worker-${id()}`;
-    await db`UPDATE device SET protocol_params=jsonb_set(
-        protocol_params, '{device_code}', to_jsonb(${liveMarker}::text)) WHERE id=${device}`;
-    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', 'device', 'ids', device]);
-    const liveSnapshots = await Promise.all(
-        liveStreams.map((stream) =>
-            stream.next((value) => JSON.stringify(value).includes(liveMarker))
-        )
-    );
-    assert(
-        liveSnapshots.every((snapshot) => JSON.stringify(snapshot).includes(liveMarker)),
-        'one committed device change did not reach every worker-local live subscription'
-    );
-    console.log('PASS two simultaneous SSE subscriptions receive one committed live change');
+    const liveSubscriber = new Bun.RedisClient(redisUrl);
+    try {
+        const channel = 'iot:live:topic:device';
+        let changed!: (payload: string) => void;
+        const change = new Promise<string>(resolve => { changed = resolve; });
+        assert.equal(await liveSubscriber.subscribe(channel, payload => {
+            if (payload.split(',').includes(device)) changed(payload);
+        }), 1, 'business subscription must be confirmed before committing the change');
+        const liveMarker = `rpc-live-worker-${id()}`;
+        await db`UPDATE device SET protocol_params=jsonb_set(
+            protocol_params, '{device_code}', to_jsonb(${liveMarker}::text)) WHERE id=${device}`;
+        assert.equal(await waitFor(change, 'committed outbox change did not publish its business topic'),
+            device, 'outbox live payload must identify only the affected device');
+        const liveSnapshots = await Promise.all(
+            liveStreams.map((stream) =>
+                stream.next((value) => JSON.stringify(value).includes(liveMarker))
+            )
+        );
+        assert(
+            liveSnapshots.every((snapshot) => JSON.stringify(snapshot).includes(liveMarker)),
+            'one committed device change did not reach every live subscription'
+        );
+        console.log('PASS committed outbox change publishes its entity id and reaches both SSE subscriptions');
+    } finally {
+        liveSubscriber.close();
+    }
     await Promise.all(liveStreams.map((stream) => stream.close()));
     liveStreams = [];
 
@@ -878,21 +873,17 @@ try {
         return Number(fields['entries-added']);
     };
     const configLengths = await Promise.all(configStreams.map(entriesAdded));
-    await redis.send('XADD', [
-        'iot:live:changes',
-        '*',
-        'schema_version',
-        '2',
-        'topic',
-        'runtime-config',
-        'ids',
-        '',
+    const liveSource = await Bun.file('service/features/live/live.service.h').text();
+    await redis.send('EVAL', [
+        productionScript(liveSource, 'kPublishChangeScript'),
+        '3', 'iot:live:topic:runtime-config', 'iot:live:changes', 'iot:consumer:input:iot:live:changes',
+        'runtime-config', '', '20000',
     ]);
     await until(async () => {
         const lengths = await Promise.all(configStreams.map(entriesAdded));
         return lengths.every((length, index) => length > configLengths[index]);
     }, 'shared live configuration notification was not relayed to every Collector Worker');
-    // Every Service Worker reads the entry; the per-instance claim lets exactly one relay it.
+    // The durable runtime-config relay is claimed once per instance.
     await Bun.sleep(500);
     const relayedLengths = await Promise.all(configStreams.map(entriesAdded));
     assert.deepEqual(

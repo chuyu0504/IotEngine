@@ -21,13 +21,32 @@ const wake = `iot:service:worker:${recoveryInstance}:${oldWorker}:wake`;
 const oldToken = `${oldInstance}:${oldWorker}`;
 const activeToken = `${activeInstance}:${activeWorker}`;
 const recoveryToken = `${recoveryInstance}:recovery:${oldWorker}:${oldInstance}:${oldWorker}`;
+const inputChannel = `iot:consumer:input:${oldStream}`;
+const wakeChannel = `iot:consumer:input:${wake}`;
+const pendingDeadlines = `iot:consumer:pending:${group}:${oldStream}`;
+const deadlineChannel = `iot:consumer:deadline:${group}:${oldStream}`;
+const recoveryDeadlines = `iot:v3:edge:projector:deadlines:${suffix}`;
+const subscriber = new Bun.RedisClient(redisUrl);
+const notices: { payload: string; channel: string }[] = [];
+const barrierChannel = `iot:test:edge-recovery:${suffix}:barrier`;
+let barrier: (() => void) | undefined;
+for (const channel of [inputChannel, wakeChannel, deadlineChannel]) {
+    await subscriber.subscribe(channel, (payload, channel) => notices.push({ payload, channel }));
+}
+await subscriber.subscribe(barrierChannel, () => barrier?.());
+async function drainNotices() {
+    const ready = Promise.withResolvers<void>();
+    barrier = ready.resolve;
+    await redis.send('PUBLISH', [barrierChannel, '']);
+    await ready.promise;
+    barrier = undefined;
+    return notices.splice(0);
+}
 
-async function sourceScript(path: string, marker: string): Promise<string> {
+async function sourceScript(path: string, name: string): Promise<string> {
     const source = await Bun.file(path).text();
-    const start = source.indexOf(marker);
-    assert(start >= 0, `missing Lua marker ${marker} in ${path}`);
-    const script = source.slice(start).match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
-    assert(script, `missing Lua body ${marker} in ${path}`);
+    const script = source.match(new RegExp(`\\b${name}\\s*=\\s*R"lua\\(([\\s\\S]*?)\\)lua"`))?.[1];
+    assert(script, `missing Lua constant ${name} in ${path}`);
     return script;
 }
 
@@ -40,32 +59,14 @@ async function waitForExpired(key: string) {
 }
 
 try {
-    const runtimePath = 'service/features/edge/projection/projection.runtime.h';
+    const persistencePath = 'service/features/edge/projection/projection.service.h';
     const publishPath = 'service/features/edge/edge.service.h';
-    const redisPath = 'service/utils/redis.h';
-    const claimRecovery = await sourceScript(runtimePath, 'kClaimLeaseScript =');
-    const fencedAck = await sourceScript(runtimePath, 'kAcknowledgeFencedScript =');
-    const eraseDead = await sourceScript(runtimePath, 'kEraseDeadStreamScript =');
-    const fencedPublish = await sourceScript(publishPath, 'kFencedPublishScript =');
+    const claimRecovery = await sourceScript(persistencePath, 'kClaimLeaseScript');
+    const fencedAck = await sourceScript(persistencePath, 'kAcknowledgeFencedScript');
+    const eraseDead = await sourceScript(persistencePath, 'kEraseDeadStreamScript');
+    const fencedPublish = await sourceScript(publishPath, 'kFencedPublishScript');
 
-    assert(!fencedPublish.includes("local arguments = {'MAXLEN'"));
-    for (const consumerRuntime of [
-        'service/features/access/access.runtime.h',
-        'service/features/telemetry/telemetry.runtime.h',
-        'service/features/command/command.runtime.h',
-        'service/features/configuration/configuration.runtime.h',
-    ]) {
-        const consumerSource = await Bun.file(consumerRuntime).text();
-        assert(!consumerSource.includes('repairLegacyReadSet'), `${consumerRuntime} retains legacy read-set repair`);
-        assert(consumerSource.includes('kPendingRecoveryInterval'), `${consumerRuntime} has no periodic pending recovery deadline`);
-    }
-
-    // A discovered dead stream must not be recreated after it was drained and
-    // removed while recovery was being prepared.
-    const redisSource = await Bun.file(redisPath).text();
-    const groupHelper = redisSource.slice(redisSource.indexOf('ensureGroupIfPresent'));
-    const groupCreate = groupHelper.match(/\{\s*"XGROUP"[\s\S]*?\}\s*\);/)?.[0];
-    assert(groupCreate && !groupCreate.includes('MKSTREAM'));
+    // A discovered dead stream must not be recreated by group creation.
     const missingStream = `iot:v3:edge:projector:${suffix}:missing`;
     let missingRejected = false;
     try {
@@ -104,6 +105,7 @@ try {
         Array.isArray(pendingRows) && pendingRows.length === 1,
         'old owner must leave a pending entry before crashing'
     );
+    await redis.send('ZADD', [pendingDeadlines, String(Date.now() + 60000), oldMessage]);
     await waitForExpired(oldLease);
 
     // A live owner is never stolen, even when another worker is trying to
@@ -111,20 +113,24 @@ try {
     await redis.send('SET', [activeLease, activeToken, 'PX', '5000', 'NX']);
     const activeClaim = await redis.send('EVAL', [
         claimRecovery,
-        '1',
+        '2',
         activeLease,
+        recoveryDeadlines,
         recoveryToken,
         '2000',
+        activeStream,
     ]);
     assert.equal(Number(activeClaim), 0, 'active owner lease was stolen');
     assert.equal(await redis.send('GET', [activeLease]), activeToken);
 
     const claimed = await redis.send('EVAL', [
         claimRecovery,
-        '1',
+        '2',
         oldLease,
+        recoveryDeadlines,
         recoveryToken,
         '2000',
+        oldStream,
     ]);
     assert.equal(Number(claimed), 1, 'dead owner recovery lease was not claimed');
     assert.equal(await redis.send('GET', [oldLease]), recoveryToken);
@@ -133,11 +139,13 @@ try {
     // rejected atomically after recovery claims the lease.
     const staleWrite = await redis.send('EVAL', [
         fencedPublish,
-        '4',
+        '6',
         oldLease,
         oldStream,
         registry,
         wake,
+        inputChannel,
+        wakeChannel,
         oldToken,
         '100000',
         '100000',
@@ -150,6 +158,13 @@ try {
         String(Date.now()),
     ]);
     assert.equal(Number(staleWrite), 0, 'stale gateway write crossed the fence');
+    assert.deepEqual(await drainNotices(), [], 'a fenced-out producer must not publish');
+    assert.equal(Number(await redis.send('EVAL', [
+        fencedAck, '4', oldLease, oldStream, pendingDeadlines, deadlineChannel,
+        oldToken, group, oldMessage,
+    ])), 0, 'stale owner crossed the acknowledgement fence');
+    assert.notEqual(await redis.send('ZSCORE', [pendingDeadlines, oldMessage]), null);
+    assert.deepEqual(await drainNotices(), [], 'stale acknowledgement published a deadline change');
 
     // Recovery claims the crashed consumer's pending entry and processes it
     // through the real stream before the fenced acknowledgement removes it.
@@ -169,9 +184,11 @@ try {
 
     const acknowledged = await redis.send('EVAL', [
         fencedAck,
-        '2',
+        '4',
         oldLease,
         oldStream,
+        pendingDeadlines,
+        deadlineChannel,
         recoveryToken,
         group,
         oldMessage,
@@ -180,17 +197,23 @@ try {
     assert.equal(Number(await redis.send('XLEN', [oldStream])), 0);
     const pendingSummary = await redis.send('XPENDING', [oldStream, group]) as unknown[];
     assert.equal(Number(pendingSummary[0]), 0);
+    assert.equal(await redis.send('ZSCORE', [pendingDeadlines, oldMessage]), null);
+    const ackNotices = await drainNotices();
+    assert.equal(ackNotices.length, 1);
+    assert.equal(ackNotices[0].channel, deadlineChannel);
 
     // A live, fenced producer must refuse a full data stream instead of
     // approximately trimming entries that have not reached the database.
     await redis.send('PEXPIRE', [oldLease, '5000']);
     const capacityFirst = await redis.send('EVAL', [
         fencedPublish,
-        '4',
+        '6',
         oldLease,
         oldStream,
         registry,
         wake,
+        inputChannel,
+        wakeChannel,
         recoveryToken,
         '1',
         '100000',
@@ -203,13 +226,20 @@ try {
         String(Date.now()),
     ]);
     assert.notEqual(String(capacityFirst), '0');
+    const [wakeEntry] = await redis.send('XRANGE', [wake, '-', '+']) as [string, string[]][];
+    assert.deepEqual(await drainNotices(), [
+        { payload: String(capacityFirst), channel: inputChannel },
+        { payload: wakeEntry[0], channel: wakeChannel },
+    ], 'durable data and task appends must each publish their actual ID');
     const capacitySecond = await redis.send('EVAL', [
         fencedPublish,
-        '4',
+        '6',
         oldLease,
         oldStream,
         registry,
         wake,
+        inputChannel,
+        wakeChannel,
         recoveryToken,
         '1',
         '100000',
@@ -223,6 +253,7 @@ try {
     ]);
     assert.equal(Number(capacitySecond), 0, 'full data stream was trimmed instead of rejected');
     assert.equal(Number(await redis.send('XLEN', [oldStream])), 1);
+    assert.deepEqual(await drainNotices(), [], 'a full stream must not emit input notifications');
     const retainedCapacityEntry = await redis.send('XRANGE', [oldStream, '-', '+']) as unknown[][];
     assert.equal(String(retainedCapacityEntry[0]?.[0]), String(capacityFirst));
     await redis.send('XDEL', [oldStream, String(capacityFirst)]);
@@ -231,10 +262,11 @@ try {
     // lease, and registry entry only after the stream is fully drained.
     const erased = await redis.send('EVAL', [
         eraseDead,
-        '3',
+        '4',
         oldLease,
         oldStream,
         registry,
+        recoveryDeadlines,
         recoveryToken,
     ]);
     assert.equal(Number(erased), 1, 'drained dead stream was not removed');
@@ -251,8 +283,11 @@ try {
         oldLease,
         activeLease,
         wake,
+        pendingDeadlines,
+        recoveryDeadlines,
         `iot:v3:edge:projector:${suffix}:missing`,
     ]);
     await redis.send('SREM', [registry, oldStream, activeStream]);
+    subscriber.close();
     redis.close();
 }

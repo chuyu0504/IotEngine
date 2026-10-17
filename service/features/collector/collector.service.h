@@ -814,53 +814,56 @@ ruvia::task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
         owner.string() == expectedOwner;
 }
 
-template <typename Redis>
-ruvia::task<bool> retainTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
-    static constexpr std::string_view script = R"lua(
+inline constexpr std::string_view kRetainTargetScript = R"lua(
 local current=redis.call('GET',KEYS[1])
 if current and current~=ARGV[1] then return 0 end
 redis.call('SET',KEYS[1],ARGV[1],'PX',15000)
 return 1
 )lua";
+
+template <typename Redis>
+ruvia::task<bool> retainTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     const auto lease = targetKey(linkId, targetId);
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
-    const auto reply = co_await redis.eval(script, keys, args);
+    const auto reply = co_await redis.eval(kRetainTargetScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("claim target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
 
-template <typename Redis>
-ruvia::task<bool> renewTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
-    static constexpr std::string_view script = R"lua(
+inline constexpr std::string_view kRenewTargetScript = R"lua(
 if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end
 return redis.call('PEXPIRE',KEYS[1],15000)
 )lua";
+
+template <typename Redis>
+ruvia::task<bool> renewTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     const auto lease = targetKey(linkId, targetId);
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
-    const auto reply = co_await redis.eval(script, keys, args);
+    const auto reply = co_await redis.eval(kRenewTargetScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("renew target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
 
-template <typename Redis>
-ruvia::task<void> releaseTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
-    static constexpr std::string_view script = R"lua(
+inline constexpr std::string_view kReleaseTargetScript = R"lua(
 if redis.call('GET',KEYS[1])==ARGV[1] then
   redis.call('DEL',KEYS[1])
   return 1
 end
 return 0
 )lua";
+
+template <typename Redis>
+ruvia::task<void> releaseTarget(const Redis& redis, std::string_view linkId, std::string_view targetId, std::string_view owner) {
     const auto lease = targetKey(linkId, targetId);
     const std::string_view keys[]{ lease };
     const std::string_view args[]{ owner };
-    const auto reply = co_await redis.eval(script, keys, args);
+    const auto reply = co_await redis.eval(kReleaseTargetScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         message::redis::throwValue("release target ownership", reply);
     }
@@ -1304,7 +1307,7 @@ class CollectorStateService final {
         const auto key = message::collector::connectionKey(action.deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(action.deviceId);
         const auto ownerKey = message::collector::linkOwnerKey(linkId);
-        const auto revisionKey = std::string(service::message::live::kChanges);
+        const auto revisionKey = message::live::channel(message::live::topic::kDeviceState);
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
@@ -1344,7 +1347,7 @@ class CollectorStateService final {
         std::string_view workerInstanceId, std::string_view reason) {
         const auto key = message::collector::connectionKey(deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(deviceId);
-        const auto revisionKey = std::string(service::message::live::kChanges);
+        const auto revisionKey = message::live::channel(message::live::topic::kDeviceState);
         const auto now = std::to_string(message::utcNowMilliseconds());
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
@@ -1377,7 +1380,7 @@ class CollectorStateService final {
     template <typename Redis>
     static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const RuntimeSnapshot& snapshot) {
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const auto changes = std::string(message::live::kChanges);
+        const auto changes = message::live::channel(message::live::topic::kDeviceState);
         for (const auto& device : snapshot.devices) {
             const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);

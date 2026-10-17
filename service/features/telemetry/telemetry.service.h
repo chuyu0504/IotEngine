@@ -55,10 +55,10 @@ inline std::string consumerStream(Consumer consumer) {
 }
 
 // 一批遥测的复制回执与四份消费者副本在一个脚本内原子提交；消费者流从不修剪待确认条目，各消费者自行 XACK+XDEL。
-// KEYS[1..4]: history、latest、alerts、delivery 消费者流；KEYS[5]: 本实例共享唤醒流；KEYS[6..]: 每条遥测的复制回执键（与条目一一对应）。
+// KEYS[1..4]: history、latest、alerts、delivery 消费者流；KEYS[5]: 本实例共享唤醒流；KEYS[6..10]: 对应流的输入通知频道；KEYS[11..]: 每条遥测的复制回执键。
 // ARGV[1]: 唤醒流容量；ARGV[2]: 告警消费者的唤醒任务名；之后按条目顺序依次为 <字段名值个数> <name> <value> ...
 // 回执已存在时不重复复制；若重复投递携带原始帧身份（raw_packet_ids 非空），只向 history 追加以补记原始帧关联。
-// 告警复制流属于 alert 组件，有新副本时经 Redis 唤醒流通知其消费者。返回新复制的条目数。
+// 每次实际追加后在同一脚本发布新条目 ID；无副本追加的重复投递不通知。返回新复制的条目数。
 inline constexpr std::string_view kFanoutScript = R"lua(
 for i=1,4 do
  local kind = redis.call('TYPE',KEYS[i]).ok
@@ -68,7 +68,7 @@ for i=1,4 do
 end
 local copied = 0
 local cursor = 3
-for entry=6,#KEYS do
+for entry=11,#KEYS do
  local count = tonumber(ARGV[cursor])
  if not count then return redis.error_reply('telemetry fanout field count is missing') end
  local fields = {'*'}
@@ -80,15 +80,22 @@ for entry=6,#KEYS do
  end
  cursor = cursor + count + 1
  if redis.call('EXISTS',KEYS[entry]) ~= 0 then
-  if replay then redis.call('XADD',KEYS[1],unpack(fields)) end
+  if replay then
+   local id = redis.call('XADD',KEYS[1],unpack(fields))
+   redis.call('PUBLISH',KEYS[6],id)
+  end
  else
-  for i=1,4 do redis.call('XADD',KEYS[i],unpack(fields)) end
+  for i=1,4 do
+   local id = redis.call('XADD',KEYS[i],unpack(fields))
+   redis.call('PUBLISH',KEYS[i+5],id)
+  end
   redis.call('SET',KEYS[entry],'1','EX',604800)
   copied = copied + 1
  end
 end
 if copied > 0 then
- redis.call('XADD',KEYS[5],'MAXLEN','~',ARGV[1],'*','task',ARGV[2])
+ local id = redis.call('XADD',KEYS[5],'MAXLEN','~',ARGV[1],'*','task',ARGV[2])
+ redis.call('PUBLISH',KEYS[10],id)
 end
 return copied
 )lua";
@@ -117,8 +124,19 @@ ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMe
         entries.push_back(std::move(fields));
     }
     const auto wakeStream = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
-    std::vector<std::string_view> keys{ message::telemetry::kHistoryStream, message::telemetry::kLatestStream, message::telemetry::kAlertsStream, message::telemetry::kDeliveryStream, wakeStream };
-    keys.reserve(keys.size() + receipts.size());
+    const std::string inputChannels[]{
+        message::consumer::inputChannel(message::telemetry::kHistoryStream),
+        message::consumer::inputChannel(message::telemetry::kLatestStream),
+        message::consumer::inputChannel(message::telemetry::kAlertsStream),
+        message::consumer::inputChannel(message::telemetry::kDeliveryStream),
+        message::consumer::inputChannel(wakeStream)
+    };
+    std::vector<std::string_view> keys;
+    keys.reserve(10 + receipts.size());
+    keys.insert(keys.end(), { message::telemetry::kHistoryStream, message::telemetry::kLatestStream, message::telemetry::kAlertsStream, message::telemetry::kDeliveryStream, wakeStream });
+    for (const auto& channel : inputChannels) {
+        keys.push_back(channel);
+    }
     for (const auto& receipt : receipts) {
         keys.push_back(receipt);
     }

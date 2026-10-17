@@ -92,7 +92,7 @@ async function nextPayload(stream: SnapshotSubscription, eventName: string): Pro
     return payload;
 }
 function change(topic: string, ...ids: string[]) {
-    return redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', topic, 'ids', ids.join(',')]);
+    return redis.send('PUBLISH', [`iot:live:topic:${topic}`, ids.join(',')]);
 }
 try {
     await request('GET', '/v1/device', undefined, 11004, null);
@@ -130,8 +130,8 @@ try {
     assert(list.commentCount > 0, 'idle connection must use comment-only keepalive');
     const reported = Date.now();
     await redis.send('EVAL', [
-        "redis.call('HSET',KEYS[1],'last_report_at_ms',ARGV[1]); return redis.call('XADD',KEYS[2],'*','schema_version','2','topic','device.realtime','ids',ARGV[2])",
-        '2', `iot:v2:runtime:device:${device}`, 'iot:live:changes', String(reported), device,
+        "redis.call('HSET',KEYS[1],'last_report_at_ms',ARGV[1]); return redis.call('PUBLISH',KEYS[2],ARGV[2])",
+        '2', `iot:v2:runtime:device:${device}`, 'iot:live:topic:device.realtime', String(reported), device,
     ]);
     const telemetryEvent = await list.next();
     assert.equal(telemetryEvent.event, 'realtime', 'telemetry must not rebuild metadata or groups');
@@ -216,10 +216,6 @@ try {
     await db`UPDATE command_operation SET status='SUCCEEDED',completed_at=NOW(),actual_values='[{"elementId":"reading","name":"读数","kind":"DOUBLE","value":"12.5","unit":"V"}]'::jsonb WHERE request_id=${commandRequest}`;
     console.log('device integration: command batch completion');
     const completion = await commands.next();
-    if (completion.event !== 'commands') {
-        const changes = await redis.send('XREVRANGE', ['iot:live:changes', '+', '-', 'COUNT', '20']) as [string, string[]][];
-        console.log('command isolation notification topics', changes.map(([id, fields]) => [id, fields[fields.indexOf('topic') + 1]]));
-    }
     assert.equal(completion.event, 'commands');
     const completed = JSON.parse(completion.data).data;
     assert.equal(completed.complete, true);
@@ -263,7 +259,6 @@ try {
     assert.equal(initialChannels.get('packets').code, 11007);
     assert.equal(initialChannels.get('commands').code, 11007);
     await db`UPDATE sys_role SET permissions='["iot:device-group:query"]'::jsonb WHERE id=${role}`;
-    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'auth']);
     console.log('device integration: permission replacement');
     const revokedChannels = new Map<string, any>();
     while (revokedChannels.size < 3) {

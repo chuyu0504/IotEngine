@@ -56,8 +56,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 # Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    URL https://github.com/hyird/Ruvia/archive/3a10c4b993ae5307d65387fe5ae5cfe3bb8e0c5d.tar.gz
-    URL_HASH SHA256=59b5afdee87c426f733d74c0a7d84f6d22e24f0a4f06ba3023c9ad0a7523c9e2)
+    URL https://github.com/hyird/Ruvia/archive/658b6e169339c9981c40e79851878760a886f2be.tar.gz
+    URL_HASH SHA256=a6ffa689d8d9f79bdfb7d7f9024eb574d05171fc3c5b3d9b36111d9178a76765)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -350,11 +350,20 @@ iot_engine_add_test(context-operation-memory LARGE
     SOURCES tests/context-operation-memory-test.cpp
     LIBRARIES ruvia::web)
 
+find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server redis-server.exe)
+if(NOT REDIS_SERVER_EXECUTABLE)
+    set(REDIS_SERVER_EXECUTABLE "")
+endif()
 iot_engine_add_test(collector-protocol LARGE
     SOURCES
         tests/collector-protocol-test.cpp
         service/features/packet_log/packet_log.transport.cpp
-    LIBRARIES ruvia::web spdlog::spdlog edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web spdlog::spdlog edgenode-protocol OpenSSL::Crypto
+    DEFINITIONS
+        "IOT_TEST_REDIS_SERVER=\"${REDIS_SERVER_EXECUTABLE}\""
+        "IOT_TEST_BUILD_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\""
+    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN)
+set_tests_properties(collector-protocol PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
 iot_engine_add_test(access LARGE
     SOURCES tests/access-test.cpp
@@ -416,10 +425,6 @@ iot_engine_add_test(collector-state
     SOURCES tests/collector-state-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)
 
-find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server redis-server.exe)
-if(NOT REDIS_SERVER_EXECUTABLE)
-    set(REDIS_SERVER_EXECUTABLE "")
-endif()
 iot_engine_add_test(collector-route LARGE
     SOURCES tests/collector-route-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto spdlog::spdlog
@@ -556,6 +561,7 @@ add_custom_target(iot-engine-web ALL
 # IOT_TEST_POSTGRES_URL and IOT_TEST_REDIS_URL; see docs/build.md.
 iot_engine_add_integration_fixture(api)
 foreach(test_name
+        access-delivery-result-integration
         access-http-sse-integration
         alert-orm-integration
         architecture-integration

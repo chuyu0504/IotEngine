@@ -96,7 +96,7 @@ async function publicFrames(path: string, accessKey: string) {
     return {next,close:()=>{controller.abort();void reader.cancel().catch(()=>{});}};
 }
 const publishChange = (topic: string, ids: string[]) =>
-    redis.send('XADD',['iot:live:changes','MAXLEN','~','100000','*','schema_version','2','topic',topic,'ids',ids.join(',')]);
+    redis.send('PUBLISH',[`iot:live:topic:${topic}`,ids.join(',')]);
 try {
     await request('GET','/api/open-access-key',undefined,11004,null);
     await request('POST','/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[]}});
@@ -203,6 +203,18 @@ try {
     assert.equal((await db`SELECT count(*)::int AS n FROM open_access_key WHERE name=${`${tag}_forbidden`}`)[0].n,0);
     await request('DELETE',`/api/open-webhook/${webhook}`);
     assert.deepEqual(await webhooks(),[]);
+    // Expiration must close an already-open SSE without a heartbeat query.
+    // The access event may refresh its cached session once, but the deadline
+    // itself is enforced locally without another business notification.
+    await request('PUT',`/api/open-access-key/${key}`, {expiresAt:new Date(Date.now()+10000).toISOString()});
+    const expiring = await publicFrames(`/open-api/device/realtime?deviceId=${device}`,rotated.accessKey);
+    try {
+        assert.equal((await expiring.next()).event,'snapshot');
+        let expired = await expiring.next();
+        while (expired.event === 'snapshot') expired = await expiring.next();
+        assert.equal(expired.event,'error');
+        assert.equal(JSON.parse(expired.data).code,19010);
+    } finally { expiring.close(); }
     await request('DELETE',`/api/open-access-key/${key}`);
     await publicList(rotated.accessKey,401);
     for (const path of ['/api/open-access-key','/api/open-webhook','/api/open-access-log','/api/device/options'])

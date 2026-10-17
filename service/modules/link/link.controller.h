@@ -71,9 +71,9 @@ class LinkController final {
             co_return service::middleware::modelJson(service::common::ok<LinkPageResponse>(request, std::move(page)));
         };
         // 边缘链路仅在有设备使用时列出，设备增删改换链路会改变其可见性。
-        auto linksUpdate = [&c, visible, linksSnapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+        auto linksUpdate = [&c, visible, linksSnapshot](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
             co_await service::middleware::requirePermission(request, "iot:link:query");
-            service::utils::ChangeSet::Ids requested;
+            service::message::live::ChangeSet::Ids requested;
             std::vector<std::string> devices;
             for (const auto& [name, ids] : changes.topics) {
                 if (!ids) {
@@ -112,7 +112,7 @@ class LinkController final {
                 debugAuthorized = true;
                 co_return payload;
             };
-            auto update = [snapshot, linkId = debugId](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+            auto update = [snapshot, linkId = debugId](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                 const auto* changed = changes.find(topic::kPacketDebug);
                 if (changed == nullptr || (*changed && !(*changed)->contains(linkId))) {
                     co_return std::nullopt;

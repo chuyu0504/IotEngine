@@ -30,6 +30,7 @@ return previous or ''
 )lua";
 
 // 投递结果入队与 DeliveryProgressRecord 进度原子写入：KEYS[1]=结果流，KEYS[2]=进度 Hash，KEYS[3]=唤醒流；
+// KEYS[4]=结果流输入通知频道，KEYS[5]=唤醒流输入通知频道。
 // ARGV[1]=目标 ID，ARGV[2]=结果流长度上限，ARGV[3]=进度 TTL 秒，ARGV[4]=唤醒流长度上限，ARGV[5]=唤醒任务名，
 // ARGV[6]='1' 时记录目标已完成，ARGV[7..]=结果字段名/值。目标已完成时返回 false。
 inline constexpr std::string_view kDeliveryResultScript = R"lua(
@@ -41,7 +42,9 @@ if ARGV[6] == '1' then
 redis.call('HSET', KEYS[2], ARGV[1], '1')
 redis.call('EXPIRE', KEYS[2], ARGV[3])
 end
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
+local wake = redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
+redis.call('PUBLISH', KEYS[4], id)
+redis.call('PUBLISH', KEYS[5], wake)
 return id
 )lua";
 

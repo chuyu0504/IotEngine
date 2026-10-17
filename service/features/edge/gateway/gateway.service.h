@@ -27,10 +27,24 @@
 #include "service/features/edge/gateway/gateway.entity.h"
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/features/edge/projection/projection.entity.h"
-#include "service/features/live/live.service.h"
+#include "service/utils/redis.h"
 #include "service/utils/number.h"
 
 namespace service::edge::gateway {
+
+inline constexpr std::string_view kSaveLogResultScript = R"lua(
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+if ARGV[2] == '1' then
+  redis.call('SET', KEYS[2], ARGV[1])
+  redis.call('PUBLISH', KEYS[3], ARGV[3])
+end
+return redis.call('PUBLISH', KEYS[1], '')
+)lua";
+
+inline constexpr std::string_view kSaveLogLevelResultScript = R"lua(
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+return redis.call('PUBLISH', KEYS[1], '')
+)lua";
 
 class GatewayService final {
   public:
@@ -53,17 +67,15 @@ class GatewayService final {
         if (!result.SerializeToString(&record.protobufBytes)) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
-        ruvia::redis_set_options options;
-        options.expiration_ =
-            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
+        const auto id = service::common::uuidText(result.request_id());
         const auto key = service::message::edge::logResultKey(id);
-        co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publishDirected(c.redis(), key);
-        if (result.success()) {
-            const auto snapshotKey = service::message::edge::logSnapshotKey(nodeId);
-            co_await c.redis().set(snapshotKey, record.protobufBytes);
-            co_await service::live::publish(c.redis(), service::message::live::topic::kEdgeLogs, std::array{ std::string(nodeId) });
+        const auto snapshot = service::message::edge::logSnapshotKey(nodeId);
+        const auto channel = service::message::live::channel(service::message::live::topic::kEdgeLogs);
+        const std::string_view keys[]{ key, snapshot, channel };
+        const std::string_view args[]{ record.protobufBytes, result.success() ? "1" : "0", nodeId };
+        const auto saved = co_await c.redis().eval(kSaveLogResultScript, keys, args);
+        if (saved.kind() != ruvia::redis_value::kind_type::integer) {
+            service::message::redis::throwValue("persist edge log result", saved);
         }
     }
 
@@ -75,13 +87,14 @@ class GatewayService final {
         if (!result.SerializeToString(&record.protobufBytes)) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
-        ruvia::redis_set_options options;
-        options.expiration_ =
-            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
+        const auto id = service::common::uuidText(result.request_id());
         const auto key = service::message::edge::logLevelResultKey(id);
-        co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publishDirected(c.redis(), key);
+        const std::string_view keys[]{ key };
+        const std::string_view args[]{ record.protobufBytes };
+        const auto saved = co_await c.redis().eval(kSaveLogLevelResultScript, keys, args);
+        if (saved.kind() != ruvia::redis_value::kind_type::integer) {
+            service::message::redis::throwValue("persist edge log level result", saved);
+        }
     }
 
     template <typename Context>

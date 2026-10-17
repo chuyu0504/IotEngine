@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <map>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -622,21 +623,15 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
 
 namespace service::message::live {
 
-// Broadcast stream of committed business changes. An entry names the changed
-// entity kind (`topic`) and the affected entity ids (`ids`, comma separated).
-// Absent or empty ids mean the whole topic scope changed. Subscribers re-query
-// only the affected rows within their own authorization scope and never treat
-// an entry as response data.
+// Durable runtime-config relay only. UI business changes use topic channels;
+// notifications never replace the authorized database/Redis snapshot.
 inline constexpr std::string_view kChanges{"iot:live:changes"};
 inline constexpr std::string_view kChangesCapacity{"100000"};
 inline constexpr std::string_view kTopicField{"topic"};
-inline constexpr std::string_view kIdsField{"ids"};
-inline constexpr std::string_view kSchemaVersionField{"schema_version"};
-inline constexpr std::string_view kSchemaVersion{"2"};
 // Larger batches are published scope-wide instead of carrying every id.
 inline constexpr std::size_t kMaximumIds = 1000;
 
-// Entity kinds published on kChanges. Each producer owns the meaning of ids:
+// Entity kinds published on independent Pub/Sub channels.
 // device/device.state/device.realtime/device.history → device ids
 // (device.realtime: latest values; device.history: persisted history rows);
 // device-group → group ids;
@@ -700,23 +695,42 @@ inline std::vector<std::string_view> splitIds(std::string_view ids) {
     return result;
 }
 
-// Directed messages (RPC replies, terminal and serial frames, edge request
-// results) go to the stream of the one Service Worker waiting for them. Entries
-// carry only `topic`; the waiter reads the payload from its own keys. Streams are
-// named per process incarnation and expire when their worker is gone.
-inline constexpr std::string_view kWorkerStreamPrefix{"iot:live:worker:"};
-inline constexpr std::string_view kWorkerStreamCapacity{"10000"};
-inline constexpr std::string_view kWorkerStreamTtlMilliseconds{"600000"};
-
-inline std::string workerStream(std::string_view instance, std::size_t workerIndex) {
-    return std::string(kWorkerStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex);
+inline std::string channel(std::string_view topic) {
+    return "iot:live:topic:" + std::string(topic);
 }
 
-// Reply route of one directed topic: the value is the waiting worker's stream.
-// Producers that do not know the waiter (node-side gateway) resolve it here.
-inline std::string routeKey(std::string_view topic) {
-    return "iot:live:route:" + std::string(topic);
-}
+// Coalesced notifications owned by one live connection, with no I/O or shared
+// runtime state. An empty id list marks a whole-scope change.
+struct ChangeSet final {
+    using Ids = std::set<std::string, std::less<>>;
+    std::map<std::string, std::optional<Ids>, std::less<>> topics;
+    bool recovered = false;
+
+    [[nodiscard]] bool empty() const noexcept { return topics.empty() && !recovered; }
+
+    [[nodiscard]] const std::optional<Ids>* find(std::string_view topic) const {
+        const auto found = topics.find(topic);
+        return found == topics.end() ? nullptr : &found->second;
+    }
+
+    void add(std::string_view topic, std::string_view ids) {
+        auto [entry, inserted] = topics.try_emplace(std::string(topic), Ids{});
+        if (!entry->second) {
+            return;
+        }
+        const auto split = splitIds(ids);
+        if (split.empty()) {
+            entry->second.reset();
+            return;
+        }
+        for (const auto id : split) {
+            entry->second->emplace(id);
+        }
+        if (entry->second->size() > kMaximumIds) {
+            entry->second.reset();
+        }
+    }
+};
 
 } // namespace service::message::live
 
@@ -806,6 +820,7 @@ inline constexpr std::int64_t kVpnAddressAllocation{5282804697543808068};
 inline constexpr std::int64_t kVpnReconciliation{5282804697543808071};
 inline constexpr std::int64_t kAccessSessionProjection{734622};
 inline constexpr std::int64_t kAlertMetadataProjection{734623};
+inline constexpr std::int64_t kOutboxReceiptCleanup{734624};
 // Two-key form pg_advisory_xact_lock(int4, int4) guarding firmware storage.
 inline constexpr std::int32_t kFirmwareStorageClass{17011};
 inline constexpr std::int32_t kFirmwareStorageObject{1};
@@ -1048,6 +1063,18 @@ inline std::string snapshotId(std::size_t workerIndex,
 }
 
 } // namespace service::message::worker_metrics
+
+namespace service::message::consumer {
+inline std::string inputChannel(std::string_view stream) {
+    return "iot:consumer:input:" + std::string(stream);
+}
+inline std::string deadlineKey(std::string_view stream, std::string_view group) {
+    return "iot:consumer:pending:" + std::string(group) + ":" + std::string(stream);
+}
+inline std::string deadlineChannel(std::string_view stream, std::string_view group) {
+    return "iot:consumer:deadline:" + std::string(group) + ":" + std::string(stream);
+}
+} // namespace service::message::consumer
 
 namespace service::message {
 
@@ -1585,7 +1612,10 @@ RUVIA_MODEL(Request,
     RUVIA_OPTIONAL_FIELD(columns, ruvia::int64),
     RUVIA_OPTIONAL_FIELD(rows, ruvia::int64),
     RUVIA_OPTIONAL_FIELD(content, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64));
+    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(after, ruvia::int64),
+    RUVIA_OPTIONAL_FIELD(ready, ruvia::bool_value),
+    RUVIA_OPTIONAL_FIELD(closed, ruvia::bool_value));
 
 RUVIA_MODEL(OpenReply,
     RUVIA_REQUIRED_FIELD(id, ruvia::string),

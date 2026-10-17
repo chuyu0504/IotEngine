@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -16,7 +17,6 @@
 #include "service/middleware/validation.h"
 #include "service/modules/open_access/open_access.types.h"
 #include "service/modules/open_access/open_access.service.h"
-#include "service/utils/change_feed.h"
 #include "service/utils/json.h"
 #include "service/utils/text.h"
 
@@ -187,7 +187,7 @@ class AccessController final {
   private:
     // True when `topic` changed as a whole or for an id accepted by `accepts`.
     template <typename Accepts>
-    static bool touches(const service::utils::ChangeSet& changes, std::string_view topic, Accepts accepts) {
+    static bool touches(const service::message::live::ChangeSet& changes, std::string_view topic, Accepts accepts) {
         const auto* ids = changes.find(topic);
         if (!ids) {
             return false;
@@ -203,12 +203,11 @@ class AccessController final {
         return false;
     }
 
-    // Third-party snapshot stream. The wire (snapshot/id/retry/heartbeat, expiry,
-    // JSON mode) is a public contract; `relevant` decides which committed changes
-    // of `topics` affect this key's result. Access key/auth changes and feed
-    // recovery always re-query because they may change the authorized scope.
+    // Third-party snapshot/id/retry/expiry and JSON mode remain unchanged.
+    // Every SSE owns its subscription and confirms it before querying. Idle
+    // heartbeats are comments; authorization is reloaded only for real changes.
     template <typename Query, typename Relevant>
-    static ruvia::task<void> servePublicQuery(ruvia::context& context, std::vector<std::string> topics, Query query, Relevant relevant, std::function<ruvia::task<void>()> authorize, std::chrono::milliseconds coalesceDelay = {}) {
+    static ruvia::task<void> servePublicQuery(ruvia::context& context, std::vector<std::string> topics, Query query, Relevant relevant, std::function<ruvia::task<std::int64_t>()> authorize, std::chrono::milliseconds coalesceDelay = {}) {
         using namespace std::chrono_literals;
         if (context.req().header("Accept").value_or("").find("application/json") != std::string_view::npos) {
             co_await authorize();
@@ -227,64 +226,93 @@ class AccessController final {
         }
         topics.emplace_back(service::message::live::topic::kAuth);
         topics.emplace_back(service::message::live::topic::kAccess);
-        auto subscription = co_await context.worker_state<service::utils::ChangeFeed>().watch(context, std::move(topics));
-        auto snapshot = co_await query();
-        context.header("X-Accel-Buffering", "no");
-        context.header("Cache-Control", "no-store");
-        auto stream = context.stream_sse();
-        std::uint64_t revision = 1;
-        auto id = std::to_string(revision);
-        co_await stream.write({ .data_ = snapshot, .event_ = "snapshot", .id_ = id, .retry_ = 1s });
-        snapshot.clear();
-        // Bound request-arena retention. Reconnection creates a new authorized
-        // snapshot; event IDs are connection-local, never misleading replay cursors.
-        const auto expires = std::chrono::steady_clock::now() + (coalesceDelay.count() > 0 ? 1min : 5min);
-        auto heartbeat = std::chrono::steady_clock::now() + 15s;
-        while (!stream.aborted() && std::chrono::steady_clock::now() < expires) {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(heartbeat - std::chrono::steady_clock::now());
-            const auto woke = co_await subscription->wait(std::max(remaining, std::chrono::milliseconds(0)), context.get_stop_token());
-            if (stream.aborted() || context.get_stop_token().stop_requested() || woke == service::utils::ChangeWait::Stopped) {
-                co_return;
-            }
-            const bool changed = woke == service::utils::ChangeWait::Changed;
-            if (changed && coalesceDelay.count() > 0) {
-                (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.get_stop_token());
-                if (stream.aborted() || context.get_stop_token().stop_requested()) {
-                    co_return;
-                }
-            }
-            std::string error;
-            std::string next;
-            try {
-                // Every wake rechecks the key; permission changes publish auth or
-                // access events, which reexecute the authorized query immediately.
-                co_await authorize();
-                if (changed) {
-                    const auto changes = subscription->take();
-                    if (changes.recovered || changes.find(service::message::live::topic::kAuth) ||
+        co_await service::middleware::withLiveSubscription(context, std::move(topics),
+            [&](service::middleware::LiveSubscription& subscription) -> ruvia::task<void> {
+                context.header("X-Accel-Buffering", "no");
+                context.header("Cache-Control", "no-store");
+                auto stream = context.stream_sse();
+                std::uint64_t revision = 0;
+                const auto expires = std::chrono::steady_clock::now() + (coalesceDelay.count() > 0 ? 1min : 5min);
+                auto heartbeat = std::chrono::steady_clock::now() + 15s;
+                bool refresh = true;
+                std::int64_t expiresAtMs = 0;
+                while (!stream.aborted() && !context.get_stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
+                    if (expiresAtMs > 0 && expiresAtMs <= service::message::utcNowMilliseconds()) {
+                        const auto error = service::middleware::modelJson(service::common::error(context, 19010, "AccessKey 已过期"));
+                        co_await stream.write({ .data_ = error, .event_ = "error" });
+                        co_return;
+                    }
+                    const auto changes = subscription.take();
+                    refresh = refresh || changes.recovered;
+                    if (!subscription.ready()) {
+                        refresh = true;
+                    } else if (refresh || changes.find(service::message::live::topic::kAuth) ||
                         changes.find(service::message::live::topic::kAccess) || relevant(changes)) {
-                        next = co_await query();
+                        bool reauthorize = refresh || changes.find(service::message::live::topic::kAuth) ||
+                            changes.find(service::message::live::topic::kAccess);
+                        if (revision != 0 && coalesceDelay.count() > 0) {
+                            (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.get_stop_token());
+                            if (stream.aborted() || context.get_stop_token().stop_requested()) {
+                                co_return;
+                            }
+                            // Everything received before this full query is
+                            // covered by it; do not emit one snapshot per wake.
+                            const auto coalesced = subscription.take();
+                            reauthorize = reauthorize || coalesced.recovered ||
+                                coalesced.find(service::message::live::topic::kAuth) || coalesced.find(service::message::live::topic::kAccess);
+                        }
+                        if (!subscription.ready()) {
+                            refresh = true;
+                            continue;
+                        }
+                        const auto generation = subscription.generation();
+                        std::string error;
+                        std::string next;
+                        try {
+                            if (reauthorize) {
+                                expiresAtMs = co_await authorize();
+                            }
+                            if (expiresAtMs > 0 && expiresAtMs <= service::message::utcNowMilliseconds()) {
+                                service::common::fail(19010, "AccessKey 已过期", 401);
+                            }
+                            next = co_await query();
+                        } catch (const ruvia::http_error& failure) {
+                            const auto info = failure.info();
+                            error = service::middleware::modelJson(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
+                        } catch (const std::exception& failure) {
+                            LOG_WARN << "Public SSE query failed: " << failure.what();
+                            error = "{\"code\":10004,\"message\":\"Subscription interrupted\"}";
+                        }
+                        // Never publish a query completed across revocation or
+                        // subscription loss; recovery reauthorizes first.
+                        if (!subscription.ready() || generation != subscription.generation()) {
+                            refresh = true;
+                            continue;
+                        }
+                        if (!error.empty()) {
+                            co_await stream.write({ .data_ = error, .event_ = "error" });
+                            co_return;
+                        }
+                        const auto id = std::to_string(++revision);
+                        co_await stream.write({ .data_ = next, .event_ = "snapshot", .id_ = id,
+                            .retry_ = revision == 1 ? std::optional<std::chrono::milliseconds>(1s) : std::nullopt });
+                        refresh = false;
+                        heartbeat = std::chrono::steady_clock::now() + 15s;
+                    }
+                    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(heartbeat - std::chrono::steady_clock::now());
+                    if (expiresAtMs > 0) {
+                        remaining = std::min(remaining, std::chrono::milliseconds(expiresAtMs - service::message::utcNowMilliseconds()));
+                    }
+                    const auto woke = co_await subscription.wait(std::max(remaining, std::chrono::milliseconds(0)));
+                    if (woke == service::middleware::LiveWait::Stopped) {
+                        co_return;
+                    }
+                    if (std::chrono::steady_clock::now() >= heartbeat) {
+                        co_await context.stream().write(": keepalive\n\n");
+                        heartbeat = std::chrono::steady_clock::now() + 15s;
                     }
                 }
-            } catch (const ruvia::http_error& failure) {
-                const auto info = failure.info();
-                error = service::middleware::modelJson(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
-            } catch (const std::exception&) {
-                error = "{\"code\":10004,\"message\":\"Subscription interrupted\"}";
-            }
-            if (!error.empty()) {
-                co_await stream.write({ .data_ = error, .event_ = "error" });
-                co_return;
-            }
-            if (!next.empty()) {
-                id = std::to_string(++revision);
-                co_await stream.write({ .data_ = next, .event_ = "snapshot", .id_ = id });
-                heartbeat = std::chrono::steady_clock::now() + 15s;
-            } else if (std::chrono::steady_clock::now() >= heartbeat) {
-                co_await stream.write({ .data_ = "{}", .event_ = "heartbeat" });
-                heartbeat = std::chrono::steady_clock::now() + 15s;
-            }
-        }
+            });
     }
 
     // Ids of devices whose change can alter a result bound to `session`.
@@ -301,14 +329,16 @@ class AccessController final {
         auto session = std::make_shared<AccessSession>();
         co_await servePublicQuery(c, { std::string(service::message::live::topic::kDevice) },
             [this, &c, &audited, session]() { return devicesSnapshot(c, audited, *session); },
-            [session](const service::utils::ChangeSet& changes) {
+            [session](const service::message::live::ChangeSet& changes) {
                 return touches(changes, service::message::live::topic::kDevice, boundDevice(session));
             },
-            [&c, session]() -> ruvia::task<void> { *session = co_await accessService().authenticate(c, {}); });
+            [&c, session]() -> ruvia::task<std::int64_t> {
+                *session = co_await accessService().authenticate(c, {});
+                co_return session->expiresAtMs;
+            });
     }
 
     ruvia::task<std::string> devicesSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {
-        session = co_await accessService().authenticate(c, {});
         const auto data = co_await accessService().publicDevices(c, session);
         if (!audited) {
             co_await accessService().audit(c, "device-list", session, std::string_view{}, "{}", data);
@@ -319,18 +349,21 @@ class AccessController final {
 
     ruvia::task<void> realtime(ruvia::context& c) {
         bool audited = false;
+        auto session = std::make_shared<AccessSession>();
         co_await servePublicQuery(c,
             { std::string(service::message::live::topic::kDeviceRealtime), std::string(service::message::live::topic::kDeviceState), std::string(service::message::live::topic::kDevice) },
-            [this, &c, &audited]() { return realtimeSnapshot(c, audited); },
-            [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
+            [this, &c, &audited, session]() { return realtimeSnapshot(c, audited, *session); },
+            [device = requestedDevice(c)](const service::message::live::ChangeSet& changes) {
                 return touches(changes, service::message::live::topic::kDeviceRealtime, device) ||
                     touches(changes, service::message::live::topic::kDeviceState, device) ||
                     touches(changes, service::message::live::topic::kDevice, device);
             },
-            [&c]() -> ruvia::task<void> { (void)co_await accessService().authenticate(c, kScopeRealtime); });
+            [&c, session]() -> ruvia::task<std::int64_t> {
+                *session = co_await accessService().authenticate(c, kScopeRealtime);
+                co_return session->expiresAtMs;
+            });
     }
-    ruvia::task<std::string> realtimeSnapshot(ruvia::context& c, bool& audited) {
-        const auto session = co_await accessService().authenticate(c, kScopeRealtime);
+    ruvia::task<std::string> realtimeSnapshot(ruvia::context& c, bool& audited, const AccessSession& session) {
         const auto id = service::utils::trim(c.req().query("deviceId").value_or(""));
         const auto data = co_await accessService().publicRealtime(c, session, id);
         if (!audited) {
@@ -342,16 +375,19 @@ class AccessController final {
 
     ruvia::task<void> history(ruvia::context& c) {
         bool audited = false;
+        auto session = std::make_shared<AccessSession>();
         co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceHistory) },
-            [this, &c, &audited]() { return historySnapshot(c, audited); },
-            [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
+            [this, &c, &audited, session]() { return historySnapshot(c, audited, *session); },
+            [device = requestedDevice(c)](const service::message::live::ChangeSet& changes) {
                 return touches(changes, service::message::live::topic::kDeviceHistory, device);
             },
-            [&c]() -> ruvia::task<void> { (void)co_await accessService().authenticate(c, kScopeHistory); });
+            [&c, session]() -> ruvia::task<std::int64_t> {
+                *session = co_await accessService().authenticate(c, kScopeHistory);
+                co_return session->expiresAtMs;
+            });
     }
 
-    ruvia::task<std::string> historySnapshot(ruvia::context& c, bool& audited) {
-        const auto session = co_await accessService().authenticate(c, kScopeHistory);
+    ruvia::task<std::string> historySnapshot(ruvia::context& c, bool& audited, const AccessSession& session) {
         const auto id = service::utils::trim(c.req().query("deviceId").value_or(""));
         const auto data = co_await accessService().publicHistory(c, session, id);
         if (!audited) {
@@ -377,16 +413,18 @@ class AccessController final {
         auto session = std::make_shared<AccessSession>();
         co_await servePublicQuery(c, { std::string(service::message::live::topic::kAlert), std::string(service::message::live::topic::kDevice) },
             [this, &c, &audited, session]() { return alertsSnapshot(c, audited, *session); },
-            [session](const service::utils::ChangeSet& changes) {
+            [session](const service::message::live::ChangeSet& changes) {
                 // Alert record ids cannot be mapped to devices without a query.
                 return changes.find(service::message::live::topic::kAlert) != nullptr ||
                     touches(changes, service::message::live::topic::kDevice, boundDevice(session));
             },
-            [&c, session]() -> ruvia::task<void> { *session = co_await accessService().authenticate(c, kScopeAlert); });
+            [&c, session]() -> ruvia::task<std::int64_t> {
+                *session = co_await accessService().authenticate(c, kScopeAlert);
+                co_return session->expiresAtMs;
+            });
     }
 
     ruvia::task<std::string> alertsSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {
-        session = co_await accessService().authenticate(c, kScopeAlert);
         const auto data = co_await accessService().publicAlerts(c, session);
         if (!audited) {
             co_await accessService().audit(c, "alert", session, std::string_view{}, "{}", data);

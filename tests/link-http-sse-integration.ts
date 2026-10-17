@@ -58,7 +58,85 @@ async function delta(stream: SnapshotSubscription, eventName = 'links') {
     return payload.delta as {upsert:any[];remove:string[]};
 }
 function change(topic: string, ...ids: string[]) {
-    return redis.send('XADD',['iot:live:changes','*','schema_version','2','topic',topic,'ids',ids.join(',')]);
+    return redis.send('PUBLISH',[`iot:live:topic:${topic}`,ids.join(',')]);
+}
+
+async function pubsubClients() {
+    const clients = String(await redis.send('CLIENT', ['LIST', 'TYPE', 'PUBSUB'])).trim();
+    return clients ? clients.split('\n').map(line => Object.fromEntries(line.trim().split(' ').map(field => {
+        const separator = field.indexOf('=');
+        return [field.slice(0, separator), field.slice(separator + 1)];
+    }))) : [];
+}
+
+async function verifySubscriptionRaceAndRecovery() {
+    const raceId = crypto.randomUUID();
+    const marker = `${tag}_subscription_race`;
+    const latest = `${marker}_committed`;
+    const before = new Set((await pubsubClients()).map(client => client.id));
+    let opening: Promise<SnapshotSubscription> | undefined;
+    let first: SnapshotSubscription | undefined;
+    let second: SnapshotSubscription | undefined;
+    let clientId = '';
+    try {
+        await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by)
+            VALUES(${raceId},${marker},'Modbus','{"transport":"tcp","mode":"TCP Client","targets":[]}'::jsonb,'disabled','collector',${admin})`;
+        await db.begin(async transaction => {
+            // Block the initial business query without blocking Redis. The SSE
+            // must already own a subscribed connection while its query waits.
+            await transaction`LOCK TABLE link IN ACCESS EXCLUSIVE MODE`;
+            opening = subscribe(`/v1/link/events?keyword=${marker}`);
+            void opening.catch(() => {});
+            const deadline = Date.now() + 10000;
+            for (;;) {
+                const clients = (await pubsubClients()).filter(client => !before.has(client.id) && Number(client.sub) >= 3);
+                const [blocked] = await db`SELECT EXISTS (
+                    SELECT 1 FROM pg_locks
+                    WHERE relation='link'::regclass AND NOT granted
+                ) AS waiting`;
+                if (clients.length === 1 && blocked.waiting) {
+                    clientId = clients[0].id;
+                    break;
+                }
+                assert(Date.now() < deadline, 'SSE must subscribe before its blocked initial snapshot query');
+                await Bun.sleep(10);
+            }
+            await transaction`UPDATE link SET name=${latest} WHERE id=${raceId}`;
+            // Publish while the snapshot is suspended: it cannot disappear in
+            // the subscribe/snapshot gap, even if PostgreSQL took an old view.
+            assert(Number(await change('link', raceId)) > 0);
+        });
+        assert(opening);
+        first = await opening;
+        let answer = JSON.parse((await first.next()).data);
+        while (!(answer.data?.list ?? answer.delta?.upsert ?? []).some((row: {id:string;name:string}) => row.id === raceId && row.name === latest)) {
+            assert.equal(answer.code, 0);
+            answer = JSON.parse((await first.next()).data);
+        }
+        await first.expectQuiet(1000);
+        const firstClients = new Set((await pubsubClients()).map(client => client.id));
+        second = await subscribe(`/v1/link/events?keyword=${marker}`);
+        const secondInitial = await snapshot(second);
+        assert.equal(secondInitial.list[0].name, latest);
+        const secondClients = (await pubsubClients()).filter(client => !firstClients.has(client.id));
+        assert.equal(secondClients.length, 1, 'each SSE must own a separate Redis subscription connection');
+        assert.notEqual(secondClients[0].id, clientId);
+        // Interrupt only the first subscription, not Redis command pools or the
+        // second SSE. Identical persisted state still needs ONE recovery frame.
+        assert.equal(Number(await redis.send('CLIENT', ['KILL', 'ID', clientId])), 1);
+        const recovered = JSON.parse((await first.next()).data);
+        assert.equal(recovered.code, 0);
+        assert(recovered.data?.list, 'recovery must be a complete snapshot, not a delta');
+        assert.deepEqual(recovered.data, secondInitial);
+        await Promise.all([first.expectQuiet(1600), second.expectQuiet(1600)]);
+        console.log('PASS SSE subscribes before snapshot, closes the snapshot race, and independently recovers once even for identical state');
+    } finally {
+        if (!first && opening) first = await opening.catch(() => undefined);
+        await first?.close();
+        await second?.close();
+        await db`DELETE FROM outbox_event WHERE aggregate_id=${raceId}`;
+        await db`DELETE FROM link WHERE id=${raceId}`;
+    }
 }
 async function verifyRuntimeAggregation() {
     await redis.send('SET', [runtimeOwnerKey, runtimeOwner, 'EX', '300']);
@@ -143,6 +221,7 @@ try {
     await request('GET','/v1/link',undefined,11004);
     actor = admin;
     await verifyRuntimeAggregation();
+    await verifySubscriptionRaceAndRecovery();
     const endpoint = {transport:'tcp',mode:'TCP Server',ip:'0.0.0.0',port:59888,targets:[]};
     const configuration = {execution:'collector',name:tag,protocol:'Modbus',endpoint,status:'disabled'};
     const subscription = await subscribe(`/v1/link/events?keyword=${tag}`);

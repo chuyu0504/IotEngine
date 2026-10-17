@@ -26,6 +26,13 @@ async function request(method: string, path: string, body?: unknown, bearer = to
     return result;
 }
 
+async function pubsubIds() {
+    const clients = String(await redis.send('CLIENT', ['LIST', 'TYPE', 'PUBSUB']));
+    return new Set(clients.split('\n').flatMap(line => {
+        const id = line.match(/(?:^| )id=(\d+)(?: |$)/)?.[1];
+        return id ? [id] : [];
+    }));
+}
 let stream: SnapshotSubscription | undefined;
 try {
     await request('POST', '/v1/roles', { name: tag, code: tag, permissions: [] });
@@ -37,6 +44,7 @@ try {
     assert.equal((await request('GET', '/v1/auth/me', undefined, login.token)).data.id, user.id);
     const refreshed = (await request('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token })).data;
     assert.equal(refreshed.user.id, user.id);
+    const previousSubscriptions = await pubsubIds();
     stream = await openSnapshotSubscription('/v1/device/events', refreshed.token, { includeUser: true });
     const initialChannels = new Map<string, any>();
     for (let count = 0; count < 4; count++) {
@@ -45,6 +53,8 @@ try {
     assert.equal(initialChannels.get('user').data.id, user.id);
     assert.equal(initialChannels.get('user').code, 0);
     for (const event of ['devices', 'groups', 'realtime']) assert.equal(initialChannels.get(event).code, 11007);
+    const ownedSubscriptions = [...await pubsubIds()].filter(id => !previousSubscriptions.has(id));
+    assert.equal(ownedSubscriptions.length, 1, 'the SSE must own its Redis subscription');
     await request('PUT', `/v1/users/${user.id}`, { nickname: 'shared user channel' });
     const userChanged = await stream.next();
     assert.equal(userChanged.event, 'user');
@@ -71,8 +81,40 @@ try {
     });
     // Telemetry of a device outside this user's scope must neither reach the
     // realtime channel nor reload any other channel.
-    await redis.send('XADD', ['iot:live:changes', '*', 'schema_version', '2', 'topic', 'device.realtime', 'ids', crypto.randomUUID()]);
+    await redis.send('PUBLISH', ['iot:live:topic:device.realtime', crypto.randomUUID()]);
     await stream.expectQuiet();
+    // Revoke while this very connection still holds a cached successful
+    // permission answer. A separate connection's cache must not keep it alive.
+    await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: [] });
+    const revokedChannels = new Map<string, any>();
+    for (let count = 0; count < 3; count++) {
+        const event = await stream.next(); revokedChannels.set(event.event, JSON.parse(event.data));
+    }
+    assert.equal(revokedChannels.get('devices').code, 11007);
+    assert.equal(revokedChannels.get('realtime').code, 11007);
+    assert.equal(revokedChannels.get('user').data.permissions.includes('iot:device:query'), false);
+    // Real notifications after revocation cannot resurrect cached access.
+    await redis.send('PUBLISH', ['iot:live:topic:device.realtime', '']);
+    await stream.expectQuiet(1000);
+    await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
+    for (let count = 0; count < 3; count++) await stream.next();
+    // Simulate a permission change in the missed interval: there is deliberately
+    // no auth event to invalidate the old positive cache. Losing the dedicated
+    // subscription itself must invalidate it before any recovery query.
+    await sql.begin(async transaction => {
+        await transaction`SET LOCAL session_replication_role = replica`;
+        await transaction`UPDATE sys_role SET permissions='[]'::jsonb WHERE id=${role.id}`;
+    });
+    assert.equal(Number(await redis.send('CLIENT', ['KILL', 'ID', ownedSubscriptions[0]])), 1);
+    const recoveryChannels = new Map<string, any>();
+    for (let count = 0; count < 4; count++) {
+        const event = await stream.next(); recoveryChannels.set(event.event, JSON.parse(event.data));
+    }
+    assert.equal(recoveryChannels.get('devices').code, 11007);
+    assert.equal(recoveryChannels.get('realtime').code, 11007);
+    assert.equal(recoveryChannels.get('groups').code, 11007, 'identical denied channels also receive the recovery snapshot');
+    assert.equal(recoveryChannels.get('user').data.permissions.includes('iot:device:query'), false);
+    await stream.expectQuiet(1600);
     await stream.close();
     console.log('PASS page SSE shares user profile, permission changes and scoped queries without an extra auth connection');
     stream = await openSnapshotSubscription('/v1/device/events', token(user.id, 2), { includeUser: true });

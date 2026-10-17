@@ -16,9 +16,10 @@
 namespace service::telemetry::derived {
 
 // 状态与派生样本同一事务提交；重试不会重复计入样本，下游按不可变消息 ID 去重。
+// KEYS: 状态、样本流、唤醒流、样本输入频道、唤醒输入频道，以及可选复制回执。
 inline constexpr std::string_view kStateTransitionScript = R"lua(
 local current=redis.call('GET',KEYS[1]) or ''
-if #KEYS>3 and redis.call('EXISTS',KEYS[4])==1 then return 2 end
+if #KEYS>5 and redis.call('EXISTS',KEYS[6])==1 then return 2 end
 if current~=ARGV[1] then return 0 end
 for i=2,3 do
  local kind=redis.call('TYPE',KEYS[i]).ok
@@ -27,11 +28,13 @@ end
 if ARGV[3]=='1' then
  local fields={'*'}
  for i=4,#ARGV do fields[#fields+1]=ARGV[i] end
- redis.call('XADD',KEYS[2],unpack(fields))
- redis.call('XADD',KEYS[3],'MAXLEN','~','100000','*','task','telemetry')
+ local id=redis.call('XADD',KEYS[2],unpack(fields))
+ redis.call('PUBLISH',KEYS[4],id)
+ local wake=redis.call('XADD',KEYS[3],'MAXLEN','~','100000','*','task','telemetry')
+ redis.call('PUBLISH',KEYS[5],wake)
 end
 redis.call('SET',KEYS[1],ARGV[2],'EX',172800)
-if #KEYS>3 then redis.call('SET',KEYS[4],'1','EX',604800) end
+if #KEYS>5 then redis.call('SET',KEYS[6],'1','EX',604800) end
 return 1
 )lua";
 
@@ -92,7 +95,9 @@ class DerivedService final {
         const auto stream = message::parsedStream();
         const auto wake = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
         const auto receipt = "iot:derived:receipt:" + message.messageId;
-        std::vector<std::string_view> keys{ device.stateKey, stream, wake };
+        const auto inputChannel = message::consumer::inputChannel(stream);
+        const auto wakeChannel = message::consumer::inputChannel(wake);
+        std::vector<std::string_view> keys{ device.stateKey, stream, wake, inputChannel, wakeChannel };
         if (deduplicate) {
             keys.push_back(receipt);
         }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <set>
@@ -99,7 +100,8 @@ class OperationsService final {
   private:
     static std::size_t workerCount(const ruvia::context& context) noexcept {
         try {
-            return context.worker_state<service::ServiceWorkerTopology>().count;
+            const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>();
+            return identity ? identity->count : 0;
         } catch (const std::logic_error&) {
             return 0;
         }
@@ -107,16 +109,29 @@ class OperationsService final {
 
     static ruvia::task<std::vector<WorkerDiagnosticSnapshot>>
     loadSnapshots(ruvia::context& context, std::size_t count) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         auto snapshots = context.redis().get_repository<entities::WorkerSnapshotEntity>();
         std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
                 .where_ = entities::WorkerSnapshotEntity::field<"id">() ==
-                    service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
+                    service::message::worker_metrics::snapshotId(index, identity.instanceId)};
             const auto snapshot = co_await snapshots.find_one(options);
             if (!snapshot) continue;
             auto& value = result[index];
             value.metrics.assign(snapshot->get<"metrics">().view());
+            // Age advances at read time from the last real queue observation;
+            // health lease renewal never performs a business aggregate query.
+            const auto oldestAt = snapshot->get<"outbox_oldest_at_ms">();
+            const auto age = oldestAt == 0 ? 0 : std::max<std::int64_t>(0, service::message::utcNowMilliseconds() - oldestAt);
+            constexpr std::string_view ageMetric{ "iot_engine_outbox_oldest_age_ms{" };
+            if (const auto start = value.metrics.find(ageMetric); start != std::string::npos) {
+                const auto space = value.metrics.find(' ', start);
+                const auto end = value.metrics.find('\n', space);
+                if (space != std::string::npos && end != std::string::npos) {
+                    value.metrics.replace(space + 1, end - space - 1, std::to_string(age));
+                }
+            }
             value.healthJson.assign(snapshot->get<"health">().view());
             value.metricsPresent = true;
             value.readinessPresent = true;

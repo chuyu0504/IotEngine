@@ -32,25 +32,23 @@ void require(bool condition, const char* message) {
     }
 }
 
-// (topic, ids) of every live change entry, oldest first.
-ruvia::task<std::vector<std::pair<std::string, std::string>>> changes(const ruvia::redis_handle& redis) {
-    const auto reply = co_await command(redis, { "XRANGE", service::message::live::kChanges, "-", "+" });
-    require(reply.kind() == ruvia::redis_value::kind_type::array, "XRANGE reply expected");
-    std::vector<std::pair<std::string, std::string>> result;
-    for (const auto& entry : reply.array()) {
-        const auto fields = entry.array()[1].array();
-        std::string topic, ids;
-        for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
-            if (fields[index].string() == service::message::live::kTopicField) {
-                topic = fields[index + 1].string();
-            }
-            if (fields[index].string() == service::message::live::kIdsField) {
-                ids = fields[index + 1].string();
-            }
-        }
-        result.emplace_back(topic, ids);
-    }
-    co_return result;
+ruvia::task<void> expectMessage(ruvia::redis_subscription& subscription,
+                              std::string_view channel, std::string_view ids) {
+    const auto event = co_await subscription.read();
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::message,
+            "live PubSub message expected");
+    require(event->channel() == channel && event->payload() == ids,
+            "live PubSub channel or affected device ids differ");
+}
+
+// A same-channel marker is ordered after all preceding transitions by Redis.
+// Seeing it next proves that a no-op did not emit an extra business message.
+ruvia::task<void> expectQuiet(const ruvia::redis_handle& redis,
+                             ruvia::redis_subscription& subscription,
+                             std::string_view channel) {
+    constexpr std::string_view marker = "test:transition-complete";
+    require(co_await redis.publish(channel, marker) == 1, "dedicated subscriber is missing");
+    co_await expectMessage(subscription, channel, marker);
 }
 
 ruvia::task<std::string> field(const ruvia::redis_handle& redis, std::string_view key, std::string_view name) {
@@ -71,45 +69,89 @@ service::message::ParsedDeviceMessage report(std::string deviceId, std::int64_t 
 
 ruvia::task<void> verifyLatest(const ruvia::redis_handle& redis) {
     namespace latest = service::telemetry::latest;
+    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceRealtime);
+    auto subscription = redis.subscription();
+    const std::string_view channels[]{channel};
+    co_await subscription.subscribe(channels);
+    const auto confirmed = co_await subscription.read();
+    require(confirmed && confirmed->kind() == ruvia::redis_pubsub_event_kind::subscribed &&
+                confirmed->channel() == channel && confirmed->subscription_count() == 1,
+            "realtime subscription was not confirmed before device transitions");
+
     const auto now = service::message::utcNowMilliseconds();
     co_await latest::initializeDevice(redis, "device-a", "code-device-a");
+    co_await expectMessage(subscription, channel, "device-a");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state")) == "offline" &&
+                (co_await field(redis, service::message::telemetry::latestKey("device-a"), "_device_id")) == "device-a",
+            "initialization published before persisting the device projection");
     co_await latest::initializeDevice(redis, "device-b", "code-device-b");
-    auto entries = co_await changes(redis);
-    require(entries.size() == 2 && entries[0] == std::pair<std::string, std::string>{ "device.realtime", "device-a" } && entries[1] == std::pair<std::string, std::string>{ "device.realtime", "device-b" }, "initialization did not publish its device id");
+    co_await expectMessage(subscription, channel, "device-b");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-b"), "device_code")) == "code-device-b",
+            "initialization did not persist the second device");
+    co_await expectQuiet(redis, subscription, channel);
 
-    // device-c has no runtime projection, so the script leaves it untouched.
-    co_await latest::update(redis, { report("device-a", now), report("device-a", now + 1), report("device-c", now) });
-    entries = co_await changes(redis);
-    require(entries.size() == 3 && entries[2] == std::pair<std::string, std::string>{ "device.realtime", "device-a" }, "a batch must publish one change naming only the touched devices");
-    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state")) == "online", "update did not mark the reporting device online");
+    // device-c has no runtime projection, so the batch must leave it untouched.
+    co_await latest::update(redis, { report("device-a", now), report("device-a", now + 1), report("device-c", now) }, "collector-test-instance");
+    co_await expectMessage(subscription, channel, "device-a");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state")) == "online" &&
+                (co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "last_report_at_ms")) == std::to_string(now + 1) &&
+                !(co_await field(redis, service::message::telemetry::latestKey("device-a"), "pressure")).empty(),
+            "update notification did not expose committed latest telemetry");
+    require(!(co_await redis.exists(service::message::telemetry::runtimeKey("device-c"))) &&
+                !(co_await redis.exists(service::message::telemetry::latestKey("device-c"))),
+            "unconfigured device acquired a realtime projection");
+    co_await expectQuiet(redis, subscription, channel);
 
     // A stale report touches nothing and publishes nothing.
-    co_await latest::update(redis, { report("device-a", now - 600000) });
-    require((co_await changes(redis)).size() == 3, "an older report published a change");
+    const auto pressure = co_await field(redis, service::message::telemetry::latestKey("device-a"), "pressure");
+    co_await latest::update(redis, { report("device-a", now - 600000) }, "collector-test-instance");
+    co_await expectQuiet(redis, subscription, channel);
+    require((co_await field(redis, service::message::telemetry::latestKey("device-a"), "pressure")) == pressure &&
+                (co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "last_report_at_ms")) == std::to_string(now + 1),
+            "older report changed persisted telemetry");
 
     // The cached SHA survives a flushed script cache: NOSCRIPT reloads and retries once.
     (void)co_await command(redis, { "SCRIPT", "FLUSH" });
-    co_await latest::update(redis, { report("device-b", now + 2) });
-    entries = co_await changes(redis);
-    require(entries.size() == 4 && entries[3] == std::pair<std::string, std::string>{ "device.realtime", "device-b" }, "update did not recover from a flushed script cache");
+    co_await latest::update(redis, { report("device-b", now + 2) }, "collector-test-instance");
+    co_await expectMessage(subscription, channel, "device-b");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-b"), "last_report_at_ms")) == std::to_string(now + 2),
+            "script-cache recovery did not persist the report");
+    co_await expectQuiet(redis, subscription, channel);
+
+    co_await latest::update(redis, {report("device-b", now + 4), report("device-a", now + 3),
+                                   report("device-a", now + 3)}, "collector-test-instance");
+    co_await expectMessage(subscription, channel, "device-a,device-b");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "last_report_at_ms")) == std::to_string(now + 3) &&
+                (co_await field(redis, service::message::telemetry::runtimeKey("device-b"), "last_report_at_ms")) == std::to_string(now + 4),
+            "multi-device batch notification did not expose every persisted report");
+    co_await expectQuiet(redis, subscription, channel);
 
     // Due online deadline: claim, mark stale and publish the expired id once.
     (void)co_await command(redis, { "HSET", service::message::telemetry::runtimeKey("device-a"), "online_until_ms", "1" });
     (void)co_await command(redis, { "ZADD", latest::onlineDeadlinesKey(), "1", "device-a" });
     co_await latest::expireStale(redis);
+    co_await expectMessage(subscription, channel, "device-a");
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state")) == "offline" &&
+                (co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state_reason")) == "data_stale",
+            "expiry notification preceded persisted stale state");
     co_await latest::expireStale(redis);
-    entries = co_await changes(redis);
-    require(entries.size() == 5 && entries[4] == std::pair<std::string, std::string>{ "device.realtime", "device-a" }, "deadline expiry must publish the expired device exactly once");
-    require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state_reason")) == "data_stale", "expired device was not marked stale");
+    co_await expectQuiet(redis, subscription, channel);
 
     // A renewed deadline is re-armed instead of expired.
     (void)co_await command(redis, { "ZADD", latest::onlineDeadlinesKey(), "1", "device-b" });
     co_await latest::expireStale(redis);
-    require((co_await changes(redis)).size() == 5, "a renewed device was published as expired");
+    co_await expectQuiet(redis, subscription, channel);
+    require((co_await field(redis, service::message::telemetry::runtimeKey("device-b"), "state")) == "online",
+            "renewed device was incorrectly marked stale");
 
     co_await latest::eraseDevice(redis, "device-b");
-    entries = co_await changes(redis);
-    require(entries.size() == 6 && entries[5] == std::pair<std::string, std::string>{ "device.realtime", "device-b" }, "erase did not publish its device id");
+    co_await expectMessage(subscription, channel, "device-b");
+    require(!(co_await redis.exists(service::message::telemetry::runtimeKey("device-b"))) &&
+                !(co_await redis.exists(service::message::telemetry::latestKey("device-b"))) &&
+                (co_await command(redis, {"ZSCORE", latest::onlineDeadlinesKey(), "device-b"})).kind() ==
+                    ruvia::redis_value::kind_type::null,
+            "erase notification preceded removal of persisted device state");
+    co_await expectQuiet(redis, subscription, channel);
 }
 
 ruvia::task<void> run(ruvia::event_loop loop, std::uint16_t port) {

@@ -21,7 +21,7 @@ return route
 )lua";
 
 // 待下发命令批量入队（Stream 或 List）：容量不足时整体拒绝并返回 0，已接受的命令不裁剪。
-// KEYS[1]=队列；ARGV[1]=stream|list，ARGV[2]=最大深度，ARGV[3]=命令数，其后每条命令为“值个数 + 值”。
+// KEYS[1]=队列，KEYS[2]=Stream 输入通知频道（List 不发布）；ARGV[1]=stream|list，ARGV[2]=最大深度，ARGV[3]=命令数，其后每条命令为“值个数 + 值”。
 inline constexpr std::string_view kPendingBatchDispatchScript = R"lua(
 local mode=ARGV[1]
 local count=tonumber(ARGV[3])
@@ -34,7 +34,9 @@ for task=1,count do
   local values={}
   if mode=='stream' then values[1]='*' end
   for index=1,size do values[#values+1]=ARGV[offset]; offset=offset+1 end
-  if mode=='stream' then redis.call('XADD',KEYS[1],unpack(values))
+  if mode=='stream' then
+    local id=redis.call('XADD',KEYS[1],unpack(values))
+    redis.call('PUBLISH',KEYS[2],id)
   else redis.call('RPUSH',KEYS[1],unpack(values)) end
 end
 return count

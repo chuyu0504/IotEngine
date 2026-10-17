@@ -206,21 +206,59 @@ try {
     const source = await Bun.file('service/features/command/command.entity.h').text();
     const script = source.match(/kPendingBatchDispatchScript = R"lua\(([\s\S]*?)\)lua"/)![1];
     const capacityQueue = `architecture-capacity:${id()}`;
-    assert.equal(
-        await redis.send('EVAL', [script, '1', capacityQueue, 'list', '1', '1', '1', 'first']),
-        1
-    );
-    assert.equal(
-        await redis.send('EVAL', [script, '1', capacityQueue, 'list', '1', '1', '1', 'second']),
-        0
-    );
-    assert.deepEqual(await redis.send('LRANGE', [capacityQueue, '0', '-1']), ['first']);
-    await redis.send('DEL', [capacityQueue]);
-    console.log('PASS actual Redis Lua capacity backpressure preserves accepted work');
+    const inputChannel = `iot:consumer:input:${capacityQueue}`;
+    const capacitySubscriber = new Bun.RedisClient(redisUrl);
+    const inputs: string[] = [];
+    const barriers = new Map<string, () => void>();
+    const receivedInputs = async () => {
+        const marker = `barrier:${id()}`;
+        const ready = new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('command input barrier timed out')), 5000);
+            barriers.set(marker, () => { clearTimeout(timer); resolve(); });
+        });
+        await redis.send('PUBLISH', [inputChannel, marker]);
+        await ready;
+        return [...inputs];
+    };
+    try {
+        assert.equal(await capacitySubscriber.subscribe(inputChannel, (entry) => {
+            const barrier = barriers.get(entry);
+            if (barrier) {
+                barriers.delete(entry);
+                barrier();
+            } else {
+                inputs.push(entry);
+            }
+        }), 1);
+        assert.equal(
+            await redis.send('EVAL', [script, '2', capacityQueue, inputChannel, 'list', '1', '1', '1', 'first']),
+            1
+        );
+        assert.equal(
+            await redis.send('EVAL', [script, '2', capacityQueue, inputChannel, 'list', '1', '1', '1', 'second']),
+            0
+        );
+        assert.deepEqual(await redis.send('LRANGE', [capacityQueue, '0', '-1']), ['first']);
+        assert.deepEqual(await receivedInputs(), [], 'List appends do not publish consumer input');
+        await redis.send('DEL', [capacityQueue]);
+        assert.equal(
+            await redis.send('EVAL', [script, '2', capacityQueue, inputChannel, 'stream', '2', '2', '2', 'command', 'first', '2', 'command', 'second']),
+            2
+        );
+        assert.equal(
+            await redis.send('EVAL', [script, '2', capacityQueue, inputChannel, 'stream', '2', '1', '2', 'command', 'third']),
+            0
+        );
+        const rows = await redis.send('XRANGE', [capacityQueue, '0', '+']) as [string, string[]][];
+        assert.equal(rows.length, 2, 'capacity rejection preserves both accepted commands');
+        assert.deepEqual(await receivedInputs(), rows.map(([entry]) => entry), 'each accepted Stream command publishes its entry ID; rejection publishes nothing');
+    } finally {
+        capacitySubscriber.close();
+        await redis.send('DEL', [capacityQueue]);
+    }
+    console.log('PASS actual Redis Lua capacity backpressure and atomic Stream input notification');
     const ownership = await Bun.file('service/features/collector/collector.service.h').text();
-    const retainTarget = ownership.indexOf('retainTarget(const Redis&');
-    assert(retainTarget >= 0, 'collector target lease operation is missing');
-    const claim = ownership.slice(retainTarget).match(/R"lua\(([\s\S]*?)\)lua"/)![1];
+    const claim = ownership.match(/kRetainTargetScript = R"lua\(([\s\S]*?)\)lua"/)![1];
     const lease = `architecture-lease:${id()}`;
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-a']), 1);
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-b']), 0);

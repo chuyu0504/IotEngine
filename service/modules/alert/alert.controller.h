@@ -81,7 +81,7 @@ class AlertController final {
             records->collection.assign(rows);
             co_return service::middleware::dataJson(page.json);
         };
-        auto recordsUpdate = [&c, records, recordsSnapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+        auto recordsUpdate = [&c, records, recordsSnapshot](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
             co_await service::middleware::requirePermission(request, "iot:alert:query");
             std::vector<std::string> recordIds;
             std::vector<std::string> ruleIds;
@@ -95,7 +95,7 @@ class AlertController final {
                 target.insert(target.end(), ids->begin(), ids->end());
             }
             const auto rows = co_await alertService().recordRows(request, c.req().validated<AlertListQuery>(), recordIds, ruleIds, deviceIds, records->visible);
-            service::utils::ChangeSet::Ids requested(recordIds.begin(), recordIds.end());
+            service::message::live::ChangeSet::Ids requested(recordIds.begin(), recordIds.end());
             std::vector<service::middleware::LiveCollection::Row> changed;
             changed.reserve(rows.size());
             for (const auto& row : rows) {

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <any>
+#include <cstdint>
+#include <map>
 #include <functional>
 #include <memory_resource>
 #include <string>
@@ -11,9 +14,40 @@
 #include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/redis/redis_handle.h>
 
-#include "service/utils/change_feed.h"
 
 namespace service::middleware {
+
+// Authorization facts belong to one SSE connection, never to its Worker.
+// Invalidating also prevents an in-flight query from caching a stale answer.
+class AuthorizationCache final {
+  public:
+    void invalidate() {
+        values_.clear();
+        ++generation_;
+    }
+
+    [[nodiscard]] std::uint64_t generation() const { return generation_; }
+
+    template <typename Value, typename Load>
+    ruvia::task<Value> get(std::string key, Load load) {
+        for (;;) {
+            if (const auto found = values_.find(key); found != values_.end()) {
+                co_return std::any_cast<Value>(found->second);
+            }
+            const auto generation = generation_;
+            Value value = co_await load();
+            if (generation != generation_) {
+                continue;
+            }
+            values_.insert_or_assign(std::move(key), value);
+            co_return value;
+        }
+    }
+
+  private:
+    std::map<std::string, std::any, std::less<>> values_;
+    std::uint64_t generation_ = 0;
+};
 
 // Each operation owns temporary model storage on the accepting Worker.
 // HTTP handlers serialize with c.json(model) before this scope ends; SSE
@@ -45,16 +79,15 @@ class RequestContext {
 
     const auto& env() const { return connection_.env(); }
 
-    // Live connections share authorization facts through the worker's change
-    // feed until the next auth change; plain requests always load them.
-    void shareAuthorization(service::utils::ChangeFeed& feed) { authorizations_ = &feed; }
+    // Plain requests do not cache; live requests borrow their connection cache.
+    void shareAuthorization(AuthorizationCache& cache) { authorizations_ = &cache; }
 
     template <typename Value, typename Load>
     ruvia::task<Value> authorization(std::string key, Load load) {
         if (authorizations_ == nullptr) {
             co_return co_await load();
         }
-        co_return co_await authorizations_->authorization<Value>(std::move(key), std::move(load));
+        co_return co_await authorizations_->get<Value>(std::move(key), std::move(load));
     }
 
     std::string userId;
@@ -63,7 +96,7 @@ class RequestContext {
   private:
     ruvia::context& connection_;
     std::pmr::monotonic_buffer_resource memory_;
-    service::utils::ChangeFeed* authorizations_ = nullptr;
+    AuthorizationCache* authorizations_ = nullptr;
 };
 
 // Bound by authentication middleware for this request only. The query runs

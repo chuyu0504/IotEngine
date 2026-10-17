@@ -10,6 +10,7 @@
 #include <ruvia/web/model_object.h>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <set>
@@ -42,6 +43,7 @@ struct AccessSession final {
     std::string name;
     std::set<std::string, std::less<>> scopes;
     std::set<std::string, std::less<>> deviceIds;
+    std::int64_t expiresAtMs = 0;
     [[nodiscard]] bool allows(std::string_view scope) const { return scopes.contains(scope); }
     [[nodiscard]] bool allowsDevice(std::string_view id) const { return deviceIds.contains(id); }
 };

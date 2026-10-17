@@ -146,7 +146,7 @@ class VpnController final {
         };
         std::vector<service::middleware::LiveChannel> channels;
         channels.push_back({"snapshot", { std::string(service::message::live::topic::kVpn), std::string(service::message::live::topic::kEdge) }, snapshot,
-            [snapshot, scope](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+            [snapshot, scope](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                 const auto hits = [&](std::string_view topic, auto&& contains) {
                     const auto* ids = changes.find(topic);
                     if (!ids) return false;

@@ -84,10 +84,7 @@ export class SseTransport implements LiveTransport<string> {
                             sink.delta(event.event, readSnapshotDelta(result.delta));
                         else sink.next(event.event, result.data);
                     },
-                    signal,
-                    // The server writes a keepalive comment every 15 s; three missed
-                    // ones mean the path is dead even if a proxy keeps it open.
-                    45000
+                    signal
                 );
                 if (signal.aborted) return;
                 throw new Error('实时连接已断开');

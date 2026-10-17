@@ -36,23 +36,25 @@ ruvia::task<void> verifyMetadataOwner() {
     }
 }
 
-// Directed messages (RPC requests, RPC replies, terminal frames) are addressed
-// to one worker of one process incarnation; two workers never share a stream.
-void verifyDirectedStreams() {
-    using service::message::live::workerStream;
+// Requests stay on the accepting worker. Replies/frames have independent
+// operation/session channels rather than a worker-wide notification stream.
+void verifyDirectedAddresses() {
     using service::message::rpc::Contract;
-    if (workerStream("instance", 0) == workerStream("instance", 1) ||
-        workerStream("instance", 0) == workerStream("other", 0) ||
-        Contract::requests("instance", 0) == Contract::requests("instance", 1) ||
-        Contract::requests("instance", 0) == Contract::requests("other", 0)) {
-        throw std::runtime_error("directed streams are shared across workers or instances");
+    if (Contract::requests("instance", 0) == Contract::requests("instance", 1) ||
+        Contract::requests("instance", 0) == Contract::requests("other", 0) ||
+        Contract::reply("request-a") == Contract::reply("request-b") ||
+        service::message::terminal::terminalEventTopic("node", "session-a") ==
+            service::message::terminal::terminalEventTopic("node", "session-b") ||
+        service::message::terminal::terminalEventTopic("node", "session-a") ==
+            service::message::terminal::terminalAckTopic("node", "session-a")) {
+        throw std::runtime_error("directed requests or operation channels overlap");
     }
 }
 } // namespace
 
 int main() {
     try {
-        verifyDirectedStreams();
+        verifyDirectedAddresses();
         ruvia::event_loop_pool pool({ .loop_count_ = 1, .queue_capacity_ = 64 });
         pool.start();
         pool.loop(0).start(verifyMetadataOwner()).get();

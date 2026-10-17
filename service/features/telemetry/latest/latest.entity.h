@@ -40,8 +40,7 @@ for _, device_id in ipairs(due) do
   end
 end
 if #expired > 0 then
-  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'schema_version', '2',
-             'topic', 'device.state', 'ids', table.concat(expired, ','))
+  redis.call('PUBLISH', KEYS[2], table.concat(expired, ','))
 end
 return #expired
 )lua";

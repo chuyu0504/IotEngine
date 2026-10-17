@@ -675,10 +675,14 @@ class DeliveryService final {
         const auto responseJson = (target.mqtt ? std::string("{\"qos\":1,\"acknowledged\":") + (success ? "true" : "false") : "{\"httpStatus\":" + std::to_string(response.status)) +
             ",\"body\":" + service::utils::jsonQuoted(service::utils::sanitize(response.body, 2000)) +
             (error.empty() ? "" : ",\"error\":" + service::utils::jsonQuoted(error)) + "}";
+        const auto resultStream = service::message::access::stream::deliveryResult();
+        const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
         const std::vector<std::string> keyStore{
-            service::message::access::stream::deliveryResult(),
+            resultStream,
             DeliveryProgressRecord::key(delivery.eventType, delivery.id),
-            service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
+            wakeStream,
+            service::message::consumer::inputChannel(resultStream),
+            service::message::consumer::inputChannel(wakeStream)
         };
         const std::vector<std::string> argumentStore{
             target.id,
