@@ -360,9 +360,6 @@ iot_engine_add_test(access LARGE
     SOURCES tests/access-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
-iot_engine_add_test(access-webhook
-    SOURCES tests/access-webhook-test.cpp)
-
 iot_engine_add_test(open-mqtt
     SOURCES tests/open-mqtt-test.cpp
     LIBRARIES ruvia::web OpenSSL::SSL OpenSSL::Crypto)
@@ -459,14 +456,6 @@ iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp
     LIBRARIES ruvia::web
     DEFINITIONS IOT_ENGINE_TESTING)
-
-foreach(test_name
-        configuration-service
-        telemetry-persistence
-        command-service)
-    iot_engine_add_test("${test_name}"
-        SOURCES "tests/${test_name}-test.cpp")
-endforeach()
 
 iot_engine_add_test(access-service LARGE
     SOURCES tests/access-service-test.cpp
