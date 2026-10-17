@@ -22,9 +22,12 @@
 #include <ruvia/web/web_worker.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/redis/redis.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/worker.h"
+#include "service/utils/startup.h"
 #include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/utils/json.h"
@@ -60,7 +63,7 @@ ruvia::task<std::vector<std::int64_t>> evalBatch(const Redis& redis, std::string
             const auto& call = calls[index];
             const std::vector<std::string_view> keys(call.begin(), call.begin() + static_cast<std::ptrdiff_t>(keyCount));
             const std::vector<std::string_view> arguments(call.begin() + static_cast<std::ptrdiff_t>(keyCount), call.end());
-            service::message::redis::queueEvalSha(pipeline, sha, keys, arguments);
+            pipeline.eval_sha(sha, keys, arguments);
         }
         const auto replies = co_await std::move(pipeline).exec();
         std::vector<std::size_t> missing;
@@ -71,7 +74,7 @@ ruvia::task<std::vector<std::int64_t>> evalBatch(const Redis& redis, std::string
             } else if (attempt == 0 && reply.kind() == ruvia::redis_value::kind_type::error && reply.error().starts_with("NOSCRIPT")) {
                 missing.push_back(pending[position]);
             } else {
-                service::message::redis::throwValue(operation, reply);
+                service::utils::redis::throwValue(operation, reply);
             }
         }
         if (!missing.empty()) sha.clear();
@@ -110,7 +113,7 @@ inline std::string stateJson(std::string_view state, std::string_view reason, st
 template <typename Pipeline>
 ruvia::task<bool> executeProjectionPipeline(Pipeline pipeline, std::string_view operation) {
     const auto replies = co_await std::move(pipeline).exec();
-    service::message::redis::requirePipelineSuccess(operation, replies);
+    service::utils::redis::requirePipelineSuccess(operation, replies);
     co_return true;
 }
 
@@ -124,14 +127,14 @@ ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId
           { "state_reason", "no_connection" },
           { "updated_at_ms", now }
     };
-    co_await service::message::redis::setHash(redis, service::message::telemetry::runtimeKey(deviceId), runtimeFields);
+    co_await service::utils::redis::setHash(redis, service::message::telemetry::runtimeKey(deviceId), runtimeFields);
     const std::vector<message::StreamField> latestFields{
           { "_device_id", std::string(deviceId) },
           { "_device_code", std::string(deviceCode) },
           { "_state", stateJson("offline", "no_connection", {}, {}, now) },
           { "_updated_at_ms", now }
     };
-    co_await service::message::redis::setHash(redis, service::message::telemetry::latestKey(deviceId), latestFields);
+    co_await service::utils::redis::setHash(redis, service::message::telemetry::latestKey(deviceId), latestFields);
     const std::string ids[]{ std::string(deviceId) };
     co_await publishRealtimeChange(redis, ids);
 }
@@ -146,25 +149,23 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
         persistence::DeviceConnectionDeadline::eraseScript, keys, arguments
     );
     if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
-        service::message::redis::throwValue("erase device connection deadline", reply);
+        service::utils::redis::throwValue("erase device connection deadline", reply);
     }
-    co_await service::message::redis::eraseHash(redis, service::message::telemetry::runtimeKey(deviceId));
-    co_await service::message::redis::eraseHash(redis, service::message::telemetry::latestKey(deviceId));
+    (void)co_await redis.del(service::message::telemetry::runtimeKey(deviceId));
+    (void)co_await redis.del(service::message::telemetry::latestKey(deviceId));
     const std::vector<std::string> zremArguments{ "ZREM", onlineDeadlinesKey(), std::string(deviceId) };
-    (void)co_await service::message::redis::command(
-        redis,
-        zremArguments
-    );
+    (void)co_await redis.command(std::vector<std::string_view>(zremArguments.begin(), zremArguments.end()));
     const std::string ids[]{ std::string(deviceId) };
     co_await publishRealtimeChange(redis, ids);
 }
 
 template <typename Redis>
-ruvia::task<void> signalFreshness(const Redis& redis) {
+ruvia::task<void> signalFreshness(const Redis& redis, std::string_view instance) {
     co_await service::messaging::stream::wakeWorker(
         redis,
         std::nullopt,
-        service::message::WorkerStreamTask::Freshness
+        service::message::WorkerStreamTask::Freshness,
+        instance
     );
 }
 
@@ -291,13 +292,13 @@ return 0
 )lua";
 
 template <typename Redis>
-ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages) {
+ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages, std::string_view instance) {
     if (messages.empty()) {
         co_return;
     }
     thread_local std::string sha;
     const auto deadlinesKey = onlineDeadlinesKey();
-    const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt, instance);
     std::vector<std::vector<std::string>> calls;
     calls.reserve(messages.size());
     for (const auto& parsed : messages) {
@@ -327,12 +328,12 @@ ruvia::task<void> update(const Redis& redis, const std::vector<service::message:
 template <typename Redis>
 ruvia::task<std::int64_t> deadlineTimeMilliseconds(const Redis& redis) {
     const std::vector<std::string> clockArguments{ "TIME" };
-    const auto clock = co_await service::message::redis::command(redis, clockArguments);
+    const auto clock = co_await redis.command(std::vector<std::string_view>(clockArguments.begin(), clockArguments.end()));
     if (clock.kind() != ruvia::redis_value::kind_type::array ||
         clock.array().size() != 2 ||
         clock.array()[0].kind() != ruvia::redis_value::kind_type::string ||
         clock.array()[1].kind() != ruvia::redis_value::kind_type::string) {
-        service::message::redis::throwValue("read device deadline clock", clock);
+        service::utils::redis::throwValue("read device deadline clock", clock);
     }
     const auto seconds = service::utils::parseInt64(
         std::optional<std::string_view>{ clock.array()[0].string() }
@@ -383,12 +384,9 @@ template <typename Redis>
 ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
     const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
     const std::vector<std::string> dueArguments{ "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" };
-    const auto due = co_await service::message::redis::command(
-        redis,
-        dueArguments
-    );
+    const auto due = co_await redis.command(std::vector<std::string_view>(dueArguments.begin(), dueArguments.end()));
     if (due.kind() != ruvia::redis_value::kind_type::array) {
-        service::message::redis::throwValue("read device online deadlines", due);
+        service::utils::redis::throwValue("read device online deadlines", due);
     }
     std::vector<std::vector<std::string>> calls;
     calls.reserve(due.array().size());
@@ -429,7 +427,7 @@ ruvia::task<void> expireConnections(const Redis& redis) {
         persistence::DeviceConnectionDeadline::expireScript, keys, arguments
     );
     if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() < 0) {
-        service::message::redis::throwValue("expire device connection deadlines", reply);
+        service::utils::redis::throwValue("expire device connection deadlines", reply);
     }
 }
 
@@ -439,19 +437,16 @@ ruvia::task<std::optional<std::int64_t>> nextDeadlineForKey(
     std::string deadlineKey
 ) {
     const std::vector<std::string> replyArguments{ "ZRANGE", deadlineKey, "0", "0", "WITHSCORES" };
-    const auto reply = co_await service::message::redis::command(
-        redis,
-        replyArguments
-    );
+    const auto reply = co_await redis.command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
     if (reply.kind() != ruvia::redis_value::kind_type::array) {
-        service::message::redis::throwValue("read next device online deadline", reply);
+        service::utils::redis::throwValue("read next device online deadline", reply);
     }
     if (reply.array().empty()) {
         co_return std::nullopt;
     }
     if (reply.array().size() != 2 ||
         reply.array()[1].kind() != ruvia::redis_value::kind_type::string) {
-        service::message::redis::throwValue("parse next device online deadline", reply);
+        service::utils::redis::throwValue("parse next device online deadline", reply);
     }
     const auto score = service::utils::parseInt64(
         std::optional<std::string_view>{ reply.array()[1].string() }
@@ -487,7 +482,7 @@ deadlineWait(std::int64_t now, std::optional<std::int64_t> deadline) {
 enum class ProjectionScope { Device, Protocol };
 
 template <typename Context>
-ruvia::task<void> project(Context& context, ProjectionScope scope, const std::vector<std::string>& ids, bool resetRuntime, bool preserveExisting = false) {
+ruvia::task<void> project(Context& context, ProjectionScope scope, const std::vector<std::string>& ids, bool resetRuntime, bool preserveExisting = false, bool notify = true) {
     if (ids.empty()) co_return;
     using Op = ruvia::db_binary_operator;
     using Type = ruvia::db_data_type;
@@ -838,13 +833,15 @@ return 1
         }
         co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
-    co_await signalFreshness(redis);
-    std::vector<std::string> projectedIds;
-    projectedIds.reserve(devices.size());
-    for (const auto& row : devices) {
-        projectedIds.emplace_back(row[0].value().value_or(std::string_view{}));
+    if (notify) {
+        co_await signalFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
+        std::vector<std::string> projectedIds;
+        projectedIds.reserve(devices.size());
+        for (const auto& row : devices) {
+            projectedIds.emplace_back(row[0].value().value_or(std::string_view{}));
+        }
+        co_await publishRealtimeChange(redis, projectedIds);
     }
-    co_await publishRealtimeChange(redis, projectedIds);
 }
 
 template <typename Context>
@@ -859,10 +856,7 @@ ruvia::task<void> projectProtocol(Context& context, std::string_view id) {
     co_await project(context, ProjectionScope::Protocol, ids, false, true);
 }
 
-inline ruvia::task<void> hydrate(ruvia::web_worker_context& context, std::size_t workerIndex = 0, std::size_t workerCount = 1) {
-    if (workerCount == 0 || workerIndex >= workerCount) {
-        throw std::invalid_argument("invalid hydration worker ownership");
-    }
+inline ruvia::task<void> hydrateRecords(ruvia::web_worker_context& context) {
     // Redis is the realtime read model. Keep its persisted hashes across a
     // service restart; PostgreSQL repairs metadata and is consulted only for
     // devices whose Redis projection is missing or incomplete.
@@ -871,6 +865,7 @@ inline ruvia::task<void> hydrate(ruvia::web_worker_context& context, std::size_t
     // the whole startup or retain every point JSON row in memory at once.
     static constexpr std::size_t kHydrationBatchSize = 32;
     std::string cursor = "00000000-0000-0000-0000-000000000000";
+    bool projected = false;
     for (;;) {
         ruvia::db_query page;
         page.select(page.cast(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_data_type::text)).from(service::configuration::persistence::DeviceEntity::table_name()).and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()))).and_where(page.binary(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view()), ruvia::db_binary_operator::greater, page.cast(page.value(cursor), ruvia::db_data_type::uuid))).add_order_by(page.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view())).limit(kHydrationBatchSize);
@@ -886,12 +881,25 @@ inline ruvia::task<void> hydrate(ruvia::web_worker_context& context, std::size_t
         }
         cursor.assign(devices[devices.size() - 1][0].value().value_or(std::string_view{}));
         if (!ids.empty()) {
-            co_await project(context, ProjectionScope::Device, ids, false, true);
+            co_await project(context, ProjectionScope::Device, ids, false, true, false);
+            projected = true;
         }
         if (devices.size() < kHydrationBatchSize) {
             break;
         }
     }
+    if (projected) {
+        co_await signalFreshness(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
+        co_await publishRealtimeChange(context.redis());
+    }
+}
+
+inline ruvia::task<void> hydrate(ruvia::web_worker_context& context) {
+    const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+    co_await service::utils::initializeOnce(
+        context, service::message::lock::kLatestHydration,
+        service::message::telemetry::startupHydrationKey(identity.instanceId),
+        hydrateRecords);
 }
 
 } // namespace service::telemetry::latest

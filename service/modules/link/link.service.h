@@ -33,6 +33,7 @@
 #include "service/common/http.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/middleware/log.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/edge_node/edge_node.entity.h"
@@ -334,7 +335,7 @@ class LinkService {
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::nullopt);
         const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         auto transaction = co_await c.db().begin_transaction();
         entities::LinkEntity link(c.pool());
         link.set<"id">(id);
@@ -345,7 +346,7 @@ class LinkService {
         link.set<"created_by">(c.userId);
         link.set<"execution">("collector");
         (void)co_await transaction.template get_repository<entities::LinkEntity>().insert(link);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -392,7 +393,7 @@ return result
         const std::vector<std::string_view> args;
         const auto reply = co_await c.redis().eval(readPackets, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            service::message::redis::throwValue("read debug packets", reply);
+            service::utils::redis::throwValue("read debug packets", reply);
         }
         ruvia::boxed_array<LinkDebugAcquisitionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : reply.array()) {
@@ -499,7 +500,7 @@ return result
             .returning({Link::column<"id">().expression(query)});
         if (changed) {
             (void)co_await transaction.query(query);
-            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         }
         if (enabled) {
             co_await DebugIdle::touch(c.redis(), debugKeys(id));
@@ -567,7 +568,7 @@ return result
             co_await transaction.commit();
             co_return;
         }
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         if (!edgeNodeId.empty() && service::common::isUuid(actor) && co_await edgeDebugNodeAvailable(c, edgeNodeId))
             (void)co_await service::edge_node::EdgeService::queueSnapshot(c, edgeNodeId, actor);
@@ -629,7 +630,7 @@ return result
         query.and_where(query.binary(query.binary(nameChanged, ruvia::db_binary_operator::or_value, endpointChanged), ruvia::db_binary_operator::or_value, statusChanged));
         const auto updated = co_await transaction.execute(query);
         if (updated.affected_rows() != 0) {
-            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         }
         co_await transaction.commit();
     }
@@ -662,7 +663,7 @@ return result
             entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"deleted_at">().is_null(),
             deletionChanges
         );
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "deleted", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -804,7 +805,7 @@ return result
             (void)co_await tx.execute(update);
             co_return id;
         }
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         auto nameEnd = std::min<std::size_t>(name.size(), 60);
         while (nameEnd < name.size() && nameEnd > 0 && (static_cast<unsigned char>(name[nameEnd]) & 0xc0) == 0x80) --nameEnd;
         const auto endpointName = name.substr(0, nameEnd) + " [" + id + "]";

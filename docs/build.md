@@ -115,6 +115,36 @@ SQL 与 Redis 字段名通过实体公开的 `column_index<...>()`、`columns_ty
 独立 HTTP、PostgreSQL、Redis 客户端通过公开 `handle()` 获取并复用操作句柄；句柄及结果在所属客户端释放前销毁，
 客户端在所属 `event_loop` 等待 `shutdown()` 后再关闭线程。
 
+### Worker 装配与启动认领
+
+环境变量由进程及各组件的配置入口一次解析，装配阶段复用配置值，不在每个 Worker 重读。
+进程身份在 `server.cpp` 生成一次，按 Worker 注入不可变的 `common::WorkerIdentity`；
+UUID 的时间戳和 74-bit 序列由每个 Worker 的 `common::UuidV7State` 值持有，
+`utils::nextUuid(state)` 显式借用该状态，时间前进或序列溢出时获取随机熵，无全局生成器或锁。
+
+所有 Service Worker 都参与配置投影和 latest 恢复认领，不指定 Worker 0。
+`startup` 数据库别名专门持有事务 advisory lock，完成标记按进程 incarnation 写入 Redis，
+等待者只在成功完成后进入就绪；失败不写完成标记。配置新版本完整生成、latest 恢复完成后，
+才启动 Collector、GB28181 和业务消费任务。latest 分页恢复合并为一次最终实时通知。
+
+`ComponentLifecycle` 归属 observability 的运行监督，只有装配入口引用；
+各 runtime 自己持有取消源和完成句柄，复用的启动、停止函数不持有运行状态。
+Collector 与 GB28181 在同一 Collector event loop 上分别装配，先停止两者业务，
+再等待该 loop 的 Redis `shutdown()`、销毁借用对象，最后停止并 join 线程。
+设备协议端点位于 `gateway.transport.h`，保留唯一 Ruvia 路由宏和固件线协议；
+接入、业务持久化、后台清理分别归 transport、service、runtime。
+
+持久 Stream 消费将领取和 pending 可见期限登记放在同一 Lua 中，确认时原子清除期限。
+消费者自己的独立 Pub/Sub 连接只传递输入与期限变化通知，先确认订阅再读取持久状态，
+按最早真实 pending/业务截止唤醒；没有 pending 时不运行固定周期的 PEL 扫描。
+通知读取与截止等待分开，健康连接不会因截止到来而重连，也不占用命令池的阻塞连接。
+领取者崩溃且没有新输入时，其他消费者仍按已登记期限恢复认领。
+
+固定版本的 `redis_error::code()` 只区分 `command_error`，不精确区分服务端 `NOGROUP`。
+共享消费者仅对该类型做一次幂等建组及原操作重试；建组 Lua 按官方 `BUSYGROUP` 前缀处理，
+其他错误保留。首次原错误留存，建组或再次操作失败时记录并传播实际错误，
+不把 ACL 拒绝或 `WRONGTYPE` 当作成功，也不匹配 C++ 异常的 `what()` 文本。
+
 ## 连接状态租约与升级
 
 Collector 的连接身份保存在 `iot:v3:device:connection:<deviceId>`，TTL 为 15 秒。

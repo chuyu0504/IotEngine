@@ -1,15 +1,16 @@
 #include <iostream>
 #include <stdexcept>
 #include "service/features/telemetry/telemetry.protocol.h"
+#include "service/utils/uuid.h"
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 int main() {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     try {
         service::message::ParsedDeviceMessage input;
-        input.acquisitionId = uuidGenerator.next();
+        input.acquisitionId = service::utils::nextUuid(uuidState);
         input.observedAtMs=123;input.occurredAtMs=456;
         input.valuesJson=R"({"values":{"n":{"value":12.5,"unit":"C"},"b":{"value":true},"s":{"value":"0012"},"nil":{"value":null},"text":{"value":"\"type\":\"JPEG\""}}})";
         service::telemetry::contract::normalize(input);
@@ -51,20 +52,20 @@ int main() {
         require(!service::telemetry::contract::isSl651EmptyReport(input), "SL651 empty report rule leaked to another protocol");
         input.protocol = "SL651";
         input.deviceId = "00000000-0000-7000-8000-000000000003";
-        input.messageId = uuidGenerator.next();
+        input.messageId = service::utils::nextUuid(uuidState);
         input.rawPayloads = {{0x7e, 0x7e, 0x01}, {0x02, 0x03}};
         input.valuesJson = R"({"values":{"flow":{"value":1}}})";
         service::telemetry::contract::normalize(input);
         const auto report = input;
         require(service::common::isUuid(report.messageId), "report identity is not a UUID");
-        input.messageId = uuidGenerator.next();
-        input.connectionId = uuidGenerator.next();
-        input.causationId = uuidGenerator.next();
+        input.messageId = service::utils::nextUuid(uuidState);
+        input.connectionId = service::utils::nextUuid(uuidState);
+        input.causationId = service::utils::nextUuid(uuidState);
         input.occurredAtMs += 5000;
         service::telemetry::contract::normalize(input);
         require(input.messageId == report.messageId, "reconnected retransmission changed identity");
         auto nextRound = report;
-        nextRound.acquisitionId = uuidGenerator.next();
+        nextRound.acquisitionId = service::utils::nextUuid(uuidState);
         service::telemetry::contract::normalize(nextRound);
         require(nextRound.messageId != report.messageId, "identical values collapsed independent scans");
         auto missingIdentity = report;

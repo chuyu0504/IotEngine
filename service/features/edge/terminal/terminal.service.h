@@ -14,6 +14,8 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/session/session.service.h"
@@ -229,7 +231,7 @@ class TerminalService final {
         (void)service::common::uuidBytes(id, bytes.data());
         const auto terminalBytes = protocol::bytes(bytes.data(), bytes.size());
         const auto envelope = [&] {
-            return protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, node);
+            return protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, node);
         };
         if (operation == "terminal-open") {
             const auto [columns, rows] = dimensions();
@@ -382,7 +384,7 @@ class TerminalService final {
             const std::string_view args[]{ lifetime };
             const auto renewed = co_await c.redis().eval(kExpireKeysScript, keys, args);
             if (renewed.kind() != ruvia::redis_value::kind_type::integer) {
-                service::message::redis::throwValue("renew edge terminal browser state", renewed);
+                service::utils::redis::throwValue("renew edge terminal browser state", renewed);
             }
             co_await routeBrowser(c, node, id);
             auto* resize = command.mutable_terminal_resize();
@@ -406,7 +408,7 @@ class TerminalService final {
     static ruvia::task<void> deleteKeys(Context& c, std::span<const std::string_view> keys) {
         const auto reply = co_await c.redis().eval(kDeleteKeysScript, keys, std::span<const std::string_view>{});
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("delete edge terminal browser state", reply);
+            service::utils::redis::throwValue("delete edge terminal browser state", reply);
         }
     }
 
@@ -468,7 +470,7 @@ class TerminalService final {
         const std::string_view arguments[]{ nodeSession, "120" };
         const auto result = co_await c.redis().eval(kRefreshScript, keys, arguments);
         if (result.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("refresh edge terminal state", result);
+            service::utils::redis::throwValue("refresh edge terminal state", result);
         }
         co_return result.integer();
     }
@@ -488,7 +490,7 @@ class TerminalService final {
         const std::string_view arguments[]{ wire, "4096", "120" };
         const auto reply = co_await c.redis().eval(kEnqueueInputScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("enqueue edge terminal input", reply);
+            service::utils::redis::throwValue("enqueue edge terminal input", reply);
         }
         if (reply.integer() == 0) {
             throw std::runtime_error("edge terminal input backlog exceeded");
@@ -506,7 +508,7 @@ class TerminalService final {
         const std::string_view arguments[]{ nodeSession };
         const auto reply = co_await c.redis().eval(kReleaseTerminalSessionScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("release edge terminal session", reply);
+            service::utils::redis::throwValue("release edge terminal session", reply);
         }
     }
 
@@ -522,7 +524,7 @@ class TerminalService final {
             session.epoch,
             session.protocolVersion,
             session.workerIndex,
-            service::runtime::instanceId()
+            c.template worker_state<std::optional<common::WorkerIdentity>>().value().instanceId
         );
         const std::string ttl = "120";
         const auto readyKey = TerminalBrowserRecord::readyKey(terminalId), remoteClosedKey = TerminalBrowserRecord::remoteClosedKey(terminalId);
@@ -537,7 +539,7 @@ class TerminalService final {
                                             service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await c.redis().eval(kSaveTerminalFrameScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("append edge terminal output", reply);
+            service::utils::redis::throwValue("append edge terminal output", reply);
         }
         if (reply.integer() < 0) {
             co_await failTerminal(c, session, terminalId, "terminal output backlog exceeded");
@@ -547,7 +549,7 @@ class TerminalService final {
     template <typename Context>
     static ruvia::task<void> failTerminal(Context& c, const ConnectionIdentity& session, std::string_view terminalId, std::string_view reason) {
         std::array<std::uint8_t, 16> terminalBytes{};
-        if (!protocol::uuidBytes(terminalId, terminalBytes.data())) {
+        if (!service::common::uuidBytes(terminalId, terminalBytes.data())) {
             co_return;
         }
         webpb::WebTerminalFrame frame;
@@ -560,17 +562,17 @@ class TerminalService final {
         const auto output = service::message::terminal::terminalOutputKey(session.nodeId, terminalId);
         const auto inputAck = TerminalSessionRecord::terminalInputAckKey(session.nodeId, terminalId);
         const auto outputSequence = TerminalSessionRecord::terminalOutputSequenceKey(session.nodeId, terminalId);
-        const auto epoch = session_state::value(session.epoch, session.protocolVersion, session.workerIndex, service::runtime::instanceId());
+        const auto epoch = session_state::value(session.epoch, session.protocolVersion, session.workerIndex, c.template worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
         const auto topic = service::message::terminal::terminalEventTopic(session.nodeId, terminalId), ackTopic = service::message::terminal::terminalAckTopic(session.nodeId, terminalId);
         const auto eventRoute = service::message::live::routeKey(topic), ackRoute = service::message::live::routeKey(ackTopic);
         const std::string_view keys[]{ owner, output, inputAck, outputSequence, eventRoute, ackRoute };
         const std::string_view args[]{ epoch, wire, topic, ackTopic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto result = co_await c.redis().eval(kFailScript, keys, args);
         if (result.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("close failed terminal", result);
+            service::utils::redis::throwValue("close failed terminal", result);
         }
         if (result.integer() == 1) {
-            auto close = service::edge::protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, session.nodeId);
+            auto close = service::edge::protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, session.nodeId);
             close.mutable_terminal_close()->set_terminal_id(
                 protocol::bytes(terminalBytes.data(), terminalBytes.size())
             );
@@ -583,7 +585,7 @@ class TerminalService final {
         if (data.terminal_id().size() != 16 || data.data().empty()) {
             co_return;
         }
-        const auto id = protocol::uuidText(data.terminal_id());
+        const auto id = service::common::uuidText(data.terminal_id());
         if (data.data().size() > 16384 || data.sequence() > 9007199254740991ULL) {
             co_await failTerminal(c, session, id, "terminal output exceeds limits");
             co_return;
@@ -612,7 +614,7 @@ class TerminalService final {
             session.epoch,
             session.protocolVersion,
             session.workerIndex,
-            service::runtime::instanceId()
+            c.template worker_state<std::optional<common::WorkerIdentity>>().value().instanceId
         );
         const auto sequence = std::to_string(data.sequence());
         const std::string ttl = "120";
@@ -622,7 +624,7 @@ class TerminalService final {
         const std::string_view arguments[]{ epoch, wire, sequence, ttl, topic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await c.redis().eval(kSaveTerminalDataScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("append sequenced terminal output", reply);
+            service::utils::redis::throwValue("append sequenced terminal output", reply);
         }
         if (reply.integer() < 0) {
             co_await failTerminal(c, session, id, "terminal output sequence mismatch");
@@ -640,7 +642,7 @@ class TerminalService final {
         if (ack.terminal_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(ack.terminal_id());
+        const auto id = service::common::uuidText(ack.terminal_id());
         if (ack.sequence() == 0) {
             co_await failTerminal(c, session, id, "terminal input sequence missing");
             co_return;
@@ -651,7 +653,7 @@ class TerminalService final {
             session.epoch,
             session.protocolVersion,
             session.workerIndex,
-            service::runtime::instanceId()
+            c.template worker_state<std::optional<common::WorkerIdentity>>().value().instanceId
         );
         const auto sequence = std::to_string(ack.sequence());
         const std::string ttl = "120";
@@ -661,7 +663,7 @@ class TerminalService final {
         const std::string_view arguments[]{ epoch, sequence, ttl, topic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await c.redis().eval(kSaveTerminalAckScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("advance terminal input ack", reply);
+            service::utils::redis::throwValue("advance terminal input ack", reply);
         }
         if (reply.integer() < 0) {
             co_await failTerminal(c, session, id, "terminal input acknowledgement mismatch");
@@ -672,7 +674,7 @@ class TerminalService final {
         if (opened.terminal_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(opened.terminal_id());
+        const auto id = service::common::uuidText(opened.terminal_id());
         webpb::WebTerminalFrame frame;
         frame.mutable_ready();
         co_await saveTerminalFrame(c, session, id, frame);
@@ -682,7 +684,7 @@ class TerminalService final {
         if (close.terminal_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(close.terminal_id());
+        const auto id = service::common::uuidText(close.terminal_id());
         webpb::WebTerminalFrame frame;
         auto* terminalClose = frame.mutable_close();
         terminalClose->set_exit_code(close.exit_code());

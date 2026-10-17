@@ -48,6 +48,14 @@ inline std::string desktopSessionKey(std::string_view peerId) {
     return "iot:vpn:desktop:sessions:" + std::string(peerId);
 }
 
+inline std::string hubScheduleKey(std::string_view instanceId) {
+    return "iot:vpn:hub:schedule:" + std::string(instanceId);
+}
+
+inline std::string hubScheduleChannel(std::string_view instanceId) {
+    return "iot:vpn:hub:schedule:changed:" + std::string(instanceId);
+}
+
 // Shared VPN address contract. It contains only immutable values and pure mapping logic.
 using service::utils::network::Ipv4Cidr;
 
@@ -800,6 +808,8 @@ namespace service::message::lock {
 // PostgreSQL advisory lock identities shared by every Service Worker and process.
 // Values are runtime contracts: changing one breaks mutual exclusion during upgrades.
 inline constexpr std::int64_t kConfigurationProjection{5282804697543808067};
+inline constexpr std::int64_t kLatestHydration{5282804697543808074};
+inline constexpr std::int64_t kConfigurationStartup{5282804697543808076};
 // Default VPN network row: Hub key initialization and default network provisioning.
 inline constexpr std::int64_t kVpnDefaultNetwork{5282804697543808073};
 inline constexpr std::int64_t kVpnAddressAllocation{5282804697543808068};
@@ -818,6 +828,10 @@ inline constexpr std::int64_t kCommandIdempotencySeed{0};
 } // namespace service::message::lock
 
 namespace service::message::configuration {
+
+inline std::string startupProjectionKey(std::string_view instance) {
+    return "iot:v3:startup:configuration:" + std::string(instance);
+}
 
 inline std::string runtimeChangesStream() {
     return "iot:channel:runtime:config-work";
@@ -861,6 +875,10 @@ inline std::string linkRuntimePrefix(std::string_view linkId) {
 } // namespace service::message::collector
 
 namespace service::message::telemetry {
+
+inline std::string startupHydrationKey(std::string_view instance) {
+    return "iot:v3:startup:latest:" + std::string(instance);
+}
 
 inline std::string latestKey(std::string_view deviceId) {
     return "iot:v2:device:" + std::string(deviceId) + ":latest";
@@ -1236,6 +1254,12 @@ inline constexpr std::string_view kMetadataKind{ "metadata" };
 inline constexpr std::string_view kStreamPrefix{ "iot:v3:edge:projector:" };
 inline constexpr std::string_view kLeasePrefix{ "iot:v3:edge:projector:lease:" };
 inline constexpr std::string_view kStreamRegistry{ "iot:v3:edge:projector:streams" };
+inline constexpr std::string_view kRecoveryDeadlines{ "iot:v3:edge:projector:deadlines" };
+inline constexpr std::int64_t kStartupLock = 5282804697543808075LL;
+
+inline std::string startupKey(std::string_view instance) {
+    return "iot:v3:edge:projector:startup:" + std::string(instance);
+}
 
 inline std::string stream(std::size_t workerIndex, std::string_view instance) {
     return std::string(kStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex);
@@ -1664,3 +1688,19 @@ RUVIA_MODEL(EdgeConfigResult,
     RUVIA_REQUIRED_FIELD(errorMessage, ruvia::string));
 
 } // namespace service::message::vpn
+
+namespace service::message::consumer {
+
+inline std::string inputChannel(std::string_view stream) {
+    return "iot:consumer:input:" + std::string(stream);
+}
+
+inline std::string deadlineKey(std::string_view stream, std::string_view group) {
+    return "iot:consumer:pending:" + std::string(group) + ":" + std::string(stream);
+}
+
+inline std::string deadlineChannel(std::string_view stream, std::string_view group) {
+    return "iot:consumer:deadline:" + std::string(group) + ":" + std::string(stream);
+}
+
+} // namespace service::message::consumer

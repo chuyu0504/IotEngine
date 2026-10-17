@@ -24,6 +24,7 @@
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
+#include "service/utils/uuid.h"
 #endif
 
 namespace service::gb28181::sip {
@@ -425,8 +426,8 @@ void enablePortReuse(Socket& socket, std::error_code& error) {
 
 } // namespace
 
-SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, device::DeviceRegistry& deviceRegistry, std::shared_ptr<media::ZlmSdk> zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver, media::ZlmSdk::OwnerIndex owner)
-    : uuidGenerator_(uuidGenerator),
+SipServer::SipServer(service::common::UuidV7State& uuidState, SipConfig sipConfig, MediaConfig mediaConfig, device::DeviceRegistry& deviceRegistry, std::shared_ptr<media::ZlmSdk> zlmSdk, ruvia::event_loop ioLoop, ViewerCountObserver viewerCountObserver, media::ZlmSdk::OwnerIndex owner)
+    : uuidState_(uuidState),
       sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
       deviceRegistry_(deviceRegistry),
@@ -1697,7 +1698,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
     LOG_DEBUG << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
               << ", channel=" << channelId
               << ", ssrc=" << ssrc;
-    const auto rtpServer = zlmSdk_->openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next());
+    const auto rtpServer = zlmSdk_->openRtpServer(deviceId, channelId, ssrc, service::utils::nextUuid(uuidState_));
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Preview] Start failed, device=" << deviceId
                  << ", channel=" << channelId

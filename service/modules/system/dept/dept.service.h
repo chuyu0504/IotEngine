@@ -13,6 +13,7 @@
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/system/dept/dept.entity.h"
 #include "service/modules/system/dept/dept.types.h"
 #include "service/modules/system/user/user.entity.h"
@@ -99,7 +100,7 @@ class DeptService {
             body.get<"sortOrder">() ? static_cast<std::int64_t>(*body.get<"sortOrder">()) : 0;
         const std::string status =
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         co_await validateRelations(c, parentId, leaderId, std::nullopt);
         co_await ensureCodeAvailable(c, code, std::nullopt);
         entities::DeptEntity department(c.pool());

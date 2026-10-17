@@ -23,23 +23,21 @@
 #include <ruvia/web/redis/redis_types.h>
 
 #include "service/common/message.h"
-#include "service/common/uuid.h"
+#include "service/common/worker.h"
+#include "service/utils/uuid.h"
 #include "service/features/collector/collector.protocol.h"
 #include "service/features/collector/collector.types.h"
+#include "service/features/collector/engine/engine.types.h"
 #include "service/features/messaging/messaging.transport.h"
+#include "service/features/packet_log/packet_log.service.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/telemetry/derived/derived.service.h"
 #include "service/middleware/log.h"
 #include "service/utils/number.h"
+#include "service/utils/redis.h"
 
 namespace service::collector::config {
 
-namespace redis = service::message::redis;
-
-using service::message::projection::kRuntimeActiveVersionKey;
-using service::message::projection::realtimeDeviceKey;
-using service::message::projection::realtimeDevicePointsKey;
-using service::message::projection::kRuntimeVersionsKey;
 inline constexpr std::int64_t kSnapshotGraceMilliseconds = 120000;
 
 inline std::string prefix(std::string_view version) {
@@ -208,14 +206,14 @@ namespace detail {
 
 inline std::string stringReply(const ruvia::redis_value& value, std::string_view operation) {
     if (value.kind() != ruvia::redis_value::kind_type::string) {
-        redis::throwValue(operation, value);
+        service::utils::redis::throwValue(operation, value);
     }
     return std::string(value.string());
 }
 
 inline std::int64_t integerReply(const ruvia::redis_value& value, std::string_view operation) {
     if (value.kind() != ruvia::redis_value::kind_type::integer) {
-        redis::throwValue(operation, value);
+        service::utils::redis::throwValue(operation, value);
     }
     return value.integer();
 }
@@ -228,13 +226,13 @@ inline void requireOk(const ruvia::redis_value& value, std::string_view operatio
 
 inline std::vector<std::string> stringArray(const ruvia::redis_value& value, std::string_view operation) {
     if (value.kind() != ruvia::redis_value::kind_type::array) {
-        redis::throwValue(operation, value);
+        service::utils::redis::throwValue(operation, value);
     }
     std::vector<std::string> result;
     result.reserve(value.array().size());
     for (const auto& entry : value.array()) {
         if (entry.kind() != ruvia::redis_value::kind_type::string) {
-            redis::throwValue(operation, value);
+            service::utils::redis::throwValue(operation, value);
         }
         result.emplace_back(entry.string());
     }
@@ -248,18 +246,18 @@ inline std::vector<std::string> sortedStrings(std::vector<std::string> values) {
 
 inline std::vector<message::StreamField> hashFields(const ruvia::redis_value& value, std::string_view operation) {
     if (value.kind() != ruvia::redis_value::kind_type::array) {
-        redis::throwValue(operation, value);
+        service::utils::redis::throwValue(operation, value);
     }
     const auto values = value.array();
     if (values.size() % 2 != 0) {
-        redis::throwValue(operation, value);
+        service::utils::redis::throwValue(operation, value);
     }
     std::vector<message::StreamField> result;
     result.reserve(values.size() / 2);
     for (std::size_t index = 0; index < values.size(); index += 2) {
         if (values[index].kind() != ruvia::redis_value::kind_type::string ||
             values[index + 1].kind() != ruvia::redis_value::kind_type::string) {
-            redis::throwValue(operation, value);
+            service::utils::redis::throwValue(operation, value);
         }
         result.push_back(
             { std::string(values[index].string()), std::string(values[index + 1].string()) }
@@ -283,7 +281,7 @@ execute(const Redis& redis, const std::vector<std::vector<std::string>>& command
         auto replies = co_await std::move(pipeline).exec();
         for (const auto& reply : replies) {
             if (reply.kind() == ruvia::redis_value::kind_type::error) {
-                redis::throwValue("runtime pipeline", reply);
+                service::utils::redis::throwValue("runtime pipeline", reply);
             }
         }
         co_return replies;
@@ -306,7 +304,7 @@ return replies
         std::vector<std::string_view> views(arguments.begin(), arguments.end());
         const auto reply = co_await redis.eval(script, {}, views);
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            redis::throwValue("runtime batch", reply);
+            service::utils::redis::throwValue("runtime batch", reply);
         }
         std::pmr::vector<ruvia::redis_value> replies;
         replies.reserve(reply.array().size());
@@ -499,7 +497,7 @@ template <typename Redis>
 ruvia::task<std::vector<std::string>> members(const Redis& redis, std::string key) {
     const std::vector<std::string> arguments{ "SMEMBERS", std::move(key) };
     co_return sortedStrings(
-        stringArray(co_await redis::command(redis, arguments), "SMEMBERS runtime")
+        stringArray(co_await redis.command(std::vector<std::string_view>(arguments.begin(), arguments.end())), "SMEMBERS runtime")
     );
 }
 
@@ -507,14 +505,14 @@ template <typename Redis>
 ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
     const auto keysSet = prefix(version) + ":keys";
     const std::vector<std::string> keysArguments{ "SMEMBERS", keysSet };
-    auto keys = stringArray(co_await redis::command(redis, keysArguments), "SMEMBERS runtime snapshot keys");
+    auto keys = stringArray(co_await redis.command(std::vector<std::string_view>(keysArguments.begin(), keysArguments.end())), "SMEMBERS runtime snapshot keys");
     keys.push_back(keysSet);
     constexpr std::size_t batchSize = 128;
     for (std::size_t offset = 0; offset < keys.size(); offset += batchSize) {
         std::vector<std::string> args{ "UNLINK" };
         const auto end = std::min(keys.size(), offset + batchSize);
         args.insert(args.end(), keys.begin() + static_cast<std::ptrdiff_t>(offset), keys.begin() + static_cast<std::ptrdiff_t>(end));
-        (void)integerReply(co_await redis::command(redis, args), "UNLINK runtime snapshot keys");
+        (void)integerReply(co_await redis.command(std::vector<std::string_view>(args.begin(), args.end())), "UNLINK runtime snapshot keys");
     }
 }
 
@@ -523,10 +521,10 @@ ruvia::task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 template <typename Redis>
 ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds, std::string_view preserveVersion) {
     const std::vector<std::string> expiredArguments{
-        "ZRANGEBYSCORE", std::string(kRuntimeVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)
+        "ZRANGEBYSCORE", std::string(service::message::projection::kRuntimeVersionsKey), "-inf", std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)
     };
     const auto expired = detail::stringArray(
-        co_await redis::command(redis, expiredArguments),
+        co_await redis.command(std::vector<std::string_view>(expiredArguments.begin(), expiredArguments.end())),
         "ZRANGEBYSCORE runtime versions"
     );
     for (const auto& candidate : expired) {
@@ -534,42 +532,27 @@ ruvia::task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
             continue;
         }
         co_await detail::eraseSnapshot(redis, candidate);
-        const std::vector<std::string> removeArguments{ "ZREM", std::string(kRuntimeVersionsKey), candidate };
+        const std::vector<std::string> removeArguments{ "ZREM", std::string(service::message::projection::kRuntimeVersionsKey), candidate };
         (void)detail::integerReply(
-            co_await redis::command(redis, removeArguments),
+            co_await redis.command(std::vector<std::string_view>(removeArguments.begin(), removeArguments.end())),
             "ZREM runtime version"
         );
     }
 }
 
-template <typename Redis>
-ruvia::task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds) {
-    const std::vector<std::string> activeReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
-    const auto activeReply =
-        co_await redis::command(redis, activeReplyArguments);
-    if (activeReply.null()) {
-        co_return;
-    }
-    co_await eraseExpiredSnapshots(
-        redis,
-        nowMilliseconds,
-        detail::stringReply(activeReply, "GET active runtime")
-    );
-}
-
 // Service projection. The version pointer is switched only after every readable
 // Hash/Set/List has been written, so readers never observe a partial snapshot.
 template <typename Redis>
-ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7Generator& uuidGenerator) {
+ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7State& uuidState) {
     const auto snapshotSignature = signature(snapshot);
-    const std::vector<std::string> activeReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
+    const std::vector<std::string> activeReplyArguments{ "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) };
     const auto activeReply =
-        co_await redis::command(redis, activeReplyArguments);
+        co_await redis.command(std::vector<std::string_view>(activeReplyArguments.begin(), activeReplyArguments.end()));
     if (!activeReply.null()) {
         const auto active = detail::stringReply(activeReply, "GET active runtime");
         const std::vector<std::string> signatureReplyArguments{ "HGET", metadataKey(active), "signature" };
         const auto signatureReply =
-            co_await redis::command(redis, signatureReplyArguments);
+            co_await redis.command(std::vector<std::string_view>(signatureReplyArguments.begin(), signatureReplyArguments.end()));
         if (!signatureReply.null() &&
             detail::stringReply(signatureReply, "HGET runtime signature") ==
                 snapshotSignature) {
@@ -577,11 +560,11 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         }
     }
 
-    const auto version = uuidGenerator.next();
+    const auto version = service::utils::nextUuid(uuidState);
     const auto createdAt = message::utcNowMilliseconds();
-    const std::vector<std::string> versionArguments{ "ZADD", std::string(kRuntimeVersionsKey), std::to_string(createdAt), version };
+    const std::vector<std::string> versionArguments{ "ZADD", std::string(service::message::projection::kRuntimeVersionsKey), std::to_string(createdAt), version };
     (void)detail::integerReply(
-        co_await redis::command(redis, versionArguments),
+        co_await redis.command(std::vector<std::string_view>(versionArguments.begin(), versionArguments.end())),
         "ZADD runtime version"
     );
     const auto snapshotPrefix = prefix(version);
@@ -661,33 +644,33 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
     }
 
     for (const auto& device : snapshot.realtimeDevices) {
-        detail::appendHash(commands, version, realtimeDeviceKey(version, device.id), { { "id", device.id }, { "code", device.code }, { "name", device.name } });
-        detail::appendRealtimePoints(commands, version, realtimeDevicePointsKey(version, device.id), device.points);
+        detail::appendHash(commands, version, service::message::projection::realtimeDeviceKey(version, device.id), { { "id", device.id }, { "code", device.code }, { "name", device.name } });
+        detail::appendRealtimePoints(commands, version, service::message::projection::realtimeDevicePointsKey(version, device.id), device.points);
         if (commands.size() >= pipelineSize) {
             co_await detail::flush(redis, commands);
         }
     }
     co_await detail::flush(redis, commands);
 
-    const std::vector<std::string> previousReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
+    const std::vector<std::string> previousReplyArguments{ "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) };
     const auto previousReply =
-        co_await redis::command(redis, previousReplyArguments);
+        co_await redis.command(std::vector<std::string_view>(previousReplyArguments.begin(), previousReplyArguments.end()));
     if (!previousReply.null()) {
         const auto previous = detail::stringReply(previousReply, "GET active runtime");
         if (!previous.empty() && previous != version) {
-            const std::vector<std::string> previousVersionArguments{ "ZADD", std::string(kRuntimeVersionsKey), std::to_string(createdAt), previous };
+            const std::vector<std::string> previousVersionArguments{ "ZADD", std::string(service::message::projection::kRuntimeVersionsKey), std::to_string(createdAt), previous };
             (void)detail::integerReply(
                 // The score is the time this version stopped being active, not its creation
                 // time. Refresh it on every switch so readers that captured the old pointer
                 // receive the complete grace window even after a long-lived generation.
-                co_await redis::command(redis, previousVersionArguments),
+                co_await redis.command(std::vector<std::string_view>(previousVersionArguments.begin(), previousVersionArguments.end())),
                 "ZADD previous runtime version"
             );
         }
     }
-    const std::vector<std::string> activateArguments{ "SET", std::string(kRuntimeActiveVersionKey), version };
+    const std::vector<std::string> activateArguments{ "SET", std::string(service::message::projection::kRuntimeActiveVersionKey), version };
     detail::requireOk(
-        co_await redis::command(redis, activateArguments),
+        co_await redis.command(std::vector<std::string_view>(activateArguments.begin(), activateArguments.end())),
         "SET active runtime version"
     );
 
@@ -699,9 +682,9 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
 template <typename Redis>
 ruvia::task<std::string> activeVersion(const Redis& redis) {
-    const std::vector<std::string> versionReplyArguments{ "GET", std::string(kRuntimeActiveVersionKey) };
+    const std::vector<std::string> versionReplyArguments{ "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) };
     const auto versionReply =
-        co_await redis::command(redis, versionReplyArguments);
+        co_await redis.command(std::vector<std::string_view>(versionReplyArguments.begin(), versionReplyArguments.end()));
     if (versionReply.null()) {
         throw std::runtime_error("runtime is not ready");
     }
@@ -713,7 +696,7 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
     RuntimeSnapshot snapshot;
 
     for (const auto& linkId : co_await detail::members(redis, prefix(version) + ":links")) {
-        const auto fields = co_await redis::hashEntries(redis, linkKey(version, linkId));
+        const auto fields = co_await service::utils::redis::hashEntries(redis, linkKey(version, linkId));
         LinkDefinition link;
         link.id = detail::field(fields, "id");
         link.name = detail::field(fields, "name");
@@ -726,7 +709,7 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
         for (const auto& targetId :
              co_await detail::members(redis, linkKey(version, linkId) + ":targets")) {
             const auto targetFields =
-                co_await redis::hashEntries(redis, targetKey(version, linkId, targetId));
+                co_await service::utils::redis::hashEntries(redis, targetKey(version, linkId, targetId));
             LinkTargetDefinition target;
             target.id = detail::field(targetFields, "id");
             target.name = detail::field(targetFields, "name");
@@ -809,7 +792,7 @@ template <typename Redis>
 ruvia::task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
                             std::string_view expectedOwner) {
     const std::vector<std::string> ownerArguments{"GET", key(linkId)};
-    const auto owner = co_await message::redis::command(redis, ownerArguments);
+    const auto owner = co_await redis.command(std::vector<std::string_view>(ownerArguments.begin(), ownerArguments.end()));
     co_return owner.kind() == ruvia::redis_value::kind_type::string &&
         owner.string() == expectedOwner;
 }
@@ -827,7 +810,7 @@ return 1
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-        message::redis::throwValue("claim target ownership", reply);
+        utils::redis::throwValue("claim target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
@@ -843,7 +826,7 @@ return redis.call('PEXPIRE',KEYS[1],15000)
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-        message::redis::throwValue("renew target ownership", reply);
+        utils::redis::throwValue("renew target ownership", reply);
     }
     co_return reply.integer() == 1;
 }
@@ -862,38 +845,74 @@ return 0
     const std::string_view args[]{ owner };
     const auto reply = co_await redis.eval(script, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-        message::redis::throwValue("release target ownership", reply);
+        utils::redis::throwValue("release target ownership", reply);
     }
 }
 
-template <typename Redis>
-ruvia::task<RuntimeSnapshot> retain(const Redis& redis, RuntimeSnapshot snapshot) {
-    static constexpr std::string_view script = R"lua(
+inline constexpr std::string_view kRetainLinkOwnershipScript = R"lua(
 local owner=redis.call('GET',KEYS[1])
-if owner and owner~=ARGV[1] then return 0 end
+if owner and owner~=ARGV[1] then return {0,redis.call('PTTL',KEYS[1])} end
 redis.call('SET',KEYS[1],ARGV[1],'PX',15000)
-return 1
+return {1,redis.call('PTTL',KEYS[1])}
 )lua";
-    std::set<std::string, std::less<>> owned;
+
+template <typename Redis>
+ruvia::task<OwnedSnapshot> retain(const Redis& redis, RuntimeSnapshot snapshot,
+    std::string_view instanceId, std::map<std::string, LinkLease, std::less<>>& leases) {
+    bool ownershipChanged = false;
+    std::erase_if(leases, [&snapshot, &ownershipChanged](const auto& entry) {
+        const bool removed = std::none_of(snapshot.links.begin(), snapshot.links.end(),
+            [&entry](const auto& link) { return link.id == entry.first; });
+        ownershipChanged = ownershipChanged || (removed && entry.second.owned);
+        return removed;
+    });
+    std::optional<std::chrono::steady_clock::time_point> nextAttempt;
     for (const auto& link : snapshot.links) {
-        const auto lease = key(link.id);
-        const std::string_view keys[]{ lease };
-        const std::string_view args[]{ service::runtime::instanceId() };
-        const auto reply = co_await redis.eval(script, keys, args);
-        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            message::redis::throwValue("claim link ownership", reply);
+        auto [current, inserted] = leases.try_emplace(link.id);
+        auto& state = current->second;
+        const auto began = std::chrono::steady_clock::now();
+        if (inserted || (state.nextAttempt && *state.nextAttempt <= began)) {
+            state.nextAttempt = began;
+            const auto lease = key(link.id);
+            const std::string_view keys[]{ lease };
+            const std::string_view args[]{ instanceId };
+            const auto reply = co_await redis.eval(kRetainLinkOwnershipScript, keys, args);
+            if (reply.kind() != ruvia::redis_value::kind_type::array ||
+                reply.array().size() != 2 ||
+                reply.array()[0].kind() != ruvia::redis_value::kind_type::integer ||
+                reply.array()[1].kind() != ruvia::redis_value::kind_type::integer) {
+                utils::redis::throwValue("claim link ownership", reply);
+            }
+            const bool owned = reply.array()[0].integer() == 1;
+            ownershipChanged = ownershipChanged || state.owned != owned;
+            state.owned = owned;
+            const auto ttl = reply.array()[1].integer();
+            // A foreign permanent lease has no expiration to wake for. A key that
+            // vanished between GET and PTTL gets a bounded retry, never a busy loop.
+            if (!state.owned && ttl == -1) {
+                state.nextAttempt.reset();
+            } else {
+                const auto delay = ttl < 0 ? std::int64_t{250}
+                    : state.owned ? (std::max)(std::int64_t{1}, ttl / 3)
+                    : (std::max)(std::int64_t{1}, ttl);
+                state.nextAttempt = began + std::chrono::milliseconds(delay);
+            }
         }
-        if (reply.integer() == 1) {
-            owned.insert(link.id);
-        }
+        if (state.nextAttempt && (!nextAttempt || *state.nextAttempt < *nextAttempt))
+            nextAttempt = state.nextAttempt;
     }
-    std::erase_if(snapshot.links, [&](const auto& link) {
-        return !owned.contains(link.id);
+    std::erase_if(snapshot.links, [&leases](const auto& link) {
+        return !leases.at(link.id).owned;
     });
-    std::erase_if(snapshot.devices, [&](const auto& device) {
-        return !owned.contains(device.linkId);
+    std::erase_if(snapshot.devices, [&leases](const auto& device) {
+        const auto lease = leases.find(device.linkId);
+        return lease == leases.end() || !lease->second.owned;
     });
-    co_return snapshot;
+    const auto wait = nextAttempt
+        ? std::optional{(std::max)(std::chrono::milliseconds(1),
+            std::chrono::duration_cast<std::chrono::milliseconds>(*nextAttempt - std::chrono::steady_clock::now()))}
+        : std::nullopt;
+    co_return OwnedSnapshot{std::move(snapshot), wait, ownershipChanged};
 }
 
 } // namespace service::collector::ownership
@@ -925,9 +944,20 @@ class CollectorCommandService final {
   public:
     static constexpr std::size_t kCommandStreamCapacity = 10000;
     static constexpr std::size_t kCommandResultCapacity = 10000;
+    template <typename Redis>
+    static ruvia::task<void> rejectMessage(const Redis& redis, std::size_t workerIndex,
+        std::string_view instanceId, std::string_view consumer,
+        const message::StreamMessage& message, std::string_view reason, std::string_view detail,
+        std::string_view inputStream, std::string_view inputGroup) {
+        auto fields = deadLetterFields(message.fields, message.id, reason, detail, workerIndex);
+        const auto outputStream = message::deadLetterStream(workerIndex, instanceId);
+        (void)co_await service::messaging::stream::publishAndAcknowledge(redis, outputStream,
+            fields, kDeadLetterCapacity, inputStream, inputGroup, consumer, message.id);
+    }
 
-    CollectorCommandService(ruvia::redis_handle redis, service::common::UuidV7Generator& uuidGenerator, std::size_t workerIndex, std::string group, std::string consumer, std::string deadLetterStream)
-        : redis_(std::move(redis)), uuidGenerator_(uuidGenerator), workerIndex_(workerIndex),
+
+    CollectorCommandService(ruvia::redis_handle redis, service::common::UuidV7State& uuidState, std::size_t workerIndex, std::string group, std::string consumer, std::string deadLetterStream)
+        : redis_(std::move(redis)), uuidState_(uuidState), workerIndex_(workerIndex),
           group_(std::move(group)), consumer_(std::move(consumer)),
           deadLetterStream_(std::move(deadLetterStream)) {}
 
@@ -942,12 +972,11 @@ class CollectorCommandService final {
         // 发送前的幂等认领锁：保留一天，避免同一命令被重复发送。
         const auto key = "iot:v2:command:sent:" + task.messageId;
         const std::vector<std::string> claimedArguments{"SET", key, "1", "NX", "EX", "86400"};
-        const auto claimed = co_await message::redis::command(
-            redis, claimedArguments);
+        const auto claimed = co_await redis.command(std::vector<std::string_view>(claimedArguments.begin(), claimedArguments.end()));
         if (claimed.kind() == ruvia::redis_value::kind_type::null)
             co_return TransmissionReservation::Duplicate;
         if (claimed.kind() == ruvia::redis_value::kind_type::error)
-            message::redis::throwValue("claim command transmission", claimed);
+            utils::redis::throwValue("claim command transmission", claimed);
         co_return TransmissionReservation::Reserved;
     }
 
@@ -1128,7 +1157,7 @@ class CollectorCommandService final {
     [[nodiscard]] std::vector<message::StreamField>
     resultFields(std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
         const auto completedAt = std::to_string(message::utcNowMilliseconds());
-        return { { "message_id", uuidGenerator_.next() },
+        return { { "message_id", service::utils::nextUuid(uuidState_) },
                  { "causation_id", std::string(commandId) },
                  { "command_id", std::string(commandId) },
                  { "device_id", task.deviceId },
@@ -1187,7 +1216,7 @@ class CollectorCommandService final {
     }
 
     ruvia::redis_handle redis_;
-    service::common::UuidV7Generator& uuidGenerator_;
+    service::common::UuidV7State& uuidState_;
     std::size_t workerIndex_;
     std::string group_;
     std::string consumer_;
@@ -1209,8 +1238,8 @@ class CollectorDerivedService final {
         std::uint64_t revision = 0;
     };
 
-    CollectorDerivedService(ruvia::redis_handle redis, service::common::UuidV7Generator& uuidGenerator)
-        : redis_(std::move(redis)), uuidGenerator_(uuidGenerator) {}
+    CollectorDerivedService(ruvia::redis_handle redis, service::common::UuidV7State& uuidState, const common::WorkerIdentity& identity)
+        : redis_(std::move(redis)), uuidState_(uuidState), identity_(identity) {}
 
     CollectorDerivedService(const CollectorDerivedService&) = delete;
     CollectorDerivedService& operator=(const CollectorDerivedService&) = delete;
@@ -1245,7 +1274,7 @@ class CollectorDerivedService final {
         }
         // 持有本次使用的解析结果；等待 Redis 期间快照更新不会使其失效。
         const auto entry = current->second;
-        const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed);
+        const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed, identity_.instanceId);
         co_return Outcome{ result.published, result.nextDeadline, entry.revision };
     }
 
@@ -1257,7 +1286,7 @@ class CollectorDerivedService final {
         }
         const auto entry = current->second;
         message::ParsedDeviceMessage parsed;
-        parsed.messageId = uuidGenerator_.next();
+        parsed.messageId = service::utils::nextUuid(uuidState_);
         parsed.acquisitionId = parsed.messageId;
         parsed.causationId = parsed.messageId;
         parsed.linkId = device.linkId;
@@ -1273,7 +1302,7 @@ class CollectorDerivedService final {
         parsed.valuesJson = "{\"values\":{}}";
         Outcome outcome{ .revision = entry.revision };
         try {
-            const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed, true);
+            const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed, identity_.instanceId, true);
             outcome.published = result.published;
             outcome.nextDeadline = result.nextDeadline;
         } catch (const std::exception& error) {
@@ -1290,7 +1319,8 @@ class CollectorDerivedService final {
     };
 
     ruvia::redis_handle redis_;
-    service::common::UuidV7Generator& uuidGenerator_;
+    service::common::UuidV7State& uuidState_;
+    const common::WorkerIdentity& identity_;
     std::map<std::string, Entry, std::less<>> calculations_;
     std::uint64_t revision_ = 0;
 };
@@ -1300,7 +1330,7 @@ class CollectorStateService final {
     template <typename Redis>
     static ruvia::task<DeviceRouteOwner> bindRoute(const Redis& redis,
         const ProtocolAction& action, std::uint64_t sessionEpoch,
-        std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId) {
+        std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId, std::string_view instanceId) {
         const auto key = message::collector::connectionKey(action.deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(action.deviceId);
         const auto ownerKey = message::collector::linkOwnerKey(linkId);
@@ -1318,14 +1348,14 @@ class CollectorStateService final {
             action.connectionId,
             epoch,
             now,
-            service::runtime::instanceId(),
+            instanceId,
             linkId,
             workerInstanceId,
             ttl
         };
         const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::bindScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() != 3) {
-            message::redis::throwValue("bind device route", reply);
+            utils::redis::throwValue("bind device route", reply);
         }
         const auto oldWorker = reply.array()[0].kind() == ruvia::redis_value::kind_type::string
             ? std::string(reply.array()[0].string())
@@ -1341,7 +1371,7 @@ class CollectorStateService final {
     template <typename Redis>
     static ruvia::task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId,
         std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex,
-        std::string_view workerInstanceId, std::string_view reason) {
+        std::string_view workerInstanceId, std::string_view reason, std::string_view instanceId) {
         const auto key = message::collector::connectionKey(deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(deviceId);
         const auto revisionKey = std::string(service::message::live::kChanges);
@@ -1350,115 +1380,115 @@ class CollectorStateService final {
         const auto epoch = std::to_string(sessionEpoch);
         const std::string_view keys[]{ key, runtimeKey, revisionKey,
             message::collector::kConnectionDeadlinesKey };
-        const std::string_view args[]{service::runtime::instanceId(), worker,
+        const std::string_view args[]{instanceId, worker,
             workerInstanceId, connectionId, epoch, reason, now, deviceId};
         const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::integer)
-            message::redis::throwValue("erase device route", reply);
+            utils::redis::throwValue("erase device route", reply);
     }
 
     template <typename Redis>
     static ruvia::task<bool> renewRoute(const Redis& redis, std::string_view deviceId,
         std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex,
-        std::string_view workerInstanceId) {
+        std::string_view workerInstanceId, std::string_view instanceId) {
         const auto key = message::collector::connectionKey(deviceId);
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
         const auto ttl = std::to_string(message::collector::kConnectionTtlMilliseconds);
         const std::string_view keys[]{key, message::collector::kConnectionDeadlinesKey};
-        const std::string_view args[]{service::runtime::instanceId(), worker,
+        const std::string_view args[]{instanceId, worker,
             workerInstanceId, connectionId, epoch, ttl, message::collector::kLinkOwnerPrefix, deviceId};
         const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::renewScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::integer)
-            message::redis::throwValue("renew device route", reply);
+            utils::redis::throwValue("renew device route", reply);
         co_return reply.integer() == 1;
     }
 
     template <typename Redis>
-    static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const RuntimeSnapshot& snapshot) {
+    static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const RuntimeSnapshot& snapshot, std::string_view instanceId) {
         const auto now = std::to_string(message::utcNowMilliseconds());
         const auto changes = std::string(message::live::kChanges);
         for (const auto& device : snapshot.devices) {
             const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);
             const std::string_view keys[]{key, owner, changes};
-            const std::string_view args[]{service::runtime::instanceId(), device.linkId, now, device.id};
+            const std::string_view args[]{instanceId, device.linkId, now, device.id};
             const auto reply = co_await redis.eval(CollectorDeviceRouteRecord::eraseLegacyScript, keys, args);
             if (reply.kind() != ruvia::redis_value::kind_type::integer)
-                message::redis::throwValue("erase legacy device route", reply);
+                utils::redis::throwValue("erase legacy device route", reply);
         }
     }
 
     template <typename Redis>
-    static ruvia::task<void> eraseLegacyLinkSnapshots(const Redis& redis, const RuntimeSnapshot& snapshot) {
+    static ruvia::task<void> eraseLegacyLinkSnapshots(const Redis& redis, const RuntimeSnapshot& snapshot, std::string_view instanceId) {
         for (const auto& link : snapshot.links) {
             const auto prefix = message::collector::linkRuntimePrefix(link.id);
             const auto ownerKey = message::collector::linkOwnerKey(link.id);
-            for (const auto& key : co_await message::redis::keysMatching(redis, prefix + '*')) {
+            for (const auto& key : co_await utils::redis::keysMatching(redis, prefix + '*')) {
                 const auto separator = key.find_last_of(':');
                 if (separator == std::string::npos || separator <= prefix.size())
                     continue;
                 const auto instance = std::string_view(key).substr(prefix.size(), separator - prefix.size());
-                if (instance == service::runtime::instanceId())
+                if (instance == instanceId)
                     continue;
                 const std::string_view keys[]{key, ownerKey};
-                const std::string_view args[]{service::runtime::instanceId(), instance};
+                const std::string_view args[]{instanceId, instance};
                 const auto reply = co_await redis.eval(CollectorLinkRecord::eraseLegacyScript, keys, args);
                 if (reply.kind() != ruvia::redis_value::kind_type::integer)
-                    message::redis::throwValue("erase legacy link snapshot", reply);
+                    utils::redis::throwValue("erase legacy link snapshot", reply);
             }
         }
     }
 
     template <typename Redis>
     static ruvia::task<void> storeLinkEvent(const Redis& redis,
-        const message::StreamMessage& event, std::size_t workerIndex) {
+        const message::StreamMessage& event, std::size_t workerIndex, std::string_view instanceId) {
         const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
         const auto key =
-            CollectorLinkRecord::key(event.get("link_id"), workerIndex, service::runtime::instanceId());
+            CollectorLinkRecord::key(event.get("link_id"), workerIndex, instanceId);
         co_await storeSnapshot(redis, key, record.fields);
     }
 
     template <typename Redis>
     static ruvia::task<void> publishWorker(const Redis& redis, std::size_t workerIndex,
-        std::string_view workerInstanceId, std::string_view version) {
+        std::string_view workerInstanceId, std::string_view version, std::string_view instanceId) {
         const CollectorWorkerRecord record{
             workerIndex, std::string(version), "applied", message::utcNowMilliseconds(), std::string(workerInstanceId)};
         co_await storeSnapshot(redis,
-            CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId()), record.fields());
+            CollectorWorkerRecord::key(workerIndex, instanceId), record.fields());
     }
 
     template <typename Redis>
     static ruvia::task<void> renewWorkerSnapshot(const Redis& redis, std::size_t workerIndex,
-        std::string_view workerInstanceId, std::string_view version) {
+        std::string_view workerInstanceId, std::string_view version, std::string_view instanceId) {
         const CollectorWorkerRecord record{workerIndex, std::string(version), "applied",
             message::utcNowMilliseconds(), std::string(workerInstanceId)};
-        const auto key = CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId());
+        const auto key = CollectorWorkerRecord::key(workerIndex, instanceId);
         co_await retainSnapshot(redis, key, workerInstanceId, record.fields());
     }
 
     template <typename Redis>
     static ruvia::task<void> retainLinkSnapshot(const Redis& redis,
-        const message::StreamMessage& event, std::size_t workerIndex) {
+        const message::StreamMessage& event, std::size_t workerIndex, std::string_view instanceId) {
         const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
-        const auto key = CollectorLinkRecord::key(event.get("link_id"), workerIndex, service::runtime::instanceId());
+        const auto key = CollectorLinkRecord::key(event.get("link_id"), workerIndex, instanceId);
         co_await retainSnapshot(redis, key, event.get("worker_instance_id"), record.fields);
     }
 
     template <typename Redis>
     static ruvia::task<void> eraseWorker(const Redis& redis, std::size_t index,
-        std::string_view workerInstanceId) {
-        const auto keys = co_await message::redis::keysMatching(
-            redis, CollectorLinkRecord::key("*", index, service::runtime::instanceId()));
+        std::string_view workerInstanceId, std::string_view instanceId) {
+        const auto keys = co_await utils::redis::keysMatching(
+            redis, CollectorLinkRecord::key("*", index, instanceId));
         for (const auto& key : keys)
             co_await eraseSnapshot(redis, key, workerInstanceId);
-        co_await eraseSnapshot(redis, CollectorWorkerRecord::key(index, service::runtime::instanceId()), workerInstanceId);
+        co_await eraseSnapshot(redis, CollectorWorkerRecord::key(index, instanceId), workerInstanceId);
     }
 
     template <typename Redis>
     static ruvia::task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index,
-        std::string_view workerInstanceId) {
-        co_await eraseSnapshot(redis, CollectorLinkRecord::key(id, index, service::runtime::instanceId()), workerInstanceId);
+        std::string_view workerInstanceId, std::string_view instanceId) {
+        co_await eraseSnapshot(redis, CollectorLinkRecord::key(id, index, instanceId), workerInstanceId);
     }
 
   private:
@@ -1476,7 +1506,7 @@ class CollectorStateService final {
         const std::string_view keys[]{key};
         const auto reply = co_await redis.eval(CollectorWorkerRecord::retainScript, keys, views);
         if (reply.kind() != ruvia::redis_value::kind_type::integer)
-            message::redis::throwValue("retain collector snapshot", reply);
+            utils::redis::throwValue("retain collector snapshot", reply);
     }
 
     template <typename Redis>
@@ -1486,7 +1516,7 @@ class CollectorStateService final {
         const std::string_view args[]{workerInstanceId};
         const auto reply = co_await redis.eval(CollectorWorkerRecord::eraseScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::integer)
-            message::redis::throwValue("erase collector snapshot", reply);
+            utils::redis::throwValue("erase collector snapshot", reply);
     }
 
     template <typename Redis>
@@ -1502,7 +1532,332 @@ class CollectorStateService final {
         const std::string_view keys[]{key};
         const auto reply = co_await redis.eval(CollectorWorkerRecord::storeScript, keys, views);
         if (reply.kind() != ruvia::redis_value::kind_type::integer)
-            message::redis::throwValue("store collector snapshot", reply);
+            utils::redis::throwValue("store collector snapshot", reply);
+    }
+};
+
+// 本 Worker 的报文诊断与调试业务；借用的快照、索引与连接状态始终由所属 Worker 更新。
+class CollectorPacketService final {
+  public:
+    CollectorPacketService(std::size_t workerIndex, const RuntimeSnapshot& snapshot,
+        const std::map<std::string, std::size_t, std::less<>>& linkIndexes,
+        const std::map<std::string, ProtocolConnectionInfo, std::less<>>& connections,
+        const std::map<std::string, std::set<std::string>, std::less<>>& routes)
+        : workerIndex_(workerIndex), loadedSnapshot_(snapshot), linkIndexes_(linkIndexes),
+          networkConnections_(connections), routes_(routes) {}
+    [[nodiscard]] const LinkDefinition* findLink(std::string_view linkId) const noexcept {
+        const auto current = linkIndexes_.find(linkId);
+        return current == linkIndexes_.end() ? nullptr : &loadedSnapshot_.links[current->second];
+    }
+    [[nodiscard]] std::string_view protocolForLink(std::string_view linkId) const noexcept {
+        const auto* link = findLink(linkId);
+        return link ? std::string_view(link->protocol) : std::string_view{};
+    }
+    [[nodiscard]] std::string deviceCodesForConnection(std::string_view connectionId) const {
+        const auto current = routes_.find(connectionId);
+        if (current == routes_.end()) {
+            return {};
+        }
+        std::string result;
+        for (const auto& deviceCode : current->second) {
+            if (!result.empty()) {
+                result.push_back(',');
+            }
+            result += deviceCode;
+        }
+        return result;
+    }
+
+    [[nodiscard]] bool captureBytes() const noexcept {
+        return packet_log::enabled(packet_log::Level::Debug);
+    }
+
+    void discoveryRequested(const message::ProtocolTask& task) const {
+        if (task.kind != "discovery" || !packet_log::enabled(packet_log::Level::Info)) return;
+        const auto payload = message::fromHex(task.payload);
+        packet_log::write(packet_log::Level::Info, "DISCOVERY_REQUEST", taskLogContext(task), payload);
+    }
+
+    void discoveryUnavailable(const message::ProtocolTask& task) const {
+        packet_log::write(packet_log::Level::Warn, "DISCOVERY_FAILED", taskLogContext(task), {}, "discovery_no_connections");
+    }
+
+    void broadcastStarted(const message::ProtocolTask& task, std::size_t targets) const {
+        const auto reason = "targets=" + std::to_string(targets);
+        packet_log::write(packet_log::Level::Info, "BROADCAST_START", taskLogContext(task), {}, reason);
+    }
+
+    void broadcastTarget(const message::ProtocolTask& task, std::string_view connectionId, std::string_view childId) const {
+        auto context = taskLogContext(task, connectionId);
+        context.causationId = task.messageId;
+        context.messageId = childId;
+        packet_log::write(packet_log::Level::Debug, "BROADCAST_TARGET", context);
+    }
+
+    void discoveryStarted(const message::ProtocolTask& task) const {
+        if (task.kind == "discovery")
+            packet_log::write(packet_log::Level::Info, "DISCOVERY_START", taskLogContext(task, task.connectionId));
+    }
+
+    void ingressReceived(const IngressPacket& packet) const {
+        if (!captureBytes()) return;
+        const auto codes = deviceCodesForConnection(packet.connectionId);
+        packet_log::write(packet_log::Level::Debug, "RX_BYTES", ingressLogContext(packet, codes), packet.payload);
+    }
+
+    void ingressDropped(const IngressPacket& packet) const {
+        if (!packet_log::enabled(packet_log::Level::Error)) return;
+        const auto codes = deviceCodesForConnection(packet.connectionId);
+        packet_log::write(packet_log::Level::Error, "RX_DROPPED", ingressLogContext(packet, codes), packet.payload, "raw_ingress_backpressure");
+    }
+
+    void connectionOpened(const ProtocolConnectionInfo& info) const {
+        packet_log::write(packet_log::Level::Info, "CONNECTED", connectionLogContext(info));
+    }
+
+    void connectionClosed(const ProtocolConnectionInfo& info, std::string_view reason) const {
+        packet_log::write(packet_log::Level::Warn, "DISCONNECTED", connectionLogContext(info), {}, reason);
+    }
+
+    void staleConnection(const ProtocolConnectionInfo& info) const {
+        packet_log::write(packet_log::Level::Warn, "RX_REJECTED", connectionLogContext(info), {}, "stale_session_epoch");
+    }
+
+    void ingressRejected(const IngressPacket& packet) const {
+        if (!packet_log::enabled(packet_log::Level::Warn)) return;
+        const auto codes = deviceCodesForConnection(packet.connectionId);
+        packet_log::write(packet_log::Level::Warn, "RX_REJECTED", ingressLogContext(packet, codes), packet.payload, "stale_session_epoch");
+    }
+
+    void ingressFailed(const IngressPacket& packet, std::string_view failure) const {
+        if (!packet_log::enabled(packet_log::Level::Error)) return;
+        const auto codes = deviceCodesForConnection(packet.connectionId);
+        packet_log::write(packet_log::Level::Error, "PARSE_ERROR", ingressLogContext(packet, codes), packet.payload, failure);
+    }
+
+    void egressInvalid(const message::StreamMessage& message, std::string_view reason) const {
+        packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "TX";
+        context.operation = "decode_egress";
+        context.connectionId = message.get("connection_id");
+        context.messageId = message.get("message_id");
+        context.causationId = message.get("causation_id");
+        packet_log::write(packet_log::Level::Error, "TX_REJECTED", context, {}, reason);
+    }
+
+    void egressRejected(const message::EgressPacket& packet, std::string_view reason) const {
+        packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "TX";
+        context.operation = "transport";
+        context.connectionId = packet.connectionId;
+        context.messageId = packet.messageId;
+        context.causationId = packet.causationId;
+        context.sessionEpoch = packet.sessionEpoch;
+        packet_log::write(packet_log::Level::Warn, "TX_REJECTED", context, {}, reason);
+    }
+
+    void sending(const EgressLogContext& egress) const {
+        packet_log::write(packet_log::Level::Debug, "TX_BYTES", egressLogContext(egress), egress.debugPayload);
+    }
+
+    void sent(const EgressLogContext& egress, bool success) const {
+        packet_log::write(success ? packet_log::Level::Debug : packet_log::Level::Error,
+            success ? "TX_SUCCESS" : "TX_FAILED", egressLogContext(egress), {},
+            success ? std::string_view{} : std::string_view("socket_write_failed"));
+    }
+
+    void protocolClosed(const ProtocolAction& action) const {
+        packet_log::write(packet_log::Level::Warn,
+            hasMarker(action.reason, "timeout") ? "TIMEOUT" : "PROTOCOL_CLOSE",
+            actionLogContext(action, "protocol"), {}, action.reason);
+    }
+
+    void deviceBound(const ProtocolAction& action) const {
+        packet_log::write(packet_log::Level::Info, "DEVICE_BOUND", actionLogContext(action, "bind"));
+    }
+
+    void parsed(const message::ParsedDeviceMessage& parsed) const {
+        if (captureBytes())
+            packet_log::write(packet_log::Level::Debug, "PARSE_SUCCESS", parsedLogContext(parsed), {}, parsed.source);
+    }
+
+    void commandCompleted(const ProtocolAction& action, const message::ProtocolTask* task, bool success) const {
+        auto context = task ? taskLogContext(*task, action.connectionId) : actionLogContext(action, "command");
+        context.causationId = action.commandId;
+        const auto event = success
+            ? (task && task->kind == "discovery" ? "DISCOVERY_COMPLETED" : "COMMAND_COMPLETED")
+            : hasMarker(action.reason, "timeout") ? "TIMEOUT"
+            : (task && task->kind == "discovery" ? "DISCOVERY_FAILED" : "COMMAND_FAILED");
+        packet_log::write(success ? packet_log::Level::Info : packet_log::Level::Warn, event, context, {}, action.reason);
+    }
+
+    void deadlineFired(std::string_view connectionId, std::uint64_t token) const {
+        ProtocolAction diagnostic;
+        diagnostic.connectionId = connectionId;
+        const auto reason = std::to_string(token);
+        packet_log::write(packet_log::Level::Debug, "DEADLINE_FIRED", actionLogContext(diagnostic, "deadline"), {}, reason);
+    }
+
+    void deadlineUnresolved(std::string_view connectionId) const {
+        ProtocolAction diagnostic;
+        diagnostic.connectionId = connectionId;
+        packet_log::write(packet_log::Level::Warn, "TIMEOUT", actionLogContext(diagnostic, "deadline"), {}, "deadline_expired_without_protocol_action");
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> completeAcquisition(const Redis& redis, const ProtocolAction& action) {
+        if (action.kind == ProtocolActionKind::FinishAcquisition) {
+            co_await packet_log::DebugPacketService::finishAcquisition(redis, action.acquisitionId, action.reason);
+        } else if (!action.commandId.empty()) {
+            co_await packet_log::DebugPacketService::finishAcquisition(redis, action.commandId,
+                action.kind == ProtocolActionKind::CompleteCommand ? "success" : "failed");
+        }
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> recordDebugPacket(const Redis& redis, service::common::UuidV7State& uuidState,
+        const LinkDefinition& link, const DeviceDefinition* device, std::string_view direction,
+        std::string_view address, std::span<const std::uint8_t> bytes, std::int64_t timestamp,
+        bool deviceOnly, std::string_view eventId, std::string_view status, std::string_view reason,
+        std::string_view parsedJson, std::string_view replyToPacketId, std::string_view acquisitionId) {
+        if (!link.debugEnabled && !(device && device->debugEnabled)) co_return;
+        try {
+            co_await packet_log::DebugPacketService::recordPacket(redis, uuidState, link.id,
+                device ? std::string_view(device->id) : std::string_view{}, direction,
+                "collector", address, bytes, timestamp, link.debugEnabled && !deviceOnly,
+                device && device->debugEnabled, eventId, status, reason, parsedJson, replyToPacketId,
+                false, 0, acquisitionId);
+        } catch (const std::exception& error) {
+            LOG_WARN << "[Collector] debug_packet_failed: " << error.what();
+        }
+    }
+
+  private:
+    [[nodiscard]] service::packet_log::Context
+    ingressLogContext(const IngressPacket& packet, std::string_view deviceCodes = {}) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "RX";
+        context.operation = "transport";
+        context.protocol = protocolForLink(packet.linkId);
+        context.linkId = packet.linkId;
+        context.deviceCode = deviceCodes;
+        context.connectionId = packet.connectionId;
+        context.remoteAddress = packet.remoteAddress;
+        context.messageId = packet.messageId;
+        context.sessionEpoch = packet.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] service::packet_log::Context
+    connectionLogContext(const ProtocolConnectionInfo& info) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = "connection";
+        context.protocol = protocolForLink(info.linkId);
+        context.linkId = info.linkId;
+        context.connectionId = info.connectionId;
+        context.remoteAddress = info.remoteAddress;
+        context.sessionEpoch = info.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] service::packet_log::Context
+    taskLogContext(const message::ProtocolTask& task, std::string_view connectionId = {}) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = task.kind;
+        context.protocol = task.protocol;
+        context.linkId = task.linkId;
+        context.deviceId = task.deviceId;
+        context.deviceCode = task.deviceCode;
+        context.connectionId = connectionId.empty() ? task.connectionId : connectionId;
+        context.messageId = task.messageId;
+        context.causationId = task.causationId;
+        context.sessionEpoch = task.sessionEpoch;
+        const auto network = networkConnections_.find(context.connectionId);
+        if (network != networkConnections_.end()) {
+            context.remoteAddress = network->second.remoteAddress;
+        }
+        return context;
+    }
+
+    [[nodiscard]] service::packet_log::Context
+    actionLogContext(const ProtocolAction& action, std::string_view operation = {}) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = operation;
+        context.deviceId = action.deviceId;
+        context.deviceCode = action.deviceCode;
+        context.connectionId = action.connectionId;
+        context.causationId = action.commandId;
+        const auto network = networkConnections_.find(action.connectionId);
+        if (network != networkConnections_.end()) {
+            context.linkId = network->second.linkId;
+            context.remoteAddress = network->second.remoteAddress;
+            context.sessionEpoch = network->second.sessionEpoch;
+            context.protocol = protocolForLink(network->second.linkId);
+        }
+        return context;
+    }
+
+    [[nodiscard]] service::packet_log::Context
+    parsedLogContext(const message::ParsedDeviceMessage& parsed) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "RX";
+        context.operation = "parse";
+        context.protocol = parsed.protocol;
+        context.linkId = parsed.linkId;
+        context.deviceId = parsed.deviceId;
+        context.deviceCode = parsed.deviceCode;
+        context.connectionId = parsed.connectionId;
+        context.messageId = parsed.messageId;
+        context.causationId = parsed.causationId;
+        const auto network = networkConnections_.find(parsed.connectionId);
+        if (network != networkConnections_.end()) {
+            context.remoteAddress = network->second.remoteAddress;
+            context.sessionEpoch = network->second.sessionEpoch;
+        }
+        return context;
+    }
+
+    [[nodiscard]] service::packet_log::Context
+    egressLogContext(const EgressLogContext& egress) const noexcept {
+        service::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "TX";
+        context.operation = egress.operation;
+        context.protocol = egress.protocol;
+        context.linkId = egress.linkId;
+        context.deviceId = egress.deviceId;
+        context.deviceCode = egress.deviceCode;
+        context.connectionId = egress.connectionId;
+        context.remoteAddress = egress.remoteAddress;
+        context.messageId = egress.messageId;
+        context.causationId = egress.causationId;
+        context.sessionEpoch = egress.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] static bool hasMarker(std::string_view value, std::string_view marker) noexcept {
+        return value.find(marker) != std::string_view::npos;
+    }
+    std::size_t workerIndex_;
+    const RuntimeSnapshot& loadedSnapshot_;
+    const std::map<std::string, std::size_t, std::less<>>& linkIndexes_;
+    const std::map<std::string, ProtocolConnectionInfo, std::less<>>& networkConnections_;
+    const std::map<std::string, std::set<std::string>, std::less<>>& routes_;
+};
+
+class CollectorTelemetryService final {
+  public:
+    template <typename Redis>
+    static ruvia::task<void> publishParsed(const Redis& redis, const message::ParsedDeviceMessage& parsed) {
+        (void)co_await service::messaging::stream::publishAndWake(redis, message::parsedStream(),
+            message::parsedFields(parsed), std::nullopt, message::WorkerStreamTask::Telemetry);
     }
 };
 

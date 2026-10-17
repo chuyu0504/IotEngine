@@ -14,6 +14,7 @@
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/system/dept/dept.entity.h"
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/role/role.types.h"
@@ -118,7 +119,7 @@ class UserService {
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::string departmentId =
             body.get<"departmentId">() ? std::string(body.get<"departmentId">()->view()) : "";
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         auto tx = co_await c.db().begin_transaction();
         entities::UserEntity user(c.pool());
         user.set<"id">(id);
@@ -146,7 +147,7 @@ class UserService {
             user.set<"department_id">(departmentId);
         }
         (void)co_await tx.template get_repository<entities::UserEntity>().insert(user);
-        co_await replaceRoles(tx, id, body.get<"roleIds">(), c.pool(), *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
+        co_await replaceRoles(tx, id, body.get<"roleIds">(), c.pool(), c.template worker_state<service::common::UuidV7State>());
         co_await tx.commit();
     }
 
@@ -205,7 +206,7 @@ class UserService {
             (void)co_await tx.template get_repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
         }
         if (body.get<"roleIds">()) {
-            co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.pool(), *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
+            co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.pool(), c.template worker_state<service::common::UuidV7State>());
         }
         co_await tx.commit();
     }
@@ -329,13 +330,13 @@ class UserService {
         co_return false;
     }
 
-    static ruvia::task<void> replaceRoles(ruvia::db_transaction& tx, std::string_view userId, const ruvia::array<ruvia::string>& roleIds, std::pmr::memory_resource* resource, service::common::UuidV7Generator& uuidGenerator) {
+    static ruvia::task<void> replaceRoles(ruvia::db_transaction& tx, std::string_view userId, const ruvia::array<ruvia::string>& roleIds, std::pmr::memory_resource* resource, service::common::UuidV7State& uuidState) {
         (void)co_await tx.template get_repository<entities::UserRoleEntity>().delete_by(
             entities::UserRoleEntity::column<"user_id">() == userId
         );
         for (const auto& roleId : roleIds) {
             entities::UserRoleEntity binding(resource);
-            binding.set<"id">(uuidGenerator.next());
+            binding.set<"id">(service::utils::nextUuid(uuidState));
             binding.set<"user_id">(userId);
             binding.set<"role_id">(roleId.view());
             (void)co_await tx.template get_repository<entities::UserRoleEntity>().upsert(binding, { .do_nothing_ = true });

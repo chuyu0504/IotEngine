@@ -22,6 +22,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/common/wireguard.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/edge_node/edge_node.entity.h"
@@ -449,7 +450,7 @@ class VpnService final {
             service::common::fail(21001, "Peer 最多授权 64 条路由", 400);
         }
         co_await validateAllowedRoutes(c, networkId, allowedRoutes);
-        const auto id = reusableEdgePeerId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
+        const auto id = reusableEdgePeerId.empty() ? service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>())
                                                    : reusableEdgePeerId;
         const bool edge = peerType == "edge";
         const auto status = publicKey.empty() ? "pending" : "active";
@@ -603,7 +604,7 @@ class VpnService final {
         // Ownership, selections and current authorization must be valid before
         // the connection can create demand. A saved Peer alone creates none.
         (void)co_await desktopPeerConfig(c, peerId);
-        const auto connectionId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto connectionId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         co_await renewDesktopSession(c, peerId, connectionId);
         std::exception_ptr failure;
         try {
@@ -635,7 +636,7 @@ return 1
                                                    keys,
                                                    arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
-            service::message::redis::throwValue("renew desktop VPN session", reply);
+            service::utils::redis::throwValue("renew desktop VPN session", reply);
         }
     }
 
@@ -647,7 +648,7 @@ return 1
         // A late close removes only its own connection, including after reconnect.
         const auto reply = co_await c.redis().eval("return redis.call('ZREM',KEYS[1],ARGV[1])", keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("close desktop VPN session", reply);
+            service::utils::redis::throwValue("close desktop VPN session", reply);
         }
         co_await reconcileHub(c);
     }
@@ -886,7 +887,7 @@ ruvia::task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesk
         service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
     }
     co_await detail::validateSelectedEdges(tx, networkId, ids);
-    const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+    const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
     const auto assigned = co_await allocateAddressFromDb(tx, networkId, *overlay);
     if (!assigned) {
         service::common::fail(21002, "VPN 网络地址已用尽", 409);
@@ -1086,7 +1087,7 @@ ruvia::task<void> VpnService::discardEdgePeer(Context& c, std::string_view id) {
 template <typename Context>
 ruvia::task<void> VpnService::audit(Context& c, std::string_view actor, std::string_view action, std::string_view resource, std::string_view resourceId, std::string_view outcome, std::string_view details) {
     using Audit = service::device::entities::SecurityAuditLogEntity;
-    const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+    const auto auditId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
     ruvia::db_query insert(c.pool());
     insert
         .insert_into(service::device::entities::SecurityAuditLogEntity::table_name(), { std::tuple_element_t<Audit::column_index<"id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"actor_user_id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"action">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"resource_type">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"resource_id">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"outcome">(), Audit::columns_type>::name.view(), std::tuple_element_t<Audit::column_index<"details">(), Audit::columns_type>::name.view() })

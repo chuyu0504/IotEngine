@@ -21,6 +21,7 @@
 #include "service/middleware/request_context.h"
 #include "service/modules/edge_node/edge_node.service.h"
 #include "service/modules/edge_node/edge_node.types.h"
+#include "service/utils/uuid.h"
 
 namespace service::edge_node {
 
@@ -391,7 +392,7 @@ class EdgeManagementController final {
         const auto& configuration = c.req().validated<FirmwareUploadBody>();
         try {
             const auto directory = co_await edgeService().prepareFirmwareUpload(request, id);
-            service::edge_node::FirmwareUpload file(request.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
+            service::edge_node::FirmwareUpload file(service::utils::nextUuid(request.template worker_state<service::common::UuidV7State>()), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
             auto& reader = c.req().get_body_reader();
             while (auto chunk = co_await reader.read()) {
                 auto remaining = *chunk;

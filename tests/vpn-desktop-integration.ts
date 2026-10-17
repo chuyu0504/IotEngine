@@ -102,7 +102,55 @@ async function connectEdge() {
         };
     });
 }
+async function deadlineClaims() {
+    const source = await Bun.file(new URL('../service/features/vpn/vpn.service.h', import.meta.url)).text();
+    const script = (name: string) => {
+        const match = source.match(new RegExp(`inline constexpr std::string_view ${name} = R"lua\\(([\\s\\S]*?)\\)lua";`));
+        assert(match, `missing named Lua operation ${name}`);
+        return match[1];
+    };
+    const update = script('kHubScheduleUpdateScript');
+    const read = script('kHubScheduleReadScript');
+    const claim = script('kHubScheduleClaimScript');
+    const key = `iot:vpn:hub:schedule:fixture-${randomUUID()}`;
+    const channel = `${key}:changed`;
+    const write = (action: string, desktop = '') => presence.send('EVAL', [update, '2', key, channel, action, desktop]);
+    const snapshot = async () => await presence.send('EVAL', [read, '1', key]) as number[];
+    const take = () => presence.send('EVAL', [claim, '2', key, channel]);
+    try {
+        assert.equal(Number(await write('initialize')), 1);
+        assert.equal(Number(await write('initialize')), 0, 'only one Worker initializes startup work');
+        const [now, initial] = await snapshot();
+        assert(initial <= now, 'startup is immediately due');
+        const claimed = await Promise.all([take(), take()]);
+        assert.deepEqual(claimed.map(Number).sort(), [0, 1], 'only one Worker claims the deadline');
+        const [claimedNow, recovery] = await snapshot();
+        assert(recovery > claimedNow + 290000, 'the claimed identity survives at its recovery deadline');
+        await write('complete');
+        assert.equal((await snapshot())[1], 0, 'success leaves no periodic business work');
+        assert.equal(Number(await write('initialize')), 0, 'another Worker cannot turn success into a sweep');
+        const desktop = Date.now() + 60000;
+        await write('failed', String(desktop));
+        assert.equal((await snapshot())[1], desktop, 'nearest desktop deadline precedes the failed-attempt retry');
+        assert.equal(Number(await take()), 0, 'future deadlines are not claimable');
+        await presence.send('ZADD', [key, String(Date.now() - 1), 'desktop', String(Date.now() - 1), 'retry']);
+        assert.equal(Number(await take()), 1);
+        assert.equal(Number(await take()), 0, 'one attempt claims all due identities, not one per Worker');
+        assert.equal(Number(await presence.send('ZCARD', [key])), 3, 'in-flight desktop/retry identities are retained');
+        await presence.send('ZADD', [key, String(Date.now() - 1), 'retry']);
+        assert.equal(Number(await take()), 1, 'a lost Worker attempt becomes claimable again');
+        await write('complete');
+        assert.equal((await snapshot())[1], 0);
+        const ttl = Number(await presence.send('PTTL', [key]));
+        assert(ttl > 0 && ttl <= 600000, 'exited-instance schedule keys are reclaimed');
+    } finally {
+        await presence.del(key);
+    }
+    console.log('PASS actual VPN deadline claims, retained retry identities and no successful periodic sweep');
+}
+
 try {
+    await deadlineClaims();
     assert.equal((await db`SELECT to_regclass('public.vpn_effective_edge_access') AS name`)[0].name, 'vpn_effective_edge_access');
     const salt = randomBytes(16); const hash = `pbkdf2_sha256$210000$${salt.toString('hex')}$${pbkdf2Sync(password, salt, 210000, 32, 'sha256').toString('hex')}`;
     await db`INSERT INTO sys_role(id,code,name,status,permissions) VALUES
@@ -181,6 +229,19 @@ try {
     check(await patch(peer,[])); await requestedState(false);
     check(await patch(peer,[edgeA])); await requestedState(true);
     demandC.close(); await requestedState(false);
+    // A durable desktop session without an SSE connection models a client whose
+    // Worker disappeared without running closeDesktopSession. Only its actual
+    // Redis deadline may trigger demand shrinkage; no follow-up RPC does so.
+    await presence.send('EVAL', [`local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000);
+        redis.call('ZADD',KEYS[1],now+5000,'lost-worker-session');
+        redis.call('PEXPIRE',KEYS[1],6000); return 1`, '1', `iot:vpn:desktop:sessions:${peer}`]);
+    check(await patch(peer, [edgeA]));
+    await requestedState(true);
+    const expiryTasks = Number((await db`SELECT count(*) AS count FROM edge_task WHERE task_type='vpn' AND request->>'peerId'=${edgeA}`)[0].count);
+    await requestedState(false);
+    assert.equal(Number((await db`SELECT count(*) AS count FROM edge_task WHERE task_type='vpn' AND request->>'peerId'=${edgeA}`)[0].count), expiryTasks + 1,
+        'deadline expiry sends one effective disable across Service Workers');
+    await presence.del(`iot:vpn:desktop:sessions:${peer}`);
     assert.equal((await db`SELECT host(assigned_ipv4) AS address FROM vpn_peer WHERE id=${edgeA}`)[0].address,'100.96.0.20');
     assert.equal((await db`SELECT virtual_cidr::text AS cidr FROM vpn_route WHERE id=${routeA}`)[0].cidr,'172.31.10.0/24');
     console.log('PASS saved capability and preallocated mappings stay off, live selection enables VPN, last client closes it without reallocating');

@@ -5,6 +5,8 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <optional>
@@ -24,12 +26,14 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_predicate.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/derived_point.h"
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/configuration/configuration.entity.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.entity.h"
@@ -39,6 +43,86 @@
 #include "service/features/packet_log/packet_log.service.h"
 
 namespace service::edge {
+
+// Worker-local socket targets. Redis consumption is driven by the runtime.
+class SessionDispatcher final {
+  public:
+    using SessionWake = std::function<void()>;
+    using SessionFailure = std::function<void(std::string_view)>;
+
+    void activate(std::size_t index) {
+        if (running_) {
+            throw std::runtime_error("edge dispatcher is already running");
+        }
+        workerIndex_ = index;
+        failed_ = false;
+        running_ = true;
+    }
+    void clear() noexcept {
+        running_ = false;
+        sessions_.clear();
+    }
+    [[nodiscard]] std::size_t workerIndex() const {
+        if (!workerIndex_) {
+            throw std::runtime_error("edge dispatcher is not ready");
+        }
+        return *workerIndex_;
+    }
+    void registerSession(std::string nodeId, std::uint64_t epoch,
+                         SessionWake wake, SessionFailure failure = {}) {
+        if (!running_ || failed_ || !wake) {
+            throw std::runtime_error("edge dispatcher is not ready");
+        }
+        sessions_.insert_or_assign(std::move(nodeId), SessionTarget{ epoch, std::move(wake), std::move(failure) });
+    }
+    void unregisterSession(std::string_view nodeId, std::uint64_t epoch) noexcept {
+        const auto current = sessions_.find(nodeId);
+        if (current != sessions_.end() && current->second.epoch == epoch) {
+            sessions_.erase(current);
+        }
+    }
+    [[nodiscard]] bool failed() const noexcept { return failed_; }
+    void failSessions(std::string_view reason) noexcept {
+        failed_ = true;
+        for (auto& [nodeId, target] : sessions_) {
+            (void)nodeId;
+            try {
+                if (target.failure) {
+                    target.failure(reason);
+                }
+            } catch (const std::exception& error) {
+                std::cerr << "edge session failure notification failed: " << error.what() << '\n';
+            } catch (...) {
+                std::cerr << "edge session failure notification failed: unknown error\n";
+            }
+        }
+    }
+    bool deliver(std::string_view nodeId) {
+        const auto current = sessions_.find(nodeId);
+        if (current == sessions_.end()) {
+            return true;
+        }
+        try {
+            current->second.wake();
+            return true;
+        } catch (const std::exception& error) {
+            std::cerr << "edge dispatch worker " << workerIndex() << " wake failed: " << error.what() << '\n';
+        } catch (...) {
+            std::cerr << "edge dispatch worker " << workerIndex() << " wake failed: unknown error\n";
+        }
+        return false;
+    }
+  private:
+    struct SessionTarget final {
+        std::uint64_t epoch;
+        SessionWake wake;
+        SessionFailure failure;
+    };
+    std::map<std::string, SessionTarget, std::less<>> sessions_;
+    std::optional<std::size_t> workerIndex_;
+    bool running_ = false;
+    bool failed_ = false;
+};
 
 namespace config::detail {
 
@@ -851,22 +935,22 @@ ruvia::task<bool> publishFenced(const Redis& redis, std::size_t workerIndex, std
     if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0)
         co_return false;
     if (reply.kind() != ruvia::redis_value::kind_type::string)
-        service::message::redis::throwValue(operation, reply);
+        service::utils::redis::throwValue(operation, reply);
     co_return true;
 }
 
 template <typename Redis>
-ruvia::task<bool> publishIngress(const Redis& redis, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs) {
+ruvia::task<bool> publishIngress(const Redis& redis, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs, std::string_view instanceId) {
     const auto receivedAt = std::to_string(receivedAtMs);
     const std::string_view fields[]{"kind", service::message::edge::projector_stream::kIngressKind,
                                     "wire", wire, "received_at_ms", receivedAt};
-    co_return co_await publishFenced(redis, workerIndex, service::runtime::instanceId(), fields,
+    co_return co_await publishFenced(redis, workerIndex, instanceId, fields,
                                      "fenced edge ingress");
 }
 
 template <typename Redis>
 ruvia::task<bool> publishMetadata(const Redis& redis, std::size_t workerIndex, std::string_view nodeId,
-                                  std::string_view instance = service::runtime::instanceId()) {
+                                  std::string_view instance) {
     const std::string_view fields[]{"kind", service::message::edge::projector_stream::kMetadataKind,
                                     "node_id", nodeId};
     co_return co_await publishFenced(redis, workerIndex, instance, fields, "fenced edge metadata");
@@ -882,7 +966,7 @@ void queueStoreNode(Pipeline& pipeline, std::string_view nodeId, const NodeSnaps
     const auto arguments = storeArguments(snapshot);
     const std::vector<std::string_view> keyViews{key};
     const std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
-    service::message::redis::queueEval(pipeline, kStoreNodeScript, keyViews, argumentViews);
+    pipeline.eval(kStoreNodeScript, keyViews, argumentViews);
 }
 
 template <typename Redis>
@@ -894,7 +978,7 @@ ruvia::task<void> storeNode(const Redis& redis, std::string_view nodeId, const N
     const auto reply = co_await redis.eval(kStoreNodeScript, keys,
                                            std::span<const std::string_view>(argumentViews));
     if (reply.kind() != ruvia::redis_value::kind_type::integer)
-        service::message::redis::throwValue("store edge metadata", reply);
+        service::utils::redis::throwValue("store edge metadata", reply);
 }
 
 // Returns std::nullopt when the node hash does not exist.
@@ -902,9 +986,9 @@ template <typename Redis>
 ruvia::task<std::optional<NodeSnapshot>> loadNode(const Redis& redis, std::string_view nodeId) {
     const std::vector<std::string> replyArguments{"HGETALL", service::message::edge::metadataKey(nodeId)};
     const auto reply =
-        co_await service::message::redis::command(redis, replyArguments);
+        co_await redis.command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
     if (reply.kind() != ruvia::redis_value::kind_type::array)
-        service::message::redis::throwValue("load edge metadata", reply);
+        service::utils::redis::throwValue("load edge metadata", reply);
     const auto& fields = reply.array();
     if (fields.empty())
         co_return std::nullopt;
@@ -1028,7 +1112,7 @@ ruvia::task<Catalog> hydrate(Context& context) {
     for (const auto& [nodeId, snapshot] : catalog)
         queueStoreNode(pipeline, nodeId, snapshot);
     const auto replies = co_await std::move(pipeline).exec();
-    service::message::redis::requirePipelineSuccess("hydrate edge metadata", replies);
+    service::utils::redis::requirePipelineSuccess("hydrate edge metadata", replies);
     co_return catalog;
 }
 
@@ -1045,8 +1129,8 @@ class ConfigService final {
             packet.payload().size() > 4096 || (packet.direction() != "RX" &&
             packet.direction() != "TX" && packet.direction() != "TX_ATTEMPT" && packet.direction() != "RX_DROP")) co_return;
         const auto acquisitionId = protocol::debugAcquisitionId(nodeId, packet);
-        const auto linkId = protocol::uuidText(packet.endpoint_id());
-        const auto deviceId = packet.device_id().size() == 16 ? protocol::uuidText(packet.device_id()) : std::string{};
+        const auto linkId = service::common::uuidText(packet.endpoint_id());
+        const auto deviceId = packet.device_id().size() == 16 ? service::common::uuidText(packet.device_id()) : std::string{};
         ruvia::db_query node;
         node.select(node.column(std::tuple_element_t<persistence::EdgeNodeEntity::column_index<"name">(), persistence::EdgeNodeEntity::columns_type>::name.view()))
             .from(persistence::EdgeNodeEntity::table_name())
@@ -1089,13 +1173,13 @@ class ConfigService final {
             decoded.set_protocol(pb::PROTOCOL_SL651); // Allows existing binary-value formatting; no wire decoding.
             parsedJson = protocol::TelemetryValues::telemetryJson(decoded);
         }
-        co_await packet_log::DebugPacketService::recordPacket(c.redis(), *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>(), linkId, deviceId,
+        co_await packet_log::DebugPacketService::recordPacket(c.redis(), c.template worker_state<service::common::UuidV7State>(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
             packet.observed_at_ms(), captureLink, captureDevice,
-            packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
+            packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.packet_id()) : std::string{},
             packet.status(), packet.reason(), parsedJson,
-            packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
+            packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.reply_to_packet_id()) : std::string{},
             packet.has_parsed_value(), packet.payload_offset(), acquisitionId,
             nodeId, links.front()[1].value().value_or(""));
     }
@@ -1237,7 +1321,7 @@ class ConfigService final {
 
     static bool setUuid(std::string* field, std::string_view text) {
         std::uint8_t value[16]{};
-        if (!protocol::uuidBytes(text, value))
+        if (!service::common::uuidBytes(text, value))
             return false;
         field->assign(protocol::bytes(value, sizeof(value)));
         return true;
@@ -1354,7 +1438,7 @@ class ConfigService final {
         snapshot.itemCount = items.size();
         snapshot.wires.reserve(items.size() + 2);
 
-        auto begin = service::edge::protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+        auto begin = service::edge::protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
         auto* configBegin = begin.mutable_config_begin();
         configBegin->set_revision(revision);
         configBegin->set_item_count(static_cast<std::uint32_t>(items.size()));
@@ -1362,11 +1446,11 @@ class ConfigService final {
             protocol::bytes(snapshotDigest.data(), snapshotDigest.size()));
         appendWire(snapshot.wires, begin);
         for (const auto& item : items) {
-            auto envelope = service::edge::protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+            auto envelope = service::edge::protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
             *envelope.mutable_config_item() = item;
             appendWire(snapshot.wires, envelope);
         }
-        auto commit = service::edge::protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+        auto commit = service::edge::protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
         auto* configCommit = commit.mutable_config_commit();
         configCommit->set_revision(revision);
         configCommit->set_sha256(
@@ -1741,7 +1825,7 @@ class EdgeControlService final {
             service::common::fail(10002, "Empty edge control request", 400);
         }
 
-        pb::Envelope envelope = service::edge::protocol::outbound(context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), context.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+        pb::Envelope envelope = service::edge::protocol::outbound(service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), context.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
         bool parsed = false;
         if (operation == "queue-network") {
             pb::NetworkConfigRequest request;

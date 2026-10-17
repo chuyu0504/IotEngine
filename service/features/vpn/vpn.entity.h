@@ -1,32 +1,24 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
-#include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
-#include <ruvia/web/redis/redis_entity.h>
 
-#include "service/common/message.h"
 
 namespace service::vpn::persistence {
 
-// Per-instance drift-correction lease: present while this instance's Hub was
-// reconciled within the last drift period. Its TTL schedules the next drift run.
-RUVIA_REDIS_ENTITY(ReconciliationSchedule, "iot_vpn_reconciliation", RUVIA_REDIS_COLUMN(id, ruvia::string, ruvia::redis_column_options{ .primary_key_ = true }));
-
-// Read the connection resource owned by the desktop API through its Redis contract.
-// Per-member sorted-set expiry cannot be represented by a Redis ORM entity.
-struct DesktopSessionSet final {
-    static std::string key(std::string_view peerId) {
-        return service::message::vpn::desktopSessionKey(peerId);
-    }
-};
-
-// Latest desktop-session deadline already handled by one Service Worker. The
-// claim is a compare-and-set on a numeric string (kDesktopExpiryClaimScript),
-// which the Redis ORM cannot express.
-struct DesktopExpiryClaim final {
-    static constexpr std::string_view kKey{ "iot:vpn:desktop:expiry" };
+// Redis sorted-set mappings used by VPN business operations:
+// message::vpn::desktopSessionKey(peerId): connection ID -> Redis-clock expiry.
+// message::vpn::hubScheduleKey(instanceId): desktop/retry -> actual deadline,
+// initialized -> +inf. kHubSchedule*Script implements atomic claim/recovery,
+// which cannot be expressed as Redis ORM hash entities. The schedule's 10-minute
+// TTL reclaims keys of exited instances; active claims/retries renew it.
+// Both deadline Lua reads return this pair of integer milliseconds. A zero
+// deadline means no active member; the Redis clock avoids host clock skew.
+struct DeadlineSnapshot final {
+    std::int64_t redisNowMs{};
+    std::int64_t deadlineMs{};
 };
 
 RUVIA_DB_ENTITY(VpnEffectiveEdgeAccessEntity, "vpn_effective_edge_access", RUVIA_DB_COLUMN(peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(network_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_peer_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_node_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(edge_address, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .nullable_ = true }))

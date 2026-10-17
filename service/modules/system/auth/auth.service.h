@@ -7,10 +7,12 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 
 #include <ruvia/web/app.h>
 #include <ruvia/web/auth/jwt.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/database.h"
 #include "service/common/http.h"
@@ -146,7 +148,7 @@ class LoginRateLimiter {
     ruvia::task<bool> locked(Context& context, std::string_view username) {
         const std::vector<std::string> replyArguments{ "GET", entities::LoginFailureCounter::key(username) };
         const auto reply =
-            co_await service::message::redis::command(context.redis(), replyArguments);
+            co_await context.redis().command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
         if (reply.null()) {
             co_return false;
         }
@@ -164,10 +166,7 @@ if failures == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return failures
 )lua";
         const std::vector<std::string> replyArguments{ "EVAL", std::string(script), "1", entities::LoginFailureCounter::key(username), std::string(windowMilliseconds) };
-        const auto reply = co_await service::message::redis::command(
-            context.redis(),
-            replyArguments
-        );
+        const auto reply = co_await context.redis().command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             throw std::runtime_error("invalid login rate limit increment");
         }
@@ -177,7 +176,7 @@ return failures
     template <typename Context>
     ruvia::task<void> clear(Context& context, std::string_view username) {
         const std::vector<std::string> delArguments{ "DEL", entities::LoginFailureCounter::key(username) };
-        (void)co_await service::message::redis::command(context.redis(), delArguments);
+        (void)co_await context.redis().command(std::vector<std::string_view>(delArguments.begin(), delArguments.end()));
     }
 };
 

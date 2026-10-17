@@ -28,6 +28,7 @@
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/device/device.types.h"
 #include "service/modules/edge_node/edge_node.entity.h"
@@ -639,7 +640,7 @@ class DeviceService {
         co_await validate(c, transaction, resolvedLinkId, body, true);
         co_await ensureUnique(c, transaction, resolvedLinkId, body, std::nullopt);
         co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::nullopt);
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const std::string name(body.template get<"name">().view());
         const std::string deviceCode(body.template get<"deviceCode">().view());
         const std::string linkId = resolvedLinkId;
@@ -687,7 +688,7 @@ class DeviceService {
         insert.insert_into(service::device::entities::DeviceEntity::table_name(), { service::device::entities::DeviceEntity::column<"id">().name(), service::device::entities::DeviceEntity::column<"name">().name(), service::device::entities::DeviceEntity::column<"link_id">().name(), service::device::entities::DeviceEntity::column<"protocol_config_id">().name(), service::device::entities::DeviceEntity::column<"group_id">().name(), service::device::entities::DeviceEntity::column<"status">().name(), service::device::entities::DeviceEntity::column<"protocol_params">().name(), service::device::entities::DeviceEntity::column<"remark">().name(), service::device::entities::DeviceEntity::column<"created_by">().name() })
             .values({ db::uuid(insert, id), insert.value(name), db::uuid(insert, linkId), db::uuid(insert, protocolConfigId), db::nullableUuid(insert, groupId), insert.value(status), protocolParams, insert.null_if(db::text(insert, insert.value(remark)), insert.value("")), db::uuid(insert, c.userId) });
         (void)co_await transaction.execute(insert);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         try {
             (void)co_await service::utils::callRpc(c, "telemetry", "initialize", service::message::rpc::encodeLinePair(id, deviceCode));
@@ -731,7 +732,7 @@ return result
         const std::vector<std::string_view> args;
         const auto reply = co_await c.redis().eval(readPackets, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            service::message::redis::throwValue("read debug packets", reply);
+            service::utils::redis::throwValue("read debug packets", reply);
         }
         ruvia::boxed_array<DeviceDebugAcquisitionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : reply.array()) {
@@ -819,7 +820,7 @@ return result
             .set(service::device::entities::DeviceEntity::column<"updated_at">().name(), query.call("now"))
             .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().is_null()).expression(query));
         (void)co_await transaction.execute(query);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         if (enabled) {
             co_await touchDebug(c.redis(), id);
@@ -862,7 +863,7 @@ return result
             .set(service::device::entities::DeviceEntity::column<"updated_at">().name(), query.call("now"))
             .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().is_null()).expression(query));
         (void)co_await transaction.execute(query);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         if (!edgeNodeId.empty() && service::common::isUuid(actor)) {
             (void)co_await service::edge_node::EdgeService::queueSnapshot(c, edgeNodeId, actor);
@@ -1022,7 +1023,7 @@ return result
             if (changed) {
                 (void)co_await transaction.execute(update);
             }
-            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
             if (connectionChanged && currentExecution == "edge")
                 co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, currentLinkId);
             co_await transaction.commit();
@@ -1069,7 +1070,7 @@ return result
             .set(service::device::entities::DeviceEntity::column<"updated_at">().name(), removeQuery.call("now"))
             .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(removeQuery, id)));
         (void)co_await transaction.execute(removeQuery);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "deleted", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         if (!rows.front()[1].value().value_or("").empty())
             co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, rows.front()[2].value().value_or(""));
         co_await transaction.commit();
@@ -1118,7 +1119,7 @@ return result
     template <typename Context>
     ruvia::task<void> createGroup(Context& c, const CreateDeviceGroupBody& body) {
         co_await validateParent(c, body, std::nullopt);
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const std::string name(body.template get<"name">().view());
         const std::string parentId = body.template get<"parentId">() ? std::string(body.template get<"parentId">()->view()) : "";
         const std::string status = body.template get<"status">() ? std::string(body.template get<"status">()->view()) : "enabled";
@@ -2505,13 +2506,13 @@ class DeviceShareService {
             const std::string userId = share.subjectType == "user" ? share.subjectId : "";
             const std::string departmentId =
                 share.subjectType == "department" ? share.subjectId : "";
-            const auto grantId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            const auto grantId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
             ruvia::db_query insert(c.pool());
             insert.insert_into(service::device::entities::DeviceAccessGrantEntity::table_name(), { service::device::entities::DeviceAccessGrantEntity::column<"id">().name(), service::device::entities::DeviceAccessGrantEntity::column<"device_id">().name(), service::device::entities::DeviceAccessGrantEntity::column<"user_id">().name(), service::device::entities::DeviceAccessGrantEntity::column<"department_id">().name(), service::device::entities::DeviceAccessGrantEntity::column<"access_level">().name(), service::device::entities::DeviceAccessGrantEntity::column<"granted_by">().name() })
                 .values({ db::uuid(insert, grantId), db::uuid(insert, deviceId), db::nullableUuid(insert, userId), db::nullableUuid(insert, departmentId), insert.value(share.accessLevel), db::uuid(insert, decision.actor.userId) });
             (void)co_await transaction.execute(insert);
         }
-        const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto auditId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto shareCount = static_cast<std::int64_t>(shares.size());
         ruvia::db_query audit(c.pool());
         audit.insert_into(service::device::entities::SecurityAuditLogEntity::table_name(), { service::device::entities::SecurityAuditLogEntity::column<"id">().name(), service::device::entities::SecurityAuditLogEntity::column<"actor_user_id">().name(), service::device::entities::SecurityAuditLogEntity::column<"action">().name(), service::device::entities::SecurityAuditLogEntity::column<"resource_type">().name(), service::device::entities::SecurityAuditLogEntity::column<"resource_id">().name(), service::device::entities::SecurityAuditLogEntity::column<"outcome">().name(), service::device::entities::SecurityAuditLogEntity::column<"details">().name() })
@@ -2623,13 +2624,13 @@ class DeviceShareService {
             const std::string userId = share.subjectType == "user" ? share.subjectId : "";
             const std::string departmentId =
                 share.subjectType == "department" ? share.subjectId : "";
-            const auto grantId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            const auto grantId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
             ruvia::db_query insert(c.pool());
             insert.insert_into(service::device::entities::DeviceGroupAccessGrantEntity::table_name(), { service::device::entities::DeviceGroupAccessGrantEntity::column<"id">().name(), service::device::entities::DeviceGroupAccessGrantEntity::column<"group_id">().name(), service::device::entities::DeviceGroupAccessGrantEntity::column<"user_id">().name(), service::device::entities::DeviceGroupAccessGrantEntity::column<"department_id">().name(), service::device::entities::DeviceGroupAccessGrantEntity::column<"access_level">().name(), service::device::entities::DeviceGroupAccessGrantEntity::column<"granted_by">().name() })
                 .values({ db::uuid(insert, grantId), db::uuid(insert, groupId), db::nullableUuid(insert, userId), db::nullableUuid(insert, departmentId), insert.value(share.accessLevel), db::uuid(insert, actor.userId) });
             (void)co_await transaction.execute(insert);
         }
-        const auto auditId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto auditId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto shareCount = static_cast<std::int64_t>(shares.size());
         ruvia::db_query audit(c.pool());
         audit.insert_into(service::device::entities::SecurityAuditLogEntity::table_name(), { service::device::entities::SecurityAuditLogEntity::column<"id">().name(), service::device::entities::SecurityAuditLogEntity::column<"actor_user_id">().name(), service::device::entities::SecurityAuditLogEntity::column<"action">().name(), service::device::entities::SecurityAuditLogEntity::column<"resource_type">().name(), service::device::entities::SecurityAuditLogEntity::column<"resource_id">().name(), service::device::entities::SecurityAuditLogEntity::column<"outcome">().name(), service::device::entities::SecurityAuditLogEntity::column<"details">().name() })

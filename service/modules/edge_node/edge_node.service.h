@@ -47,6 +47,7 @@
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/redis/redis_types.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/request_validation.h>
 #include <ruvia/web/websocket.h>
 
@@ -55,6 +56,8 @@
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
+#include "service/common/worker.h"
 #include "service/middleware/log.h"
 #include "service/middleware/request_context.h"
 #include "service/modules/edge_node/edge_node.entity.h"
@@ -807,7 +810,7 @@ class EdgeService {
         const auto remark = body.get<"remark">()
             ? std::string(body.get<"remark">()->view())
             : std::string{};
-        const auto groupId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto groupId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         ruvia::db_query query(c.pool());
         query.insert_into(entities::EdgeNodeGroupEntity::table_name(), { entities::EdgeNodeGroupEntity::column<"id">().name(), entities::EdgeNodeGroupEntity::column<"name">().name(), entities::EdgeNodeGroupEntity::column<"parent_id">().name(), entities::EdgeNodeGroupEntity::column<"status">().name(), entities::EdgeNodeGroupEntity::column<"sort_order">().name(), entities::EdgeNodeGroupEntity::column<"remark">().name(), entities::EdgeNodeGroupEntity::column<"created_by">().name() })
             .values({ query.cast(query.value(groupId), ruvia::db_data_type::uuid), query.value(name), db::nullableUuid(query, parentId), query.cast(query.value(status), { .custom_name_ = "status_enum" }), query.cast(query.value(sortOrder), ruvia::db_data_type::integer), nullableText(query, remark), query.cast(query.value(c.userId), ruvia::db_data_type::uuid) });
@@ -1082,7 +1085,7 @@ class EdgeService {
         }
         // 链路列表展示边缘连接所属节点名称；节点模块不读取链路表，名称实际变化时通知链路查询。
         co_await service::system::OutboxService::enqueueQueryChange(transaction, "link", "link",
-            c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -1129,7 +1132,7 @@ class EdgeService {
         std::unordered_set<std::string> names;
         std::unordered_set<std::string> previousNames;
         std::unordered_set<std::string> devices;
-        const auto taskId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto taskId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         module_pb::NetworkConfigRequest request;
         std::uint8_t requestId[16]{};
         if (!service::common::uuidBytes(taskId, requestId)) {
@@ -1240,7 +1243,7 @@ class EdgeService {
             service::common::fail(17009, "固件不存在", 404);
         }
         const auto& row = rows.front();
-        const auto taskId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto taskId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         module_pb::FirmwareUpdateRequest request;
         std::uint8_t bytes[32]{};
         if (!service::common::uuidBytes(taskId, bytes)) {
@@ -1249,7 +1252,7 @@ class EdgeService {
         const auto requestId = binary(bytes, 16);
         std::string download;
         if (row[3].value().value_or(std::string_view{}) != "t") {
-            auto baseUrl = std::string(c.env().get("EDGE_PUBLIC_BASE_URL").value_or(service::message::edge::kDefaultPublicBaseUrl));
+            auto baseUrl = c.template worker_state<FirmwareStorageConfig>().publicBaseUrl;
             while (baseUrl.ends_with('/')) {
                 baseUrl.pop_back();
             }
@@ -1330,7 +1333,7 @@ class EdgeService {
     ruvia::task<std::filesystem::path> prepareFirmwareUpload(Context& c, std::string_view nodeId) {
         co_await validateFirmwareTarget(c, nodeId);
         std::error_code error;
-        auto directory = std::filesystem::absolute(std::filesystem::path(c.env().get("EDGE_FIRMWARE_DIR").value_or("firmware")), error);
+        auto directory = std::filesystem::absolute(c.template worker_state<FirmwareStorageConfig>().directory, error);
         if (error || (!std::filesystem::create_directories(directory, error) && error)) {
             service::common::fail(17011, "无法创建固件目录", 500);
         }
@@ -1342,7 +1345,7 @@ class EdgeService {
     // 保证恢复确实完成；恢复幂等，失败时释放认领并上报异常。
     template <typename Context>
     static ruvia::task<std::size_t> recoverFirmwareUploads(Context& context, const std::filesystem::path& directory) {
-        const auto key = entities::firmwareUploadRecoveryKey(service::runtime::instanceId());
+        const auto key = entities::firmwareUploadRecoveryKey(context.template worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
         ruvia::redis_set_options claim;
         claim.condition_ = ruvia::redis_set_condition::if_absent;
         claim.expiration_ = ruvia::redis_set_expiration::expires_after(kUploadRecoveryClaimTtl);
@@ -1464,7 +1467,7 @@ class EdgeService {
         if (c.resources.size() >= 8) {
             throw debug::EventError(17021, "当前连接的调试会话过多");
         }
-        const auto session = std::make_shared<debug::SerialSession>(c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId);
+        const auto session = std::make_shared<debug::SerialSession>(service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId);
         const auto key = "serial:" + session->id;
         c.resources.emplace(key, session);
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
@@ -1553,7 +1556,7 @@ class EdgeService {
         if (c.resources.size() >= 8) {
             throw debug::EventError(17018, "当前连接的调试会话过多");
         }
-        const auto session = std::make_shared<debug::TerminalSession>(c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId, static_cast<unsigned>(body.get<"columns">().value_), static_cast<unsigned>(body.get<"rows">().value_));
+        const auto session = std::make_shared<debug::TerminalSession>(service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()), c.userId, std::string(body.get<"id">().view()), c.identity.connectionId, static_cast<unsigned>(body.get<"columns">().value_), static_cast<unsigned>(body.get<"rows">().value_));
         const auto key = "terminal:" + session->id;
         c.resources.emplace(key, session);
         c.stop = ruvia::combine_stop_tokens(c.stop, session->lifetime.token());
@@ -1731,7 +1734,7 @@ class EdgeService {
             service::common::fail(17019, "节点当前离线", 409);
         }
 
-        const auto requestId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto requestId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         module_pb::LogRequest request;
         std::uint8_t bytes[16]{};
         if (!service::common::uuidBytes(requestId, bytes)) {
@@ -1800,7 +1803,7 @@ class EdgeService {
         if (level != "silent" && level != "debug" && level != "info" && level != "warn" && level != "error") {
             service::common::fail(17020, "日志级别无效", 400);
         }
-        const auto requestId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto requestId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         module_pb::LogLevelRequest request;
         std::uint8_t bytes[16]{};
         if (!service::common::uuidBytes(requestId, bytes)) {
@@ -1874,9 +1877,9 @@ class EdgeService {
                 break;
             }
         }
-        const auto deleted = co_await service::message::redis::command(c.redis(), cleanup);
+        const auto deleted = co_await c.redis().command(std::vector<std::string_view>(cleanup.begin(), cleanup.end()));
         if (deleted.kind() == ruvia::redis_value::kind_type::error) {
-            service::message::redis::throwValue("DEL edge node result", deleted);
+            service::utils::redis::throwValue("DEL edge node result", deleted);
         }
         co_return result;
     }
@@ -2766,7 +2769,7 @@ class DebugConnection final {
     DebugConnection(ruvia::context& context, const debug::EventRegistry<debug::EventContext>& registry)
         : context_(context), socket_(context.get_websocket()), tasks_(context.worker(), { .resource_ = context.pool() }),
           registry_(registry),
-          identity_{ context.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next() } {}
+          identity_{ service::utils::nextUuid(context.worker_state<service::common::UuidV7State>()) } {}
 
     ruvia::task<void> run() {
         // Without authorization changes a revoked user would keep its

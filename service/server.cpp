@@ -1,8 +1,6 @@
 #include "service/middleware/validation.h"
 #include "service/features/edge/edge.config.h"
 #include <algorithm>
-#include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -13,7 +11,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include <ruvia/web/app.h>
@@ -25,7 +22,8 @@
 #include "service/common/http.h"
 #include "service/common/worker.h"
 #include "service/features/packet_log/packet_log.transport.h"
-#include "service/config/lifecycle.h"
+#include "service/config/process.h"
+#include "service/features/observability/observability.runtime.h"
 #include "service/config/schema.h"
 #include "service/config/storage.h"
 #include "service/features/access/access.runtime.h"
@@ -37,17 +35,18 @@
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.runtime.h"
 #include "service/features/edge/gateway/gateway.runtime.h"
+#include "service/features/edge/gateway/gateway.transport.h"
 #include "service/features/edge/projection/projection.runtime.h"
 #include "service/features/messaging/messaging.runtime.h"
 #include "service/features/messaging/rpc/rpc.runtime.h"
-#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/features/gb28181/gb28181.runtime.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/live/live.runtime.h"
 #include "service/features/telemetry/telemetry.runtime.h"
 #include "service/features/telemetry/telemetry.service.h"
 #include "service/features/vpn/vpn.runtime.h"
-#include "service/utils/change_feed.h"
+#include "service/features/vpn/vpn.config.h"
+#include "service/utils/uuid.h"
 #include "service/modules/alert/alert.controller.h"
 #include "service/modules/device/device.controller.h"
 #include "service/modules/command/command.controller.h"
@@ -65,52 +64,6 @@
 
 namespace {
 
-template <typename String>
-void assign(String& target, std::optional<std::string_view> value) {
-    if (value) {
-        target.assign(*value);
-    }
-}
-
-ruvia::db_config databaseConfig(const ruvia::env& env) {
-    ruvia::db_config config;
-    config.driver_ = ruvia::db_driver::postgresql;
-    config.tls_.mode_ = ruvia::client_tls_mode::disabled;
-    assign(config.host_, env.get("DB_HOST"));
-    assign(config.username_, env.get("DB_USERNAME"));
-    assign(config.password_, env.get("DB_PASSWORD"));
-    assign(config.database_, env.get("DB_DATABASE"));
-    config.port_ = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-    config.acquire_timeout_ = std::chrono::seconds(2);
-    config.connect_timeout_ = std::chrono::seconds(5);
-    config.query_timeout_ = std::chrono::seconds(30);
-    return config;
-}
-
-ruvia::redis_config redisConfig(const ruvia::env& env) {
-    ruvia::redis_config config;
-    config.tls_.mode_ = ruvia::client_tls_mode::disabled;
-    assign(config.host_, env.get("REDIS_HOST"));
-    assign(config.password_, env.get("REDIS_PASSWORD"));
-    config.port_ = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
-    config.database_ = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
-    const auto poolSize = env.get<unsigned>("REDIS_POOL_SIZE_PER_WORKER").value_or(2U);
-    if (poolSize == 0U || poolSize > 16U) {
-        throw std::runtime_error("REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
-    }
-    config.pool_size_per_worker_ = poolSize;
-    return config;
-}
-
-service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::env& env) {
-    service::vpn::wireguard::HubConfig config;
-    assign(config.interfaceName, env.get("VPN_HUB_INTERFACE"));
-    assign(config.privateKey, env.get("VPN_HUB_PRIVATE_KEY"));
-    assign(config.publicKey, env.get("VPN_HUB_PUBLIC_KEY"));
-    assign(config.endpoint, env.get("VPN_HUB_ENDPOINT"));
-    config.listenPort = env.get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
-    return config;
-}
 
 std::filesystem::path runtimeDirectory(const char* executable) {
     if (!executable || *executable == '\0') {
@@ -124,12 +77,6 @@ std::filesystem::path runtimeDirectory(const char* executable) {
     return path.parent_path();
 }
 
-service::packet_log::Config packetLogConfig(const ruvia::env& env, const std::filesystem::path& runtime) {
-    service::packet_log::Config config;
-    config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
-    config.level = service::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
-    return config;
-}
 
 struct CommandLineOptions {
     bool migrateOnly{};
@@ -143,21 +90,8 @@ CommandLineOptions parseCommandLine(int argc, char* argv[]) {
     return CommandLineOptions{ .migrateOnly = migrateOnly };
 }
 
-void validateEdgeConfiguration(const ruvia::env& env) {
-    const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId);
-    if (!service::edge::config::validPlatformId(platformId)) {
-        throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
-    }
-    const auto publicBaseUrl = env.get("EDGE_PUBLIC_BASE_URL").value_or(service::message::edge::kDefaultPublicBaseUrl);
-    if (!service::edge::config::validPublicBaseUrl(publicBaseUrl)) {
-        throw std::runtime_error("EDGE_PUBLIC_BASE_URL is invalid");
-    }
-}
 
-ruvia::db_config migrateDatabase(
-    const ruvia::env& env
-) {
-    auto db = databaseConfig(env);
+ruvia::db_config migrateDatabase(ruvia::db_config db, const ruvia::env& env) {
     const auto storagePolicy = service::config::deviceDataStoragePolicy(env);
     std::vector<ruvia::db_migration> migrations;
     migrations.reserve(service::config::kSchemaMigrations.size() + 1);
@@ -177,82 +111,21 @@ ruvia::db_config migrateDatabase(
     return db;
 }
 
-std::size_t resolveWorkerCount(
-    std::optional<unsigned> configured,
-    unsigned automatic,
-    const char* name
-) {
-    const auto count = configured.value_or(automatic);
-    if (count == 0U || count > 64U) {
-        throw std::runtime_error(std::string(name) + " must be between 1 and 64");
-    }
-    return static_cast<std::size_t>(count);
-}
-
-struct WorkerBudget {
-    unsigned cpu{};
-    unsigned gb28181{};
-    std::size_t service{};
-    std::size_t collector{};
-};
-
-WorkerBudget workerBudget(
-    const ruvia::env& env,
-    const service::gb28181::Config& gb28181
-) {
-    const auto cpu = std::max(2U, std::thread::hardware_concurrency());
-    const auto mediaWorkers = static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
-    // SIP runs inside Collector Workers and HTTP media forwarding inside Service
-    // Workers. Only ZLM's internal pools reserve additional threads.
-    const auto gb28181WorkerCount = gb28181.enabled ? 2U * mediaWorkers : 0U;
-    // Service and Collector each need at least one worker. On a host with
-    // fewer CPUs than that hard minimum plus the enabled media runtime,
-    // controlled oversubscription is unavoidable and remains explicit.
-    const auto businessCpu = std::max(2U, cpu > gb28181WorkerCount ? cpu - gb28181WorkerCount : 0U);
-    return WorkerBudget{
-        .cpu = cpu,
-        .gb28181 = gb28181WorkerCount,
-        .service = resolveWorkerCount(
-            env.get<unsigned>("SERVICE_WORKERS"),
-            (businessCpu + 1U) / 2U,
-            "SERVICE_WORKERS"
-        ),
-        .collector = resolveWorkerCount(
-            env.get<unsigned>("COLLECTOR_WORKERS"),
-            businessCpu / 2U,
-            "COLLECTOR_WORKERS"
-        ),
-    };
-}
-
-service::messaging::outbox::Policy outboxPolicy(const ruvia::env& env) {
-    service::messaging::outbox::Policy policy;
-    policy.pendingAlertThreshold = env.get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
-    policy.oldestAgeAlertMs = env.get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
-    policy.deadLetterAlertThreshold = env.get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
-    policy.receiptRetentionDays = env.get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
-    if (policy.pendingAlertThreshold < 0 || policy.oldestAgeAlertMs < 0 ||
-        policy.deadLetterAlertThreshold < 0 || policy.receiptRetentionDays < 0 ||
-        policy.receiptRetentionDays > 3650) {
-        throw std::runtime_error("OUTBOX policy values are invalid");
-    }
-    return policy;
-}
 
 struct ServiceWorkerComponents {
-    std::shared_ptr<service::messaging::WorkerStreamMultiplexer> multiplexer;
     std::shared_ptr<service::edge::DispatcherRuntime> sessionDispatcherRuntime;
     std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
-    std::shared_ptr<service::application::ComponentLifecycle> componentLifecycle;
+    std::shared_ptr<service::observability::ComponentLifecycle> componentLifecycle;
     std::shared_ptr<service::telemetry::PersistenceRuntime> telemetry;
     std::shared_ptr<service::live::LiveChangeRuntime> liveChanges;
     std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime> rpcConsumer;
     std::shared_ptr<service::command::CommandProcessingRuntime> commandProcessing;
     std::shared_ptr<service::access::DeliveryRuntime> openDeliveries;
-    std::shared_ptr<service::runtime::Reconciler> configReconciler;
+    std::shared_ptr<service::configuration::Reconciler> configReconciler;
     std::shared_ptr<service::edge::projection::ProjectionRuntime> edgeProjection;
     std::shared_ptr<service::edge::gateway::FirmwareCleanupRuntime> firmwareCleanup;
     // Serves the "vpn" RPC component; its background scheduling runs only when VPN_HUB_ENABLED.
+    std::shared_ptr<service::vpn::VpnHubService> vpnHubService;
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
     bool vpnHubBackground{};
     std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
@@ -260,20 +133,136 @@ struct ServiceWorkerComponents {
     std::shared_ptr<service::messaging::outbox::OutboxRuntime> outboxRuntime;
 };
 
+// Only the supervisor owns these collections. Each record is created, driven,
+// stopped and destroyed on its own Collector event loop.
+class CollectorWorkers final {
+  public:
+    ~CollectorWorkers() { stop(); }
+
+    void start(ruvia::redis_config redis, std::size_t count,
+               service::gb28181::Config gb28181, std::string instance) {
+        if (pool_) return;
+        redis.pool_size_per_worker_ = 1;
+        redis.command_timeout_ = std::nullopt;
+        pool_ = std::make_unique<ruvia::event_loop_pool>(
+            ruvia::event_loop_pool_options{.loop_count_ = count, .queue_capacity_ = 8192});
+        try {
+            pool_->start();
+            owners_.resize(count);
+            std::vector<ruvia::root_task<std::unique_ptr<Owner>>> initializing;
+            initializing.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                initializing.push_back(pool_->loop(index).start(create(
+                    pool_->loop(index), redis, gb28181,
+                    service::common::WorkerIdentity{instance, index, count})));
+            }
+            std::exception_ptr failure;
+            for (std::size_t index = 0; index < count; ++index) {
+                try {
+                    owners_[index] = initializing[index].get();
+                } catch (...) {
+                    if (!failure) failure = std::current_exception();
+                }
+            }
+            if (failure) std::rethrow_exception(failure);
+        } catch (...) {
+            stop();
+            throw;
+        }
+    }
+
+    void stop() noexcept {
+        if (!pool_) return;
+        std::vector<ruvia::root_task<void>> stopping;
+        for (std::size_t index = 0; index < owners_.size(); ++index) {
+            if (owners_[index])
+                stopping.push_back(pool_->loop(index).start(shutdown(std::move(owners_[index]))));
+        }
+        for (auto& task : stopping) {
+            try { task.get(); }
+            catch (...) { service::collector::logShutdownFailure("worker"); }
+        }
+        pool_->stop();
+        try { pool_->join(); }
+        catch (...) { service::collector::logShutdownFailure("event_loop_pool"); }
+        owners_.clear();
+        pool_.reset();
+    }
+
+  private:
+    struct Owner {
+        std::unique_ptr<service::collector::CollectorWorker> collector;
+        std::unique_ptr<service::gb28181::CollectorRuntime> gb28181;
+    };
+
+    static ruvia::task<void> shutdown(std::unique_ptr<Owner> owner) {
+        if (owner->gb28181) {
+            try { co_await owner->gb28181->shutdown(); }
+            catch (...) { service::collector::logShutdownFailure("gb28181"); }
+        }
+        if (owner->collector) {
+            try { co_await owner->collector->shutdown(); }
+            catch (...) { service::collector::logShutdownFailure("business"); }
+        }
+        owner->gb28181.reset();
+        if (owner->collector) {
+            try { co_await owner->collector->shutdownRedis(); }
+            catch (...) { service::collector::logShutdownFailure("redis"); }
+        }
+        owner->collector.reset();
+    }
+
+    static ruvia::task<std::unique_ptr<Owner>> create(
+        ruvia::event_loop loop, ruvia::redis_config redisConfig,
+        service::gb28181::Config gbConfig, service::common::WorkerIdentity identity) {
+        auto owner = std::make_unique<Owner>();
+        auto redis = std::make_unique<ruvia::redis_client>(loop, redisConfig);
+        std::exception_ptr failure;
+        try {
+            co_await redis->connect();
+            owner->collector = std::make_unique<service::collector::CollectorWorker>(
+                loop, std::move(redis), identity);
+            if (gbConfig.enabled) {
+                owner->gb28181 = std::make_unique<service::gb28181::CollectorRuntime>(
+                    loop, owner->collector->redisHandle(), std::move(gbConfig), identity);
+                co_await owner->gb28181->initialize();
+            }
+            co_await owner->collector->initialize();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (failure) {
+            co_await shutdown(std::move(owner));
+            if (redis) {
+                try { co_await redis->shutdown(); }
+                catch (...) { service::collector::logShutdownFailure("startup_redis"); }
+            }
+            std::rethrow_exception(failure);
+        }
+        co_return owner;
+    }
+
+    std::unique_ptr<ruvia::event_loop_pool> pool_;
+    std::vector<std::unique_ptr<Owner>> owners_;
+};
+
 struct ApplicationComponents {
     service::gb28181::Config gb28181;
     ruvia::db_config database;
     ruvia::redis_config serviceRedis;
     ruvia::redis_config collectorRedis;
+    service::edge::config::Config edge;
+    std::string host;
+    std::uint16_t port{};
+    std::string instanceId;
     std::vector<std::shared_ptr<ServiceWorkerComponents>> workers;
-    std::shared_ptr<service::collector::CollectorWorkerPool> collectorWorkerPool;
+    std::shared_ptr<CollectorWorkers> collectorWorkers;
     std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
-    std::shared_ptr<service::application::ComponentLifecycle> applicationLifecycle;
+    std::shared_ptr<service::observability::ComponentLifecycle> applicationLifecycle;
 };
 
 void registerRpcHandlers(
-    const std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime>& rpcConsumer,
-    const std::shared_ptr<service::edge::gateway::FirmwareCleanupRuntime>& firmwareCleanup
+    const std::shared_ptr<service::messaging::rpc::RpcConsumerRuntime>& rpcConsumer
 ) {
     rpcConsumer->add("telemetry", service::telemetry::TelemetryService::executeProjection);
     rpcConsumer->add("alert", service::alert::metadata::executeRefreshOperation);
@@ -283,34 +272,31 @@ void registerRpcHandlers(
     rpcConsumer->add("edge", service::edge::EdgeControlService::executeOperation);
     rpcConsumer->add("edge-serial", service::edge::serial_debug::Service::executeBrowserOperation);
     rpcConsumer->add("edge-terminal", service::edge::terminal_state::TerminalService::executeBrowserOperation);
-    rpcConsumer->add(
-        std::string(service::message::edge::firmware::kRpcComponent),
-        [firmwareCleanup](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
-            return firmwareCleanup->executeOperation(context, operation, payload, stop);
-        }
-    );
+    rpcConsumer->add(std::string(service::message::edge::firmware::kRpcComponent),
+                    service::edge::gateway::GatewayService::scheduleFirmwareCleanup);
 }
 
 ApplicationComponents createComponents(
-    const ruvia::env& env,
+    service::config::ProcessConfig process,
+    service::edge::config::Config edge,
+    const service::vpn::config::Config& vpn,
     const service::gb28181::Config& gb28181,
-    const WorkerBudget& budget,
-    ruvia::db_config database,
-    ruvia::redis_config serviceRedis
+    const service::config::WorkerBudget& budget,
+    service::messaging::outbox::Policy policy
 ) {
     ApplicationComponents components;
     components.gb28181 = gb28181;
-    components.database = std::move(database);
-    components.serviceRedis = std::move(serviceRedis);
+    components.database = std::move(process.database);
+    components.serviceRedis = std::move(process.redis);
     components.collectorRedis = components.serviceRedis;
-    // A GB28181 Collector Worker blocks on its control and projection receipt
-    // streams next to the Collector's own work stream.
     components.collectorRedis.blocking_pool_size_per_worker_ = gb28181.enabled ? 3 : 1;
-    // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
-    // The tasks retain separate consumer groups and use the ordinary pool to drain.
     components.serviceRedis.blocking_pool_size_per_worker_ = 4;
-
-    components.collectorWorkerPool = std::make_shared<service::collector::CollectorWorkerPool>();
+    components.edge = std::move(edge);
+    components.host = std::move(process.host);
+    components.port = process.port;
+    service::common::UuidV7State processUuid;
+    components.instanceId = service::utils::nextUuid(processUuid);
+    components.collectorWorkers = std::make_shared<CollectorWorkers>();
     components.observability = std::make_shared<service::observability::RuntimeDiagnostics>();
     for (std::size_t index = 0; index < budget.service; ++index) {
         auto owner = std::make_shared<ServiceWorkerComponents>();
@@ -319,32 +305,33 @@ ApplicationComponents createComponents(
         workerComponents.observability->identifyWorker(index);
         workerComponents.observability->setGauge("iot_engine_service_workers", budget.service);
         workerComponents.observability->setGauge("iot_engine_collector_workers", budget.collector);
-        workerComponents.componentLifecycle = std::make_shared<service::application::ComponentLifecycle>(*workerComponents.observability);
-        workerComponents.multiplexer = std::make_shared<service::messaging::WorkerStreamMultiplexer>();
+        workerComponents.componentLifecycle = std::make_shared<service::observability::ComponentLifecycle>(*workerComponents.observability);
         workerComponents.sessionDispatcherRuntime = std::make_shared<service::edge::DispatcherRuntime>();
         workerComponents.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         workerComponents.liveChanges = std::make_shared<service::live::LiveChangeRuntime>(budget.collector);
         workerComponents.rpcConsumer = std::make_shared<service::messaging::rpc::RpcConsumerRuntime>();
         workerComponents.firmwareCleanup = std::make_shared<service::edge::gateway::FirmwareCleanupRuntime>(
-            std::filesystem::path(env.get("EDGE_FIRMWARE_DIR").value_or("firmware")));
-        registerRpcHandlers(workerComponents.rpcConsumer, workerComponents.firmwareCleanup);
+            components.edge.firmwareDirectory);
+        registerRpcHandlers(workerComponents.rpcConsumer);
         workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
         workerComponents.openDeliveries = std::make_shared<service::access::DeliveryRuntime>();
-        workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
+        workerComponents.configReconciler = std::make_shared<service::configuration::Reconciler>();
         workerComponents.edgeProjection = std::make_shared<service::edge::projection::ProjectionRuntime>(
             *workerComponents.observability);
-        workerComponents.vpnHubBackground = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
+        workerComponents.vpnHubBackground = vpn.enabled;
+        workerComponents.vpnHubService = std::make_shared<service::vpn::VpnHubService>(
+            vpn.hub, components.edge.platformId, components.instanceId);
         workerComponents.vpnHubRuntime = std::make_shared<service::vpn::VpnHubRuntime>(
-            vpnHubConfig(env),
-            std::string(env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId)));
+            *workerComponents.vpnHubService);
         workerComponents.rpcConsumer->add(
             std::string(service::message::vpn::kRpcComponent),
-            [vpnHub = workerComponents.vpnHubRuntime](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
+            [vpnHub = workerComponents.vpnHubService](ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
                 return vpnHub->executeOperation(context, operation, payload, stop);
             }
         );
         workerComponents.gbProjection = gb28181.enabled
-            ? std::make_shared<service::gb28181::GbProjectionRuntime>()
+            ? std::make_shared<service::gb28181::GbProjectionRuntime>(
+                service::common::WorkerIdentity{components.instanceId, index, budget.service})
             : nullptr;
         workerComponents.alerts = std::make_shared<service::alert::AlertRuntime>();
         workerComponents.outboxRuntime = std::make_shared<service::messaging::outbox::OutboxRuntime>(
@@ -352,11 +339,11 @@ ApplicationComponents createComponents(
             budget.collector,
             budget.service,
             components.database,
-            outboxPolicy(env)
+            policy
         );
         components.workers.push_back(std::move(owner));
     }
-    components.applicationLifecycle = std::make_shared<service::application::ComponentLifecycle>(*components.observability);
+    components.applicationLifecycle = std::make_shared<service::observability::ComponentLifecycle>(*components.observability);
     return components;
 }
 
@@ -385,179 +372,129 @@ ruvia::task<ruvia::http_response> handleError(
 // Only the supervisor visits the owner collection. Each posted operation owns one
 // worker's components; business workers never receive another worker's handle.
 template <typename Operation>
-void initializeServiceWorker(ruvia::web_worker_handle worker, Operation operation) {
+ruvia::task<void> initializeServiceWorkerTask(
+    ruvia::web_worker_context& context, Operation operation,
+    std::shared_ptr<std::promise<void>> ready) {
+    try {
+        co_await operation(context);
+        ready->set_value();
+    } catch (...) {
+        ready->set_exception(std::current_exception());
+    }
+}
+
+template <typename Operation>
+std::future<void> postServiceWorkerInitialization(ruvia::web_worker_handle worker, Operation operation) {
     auto ready = std::make_shared<std::promise<void>>();
     auto completion = ready->get_future();
-    if (!worker.post([operation = std::move(operation), ready](ruvia::web_worker_context& context) mutable -> ruvia::task<void> {
-                   try {
-                       co_await operation(context);
-                       ready->set_value();
-                   } catch (...) {
-                       ready->set_exception(std::current_exception());
-                   }
+    if (!worker.post([operation = std::move(operation), ready](ruvia::web_worker_context& context) mutable {
+                   return initializeServiceWorkerTask(context, std::move(operation), ready);
                })
              .accepted()) {
         throw std::runtime_error("service worker rejected initialization");
     }
-    completion.get();
+    return completion;
 }
 
-void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, ruvia::web_worker_handle worker, std::size_t index, std::size_t count, std::size_t collectors) {
-    auto& componentLifecycle = *workerComponents.componentLifecycle;
-    componentLifecycle.add({ .name = "stream-multiplexer", .start = [m = workerComponents.multiplexer, worker, index] {
-                       m->start(worker, index);
-                   },
-                    .stop = [m = workerComponents.multiplexer] {
-                        m->stop();
-                    } });
-    componentLifecycle.add({ .name = "live-queries", .start = [r = workerComponents.liveChanges, worker, index, count] {
-                       r->start(worker, index, count);
-                   },
-                    .stop = [r = workerComponents.liveChanges] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "outbox", .start = [r = workerComponents.outboxRuntime, worker] {
-                       r->start(worker);
-                   },
-                    .stop = [r = workerComponents.outboxRuntime] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "telemetry", .start = [r = workerComponents.telemetry, worker, index, count, collectors] {
-                       r->start(worker, index, count, collectors);
-                   },
-                    .stop = [r = workerComponents.telemetry] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "command-results", .start = [r = workerComponents.commandProcessing, worker, index, count, collectors] {
-                       r->start(worker, index, count, collectors);
-                   },
-                    .stop = [r = workerComponents.commandProcessing] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "open-access-delivery", .start = [r = workerComponents.openDeliveries, worker, index, count] {
-                       r->start(worker, index, count);
-                   },
-                    .stop = [r = workerComponents.openDeliveries] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "edge-dispatcher", .start = [r = workerComponents.sessionDispatcherRuntime, worker, index, count] {
-                       r->start(worker, index, count);
-                   },
-                    .stop = [r = workerComponents.sessionDispatcherRuntime] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "edge-projector", .start = [r = workerComponents.edgeProjection, worker, index, count] {
-                       r->start(worker, index, count);
-                   },
-                    .stop = [r = workerComponents.edgeProjection] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "firmware-cleanup", .start = [r = workerComponents.firmwareCleanup, worker] {
-                                r->start(worker);
-                            },
-                             .stop = [r = workerComponents.firmwareCleanup] {
-                                 r->stop();
-                             } });
-    componentLifecycle.add({ .name = "alerts", .start = [r = workerComponents.alerts, worker, index, count] {
-                                r->start(worker, index, count);
-                            },
-                             .stop = [r = workerComponents.alerts] {
-                                 r->stop();
-                             } });
-    if (workerComponents.vpnHubBackground) {
-        componentLifecycle.add({ .name = "vpn", .start = [r = workerComponents.vpnHubRuntime, worker] {
-                           r->start(worker);
-                       },
-                        .stop = [r = workerComponents.vpnHubRuntime] {
-                            r->stop();
-                        } });
-    }
-    componentLifecycle.add({ .name = "config-reconciler", .start = [r = workerComponents.configReconciler, worker, index, count, collectors] {
-                       r->start(worker, index, count, collectors);
-                   },
-                    .stop = [r = workerComponents.configReconciler] {
-                        r->stop();
-                    } });
-    componentLifecycle.add({ .name = "control", .start = [r = workerComponents.rpcConsumer, worker, index] {
-                       r->start(worker, index);
-                   },
-                    .stop = [r = workerComponents.rpcConsumer] {
-                        r->stop();
-                    } });
-    if (workerComponents.gbProjection) {
-        componentLifecycle.add({ .name = "gb28181-projector", .start = [r = workerComponents.gbProjection, worker, index] {
-                                    r->start(worker, index);
-                                },
-                                 .stop = [r = workerComponents.gbProjection] {
-                                     r->stop();
-                                 } });
-    }
+void registerServiceWorkerLifecycle(ServiceWorkerComponents& components,
+                                    ruvia::web_worker_handle worker) {
+    auto& lifecycle = *components.componentLifecycle;
+    lifecycle.addRuntime("live-queries", components.liveChanges, worker);
+    lifecycle.addRuntime("outbox", components.outboxRuntime, worker);
+    lifecycle.addRuntime("telemetry", components.telemetry, worker);
+    lifecycle.addRuntime("command-results", components.commandProcessing, worker);
+    lifecycle.addRuntime("open-access-delivery", components.openDeliveries, worker);
+    lifecycle.addRuntime("edge-dispatcher", components.sessionDispatcherRuntime, worker);
+    lifecycle.addRuntime("edge-projector", components.edgeProjection, worker);
+    lifecycle.addRuntime("firmware-cleanup", components.firmwareCleanup, worker);
+    lifecycle.addRuntime("alerts", components.alerts, worker);
+    if (components.vpnHubBackground)
+        lifecycle.addRuntime("vpn", components.vpnHubRuntime, worker);
+    lifecycle.addRuntime("config-reconciler", components.configReconciler, worker);
+    lifecycle.addRuntime("control", components.rpcConsumer, worker);
+    if (components.gbProjection)
+        lifecycle.addRuntime("gb28181-projector", components.gbProjection, worker);
 }
 
-auto makeApplicationStart(ruvia::application& app, ApplicationComponents& components, std::size_t collectors) {
-    const auto uploadDirectory = std::filesystem::path(app.env().get("EDGE_FIRMWARE_DIR").value_or("firmware"));
-    return [&app, &components, collectors, uploadDirectory] {
+auto makeApplicationStart(ruvia::application& app, ApplicationComponents& components,
+                          std::size_t collectors) {
+    return [&app, &components, collectors] {
         const auto workers = app.workers();
-        if (workers.empty() || workers.size() != components.workers.size()) {
+        if (workers.empty() || workers.size() != components.workers.size())
             throw std::runtime_error("service worker ownership does not match configuration");
-        }
-        const auto count = workers.size();
         auto& supervisor = *components.applicationLifecycle;
-        std::vector<std::string> preparation;
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto worker = workers[index];
-            const auto owner = components.workers[index];
-            const auto name = "prepare-worker-" + std::to_string(index);
-            preparation.push_back(name);
-            supervisor.add({ .name = name, .start = [owner, worker, index, uploadDirectory] {
-                                owner->multiplexer->configure(worker, index);
-                                initializeServiceWorker(worker, [owner, index, uploadDirectory, worker](ruvia::web_worker_context& context) -> ruvia::task<void> {
-                                    context.worker_state<ruvia::web_worker_handle>() = worker;
-                                    context.worker_state<service::ServiceWorkerTopology>().index = index;
-                                    (void)co_await service::edge_node::EdgeService::recoverFirmwareUploads(context, uploadDirectory);
-                                    (void)co_await service::configuration::ConfigurationService::project(context);
-                                });
-                            },
-                             .stop = [] {
-                             } });
-        }
+        supervisor.add({
+            .name = "prepare-workers",
+            .start = [workers, &components] {
+                std::vector<std::future<void>> readiness;
+                readiness.reserve(workers.size());
+                std::exception_ptr failure;
+                for (std::size_t index = 0; index < workers.size(); ++index) {
+                    try {
+                    readiness.push_back(postServiceWorkerInitialization(
+                        workers[index],
+                        [worker = workers[index],
+                         identity = service::common::WorkerIdentity{
+                             components.instanceId, index, workers.size()},
+                         directory = components.edge.firmwareDirectory]
+                        (ruvia::web_worker_context& context) -> ruvia::task<void> {
+                            context.worker_state<ruvia::web_worker_handle>() = worker;
+                            context.worker_state<std::optional<service::common::WorkerIdentity>>().emplace(identity);
+                            (void)co_await service::edge_node::EdgeService::recoverFirmwareUploads(context, directory);
+                            co_await service::configuration::ConfigurationService::initialize(context);
+                            co_await service::telemetry::latest::hydrate(context);
+                        }));
+                    } catch (...) {
+                        failure = std::current_exception();
+                        break;
+                    }
+                }
+                for (auto& ready : readiness) {
+                    try { ready.get(); }
+                    catch (...) { if (!failure) failure = std::current_exception(); }
+                }
+                if (failure) std::rethrow_exception(failure);
+            },
+            .stop = [] {}
+        });
+        std::vector<std::string> dependencies{"prepare-workers"};
         if (components.gb28181.enabled) {
-            supervisor.add({ .name = "gb28181-sdk", .dependencies = preparation, .start = [] {
-                                if (!service::gb28181::media::sdkSupervisor().started()) {
-                                    throw std::runtime_error("ZLMediaKit SDK is not ready");
-                                }
-                            },
-                             .stop = [] {
-                                 service::gb28181::media::sdkSupervisor().stop();
-                             } });
-            preparation.push_back("gb28181-sdk");
+            supervisor.add({
+                .name = "gb28181-sdk", .dependencies = dependencies,
+                .start = [] {
+                    if (!service::gb28181::media::sdkSupervisor().started())
+                        throw std::runtime_error("ZLMediaKit SDK is not ready");
+                },
+                .stop = [] { service::gb28181::media::sdkSupervisor().stop(); }
+            });
+            dependencies.push_back("gb28181-sdk");
         }
-        supervisor.add({ .name = "collector", .dependencies = preparation, .start = [collectorWorkerPool = components.collectorWorkerPool, redis = components.collectorRedis, gb28181 = components.gb28181, collectors, owners = components.workers]() mutable {
-                            collectorWorkerPool->start(redis, collectors, gb28181);
-                            for (const auto& owner : owners) {
-                                owner->observability->setComponentStatus("collector", service::observability::ComponentState::Ready);
-                            }
-                        },
-                         .stop = [collectorWorkerPool = components.collectorWorkerPool, owners = components.workers] {
-                             collectorWorkerPool->stop();
-                             for (const auto& owner : owners) {
-                                 owner->observability->setComponentStatus("collector", service::observability::ComponentState::Stopped);
-                             }
-                         } });
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto worker = workers[index];
+        supervisor.add({
+            .name = "collector", .dependencies = std::move(dependencies),
+            .start = [&components, collectors] {
+                components.collectorWorkers->start(
+                    components.collectorRedis, collectors,
+                    components.gb28181, components.instanceId);
+                for (const auto& owner : components.workers)
+                    owner->observability->setComponentStatus(
+                        "collector", service::observability::ComponentState::Ready);
+            },
+            .stop = [&components] {
+                components.collectorWorkers->stop();
+                for (const auto& owner : components.workers)
+                    owner->observability->setComponentStatus(
+                        "collector", service::observability::ComponentState::Stopped);
+            }
+        });
+        for (std::size_t index = 0; index < workers.size(); ++index) {
             const auto owner = components.workers[index];
-            registerServiceWorkerLifecycle(*owner, worker, index, count, collectors);
-            supervisor.add({ .name = "service-worker-" + std::to_string(index), .dependencies = { "collector" }, .start = [owner, worker, index, count] {
-                                initializeServiceWorker(worker, [index, count, worker](ruvia::web_worker_context& context) -> ruvia::task<void> {
-                                    context.worker_state<ruvia::web_worker_handle>() = worker;
-                                    co_await service::telemetry::latest::hydrate(context, index, count);
-                                });
-                                owner->componentLifecycle->start();
-                            },
-                             .stop = [owner] {
-                                 owner->componentLifecycle->stop();
-                             } });
+            registerServiceWorkerLifecycle(*owner, workers[index]);
+            supervisor.add({
+                .name = "service-worker-" + std::to_string(index),
+                .dependencies = {"collector"},
+                .start = [owner] { owner->componentLifecycle->start(); },
+                .stop = [owner] { owner->componentLifecycle->stop(); }
+            });
         }
         supervisor.start();
     };
@@ -566,7 +503,7 @@ auto makeApplicationStart(ruvia::application& app, ApplicationComponents& compon
 void configureServer(
     ruvia::application& app,
     ApplicationComponents& components,
-    const WorkerBudget& budget
+    const service::config::WorkerBudget& budget
 ) {
     auto applicationStart = makeApplicationStart(app, components, budget.collector);
     const auto applicationLifecycle = components.applicationLifecycle;
@@ -587,19 +524,22 @@ void configureServer(
         .alias_ = "vpn-edge-config",
         .config_ = components.database,
     });
+    app.database(ruvia::db_registration_config{
+        .alias_ = "startup",
+        .config_ = components.database,
+    });
     app.use_worker_state<ruvia::web_worker_handle>()
-        .use_worker_state<service::ServiceWorkerTopology>([count = components.workers.size()] {
-            return service::ServiceWorkerTopology{count};
-        })
-        .use_worker_state<std::unique_ptr<service::common::UuidV7Generator>>(
-            [] { return std::make_unique<service::common::UuidV7Generator>(); })
+        .use_worker_state<std::optional<service::common::WorkerIdentity>>()
+        .use_worker_state<service::common::UuidV7State>()
         .use_worker_state<service::edge::config::PlatformIdentity>(
-            [platformId = std::string(app.env().get("EDGE_PLATFORM_ID").value_or(
-                service::message::edge::kDefaultPlatformId))] {
+            [platformId = components.edge.platformId] {
                 return service::edge::config::PlatformIdentity{platformId};
             })
+        .use_worker_state<service::edge_node::FirmwareStorageConfig>(
+            [url = components.edge.publicBaseUrl, directory = components.edge.firmwareDirectory] {
+                return service::edge_node::FirmwareStorageConfig{url, directory};
+            })
         .use_worker_state<service::edge::SessionDispatcher>()
-        .use_worker_state<service::utils::ChangeFeed>()
         .use_worker_state<service::edge::gateway::FirmwareCleanupSignal>()
         .use_worker_state<service::device::DeviceCommandPort>([] {
             return service::device::DeviceCommandPort{
@@ -629,8 +569,8 @@ void configureServer(
         })
         .on_error(&handleError)
         .listen(ruvia::listen_config{
-            .address_ = std::string(app.env().get("HOST").value_or("0.0.0.0")),
-            .http_ = app.env().get<std::uint16_t>("PORT").value_or(1102),
+            .address_ = components.host,
+            .http_ = components.port,
         })
         .server(ruvia::server_config{
             .worker_count_ = budget.service,
@@ -648,15 +588,18 @@ int main(int argc, char* argv[]) {
         const auto commandLine = parseCommandLine(argc, argv);
         auto& app = ruvia::app();
         app.load_dotenv();
-        validateEdgeConfiguration(app.env());
+        auto process = service::config::ProcessConfig::fromEnv(app.env());
+        const auto edge = service::edge::config::Config::fromEnv(app.env());
+        const auto vpn = service::vpn::config::fromEnv(app.env());
+        const auto policy = service::messaging::outbox::Policy::fromEnv(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
-        service::packet_log::initialize(packetLogConfig(app.env(), runtime));
         auto gb28181 = service::gb28181::Config::fromEnv(app.env());
 
-        auto db = migrateDatabase(app.env());
+        process.database = migrateDatabase(std::move(process.database), app.env());
         if (commandLine.migrateOnly) {
             return 0;
         }
+        service::packet_log::initialize(service::packet_log::fromEnv(app.env(), runtime));
 
         configureWeb(app, runtime);
         if (gb28181.enabled) {
@@ -673,18 +616,19 @@ int main(int argc, char* argv[]) {
                                                             .max_response_bytes_ = 2U * 1024U * 1024U,
                                                         } });
         }
-        const auto budget = workerBudget(app.env(), gb28181);
+        const auto budget = service::config::WorkerBudget::resolve(
+            process, gb28181.enabled, static_cast<unsigned>(std::max(1, gb28181.media.workerThreads)));
         std::cout << "worker budget: cpu=" << budget.cpu
                   << ", service=" << budget.service
                   << ", collector=" << budget.collector
                   << ", gb28181=" << budget.gb28181 << '\n';
-        auto serviceRedis = redisConfig(app.env());
         auto components = createComponents(
-            app.env(),
+            std::move(process),
+            edge,
+            vpn,
             gb28181,
             budget,
-            std::move(db),
-            std::move(serviceRedis)
+            policy
         );
         configureServer(app, components, budget);
         service::gb28181::media::sdkSupervisor().stop();

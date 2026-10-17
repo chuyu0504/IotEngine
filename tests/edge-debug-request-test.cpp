@@ -4,6 +4,7 @@
 #include <ruvia/web/testing.h>
 
 #include "service/modules/edge_node/edge_node.controller.h"
+#include "service/utils/uuid.h"
 
 namespace {
 void require(bool condition, const char* reason) {
@@ -30,12 +31,12 @@ class EventProbe final {
         require(c.connection.worker().is_current(), "event migrated to another worker");
         require(c.arena() != c.connection.pool(), "debug invocation reused the connection allocation arena");
         require(c.request.event == "echo.read", "event identity changed");
-        auto& workerGenerator = *c.connection.worker_state<std::unique_ptr<service::common::UuidV7Generator>>();
-        require(c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>().get() == &workerGenerator, "debug event did not borrow its accepting worker's UUID generator");
-        const auto firstId = c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        auto& workerUuidState = c.connection.worker_state<service::common::UuidV7State>();
+        require(&c.worker_state<service::common::UuidV7State>() == &workerUuidState, "debug event did not borrow its accepting worker's UUID state");
+        const auto firstId = service::utils::nextUuid(c.worker_state<service::common::UuidV7State>());
         service::middleware::RequestContext nextRequest(c.connection, "another-actor");
-        require(nextRequest.worker_state<std::unique_ptr<service::common::UuidV7Generator>>().get() == &workerGenerator, "request scope replaced worker UUID state");
-        require(firstId < nextRequest.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), "UUID order was reset between request scopes");
+        require(&nextRequest.worker_state<service::common::UuidV7State>() == &workerUuidState, "request scope replaced worker UUID state");
+        require(firstId < service::utils::nextUuid(nextRequest.worker_state<service::common::UuidV7State>()), "UUID order was reset between request scopes");
         co_return service::edge_node::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
     }
 
@@ -43,7 +44,7 @@ class EventProbe final {
         const auto wire = co_await c.req().text();
         auto request = service::edge_node::debug::Request::parse(wire);
         service::edge_node::debug::SessionIdentity identity{
-            c.worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
+            service::utils::nextUuid(c.worker_state<service::common::UuidV7State>())
         };
         service::edge_node::debug::ConnectionResources resources;
         std::any state;
@@ -73,9 +74,9 @@ class EventProbe final {
 } // namespace
 
 int main() {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     try {
-        const auto id = uuidGenerator.next();
+        const auto id = service::utils::nextUuid(uuidState);
         const auto wire = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"typed\"}}";
         const auto parsed = service::edge_node::debug::Request::parse(wire);
         require(parsed.id == id && parsed.data == "{\"value\":\"typed\"}", "request ownership failed");
@@ -103,9 +104,9 @@ int main() {
             require(rejected, "invalid request accepted");
         }
         ruvia::test_app app;
-        app.use_worker_state<std::unique_ptr<service::common::UuidV7Generator>>(
+        app.use_worker_state<service::common::UuidV7State>(
             [] {
-                return std::make_unique<service::common::UuidV7Generator>();
+                return service::common::UuidV7State{};
             }
         );
         const auto good = app.request(ruvia::test_request::post("/probe").json(wire));

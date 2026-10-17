@@ -97,12 +97,8 @@ class OperationsService final {
     }
 
   private:
-    static std::size_t workerCount(const ruvia::context& context) noexcept {
-        try {
-            return context.worker_state<service::ServiceWorkerTopology>().count;
-        } catch (const std::logic_error&) {
-            return 0;
-        }
+    static std::size_t workerCount(const ruvia::context& context) {
+        return context.worker_state<std::optional<common::WorkerIdentity>>().value().count;
     }
 
     static ruvia::task<std::vector<WorkerDiagnosticSnapshot>>
@@ -112,7 +108,7 @@ class OperationsService final {
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
                 .where_ = entities::WorkerSnapshotEntity::field<"id">() ==
-                    service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
+                    service::message::worker_metrics::snapshotId(index, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId)};
             const auto snapshot = co_await snapshots.find_one(options);
             if (!snapshot) continue;
             auto& value = result[index];

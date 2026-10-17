@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 
 #include <array>
 #include <asio.hpp>
@@ -42,8 +43,8 @@ class TcpTransport final {
         std::function<void(std::string, std::string, std::string, std::function<void(bool)>)>;
     using TargetReleaseHandler = std::function<void(std::string, std::string, std::string)>;
 
-    TcpTransport(service::common::UuidV7Generator& uuidGenerator, asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
-        : uuidGenerator_(uuidGenerator), ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
+    TcpTransport(service::common::UuidV7State& uuidState, asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
+        : uuidState_(uuidState), ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
           workerCount_(workerCount), onConnected_(std::move(onConnected)),
           onPacket_(std::move(onPacket)), onDisconnected_(std::move(onDisconnected)),
           onState_(std::move(onState)), onTargetClaim_(std::move(onTargetClaim)),
@@ -479,7 +480,7 @@ class TcpTransport final {
             // Workers may race here, but only the lease owner is allowed to
             // reach the device and become its active connection.
             const auto currentAttempt = std::make_shared<Attempt>();
-            currentAttempt->token = owner.uuidGenerator_.next();
+            currentAttempt->token = service::utils::nextUuid(owner.uuidState_);
             attempt = currentAttempt;
             connectionId = currentAttempt->token;
             const auto claimCompleted = [self = shared_from_this(), currentAttempt](bool claimed) {
@@ -670,7 +671,7 @@ class TcpTransport final {
                         definition->second.status != "enabled") {
                         return;
                     }
-                    addConnection(definition->second, {}, uuidGenerator_.next(), std::move(remote), std::move(socket));
+                    addConnection(definition->second, {}, service::utils::nextUuid(uuidState_), std::move(remote), std::move(socket));
                 }
             );
             listeners_.emplace(link.id, listener);
@@ -811,7 +812,7 @@ class TcpTransport final {
                         client->second->lastActivityAtMs = activity;
                     }
                 }
-                IngressPacket packet{ .messageId = uuidGenerator_.next(),
+                IngressPacket packet{ .messageId = service::utils::nextUuid(uuidState_),
                                       .linkId = linkId,
                                       .connectionId = std::string(currentId),
                                       .remoteAddress = std::string(currentRemote),
@@ -920,7 +921,7 @@ class TcpTransport final {
         connectionTargets_.clear();
     }
 
-    service::common::UuidV7Generator& uuidGenerator_;
+    service::common::UuidV7State& uuidState_;
     asio::io_context& ioContext_;
     DeadlineScheduler& scheduler_;
     std::size_t workerIndex_ = 0;

@@ -23,6 +23,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/collector/collector.config.h"
 #include "service/features/collector/collector.protocol.h"
 #include "service/features/collector/collector.types.h"
@@ -74,7 +75,7 @@ ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queu
         co_return false;
     if (reply.kind() != ruvia::redis_value::kind_type::integer ||
         reply.integer() != static_cast<std::int64_t>(dispatches.size()))
-        message::redis::throwValue("dispatch pending command batch", reply);
+        utils::redis::throwValue("dispatch pending command batch", reply);
     co_return true;
 }
 
@@ -86,7 +87,7 @@ ruvia::task<std::optional<DeviceRoute>> deviceRoute(const Redis& redis, std::str
     const std::string_view args[]{message::collector::kLinkOwnerPrefix};
     const auto reply = co_await redis.eval(persistence::kDeviceRouteReadScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::array)
-        message::redis::throwValue("read device collector route", reply);
+        utils::redis::throwValue("read device collector route", reply);
     if (reply.array().size() != 6)
         co_return std::nullopt;
     for (const auto& value : reply.array())
@@ -201,7 +202,7 @@ class CommandDispatchService final {
                 dispatched.update(service::command::persistence::CommandAttemptEntity::table_name()).set(service::command::persistence::CommandAttemptEntity::column<"dispatched_at">().name(), dispatched.call("now")).and_where(dispatched.binary(dispatched.column(service::command::persistence::CommandAttemptEntity::column<"operation_id">().name()), Op::equal, dispatched.cast(dispatched.value(cell(0)), Type::uuid)));
                 (void)co_await update.execute(dispatched);
             } else {
-                co_await appendUpdatedEvent(update, cell(0), context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+                co_await appendUpdatedEvent(update, cell(0), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
             }
             co_await update.commit();
             if (published && !cell(3).empty())
@@ -221,7 +222,7 @@ class CommandDispatchService final {
             .returning({ overdue.cast(service::command::persistence::CommandOperationEntity::column<"id">().expression(overdue, "o"), Type::text) });
         const auto expired = co_await expiry.query(overdue);
         for (const auto& row : expired)
-            co_await appendUpdatedEvent(expiry, row[0].value().value_or(std::string_view{}), context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            co_await appendUpdatedEvent(expiry, row[0].value().value_or(std::string_view{}), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
         co_await expiry.commit();
     }
 
@@ -277,7 +278,7 @@ class CommandResultService final {
             outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(service::command::persistence::CommandOperationEntity::column<"status">().name(), outcome.value(state)).set(service::command::persistence::CommandOperationEntity::column<"reason">().name(), outcome.value(message.get("reason"))).set(service::command::persistence::CommandOperationEntity::column<"actual_values">().name(), outcome.cast(outcome.value(actual), ruvia::db_data_type::jsonb)).set(service::command::persistence::CommandOperationEntity::column<"completed_at">().name(), outcome.call("now")).and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"id">().name()), Op::equal, outcome.cast(outcome.value(id), ruvia::db_data_type::uuid))).and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"device_id">().name()), Op::equal, outcome.cast(outcome.value(deviceId), ruvia::db_data_type::uuid))).and_where(outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"status">().name()), Op::in, outcome.list({ outcome.value(service::message::command::kResultAcceptingStatuses[0]), outcome.value(service::message::command::kResultAcceptingStatuses[1]) })), Op::or_value, outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"status">().name()), Op::equal, outcome.value("UNKNOWN")), Op::and_value, outcome.value(mayResolveUnknown)))).returning({ outcome.cast(outcome.column(service::command::persistence::CommandOperationEntity::column<"id">().name()), ruvia::db_data_type::text) });
             const auto updated = co_await transaction.query(outcome);
             if (!updated.empty())
-                co_await appendUpdatedEvent(transaction, id, context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+                co_await appendUpdatedEvent(transaction, id, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
         }
         co_await transaction.commit();
     }
@@ -478,7 +479,7 @@ private:
         for (const auto& elements : tasks) {
             PendingDispatch dispatch;
             auto& task = dispatch.task;
-            task.messageId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            task.messageId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
             task.groupKey = "device:" + device->id;
             task.protocol = device->protocol;
             task.transport = definition.commandTransport == service::collector::CommandTransport::DeviceConfigured
@@ -541,7 +542,7 @@ private:
         for (const auto& elements : tasks) {
             PendingDispatch dispatch;
             auto& task = dispatch.task;
-            task.messageId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            task.messageId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
             task.groupKey = "device:" + device.id;
             task.protocol = device.protocol;
             task.transport = "EDGE";
@@ -554,7 +555,7 @@ private:
             for (const auto& element : elements)
                 task.elements.emplace_back(element.elementId, element.value);
 
-            auto envelope = service::edge::protocol::outbound(context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), context.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+            auto envelope = service::edge::protocol::outbound(service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), context.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
             auto* command = envelope.mutable_command_request();
             if (!setUuid(command->mutable_command_id(), task.messageId) ||
                 !setUuid(command->mutable_device_id(), task.deviceId))
@@ -676,7 +677,7 @@ private:
 
     static bool setUuid(std::string* output, std::string_view text) {
         std::uint8_t value[16]{};
-        if (!service::edge::protocol::uuidBytes(text, value))
+        if (!service::common::uuidBytes(text, value))
             return false;
         output->assign(service::edge::protocol::bytes(value, sizeof(value)));
         return true;

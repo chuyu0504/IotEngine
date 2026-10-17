@@ -23,12 +23,15 @@
 #include <ruvia/core/timer.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/model_json.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
+#include "service/utils/uuid.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/gb28181.entity.h"
 #include "service/features/gb28181/gb28181.protocol.h"
@@ -132,20 +135,20 @@ redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[3])
 return { order, id }
 )lua";
 
-// Receipt write, PEL removal and the directed receipt to the publishing
-// Collector Worker are one Redis transaction.  The receipt stream exists only
-// while that Collector incarnation consumes it; the durable receipt key covers
-// a Collector that missed the directed message.
-// KEYS[1]=receipt key, KEYS[2]=projection stream, KEYS[3]=Collector receipt stream.
+// Persist completion and remove the pending entry before notifying the
+// publishing Collector. Pub/Sub is only a wake-up; the done key is authoritative.
+// KEYS: receipt key, projection stream, receipt topic, pending deadlines, deadline channel.
 // ARGV[1]=applied (0/1), ARGV[2]=receipt TTL seconds, ARGV[3]=group,
 // ARGV[4]=entry ID, ARGV[5]=projection ID.
 inline constexpr std::string_view kMarkProjectionDoneScript = R"lua(
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 local acknowledged = redis.call('XACK', KEYS[2], ARGV[3], ARGV[4])
 redis.call('XDEL', KEYS[2], ARGV[4])
-if redis.call('EXISTS', KEYS[3]) == 1 then
-  redis.call('XADD', KEYS[3], '*', 'projection_id', ARGV[5], 'applied', ARGV[1])
-  redis.call('EXPIRE', KEYS[3], ARGV[2])
+if redis.call('ZREM', KEYS[4], ARGV[4]) > 0 then
+  redis.call('PUBLISH', KEYS[5], ARGV[4])
+end
+if KEYS[3] ~= '' then
+  redis.call('PUBLISH', KEYS[3], ARGV[5])
 end
 return acknowledged
 )lua";
@@ -331,7 +334,7 @@ class GbProjectionService {
         ConfigProjectionRecord record{ .enabled = config.enabled, .mediaStarted = media.started };
         record.mediaPorts = ruvia::to_json(control_protocol::mediaPortsJson(nullptr, media.ports));
         record.mediaCapabilities = ruvia::to_json(control_protocol::mediaCapabilitiesJson(nullptr, media.capabilities));
-        co_await service::message::redis::setHash(redis, service::message::gb28181::kStateKey, record.encode());
+        co_await service::utils::redis::setHash(redis, service::message::gb28181::kStateKey, record.encode());
         co_return;
     }
 
@@ -342,7 +345,7 @@ class GbProjectionService {
 
     static ruvia::task<ConfigProjectionRecord> loadState(const ruvia::redis_handle& redis) {
         co_return ConfigProjectionRecord::decode(
-            co_await service::message::redis::hashEntries(redis, service::message::gb28181::kStateKey)
+            co_await service::utils::redis::hashEntries(redis, service::message::gb28181::kStateKey)
         );
     }
 
@@ -398,7 +401,7 @@ class GbProjectionService {
         options.condition_ = ruvia::redis_set_condition::if_absent;
         options.expiration_ = ruvia::redis_set_expiration::expires_after(std::chrono::hours(24));
         const auto seed = co_await context.redis().set(
-            control_protocol::stream::ownerDeadlineSeed(service::runtime::instanceId()),
+            control_protocol::stream::ownerDeadlineSeed(context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId),
             "1",
             std::move(options)
         );
@@ -442,9 +445,9 @@ class GbProjectionService {
         if (arguments.size() == 3) {
             co_return;
         }
-        const auto reply = co_await service::message::redis::command(context.redis(), arguments);
+        const auto reply = co_await context.redis().command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("seed GB28181 owner deadlines", reply);
+            service::utils::redis::throwValue("seed GB28181 owner deadlines", reply);
         }
     }
 
@@ -458,12 +461,12 @@ class GbProjectionService {
         const std::string_view arguments[]{ control_protocol::stream::kOwnerPrefix, limit, kOwnerExpiryProcessingMs };
         const auto reply = co_await redis.eval(kClaimDueOwnersScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() < 2 || reply.array().size() % 2 != 0) {
-            service::message::redis::throwValue("claim GB28181 owner deadlines", reply);
+            service::utils::redis::throwValue("claim GB28181 owner deadlines", reply);
         }
         const auto values = reply.array();
         for (const auto& value : values) {
             if (value.kind() != ruvia::redis_value::kind_type::string) {
-                service::message::redis::throwValue("claim GB28181 owner deadlines", reply);
+                service::utils::redis::throwValue("claim GB28181 owner deadlines", reply);
             }
         }
         const auto milliseconds = [](std::string_view text) -> std::optional<std::int64_t> {
@@ -497,7 +500,7 @@ class GbProjectionService {
         const std::string_view arguments[]{ owner.member, owner.score };
         const auto reply = co_await redis.eval(kCompleteOwnerExpiryScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("complete GB28181 owner expiry", reply);
+            service::utils::redis::throwValue("complete GB28181 owner expiry", reply);
         }
     }
 
@@ -1103,7 +1106,7 @@ class GbControlService final {
         const std::string_view keys[]{ controlKey, ownerKey };
         const auto published = co_await redis.eval(kPublishControlCommandScript, keys, args);
         if (published.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 command publish", published);
+            service::utils::redis::throwValue("GB28181 command publish", published);
         }
         if (published.integer() != 1) {
             service::common::fail(10003, "GB28181 connection owner expired", 409);
@@ -1122,7 +1125,7 @@ class GbControlService final {
         const std::string_view args[]{ ownerToken, deadline };
         const auto claimed = co_await redis.eval(kClaimControlExecutionScript, keys, args);
         if (claimed.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 command claim", claimed);
+            service::utils::redis::throwValue("GB28181 command claim", claimed);
         }
         co_return static_cast<ControlClaimResult>(claimed.integer());
     }
@@ -1142,15 +1145,15 @@ class GbControlService final {
         const std::string_view args[]{ group, kCollectorStreamTtlSeconds };
         const auto created = co_await redis.eval(kCreateCollectorStreamScript, keys, args);
         if (created.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 Collector stream group", created);
+            service::utils::redis::throwValue("GB28181 Collector stream group", created);
         }
     }
 
     static ruvia::task<void> refreshCollectorStream(const ruvia::redis_handle& redis, std::string_view stream) {
         const std::vector<std::string> arguments{ "EXPIRE", std::string(stream), std::string(kCollectorStreamTtlSeconds) };
-        const auto refreshed = co_await service::message::redis::command(redis, arguments);
+        const auto refreshed = co_await redis.command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
         if (refreshed.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 Collector stream lifetime", refreshed);
+            service::utils::redis::throwValue("GB28181 Collector stream lifetime", refreshed);
         }
     }
 
@@ -1159,10 +1162,11 @@ class GbControlService final {
         const std::string& projectionId,
         std::string_view projectionOrder,
         std::string_view currentEntryId,
-        std::span<const service::message::StreamField> fields
+        std::span<const service::message::StreamField> fields,
+        std::string_view instanceId
     ) {
         const auto sentKey = control_protocol::stream::projectionSent(projectionId);
-        const auto wakeStream = service::message::sharedWakeStream(service::runtime::instanceId());
+        const auto wakeStream = service::message::sharedWakeStream(instanceId);
         const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
         const std::string_view keys[]{ control_protocol::stream::kProjection, sentKey, wakeStream };
         std::vector<std::string_view> args;
@@ -1198,7 +1202,7 @@ class GbControlService final {
             reply.array().size() != 2 ||
             reply.array()[0].kind() != ruvia::redis_value::kind_type::string ||
             reply.array()[1].kind() != ruvia::redis_value::kind_type::string) {
-            service::message::redis::throwValue("GB28181 projection publish result", reply);
+            service::utils::redis::throwValue("GB28181 projection publish result", reply);
         }
         ProjectionPublishResult result{
             std::string(reply.array()[0].string()),
@@ -1224,9 +1228,9 @@ class GbControlService final {
 
     // `deadlineMember` is empty for preview session owners, which have no
     // durable aggregate to reconcile.
-    static ruvia::task<bool> claimOwnerLease(const ruvia::redis_handle& connection, std::string_view key, std::string_view token, std::string_view previousToken, std::string_view deadlineMember) {
+    static ruvia::task<bool> claimOwnerLease(const ruvia::redis_handle& connection, std::string_view key, std::string_view token, std::string_view previousToken, std::string_view deadlineMember, std::string_view instanceId) {
         const auto redis = connection.with_options({ .timeout_ = std::chrono::seconds(3) });
-        const auto wakeStream = service::message::sharedWakeStream(service::runtime::instanceId());
+        const auto wakeStream = service::message::sharedWakeStream(instanceId);
         const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
         const std::string_view keys[]{ key, control_protocol::stream::kOwnerDeadlines, wakeStream };
         const std::string_view arguments[]{
@@ -1239,7 +1243,7 @@ class GbControlService final {
         };
         const auto reply = co_await redis.eval(kClaimOwnerLeaseScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("claim GB28181 owner lease", reply);
+            service::utils::redis::throwValue("claim GB28181 owner lease", reply);
         }
         co_return reply.integer() == 1;
     }
@@ -1250,7 +1254,7 @@ class GbControlService final {
         const std::string_view arguments[]{ token, kOwnerLeaseMs, deadlineMember };
         const auto reply = co_await redis.eval(kRenewOwnerLeaseScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("renew GB28181 owner lease", reply);
+            service::utils::redis::throwValue("renew GB28181 owner lease", reply);
         }
         co_return reply.integer() == 1;
     }
@@ -1263,7 +1267,7 @@ class GbControlService final {
         const std::string_view arguments[]{ token, settledMember };
         const auto reply = co_await redis.eval(kReleaseOwnerLeaseScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("release GB28181 owner lease", reply);
+            service::utils::redis::throwValue("release GB28181 owner lease", reply);
         }
         co_return;
     }
@@ -1289,7 +1293,7 @@ class GbControlService final {
         const std::string_view arguments[]{ requestId, operation, status, payload, group, messageId, result, ttl, ttl, ttl, claimOwner, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await redis.eval(kPublishReplyAndAcknowledgeScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 reply/ack", reply);
+            service::utils::redis::throwValue("GB28181 reply/ack", reply);
         }
         co_return;
     }
@@ -1310,14 +1314,14 @@ class GbControlService final {
         co_return std::optional<std::string>(std::string(*value));
     }
 
-    // `receiptStream` is the publishing Collector Worker's receipt stream.
+    // `receiptTopic` is the publishing Collector Worker's notification topic.
     static ruvia::task<void> markProjectionDoneAndAcknowledge(
         const ruvia::redis_handle& redis,
         std::string_view stream,
         std::string_view group,
         std::string_view messageId,
         std::string_view projectionId,
-        std::string_view receiptStream,
+        std::string_view receiptTopic,
         bool applied
     ) {
         if (projectionId.empty()) {
@@ -1326,11 +1330,13 @@ class GbControlService final {
         const auto doneKey = control_protocol::stream::projectionDone(projectionId);
         const std::string_view appliedValue{ applied ? "1" : "0" };
         const std::string_view ttl{ "600" };
-        const std::string_view keys[]{ doneKey, stream, receiptStream };
+        const auto pendingKey = service::message::consumer::deadlineKey(stream, group);
+        const auto pendingChannel = service::message::consumer::deadlineChannel(stream, group);
+        const std::string_view keys[]{ doneKey, stream, receiptTopic, pendingKey, pendingChannel };
         const std::string_view arguments[]{ appliedValue, ttl, group, messageId, projectionId };
         const auto reply = co_await redis.eval(kMarkProjectionDoneScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("GB28181 projection done", reply);
+            service::utils::redis::throwValue("GB28181 projection done", reply);
         }
         co_return;
     }
@@ -1533,12 +1539,12 @@ class GbControlService final {
         while (!stop.stop_requested()) {
             (void)notification.take();
             const std::vector<std::string> replyArguments{ "XREAD", "COUNT", "1", "STREAMS", std::string(stream), "0-0" };
-            const auto reply = co_await service::message::redis::command(
+            const auto reply = co_await service::utils::redis::command(
                 boundedRedis,
                 replyArguments
             );
             if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::array) {
-                service::message::redis::throwValue("XREAD GB28181 reply", reply);
+                service::utils::redis::throwValue("XREAD GB28181 reply", reply);
             }
             if (const auto message = reply.null() ? std::nullopt : matchingReply(reply, requestId)) {
                 co_return message;
@@ -1576,7 +1582,7 @@ class GbControlService final {
             service::common::fail(10003, "GB28181 连接归属已变更或已过期", 404);
         }
 
-        const auto requestId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto requestId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
         const auto replyStream = control_protocol::stream::reply(requestId);
         const auto resultKey = control_protocol::stream::result(requestId);
         const auto cancelKey = control_protocol::stream::cancel(requestId);
@@ -1667,9 +1673,9 @@ class GbControlService final {
     static ruvia::task<void> discardReply(const ruvia::redis_handle& redis, std::string_view replyStream) {
         try {
             const std::vector<std::string> arguments{ "DEL", std::string(replyStream), service::message::live::routeKey(replyStream) };
-            const auto reply = co_await service::message::redis::command(redis, arguments);
+            const auto reply = co_await service::utils::redis::command(redis, arguments);
             if (reply.kind() == ruvia::redis_value::kind_type::error) {
-                service::message::redis::throwValue("discard GB28181 reply", reply);
+                service::utils::redis::throwValue("discard GB28181 reply", reply);
             }
         } catch (const std::exception& error) {
             LOG_WARN << "GB28181 reply " << replyStream << " was not discarded: " << error.what();

@@ -13,6 +13,7 @@
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/role/role.types.h"
 #include "service/modules/system/user/user.entity.h"
@@ -95,7 +96,7 @@ class RoleService {
         const std::string status =
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::string permissions = permissionsJson(body.get<"permissions">());
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         entities::RoleEntity role(c.pool());
         role.set<"id">(id);
         role.set<"name">(name);

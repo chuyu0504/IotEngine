@@ -6,6 +6,9 @@
 #include <string>
 #include <stdexcept>
 #include <utility>
+#include <filesystem>
+#include <ruvia/web/dotenv.h>
+#include "service/common/message.h"
 
 namespace service::edge::config {
 
@@ -43,5 +46,24 @@ inline bool validPublicBaseUrl(std::string_view publicBaseUrl) {
             return false;
     return true;
 }
+
+struct Config final {
+    std::string platformId;
+    std::string publicBaseUrl;
+    std::filesystem::path firmwareDirectory;
+
+    static Config fromEnv(const ruvia::env& env) {
+        Config config{
+            std::string(env.get("EDGE_PLATFORM_ID").value_or(service::message::edge::kDefaultPlatformId)),
+            std::string(env.get("EDGE_PUBLIC_BASE_URL").value_or(service::message::edge::kDefaultPublicBaseUrl)),
+            std::filesystem::path(env.get("EDGE_FIRMWARE_DIR").value_or("firmware"))
+        };
+        if (!validPlatformId(config.platformId))
+            throw std::invalid_argument("EDGE_PLATFORM_ID is invalid");
+        if (!validPublicBaseUrl(config.publicBaseUrl))
+            throw std::invalid_argument("EDGE_PUBLIC_BASE_URL is invalid");
+        return config;
+    }
+};
 
 } // namespace service::edge::config

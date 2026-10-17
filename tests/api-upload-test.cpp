@@ -99,15 +99,19 @@ struct ClaimContext {
     ClaimRedis redis() { return ClaimRedis{ &state }; }
     const ruvia::worker_handle& worker() const { return loop_.worker(); }
     ruvia::stop_token get_stop_token() const { return {}; }
+    template <typename State>
+    State& worker_state() { return identity; }
 
     ClaimState state;
+    std::optional<service::common::WorkerIdentity> identity{
+        std::in_place, "upload-test-instance", 0, 1 };
 
   private:
     const Loop& loop_;
 };
 
 std::string claimKey() {
-    return service::edge_node::entities::firmwareUploadRecoveryKey(service::runtime::instanceId());
+    return service::edge_node::entities::firmwareUploadRecoveryKey("upload-test-instance");
 }
 
 void writeOrphan(const std::filesystem::path& path) {

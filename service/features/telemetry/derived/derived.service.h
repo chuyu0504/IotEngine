@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include <ruvia/web/redis/redis_handle.h>
+
 #include "service/common/message.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/derived/derived.entity.h"
@@ -68,7 +70,7 @@ class DerivedService final {
     }
 
     template <class Redis>
-    static ruvia::task<Result> append(const Redis& redis, const DeviceCalculation& device, message::ParsedDeviceMessage& message, bool expiration = false, bool deduplicate = false) {
+    static ruvia::task<Result> append(const Redis& redis, const DeviceCalculation& device, message::ParsedDeviceMessage& message, std::string_view instanceId, bool expiration = false, bool deduplicate = false) {
         const auto& calculation = device.calculation;
         const auto& definitions = calculation.definitions();
         std::map<std::string, Sample> incoming;
@@ -90,7 +92,7 @@ class DerivedService final {
             });
         }
         const auto stream = message::parsedStream();
-        const auto wake = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+        const auto wake = message::workerWakeStream(std::nullopt, instanceId);
         const auto receipt = "iot:derived:receipt:" + message.messageId;
         std::vector<std::string_view> keys{ device.stateKey, stream, wake };
         if (deduplicate) {
@@ -98,9 +100,9 @@ class DerivedService final {
         }
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
             const std::vector<std::string> previousArguments{ "GET", device.stateKey };
-            const auto previous = co_await message::redis::command(redis, previousArguments);
+            const auto previous = co_await redis.command(std::vector<std::string_view>(previousArguments.begin(), previousArguments.end()));
             if (previous.kind() != ruvia::redis_value::kind_type::null && previous.kind() != ruvia::redis_value::kind_type::string) {
-                message::redis::throwValue("derived state read", previous);
+                utils::redis::throwValue("derived state read", previous);
             }
             const std::string before = previous.kind() == ruvia::redis_value::kind_type::string ? std::string(previous.string()) : std::string{};
             auto state = StateRecord::decode(before);
@@ -149,7 +151,7 @@ class DerivedService final {
             const std::vector<std::string_view> args(store.begin(), store.end());
             const auto reply = co_await redis.eval(kStateTransitionScript, keys, args);
             if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-                message::redis::throwValue("derived state CAS", reply);
+                utils::redis::throwValue("derived state CAS", reply);
             }
             if (reply.integer() == 0) {
                 continue;

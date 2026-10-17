@@ -6,6 +6,7 @@
 #include "service/common/message.h"
 
 #include <chrono>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <cstdint>
@@ -132,6 +133,24 @@ struct ProtocolCommand {
 
 enum class TransmissionReservation { Expired, Duplicate, Reserved };
 
+struct EgressLogContext {
+    std::string acquisitionId;
+    std::string replyToPacketId;
+    std::string operation;
+    std::string protocol;
+    std::string linkId;
+    std::string deviceId;
+    std::string deviceCode;
+    std::string connectionId;
+    std::string remoteAddress;
+    std::string messageId;
+    std::string causationId;
+    std::vector<std::uint8_t> debugPayload;
+    std::int64_t debugTime = 0;
+    bool awaitResponse = false;
+    std::uint64_t sessionEpoch = 0;
+};
+
 using RealtimePointDefinition = service::message::realtime::Point;
 using RealtimeDeviceDefinition = service::message::realtime::Device;
 
@@ -140,6 +159,21 @@ struct RuntimeSnapshot {
     std::vector<DeviceDefinition> devices;
     std::vector<RealtimeDeviceDefinition> realtimeDevices;
 };
+
+namespace ownership {
+
+struct LinkLease {
+    bool owned = false;
+    std::optional<std::chrono::steady_clock::time_point> nextAttempt;
+};
+
+struct OwnedSnapshot {
+    RuntimeSnapshot snapshot;
+    std::optional<std::chrono::milliseconds> nextLeaseWait;
+    bool ownershipChanged = false;
+};
+
+} // namespace ownership
 
 } // namespace service::collector
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
+#include <limits>
 #include <chrono>
 #include <cstdint>
 #include <google/protobuf/util/json_util.h>
@@ -19,6 +21,7 @@
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
+#include "service/common/worker.h"
 #include "service/common/uuid.h"
 #include "service/common/wireguard.h"
 #include "service/features/edge/acquisition/acquisition.protocol.h"
@@ -29,18 +32,394 @@
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/features/edge/projection/projection.entity.h"
 #include "service/features/edge/projection/projection.types.h"
+#include "service/features/observability/observability.service.h"
+#include "service/features/telemetry/derived/derived.service.h"
+#include "service/features/telemetry/telemetry.service.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/middleware/log.h"
+#include "service/utils/startup.h"
+#include "service/utils/uuid.h"
 #include "service/utils/json.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 
 namespace service::edge::projection {
+inline constexpr std::string_view kIngressGroup{ "iot-engine:edge-projector" };
+inline constexpr auto kLeaseTtl = std::chrono::milliseconds(15000);
+
+// SET NX: establishes a Worker lease or a recovery lease of an expired owner.
+inline constexpr std::string_view kClaimLeaseScript = R"lua(
+if not redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return 0 end
+local now = redis.call('TIME')
+redis.call('ZADD', KEYS[2], now[1] * 1000 + math.floor(now[2] / 1000) + tonumber(ARGV[2]), ARGV[3])
+return 1
+)lua";
+
+// Token-checked renewal; never recreates an expired lease.
+inline constexpr std::string_view kRenewLeaseScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+local now = redis.call('TIME')
+redis.call('ZADD', KEYS[2], now[1] * 1000 + math.floor(now[2] / 1000) + tonumber(ARGV[2]), ARGV[3])
+return 1
+)lua";
+
+inline constexpr std::string_view kLeaseOwnedScript = R"lua(
+if redis.call('GET', KEYS[1]) == ARGV[1] then return 1 end
+return 0
+)lua";
+
+inline constexpr std::string_view kReleaseLeaseScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])
+)lua";
+
+// Deletes a recovered Stream only after it is empty and has no pending entries.
+inline constexpr std::string_view kEraseDeadStreamScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call('EXISTS', KEYS[2]) ~= 0 then
+  if redis.call('XLEN', KEYS[2]) ~= 0 then return 0 end
+  local groups = redis.call('XINFO', 'GROUPS', KEYS[2])
+  for _, group in ipairs(groups) do
+    for index = 1, #group, 2 do
+      if group[index] == 'pending' and tonumber(group[index + 1]) > 0 then
+        return 0
+      end
+    end
+  end
+  redis.call('DEL', KEYS[2])
+end
+redis.call('DEL', KEYS[1])
+redis.call('SREM', KEYS[3], KEYS[2])
+redis.call('ZREM', KEYS[4], KEYS[2])
+return 1
+)lua";
+
+// Acknowledges projected entries only while the consuming lease is still owned.
+inline constexpr std::string_view kAcknowledgeFencedScript = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local group = ARGV[2]
+local removed = 0
+for index = 3, #ARGV do
+  redis.call('XACK', KEYS[2], group, ARGV[index])
+  redis.call('XDEL', KEYS[2], ARGV[index])
+  removed = removed + redis.call('ZREM', KEYS[3], ARGV[index])
+end
+if removed > 0 then redis.call('PUBLISH', KEYS[4], 'changed') end
+return 1
+)lua";
+
+// Bootstraps existing registered Streams once on startup, preserving live leases.
+inline constexpr std::string_view kSeedRecoveryDeadlineScript = R"lua(
+if redis.call('EXISTS', KEYS[2]) == 0 then
+  redis.call('SREM', KEYS[1], KEYS[2])
+  redis.call('ZREM', KEYS[4], KEYS[2])
+  return 0
+end
+local now = redis.call('TIME')
+local ttl = math.max(0, redis.call('PTTL', KEYS[3]))
+return redis.call('ZADD', KEYS[4], 'NX', now[1] * 1000 + math.floor(now[2] / 1000) + ttl, KEYS[2])
+)lua";
+
+inline constexpr std::string_view kDueRecoveryStreamsScript = R"lua(
+local now = redis.call('TIME')
+return redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now[1] * 1000 + math.floor(now[2] / 1000), 'LIMIT', 0, 128)
+)lua";
+
+inline constexpr std::string_view kNextRecoveryDeadlineScript = R"lua(
+local first = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+if #first == 0 then return 0 end
+local now = redis.call('TIME')
+return math.max(1, tonumber(first[2]) - now[1] * 1000 - math.floor(now[2] / 1000))
+)lua";
+
+// Lease, fencing and dead-Stream recovery of the projector Streams in Redis.
+class ProjectorStreams final {
+  public:
+    static ProjectorStreamOwner current(std::size_t workerIndex, std::string_view instance) {
+        return { service::message::edge::projector_stream::stream(workerIndex, instance),
+                 service::message::edge::projector_stream::leaseKey(workerIndex, instance),
+                 service::message::edge::projector_stream::ownerToken(workerIndex, instance) };
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> claimLease(const Redis& redis, std::string_view key, std::string_view token) {
+        co_return co_await leaseScript(redis, kClaimLeaseScript, key, token, true, "claim edge projector lease");
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> renewLease(const Redis& redis, std::string_view key, std::string_view token) {
+        co_return co_await leaseScript(redis, kRenewLeaseScript, key, token, true, "renew edge projector lease");
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> leaseOwned(const Redis& redis, std::string_view key, std::string_view token) {
+        co_return co_await leaseScript(redis, kLeaseOwnedScript, key, token, false, "check edge projector lease");
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> releaseLease(const Redis& redis, std::string_view key, std::string_view token) {
+        co_return co_await leaseScript(redis, kReleaseLeaseScript, key, token, false, "release edge projector lease");
+    }
+
+    template <typename Redis>
+    static ruvia::task<void> registerStream(const Redis& redis, std::string_view streamName) {
+        const std::vector<std::string> arguments{
+            "SADD",
+            std::string(service::message::edge::projector_stream::kStreamRegistry),
+            std::string(streamName)
+        };
+        const auto reply = co_await redis.command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("register edge projector stream", reply);
+        }
+    }
+
+    // Drops registry members whose Stream no longer exists.
+    template <typename Redis>
+    static ruvia::task<void> cleanupRegistry(const Redis& redis) {
+        const std::string registry(service::message::edge::projector_stream::kStreamRegistry);
+        const std::vector<std::string> arguments{ "SMEMBERS", registry };
+        const auto reply = co_await redis.command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
+        if (reply.kind() == ruvia::redis_value::kind_type::null) {
+            co_return;
+        }
+        if (reply.kind() != ruvia::redis_value::kind_type::array) {
+            service::utils::redis::throwValue("list edge projector streams", reply);
+        }
+        for (const auto& value : reply.array()) {
+            if (value.kind() != ruvia::redis_value::kind_type::string) {
+                continue;
+            }
+            const std::string streamName(value.string());
+            const auto owner = ownerFromStream(streamName);
+            if (!owner) {
+                throw std::runtime_error("invalid registered edge projector stream");
+            }
+            const auto lease = service::message::edge::projector_stream::leaseKey(owner->second, owner->first);
+            const std::string_view keys[]{ registry, streamName, lease, service::message::edge::projector_stream::kRecoveryDeadlines };
+            const auto removed = co_await redis.eval(kSeedRecoveryDeadlineScript, keys, std::span<const std::string_view>{});
+            if (removed.kind() != ruvia::redis_value::kind_type::integer) {
+                service::utils::redis::throwValue("clean edge projector registry", removed);
+            }
+        }
+    }
+
+    // Owner (instance, Worker index) encoded in a projector Stream name.
+    static std::optional<std::pair<std::string, std::size_t>> ownerFromStream(std::string_view streamName) {
+        if (!streamName.starts_with(service::message::edge::projector_stream::kStreamPrefix)) {
+            return std::nullopt;
+        }
+        const auto suffix = streamName.substr(service::message::edge::projector_stream::kStreamPrefix.size());
+        const auto separator = suffix.rfind(':');
+        if (separator == std::string_view::npos || separator == 0 || separator + 1 >= suffix.size()) {
+            return std::nullopt;
+        }
+        const auto instance = suffix.substr(0, separator);
+        if (instance.find(':') != std::string_view::npos) {
+            return std::nullopt;
+        }
+        std::uint64_t parsedIndex = 0;
+        const auto indexText = suffix.substr(separator + 1);
+        const auto [end, error] = std::from_chars(indexText.data(), indexText.data() + indexText.size(), parsedIndex);
+        if (error != std::errc{} || end != indexText.data() + indexText.size() ||
+            parsedIndex > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            return std::nullopt;
+        }
+        return std::pair{ std::string(instance), static_cast<std::size_t>(parsedIndex) };
+    }
+
+    static std::string recoveryToken(std::size_t workerIndex, std::string_view instance, const std::pair<std::string, std::size_t>& owner) {
+        return std::string(instance) + ":recovery:" + std::to_string(workerIndex) + ":" +
+            owner.first + ":" + std::to_string(owner.second);
+    }
+
+    // Streams of expired owners whose recovery lease this Worker now holds.
+    template <typename Redis>
+    static ruvia::task<std::vector<ProjectorStreamOwner>> discoverDeadStreams(const Redis& redis, std::string_view currentStream, std::size_t workerIndex, std::string_view instance) {
+        std::map<std::string, ProjectorStreamOwner, std::less<>> dead;
+        const std::string_view keys[]{ service::message::edge::projector_stream::kRecoveryDeadlines };
+        const auto due = co_await redis.eval(kDueRecoveryStreamsScript, keys, std::span<const std::string_view>{});
+        if (due.kind() != ruvia::redis_value::kind_type::array) {
+            service::utils::redis::throwValue("find due edge projector recovery", due);
+        }
+        for (const auto& entry : due.array()) {
+            if (entry.kind() != ruvia::redis_value::kind_type::string) {
+                throw std::runtime_error("invalid edge projector recovery deadline");
+            }
+            const std::string candidate(entry.string());
+            if (candidate == currentStream) {
+                continue;
+            }
+            const auto owner = ownerFromStream(candidate);
+            if (!owner) {
+                continue;
+            }
+            const auto lease = service::message::edge::projector_stream::leaseKey(owner->second, owner->first);
+            const auto token = recoveryToken(workerIndex, instance, *owner);
+            const auto current = co_await redis.get(lease);
+            if (current) {
+                // A non-expired owner or another recovery Worker still owns this
+                // Stream; neither case is safe to steal. Seeing our own recovery
+                // token is not enough either: the lease may expire before the
+                // first read, so it must be renewed (token-checked) first.
+                if (std::string_view(current->data(), current->size()) != token ||
+                    !co_await renewLease(redis, lease, token)) {
+                    continue;
+                }
+            } else if (!co_await claimLease(redis, lease, token)) {
+                continue;
+            }
+            dead.emplace(candidate, ProjectorStreamOwner{ candidate, lease, token });
+        }
+        std::vector<ProjectorStreamOwner> result;
+        result.reserve(dead.size());
+        for (auto& [streamName, owner] : dead) {
+            result.push_back(std::move(owner));
+        }
+        co_return result;
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> eraseDeadStream(const Redis& redis, const ProjectorStreamOwner& deadStream) {
+        const std::string registry(service::message::edge::projector_stream::kStreamRegistry);
+        const std::string_view keys[]{ deadStream.lease, deadStream.stream, registry, service::message::edge::projector_stream::kRecoveryDeadlines };
+        const std::string_view arguments[]{ deadStream.token };
+        const auto reply = co_await redis.eval(kEraseDeadStreamScript, keys, arguments);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("erase dead edge projector stream", reply);
+        }
+        co_return reply.integer() == 1;
+    }
+
+    template <typename Redis>
+    static ruvia::task<bool> acknowledgeFenced(const Redis& redis, const ProjectorStreamOwner& owner, const std::vector<service::message::StreamMessage>& messages) {
+        if (messages.empty()) {
+            co_return true;
+        }
+        const auto deadline = service::message::consumer::deadlineKey(owner.stream, kIngressGroup);
+        const auto channel = service::message::consumer::deadlineChannel(owner.stream, kIngressGroup);
+        const std::string_view keys[]{ owner.lease, owner.stream, deadline, channel };
+        std::vector<std::string_view> arguments;
+        arguments.reserve(messages.size() + 2);
+        arguments.push_back(owner.token);
+        arguments.push_back(kIngressGroup);
+        for (const auto& message : messages) {
+            arguments.push_back(message.id);
+        }
+        const auto reply = co_await redis.eval(kAcknowledgeFencedScript, keys, std::span<const std::string_view>(arguments));
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("fenced edge projector acknowledgement", reply);
+        }
+        co_return reply.integer() == 1;
+    }
+
+    template <typename Redis>
+    static ruvia::task<std::chrono::milliseconds> nextRecoveryDelay(const Redis& redis) {
+        const std::string_view keys[]{ service::message::edge::projector_stream::kRecoveryDeadlines };
+        const auto reply = co_await redis.eval(kNextRecoveryDeadlineScript, keys, std::span<const std::string_view>{});
+        if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() <= 0) {
+            throw std::runtime_error("edge projector recovery deadline missing");
+        }
+        co_return std::chrono::milliseconds(reply.integer());
+    }
+
+  private:
+    template <typename Redis>
+    static ruvia::task<bool> leaseScript(const Redis& redis, std::string_view script, std::string_view key, std::string_view token, bool withTtl, std::string_view operation) {
+        const auto ttl = std::to_string(kLeaseTtl.count());
+        const auto stream = std::string(service::message::edge::projector_stream::kStreamPrefix) +
+            std::string(key.substr(service::message::edge::projector_stream::kLeasePrefix.size()));
+        const std::string_view keys[]{ key, service::message::edge::projector_stream::kRecoveryDeadlines };
+        const std::string_view arguments[]{ token, ttl, stream };
+        const auto reply = co_await redis.eval(script, keys, std::span<const std::string_view>(arguments, withTtl ? 3U : 1U));
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue(operation, reply);
+        }
+        co_return reply.integer() == 1;
+    }
+};
 
 // Persists EdgeNode protocol messages taken from a Worker's projector Stream.
 // Stateless; the Worker-local catalog and caches live in ProjectionState.
 class ProjectionService final {
   public:
+    static ruvia::task<void> initialize(ruvia::web_worker_context& context, ProjectionState& state) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        co_await service::utils::initializeOnce(
+            context, service::message::edge::projector_stream::kStartupLock,
+            service::message::edge::projector_stream::startupKey(identity.instanceId),
+            [](ruvia::web_worker_context& owner) -> ruvia::task<void> {
+                co_await ProjectorStreams::cleanupRegistry(owner.redis());
+                co_await hydrateAuth(owner);
+                (void)co_await metadata::hydrate(owner);
+            });
+        // Every Worker starts with an empty local cache and loads only the node
+        // named by its first ingress/metadata entry from the completed snapshot.
+        state = {};
+    }
+
+    static ruvia::task<std::vector<DerivedDeadline>> publishTelemetry(ruvia::web_worker_context& context, ProjectionBatch& projected) {
+        std::vector<DerivedDeadline> deadlines;
+        std::vector<service::message::StreamMessage> messages;
+        messages.reserve(projected.telemetry.size());
+        for (auto& parsed : projected.telemetry) {
+            const auto calculation = projected.rawCalculations.find(parsed.messageId);
+            if (calculation != projected.rawCalculations.end()) {
+                const auto prepared = service::telemetry::derived::DerivedService::prepare(parsed.deviceId, calculation->second);
+                std::optional<std::int64_t> next;
+                bool published = false;
+                if (prepared) {
+                    const auto result = co_await service::telemetry::derived::DerivedService::append(
+                        context.redis(), *prepared, parsed,
+                        context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, false, true);
+                    next = result.nextDeadline;
+                    published = result.published;
+                }
+                deadlines.push_back({ parsed, calculation->second, next });
+                if (published) {
+                    continue;
+                }
+            }
+            service::message::StreamMessage message;
+            message.fields = service::message::parsedFields(parsed);
+            messages.push_back(std::move(message));
+        }
+        co_await service::telemetry::TelemetryService::ingest(context, messages);
+        co_await finishTelemetryUploads(context.redis(), projected.completedUploads);
+        co_return deadlines;
+    }
+
+    static ruvia::task<std::optional<std::int64_t>> expireDerived(ruvia::web_worker_context& context,
+                                                               service::message::ParsedDeviceMessage& parsed,
+                                                               std::string_view config) {
+        parsed.messageId = service::utils::nextUuid(context.worker_state<service::common::UuidV7State>());
+        parsed.acquisitionId = parsed.causationId = parsed.messageId;
+        parsed.source = "derived";
+        parsed.rawPayloads.clear();
+        parsed.rawPacketIds.clear();
+        parsed.observedAtMs = parsed.occurredAtMs = service::message::utcNowMilliseconds();
+        parsed.valuesJson = "{\"values\":{}}";
+        const auto prepared = service::telemetry::derived::DerivedService::prepare(parsed.deviceId, config);
+        if (!prepared) {
+            co_return std::nullopt;
+        }
+        co_return (co_await service::telemetry::derived::DerivedService::append(
+            context.redis(), *prepared, parsed,
+            context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, true)).nextDeadline;
+    }
+
+    static void failWorker(ruvia::web_worker_context& context, observability::RuntimeDiagnostics& diagnostics) {
+        try {
+            diagnostics.setComponentStatus("edge-projector", observability::ComponentState::Failed, "worker lease lost");
+        } catch (const std::exception& error) {
+            LOG_ERROR << "edge projector status update failed: " << error.what();
+        } catch (...) {
+            LOG_ERROR << "edge projector status update failed: unknown error";
+        }
+        context.worker_state<SessionDispatcher>().failSessions("worker lease lost");
+    }
+
     static ruvia::task<void> hydrateAuth(ruvia::web_worker_context& context) {
         ruvia::db_query query;
         query.select({ query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"imei">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), query.cast(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_data_type::text), query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()) })
@@ -51,12 +430,12 @@ class ProjectionService final {
         }
         auto pipeline = context.redis().pipeline();
         for (const auto& row : rows) {
-            const auto key = protocol::authKey(row[0].value().value_or(std::string_view{}));
+            const auto key = service::message::edge::authKey(row[0].value().value_or(std::string_view{}));
             const auto value = std::string(row[1].value().value_or(std::string_view{})) + "|" + std::string(row[2].value().value_or(std::string_view{}));
             pipeline.set(key, value);
         }
         const auto replies = co_await std::move(pipeline).exec();
-        service::message::redis::requirePipelineSuccess("hydrate edge authorization", replies);
+        service::utils::redis::requirePipelineSuccess("hydrate edge authorization", replies);
     }
 
     // Projects one ingress entry. Telemetry, completed uploads and raw-acquisition
@@ -79,7 +458,7 @@ class ProjectionService final {
         if (envelope.node_id().size() != 16) {
             co_return;
         }
-        const auto nodeId = protocol::uuidText(envelope.node_id());
+        const auto nodeId = service::common::uuidText(envelope.node_id());
         if (envelope.has_telemetry_batch() || envelope.has_command_result()) {
             // Another Worker may have refreshed this node's Redis snapshot.
             if (auto snapshot = co_await metadata::loadNode(context.redis(), nodeId)) {
@@ -113,7 +492,7 @@ class ProjectionService final {
                 update.update(persistence::EdgeDtuEntity::table_name())
                     .set(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"status">(), persistence::EdgeDtuEntity::columns_type>::name.view(), projected)
                     .where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"node_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, update.cast(update.value(nodeId), ruvia::db_data_type::uuid)))
-                    .and_where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"channel_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, update.cast(update.value(protocol::uuidText(status.channel_id())), ruvia::db_data_type::uuid)))
+                    .and_where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"channel_id">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, update.cast(update.value(service::common::uuidText(status.channel_id())), ruvia::db_data_type::uuid)))
                     .and_where(update.binary(update.column(std::tuple_element_t<persistence::EdgeDtuEntity::column_index<"status">(), persistence::EdgeDtuEntity::columns_type>::name.view()), ruvia::db_binary_operator::not_equal, projected));
                 (void)co_await context.db().execute(update);
                 break;
@@ -154,7 +533,7 @@ class ProjectionService final {
                 std::vector<std::string> deviceIds;
                 for (const auto& record : envelope.telemetry_batch().records()) {
                     if (record.device_id().size() == 16) {
-                        deviceIds.push_back(protocol::uuidText(record.device_id()));
+                        deviceIds.push_back(service::common::uuidText(record.device_id()));
                     }
                 }
                 co_await ensureMetadata(context, catalog, nodeId, deviceIds);
@@ -167,7 +546,7 @@ class ProjectionService final {
                     const auto complete = co_await storeTelemetryPart(context.redis(), nodeId, record);
                     if (complete) {
                         *assembled.add_records() = *complete;
-                        batch.completedUploads.push_back({ nodeId, protocol::uuidText(record.device_id()), protocol::uuidText(record.report_id()) });
+                        batch.completedUploads.push_back({ nodeId, service::common::uuidText(record.device_id()), service::common::uuidText(record.report_id()) });
                     }
                 }
                 if (std::any_of(assembled.records().begin(), assembled.records().end(), [](const auto& record) {
@@ -183,9 +562,9 @@ class ProjectionService final {
                 collectTelemetry(catalog, nodeId, receivedAtMs, assembled, batch.telemetry, configuration == state.acquisitionConfigurations.end() ? emptyItems : configuration->second.items);
                 for (const auto& record : assembled.records()) {
                     if (record.raw_requests_size() && configuration != state.acquisitionConfigurations.end()) {
-                        const auto calculation = configuration->second.calculations.find(protocol::uuidText(record.device_id()));
+                        const auto calculation = configuration->second.calculations.find(service::common::uuidText(record.device_id()));
                         if (calculation != configuration->second.calculations.end()) {
-                            batch.rawCalculations[protocol::uuidText(record.record_id())] = calculation->second;
+                            batch.rawCalculations[service::common::uuidText(record.record_id())] = calculation->second;
                         }
                     }
                 }
@@ -193,7 +572,7 @@ class ProjectionService final {
             }
             case pb::Envelope::kCommandResult:
                 if (envelope.command_result().device_id().size() == 16) {
-                    const std::string deviceIds[]{ protocol::uuidText(envelope.command_result().device_id()) };
+                    const std::string deviceIds[]{ service::common::uuidText(envelope.command_result().device_id()) };
                     co_await ensureMetadata(context, catalog, nodeId, deviceIds);
                 }
                 co_await saveCommandResult(context, catalog, nodeId, receivedAtMs, envelope.command_result());
@@ -262,7 +641,7 @@ class ProjectionService final {
         if (!protocol::validImei(hello.imei())) {
             co_return;
         }
-        const auto candidate = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto candidate = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
         ruvia::db_query query;
         const auto uuid = [&query](std::string_view value) {
             return query.cast(query.value(value), ruvia::db_data_type::uuid);
@@ -368,7 +747,7 @@ class ProjectionService final {
         query.on_conflict(conflict)
             .returning({ query.cast(query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"id">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()), ruvia::db_data_type::text), query.column(std::tuple_element_t<service::edge::persistence::EdgeNodeEntity::column_index<"enrollment_status">(), service::edge::persistence::EdgeNodeEntity::columns_type>::name.view()) });
         const auto rows = co_await context.db().query(query);
-        const auto key = protocol::authKey(hello.imei());
+        const auto key = service::message::edge::authKey(hello.imei());
         const auto nodeId = std::string(rows.front()[0].value().value_or(std::string_view{}));
         const auto enrollmentStatus = std::string(rows.front()[1].value().value_or(std::string_view{}));
         const auto value = nodeId + "|" + enrollmentStatus;
@@ -879,7 +1258,7 @@ class ProjectionService final {
         if (result.request_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         const std::string status = result.success() ? "succeeded" : "failed";
         const std::string json = "{\"message\":" + service::utils::jsonQuoted(result.message()) +
             ",\"rolled_back\":" +
@@ -911,7 +1290,7 @@ class ProjectionService final {
         if (result.request_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         const bool applied = result.applied();
         const std::string status = applied ? "succeeded" : "failed";
         const std::string json = "{\"configVersion\":" +
@@ -996,7 +1375,7 @@ class ProjectionService final {
         if (result.request_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         std::string status = "running";
         bool completed = false;
         if (result.state() == pb::FIRMWARE_UPDATE_ACCEPTED) {
@@ -1051,7 +1430,7 @@ class ProjectionService final {
         if (result.request_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         std::string status = "running";
         bool completed = false;
         if (result.state() == pb::MODEM_CONTROL_ACCEPTED) {
@@ -1090,7 +1469,7 @@ class ProjectionService final {
         if (result.request_id().size() != 16) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         const std::string status = result.success() ? "succeeded" : "failed";
         const std::string json = "{\"message\":" + service::utils::jsonQuoted(result.message()) + "}";
         ruvia::db_query transitioned;
@@ -1359,8 +1738,8 @@ class ProjectionService final {
             throw std::runtime_error("invalid telemetry upload part");
         }
         const persistence::TelemetryUploadRecord stored{ std::string(nodeId),
-                                                         protocol::uuidText(record.device_id()),
-                                                         protocol::uuidText(record.report_id()) };
+                                                         service::common::uuidText(record.device_id()),
+                                                         service::common::uuidText(record.report_id()) };
         auto metadata = record;
         metadata.clear_record_id();
         metadata.clear_values();
@@ -1380,7 +1759,7 @@ class ProjectionService final {
             co_return std::nullopt;
         }
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            service::message::redis::throwValue("store telemetry upload", reply);
+            service::utils::redis::throwValue("store telemetry upload", reply);
         }
         std::vector<pb::TelemetryRecord> parts;
         for (const auto& item : reply.array()) {
@@ -1405,7 +1784,7 @@ class ProjectionService final {
             const std::string_view keys[]{ key };
             const auto reply = co_await redis.eval(persistence::kFinishTelemetryUploadScript, keys, std::span<const std::string_view>{});
             if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
-                service::message::redis::throwValue("finish telemetry upload", reply);
+                service::utils::redis::throwValue("finish telemetry upload", reply);
             }
         }
     }
@@ -1419,18 +1798,18 @@ class ProjectionService final {
             if (record.record_id().size() != 16 || record.device_id().size() != 16) {
                 continue;
             }
-            const auto deviceId = protocol::uuidText(record.device_id());
+            const auto deviceId = service::common::uuidText(record.device_id());
             const auto device = node->second.find(deviceId);
             if (device == node->second.end()) {
                 continue;
             }
             message::ParsedDeviceMessage parsed;
             if (record.model_id().size() == 16) {
-                parsed.modelId = protocol::uuidText(record.model_id());
+                parsed.modelId = service::common::uuidText(record.model_id());
             } else if (!record.model_id().empty()) {
                 throw std::runtime_error("invalid edge telemetry model reference");
             }
-            parsed.messageId = protocol::uuidText(record.record_id());
+            parsed.messageId = service::common::uuidText(record.record_id());
             parsed.acquisitionId = parsed.messageId;
             parsed.causationId = parsed.messageId;
             parsed.linkId = device->second.linkId;
@@ -1449,7 +1828,7 @@ class ProjectionService final {
             if (record.raw_requests_size() != 0) {
                 const auto configured = acquisition::RawAcquisition::device(parsingItems, record.device_id());
                 if (configured.linkId != device->second.linkId ||
-                    (record.endpoint_id().size() == 16 && protocol::uuidText(record.endpoint_id()) != configured.linkId)) {
+                    (record.endpoint_id().size() == 16 && service::common::uuidText(record.endpoint_id()) != configured.linkId)) {
                     throw std::runtime_error("edge acquisition endpoint mismatch");
                 }
                 const auto decoded = acquisition::RawAcquisition::decode(record, configured);
@@ -1469,7 +1848,7 @@ class ProjectionService final {
                     if (id.size() != 16) {
                         throw std::runtime_error("invalid original packet ID");
                     }
-                    packetId = std::string(nodeId) + ':' + protocol::uuidText(id);
+                    packetId = std::string(nodeId) + ':' + service::common::uuidText(id);
                 } else {
                     packetId = std::string(nodeId) + ":legacy-history:" + parsed.messageId + ':' + std::to_string(index);
                 }
@@ -1494,8 +1873,8 @@ class ProjectionService final {
         if (!protocol::persistableCommandResult(result.state(), result.write_ack_missing())) {
             co_return;
         }
-        const auto commandId = protocol::uuidText(result.command_id());
-        const auto deviceId = protocol::uuidText(result.device_id());
+        const auto commandId = service::common::uuidText(result.command_id());
+        const auto deviceId = service::common::uuidText(result.device_id());
         const auto node = catalog.find(std::string(nodeId));
         if (node == catalog.end()) {
             co_return;
@@ -1523,7 +1902,7 @@ class ProjectionService final {
             receivedAtMs
         );
         std::vector<message::StreamField> fields{
-            { "message_id", context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next() },
+            { "message_id", service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()) },
             { "causation_id", commandId },
             { "command_id", commandId },
             { "device_id", deviceId },
@@ -1563,7 +1942,7 @@ class ProjectionService final {
             if (status.device_id().size() != 16) {
                 continue;
             }
-            const auto deviceId = protocol::uuidText(status.device_id());
+            const auto deviceId = service::common::uuidText(status.device_id());
             std::string clients;
             for (const auto& client : status.clients()) {
                 if (!clients.empty()) {
@@ -1572,7 +1951,7 @@ class ProjectionService final {
                 clients += client;
             }
             const auto key = service::message::edge::deviceStatusKey(nodeId, deviceId);
-            co_await service::message::redis::eraseHash(context.redis(), key);
+            (void)co_await context.redis().del(key);
             const std::vector<message::StreamField> fields{
                 { "node_id", std::string(nodeId) },
                 { "device_id", deviceId },
@@ -1583,12 +1962,9 @@ class ProjectionService final {
                 { "last_activity_at_ms", std::to_string(status.last_activity_at_ms()) },
                 { "updated_at_ms", std::to_string(service::message::utcNowMilliseconds()) }
             };
-            co_await service::message::redis::setHash(context.redis(), key, fields);
+            co_await service::utils::redis::setHash(context.redis(), key, fields);
             const std::vector<std::string> pexpireArguments{ "PEXPIRE", key, "900000" };
-            (void)co_await service::message::redis::command(
-                context.redis(),
-                pexpireArguments
-            );
+            (void)co_await context.redis().command(std::vector<std::string_view>(pexpireArguments.begin(), pexpireArguments.end()));
             updated.push_back(deviceId);
         }
         if (!updated.empty()) {
@@ -1601,20 +1977,20 @@ class ProjectionService final {
     // the source entry stays unacknowledged and its retry sends the event again.
     static ruvia::task<void> notifyFeature(ruvia::web_worker_context& context, std::size_t workerIndex, std::string_view component, std::string_view operation, std::string payload) {
         using Contract = service::message::rpc::Contract;
-        const auto id = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
         const auto deadline =
             Contract::now() + std::chrono::duration_cast<std::chrono::milliseconds>(Contract::timeout).count();
         const auto arguments = Contract::requestArguments(
-            Contract::requests(service::runtime::instanceId(), workerIndex),
+            Contract::requests(context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, workerIndex),
             id,
             component,
             operation,
             std::move(payload),
             deadline
         );
-        const auto reply = co_await service::message::redis::command(context.redis(), arguments);
+        const auto reply = co_await context.redis().command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
         if (reply.kind() != ruvia::redis_value::kind_type::string) {
-            service::message::redis::throwValue("edge feature notification", reply);
+            service::utils::redis::throwValue("edge feature notification", reply);
         }
     }
 

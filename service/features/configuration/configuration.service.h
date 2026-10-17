@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -19,9 +20,13 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_handle.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
+#include "service/common/worker.h"
+#include "service/utils/startup.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/collector.types.h"
 #include "service/features/collector/mqtt/mqtt.types.h"
@@ -601,6 +606,17 @@ namespace service::configuration {
 class ConfigurationService final {
   public:
     template <typename Context>
+    static ruvia::task<void> initialize(Context& context) {
+        const auto& identity = context.template worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        co_await service::utils::initializeOnce(
+            context, service::message::lock::kConfigurationStartup,
+            service::message::configuration::startupProjectionKey(identity.instanceId),
+            [](Context& owner) -> ruvia::task<void> {
+                (void)co_await project(owner);
+            });
+    }
+
+    template <typename Context>
     static ruvia::task<std::string> project(Context& context, bool notify = false) {
         auto transaction = co_await context.db().begin_transaction();
         // Every Service Worker shares this transaction-scoped lock. The snapshot is loaded only
@@ -613,11 +629,57 @@ class ConfigurationService final {
         auto snapshot =
             co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
-            co_await service::collector::config::project(context.redis(), snapshot, *context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
+            co_await service::collector::config::project(context.redis(), snapshot, context.template worker_state<service::common::UuidV7State>());
         if (notify)
             co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
         co_await transaction.commit();
         co_return version;
+    }
+
+    // Serialize retirement with publication, so an active generation cannot be
+    // removed while another Worker switches the pointer. Return the next real
+    // inactive generation deadline instead of scheduling a periodic scan.
+    template <typename Context>
+    static ruvia::task<std::optional<std::int64_t>> retireSnapshots(Context& context) {
+        auto transaction = co_await context.db().begin_transaction();
+        ruvia::db_query lock;
+        lock.select(lock.call("pg_advisory_xact_lock", {
+            lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
+        (void)co_await transaction.query(lock);
+        const auto redis = context.redis();
+        const auto active = co_await redis.get(service::message::projection::kRuntimeActiveVersionKey);
+        if (!active) {
+            co_await transaction.commit();
+            co_return std::nullopt;
+        }
+        co_await service::collector::config::eraseExpiredSnapshots(redis,
+            service::message::utcNowMilliseconds(), *active);
+        const auto generations = co_await redis.command("ZRANGE",
+            service::message::projection::kRuntimeVersionsKey, "0", "1", "WITHSCORES");
+        if (generations.kind() != ruvia::redis_value::kind_type::array) {
+            service::utils::redis::throwValue("runtime snapshot deadlines", generations);
+        }
+        std::optional<std::int64_t> deadline;
+        const auto values = generations.array();
+        for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
+            if (values[index].kind() != ruvia::redis_value::kind_type::string ||
+                values[index + 1].kind() != ruvia::redis_value::kind_type::string) {
+                service::utils::redis::throwValue("runtime snapshot deadline entry", generations);
+            }
+            if (values[index].string() == *active) {
+                continue;
+            }
+            const auto text = values[index + 1].string();
+            std::int64_t createdAt{};
+            const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), createdAt);
+            if (error != std::errc{} || end != text.data() + text.size()) {
+                throw std::runtime_error("invalid runtime snapshot deadline");
+            }
+            deadline = createdAt + service::collector::config::kSnapshotGraceMilliseconds;
+            break;
+        }
+        co_await transaction.commit();
+        co_return deadline;
     }
 
     // 处理一批运行配置变更流条目：按持久回执跳过已处理事件；link/device/protocol 变更重新投影运行配置，

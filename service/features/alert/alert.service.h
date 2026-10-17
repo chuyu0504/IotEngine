@@ -24,6 +24,8 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/access/access.service.h"
 #include "service/features/alert/alert.entity.h"
 #include "service/features/configuration/configuration.entity.h"
@@ -36,7 +38,7 @@ namespace service::alert::metadata {
 template <typename Context>
 ruvia::task<void> refresh(Context& context);
 
-// KEYS: 设备离线时长哈希、离线截止有序集、共享唤醒流；ARGV[1]: 样本观测时间。
+// KEYS: 设备离线时长哈希、离线截止有序集、共享唤醒流、消费输入通知频道；ARGV[1]: 样本观测时间。
 inline constexpr std::string_view kScheduleScript = R"lua(
 local values = redis.call('HGETALL', KEYS[1])
 if #values == 0 then return 0 end
@@ -59,7 +61,8 @@ for index = 1, #values, 2 do
   end
 end
 if wake then
-  redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'task', 'freshness-alerts')
+  local entry_id = redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'task', 'freshness-alerts')
+  redis.call('PUBLISH', KEYS[4], entry_id)
 end
 return changed
 )lua";
@@ -74,7 +77,7 @@ end
 return members
 )lua";
 
-// KEYS: 规则设备集、离线规则标记、就绪标记、离线时长键集合、离线截止有序集、共享唤醒流。
+// KEYS: 规则设备集、离线规则标记、就绪标记、离线时长键集合、离线截止有序集、共享唤醒流、消费输入通知频道。
 // ARGV: <设备数> <设备 ID...> <离线条目数> 每条 <时长键> <成员> <时长ms> <截止ms> <设备运行态键>。
 inline constexpr std::string_view kRefreshScript = R"lua(
 local previous = redis.call('SMEMBERS', KEYS[4])
@@ -107,8 +110,9 @@ end
 redis.call('SET', KEYS[2], offline_count > 0 and '1' or '0')
 redis.call('SET', KEYS[3], '1')
 if had_deadlines or offline_count > 0 then
-  redis.call('XADD', KEYS[6], 'MAXLEN', '~', '100000', '*',
-             'task', 'freshness-alerts')
+  local entry_id = redis.call('XADD', KEYS[6], 'MAXLEN', '~', '100000', '*',
+                              'task', 'freshness-alerts')
+  redis.call('PUBLISH', KEYS[7], entry_id)
 end
 return offline_count
 )lua";
@@ -133,24 +137,26 @@ inline std::string offlineDurationKey(std::string_view deviceId) {
 template <typename Redis>
 ruvia::task<void> schedule(
     const Redis& redis,
-    const std::vector<service::message::ParsedDeviceMessage>& messages
+    const std::vector<service::message::ParsedDeviceMessage>& messages,
+    std::string_view instance
 ) {
     if (messages.empty()) {
         co_return;
     }
     const auto scriptSha = co_await redis.script_load(kScheduleScript);
     const auto deadlinesKey = offlineDeadlinesKey();
-    const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt, instance);
+    const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
     auto pipeline = redis.pipeline();
     for (const auto& message : messages) {
         const auto durationKey = offlineDurationKey(message.deviceId);
         const auto observedAt = std::to_string(message.observedAtMs);
-        const std::array<std::string_view, 3> keys{ durationKey, deadlinesKey, wakeStream };
+        const std::array<std::string_view, 4> keys{ durationKey, deadlinesKey, wakeStream, wakeChannel };
         const std::array<std::string_view, 1> arguments{ observedAt };
-        service::message::redis::queueEvalSha(pipeline, scriptSha, keys, arguments);
+        pipeline.eval_sha(scriptSha, keys, arguments);
     }
     const auto replies = co_await std::move(pipeline).exec();
-    service::message::redis::requirePipelineSuccess("schedule offline alerts", replies);
+    service::utils::redis::requirePipelineSuccess("schedule offline alerts", replies);
 }
 
 template <typename Redis>
@@ -158,19 +164,16 @@ ruvia::task<std::optional<std::int64_t>> nextOfflineDeadline(
     const Redis& redis
 ) {
     const std::vector<std::string> replyArguments{ "ZRANGE", offlineDeadlinesKey(), "0", "0", "WITHSCORES" };
-    const auto reply = co_await service::message::redis::command(
-        redis,
-        replyArguments
-    );
+    const auto reply = co_await redis.command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
     if (reply.kind() != ruvia::redis_value::kind_type::array) {
-        service::message::redis::throwValue("read next offline-alert deadline", reply);
+        service::utils::redis::throwValue("read next offline-alert deadline", reply);
     }
     if (reply.array().empty()) {
         co_return std::nullopt;
     }
     if (reply.array().size() != 2 ||
         reply.array()[1].kind() != ruvia::redis_value::kind_type::string) {
-        service::message::redis::throwValue("parse next offline-alert deadline", reply);
+        service::utils::redis::throwValue("parse next offline-alert deadline", reply);
     }
     const auto score = service::utils::parseInt64(
         std::optional<std::string_view>{ reply.array()[1].string() }
@@ -194,13 +197,13 @@ ruvia::task<std::vector<std::string>> dueOffline(
     const std::string_view arguments[]{ now, limit };
     const auto reply = co_await redis.eval(kClaimOfflineScript, keys, arguments);
     if (reply.kind() != ruvia::redis_value::kind_type::array) {
-        service::message::redis::throwValue("read due offline-alert deadlines", reply);
+        service::utils::redis::throwValue("read due offline-alert deadlines", reply);
     }
     std::vector<std::string> result;
     result.reserve(reply.array().size());
     for (const auto& value : reply.array()) {
         if (value.kind() != ruvia::redis_value::kind_type::string) {
-            service::message::redis::throwValue("parse due offline-alert deadline", reply);
+            service::utils::redis::throwValue("parse due offline-alert deadline", reply);
         }
         result.emplace_back(value.string());
     }
@@ -217,7 +220,7 @@ ruvia::task<void> removeOfflineDeadlines(
     }
     std::vector<std::string> command{ "ZREM", offlineDeadlinesKey() };
     command.insert(command.end(), members.begin(), members.end());
-    (void)co_await service::message::redis::command(redis, command);
+    (void)co_await redis.command(std::vector<std::string_view>(command.begin(), command.end()));
 }
 
 struct Activity final {
@@ -246,7 +249,7 @@ ruvia::task<Activity> activity(
             pipeline.command("SISMEMBER", kRuleDevicesKey, deviceId);
         }
         const auto replies = co_await std::move(pipeline).exec();
-        service::message::redis::requirePipelineSuccess("read alert metadata", replies);
+        service::utils::redis::requirePipelineSuccess("read alert metadata", replies);
         const bool ready = !replies.empty() &&
             replies.front().kind() == ruvia::redis_value::kind_type::integer &&
             replies.front().integer() != 0;
@@ -360,8 +363,9 @@ ruvia::task<void> refresh(Context& context) {
         std::string(kReadyKey),
         std::string(kOfflineDurationKeys),
         offlineDeadlinesKey(),
-        service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
+        service::message::workerWakeStream(std::nullopt, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId)
     };
+    keys.push_back(service::message::consumer::inputChannel(keys.back()));
     std::vector<std::string_view> keyViews(keys.begin(), keys.end());
     std::vector<std::string_view> views;
     views.reserve(arguments.size());
@@ -370,7 +374,7 @@ ruvia::task<void> refresh(Context& context) {
     }
     const auto reply = co_await context.redis().eval(kRefreshScript, keyViews, views);
     if (reply.kind() == ruvia::redis_value::kind_type::error) {
-        service::message::redis::throwValue("refresh alert metadata", reply);
+        service::utils::redis::throwValue("refresh alert metadata", reply);
     }
     co_await transaction.commit();
 }
@@ -409,7 +413,7 @@ class AlertEvaluationService final {
         }
         const auto metadataState = co_await metadata::activity(context, messages);
         if (metadataState.offlineRules) {
-            co_await metadata::schedule(context.redis(), messages);
+            co_await metadata::schedule(context.redis(), messages, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
         }
         auto active = metadataState.devices;
         std::vector<std::string> previous;
@@ -481,7 +485,7 @@ class AlertEvaluationService final {
                 continue;
             }
             evaluations[sequence].push_back(
-                evaluation(row, 1, relevant[sequence]->valuesJson, context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next())
+                evaluation(row, 1, relevant[sequence]->valuesJson, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()))
             );
         }
         for (std::size_t sequence = 0; sequence < relevant.size(); ++sequence) {
@@ -541,7 +545,7 @@ class AlertEvaluationService final {
         std::vector<Evaluation> evaluations;
         evaluations.reserve(rows.size());
         for (const auto& row : rows) {
-            evaluations.push_back(evaluation(row, 1, fallbackData, context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()));
+            evaluations.push_back(evaluation(row, 1, fallbackData, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>())));
         }
         co_await applyEvaluations(context, evaluations, occurredAtMs, {});
     }
@@ -926,11 +930,12 @@ class AlertEvaluationService final {
                 event[2].value().value_or(std::string_view{}),
                 event[3].value().value_or(std::string_view{}),
                 *occurredAt,
-                event[5].value().value_or(std::string_view{})
+                event[5].value().value_or(std::string_view{}),
+                context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId
             );
         }
         const auto replies = co_await std::move(pipeline).exec();
-        service::message::redis::requirePipelineSuccess("publish alert outbox", replies);
+        service::utils::redis::requirePipelineSuccess("publish alert outbox", replies);
 
         Query remove(context.pool());
         std::vector<Query::expr_type> keys;

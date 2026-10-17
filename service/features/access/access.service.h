@@ -15,12 +15,15 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/model_object.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
+#include "service/utils/uuid.h"
 #include "service/features/access/access.entity.h"
 #include "service/features/access/access.types.h"
 #include "service/features/configuration/configuration.entity.h"
@@ -47,11 +50,10 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
     (void)co_await transaction.query(advisoryLock);
     if (onlyIfMissing) {
         const std::vector<std::string> activeArguments{"GET", std::string(service::message::access::session::kActiveVersionKey)};
-        const auto active = co_await service::message::redis::command(
-            context.redis(), activeArguments);
+        const auto active = co_await context.redis().command(std::vector<std::string_view>(activeArguments.begin(), activeArguments.end()));
         if (!active.null()) {
             if (active.kind() != ruvia::redis_value::kind_type::string)
-                service::message::redis::throwValue(
+                service::utils::redis::throwValue(
                     "read active access-session projection", active);
             co_await transaction.commit();
             co_return;
@@ -81,7 +83,7 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
         .order_by(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"));
     const auto rows = co_await transaction.query(snapshot);
 
-    const auto version = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+    const auto version = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
     const auto versionKey = std::string(service::message::access::session::kVersionPrefix) + version;
     constexpr std::size_t chunkSize = 128;
     for (std::size_t offset = 0; offset < rows.size(); offset += chunkSize) {
@@ -94,15 +96,14 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
             command.push_back(service::message::access::session::encode(row[1].value().value_or(std::string_view{}), row[2].value().value_or(std::string_view{}), row[3].value().value_or(std::string_view{}),
                                      row[4].value().value_or(std::string_view{}), row[5].value().value_or(std::string_view{}), row[6].value().value_or(std::string_view{})));
         }
-        (void)co_await service::message::redis::command(context.redis(), command);
+        (void)co_await context.redis().command(std::vector<std::string_view>(command.begin(), command.end()));
     }
     if (rows.empty()) {
         const std::vector<std::string> readyArguments{"HSET", versionKey, "__ready", "1"};
-        (void)co_await service::message::redis::command(context.redis(), readyArguments);
+        (void)co_await context.redis().command(std::vector<std::string_view>(readyArguments.begin(), readyArguments.end()));
     }
     const std::vector<std::string> expireArguments{"EXPIRE", versionKey, "600"};
-    (void)co_await service::message::redis::command(
-        context.redis(), expireArguments);
+    (void)co_await context.redis().command(std::vector<std::string_view>(expireArguments.begin(), expireArguments.end()));
 
     const std::string activeKey(service::message::access::session::kActiveVersionKey);
     const std::string_view keys[]{activeKey, versionKey};
@@ -111,17 +112,16 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
     const std::string_view args[]{version, prefix, grace};
     const auto reply = co_await context.redis().eval(persistence::kSessionActivateScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::string)
-        service::message::redis::throwValue("activate access-session projection", reply);
+        service::utils::redis::throwValue("activate access-session projection", reply);
     co_await transaction.commit();
 }
 
 template <typename Context> ruvia::task<void> ensure(Context& context) {
     const std::vector<std::string> activeArguments{"GET", std::string(service::message::access::session::kActiveVersionKey)};
-    const auto active = co_await service::message::redis::command(
-        context.redis(), activeArguments);
+    const auto active = co_await context.redis().command(std::vector<std::string_view>(activeArguments.begin(), activeArguments.end()));
     if (!active.null()) {
         if (active.kind() != ruvia::redis_value::kind_type::string)
-            service::message::redis::throwValue(
+            service::utils::redis::throwValue(
                 "read active access-session projection", active);
         co_return;
     }
@@ -586,7 +586,7 @@ class DeliveryService final {
 
     static ruvia::task<std::string> realtimeData(ruvia::web_worker_context& context, std::string_view deviceId, const DeviceCatalog& device) {
         const std::vector<std::string> arguments{ "HGETALL", service::message::telemetry::latestKey(deviceId) };
-        const auto reply = co_await message::redis::command(context.redis(), arguments);
+        const auto reply = co_await context.redis().command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
         auto record = LatestValuesRecord::decode(reply);
         std::vector<LatestValuesRecord::Point> points;
         points.reserve(record.latest.size());
@@ -620,7 +620,7 @@ class DeliveryService final {
 
     static ruvia::task<Delivery> buildDelivery(ruvia::web_worker_context& context, const message::StreamMessage& message, const DeviceCatalog& catalog) {
         Delivery delivery;
-        delivery.id = message.get("event_id").empty() ? context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next()
+        delivery.id = message.get("event_id").empty() ? service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>())
                                                       : std::string(message.get("event_id"));
         delivery.eventType = std::string(message.get("event_type"));
         delivery.deviceId = std::string(message.get("device_id"));
@@ -658,12 +658,9 @@ class DeliveryService final {
     static ruvia::task<std::set<std::string, std::less<>>>
     completedTargets(const Redis& redis, const Delivery& delivery) {
         const std::vector<std::string> replyArguments{ "HKEYS", DeliveryProgressRecord::key(delivery.eventType, delivery.id) };
-        const auto reply = co_await message::redis::command(
-            redis,
-            replyArguments
-        );
+        const auto reply = co_await redis.command(std::vector<std::string_view>(replyArguments.begin(), replyArguments.end()));
         if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            message::redis::throwValue("read webhook delivery progress", reply);
+            utils::redis::throwValue("read webhook delivery progress", reply);
         }
         co_return DeliveryProgressRecord::decode(reply).completedTargets;
     }
@@ -671,14 +668,14 @@ class DeliveryService final {
     static ruvia::task<void> enqueueResult(ruvia::web_worker_context& context, const Target& target, const Delivery& delivery, const DeliveryResponse& response, bool success) {
         const auto error = service::utils::sanitize(response.error, 1000);
         const auto status = success ? "success" : "failed";
-        const auto logId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto logId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
         const auto responseJson = (target.mqtt ? std::string("{\"qos\":1,\"acknowledged\":") + (success ? "true" : "false") : "{\"httpStatus\":" + std::to_string(response.status)) +
             ",\"body\":" + service::utils::jsonQuoted(service::utils::sanitize(response.body, 2000)) +
             (error.empty() ? "" : ",\"error\":" + service::utils::jsonQuoted(error)) + "}";
         const std::vector<std::string> keyStore{
             service::message::access::stream::deliveryResult(),
             DeliveryProgressRecord::key(delivery.eventType, delivery.id),
-            service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
+            service::message::workerWakeStream(std::nullopt, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId)
         };
         const std::vector<std::string> argumentStore{
             target.id,
@@ -718,7 +715,7 @@ class DeliveryService final {
         const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
         const auto reply = co_await context.redis().eval(service::access::persistence::kDeliveryResultScript, keys, arguments);
         if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::string) {
-            message::redis::throwValue("enqueue webhook result", reply);
+            utils::redis::throwValue("enqueue webhook result", reply);
         }
     }
 
@@ -730,7 +727,7 @@ namespace service::access::event {
 
 // 将一条开放接入事件按 service::message::access::stream 契约加入 pipeline（scriptSha 为 kPublishEventScript）。
 template <typename Pipeline>
-void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson) {
+void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instanceId) {
     const auto publication = service::message::access::stream::eventPublication(
         eventId,
         eventType,
@@ -738,18 +735,19 @@ void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view even
         deviceCode,
         occurredAtMs,
         dataJson,
-        service::runtime::instanceId()
+        instanceId
     );
     const std::array<std::string_view, 3> keys{ publication.keys[0], publication.keys[1], publication.keys[2] };
     std::array<std::string_view, 16> arguments;
     std::ranges::copy(publication.arguments, arguments.begin());
-    message::redis::queueEvalSha(pipeline, scriptSha, keys, arguments);
+    pipeline.eval_sha(scriptSha, keys, arguments);
 }
 
 template <typename Redis>
 ruvia::task<void> publishMany(
     const Redis& redis,
-    const std::vector<message::ParsedDeviceMessage>& messages
+    const std::vector<message::ParsedDeviceMessage>& messages,
+    std::string_view instanceId
 ) {
     if (messages.empty()) {
         co_return;
@@ -761,10 +759,10 @@ ruvia::task<void> publishMany(
             parsed.eventKind == "image"
             ? "device.image.reported"
             : "device.data.reported";
-        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
+        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson, instanceId);
     }
     const auto replies = co_await std::move(pipeline).exec();
-    message::redis::requirePipelineSuccess("publish open-access events", replies);
+    utils::redis::requirePipelineSuccess("publish open-access events", replies);
 }
 
 } // namespace service::access::event
@@ -834,7 +832,7 @@ class AccessOperationService final {
             const auto deviceId = text(request->get<"deviceId">());
             const auto requestPayload = json(request->get<"requestPayload">());
             const auto responsePayload = json(request->get<"responsePayload">());
-            co_await audit::publish(context.redis(), context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
+            co_await audit::publish(context.redis(), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
             co_return "{}";
         }
         service::common::fail(10002, "Unknown access operation", 400);

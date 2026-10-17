@@ -198,12 +198,9 @@ public:
 
 };
 
-using service::message::edge::kProtocolVersion;
-using service::message::edge::kOldestCompatibleProtocolVersion;
-using service::message::edge::kMaxMessageSize;
-
 inline constexpr bool supportsProtocolVersion(std::uint32_t version) noexcept {
-    return version >= kOldestCompatibleProtocolVersion && version <= kProtocolVersion;
+    return version >= service::message::edge::kOldestCompatibleProtocolVersion &&
+        version <= service::message::edge::kProtocolVersion;
 }
 
 inline constexpr bool terminalCommandResultState(pb::CommandState state) noexcept {
@@ -257,8 +254,6 @@ inline std::string_view commandResultDomainState(pb::CommandState state,
     return "UNKNOWN";
 }
 
-using service::message::edge::authKey;
-
 inline bool validImei(std::string_view imei) {
     if (imei.size() != 15)
         return false;
@@ -277,9 +272,6 @@ inline bool validImei(std::string_view imei) {
     return sum % 10U == 0U;
 }
 
-using service::common::hexDigit;
-using service::common::uuidBytes;
-
 inline bool validSessionPlatformId(std::string_view value) noexcept {
     if (value.size() != 16)
         return false;
@@ -289,18 +281,16 @@ inline bool validSessionPlatformId(std::string_view value) noexcept {
     return false;
 }
 
-using service::common::uuidText;
-
 // 0.3.44/0.3.45 do not report acquisition identities. Keep each original packet
 // independently identifiable without inventing collection-round boundaries.
 inline std::string debugAcquisitionId(std::string_view nodeId, const pb::RawPacket& packet) {
     if (packet.packet_id().size() != 16)
         throw std::invalid_argument("debug packet ID is required");
     if (packet.acquisition_id().empty())
-        return "legacy:" + std::string(nodeId) + ":" + uuidText(packet.packet_id());
+        return "legacy:" + std::string(nodeId) + ":" + service::common::uuidText(packet.packet_id());
     if (packet.acquisition_id().size() != 16)
         throw std::invalid_argument("invalid debug acquisition ID");
-    return uuidText(packet.acquisition_id());
+    return service::common::uuidText(packet.acquisition_id());
 }
 
 
@@ -327,7 +317,7 @@ inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_
     for (const char character : content) {
         if (character == ' ' || character == '\t' || character == '\r' || character == '\n')
             continue;
-        const int digit = protocol::hexDigit(character);
+        const int digit = service::common::hexDigit(character);
         if (digit < 0)
             throw std::runtime_error("invalid edge config hex: " + std::string(name));
         if (high < 0)
@@ -396,20 +386,20 @@ inline bool fitsNanopbLimits(const google::protobuf::Message& message) {
 inline pb::Envelope outbound(std::string_view messageId, std::int64_t createdAtMs,
                              std::string_view platformId, std::string_view nodeId, std::uint64_t epoch = 0,
                              std::uint64_t sequence = 0,
-                             std::uint32_t protocolVersion = kProtocolVersion) {
+                             std::uint32_t protocolVersion = service::message::edge::kProtocolVersion) {
     pb::Envelope result;
     result.set_protocol_version(protocolVersion);
     result.set_session_epoch(epoch);
     result.set_sequence(sequence);
     result.set_created_at_ms(createdAtMs);
     std::uint8_t message[16]{};
-    if (uuidBytes(messageId, message))
+    if (service::common::uuidBytes(messageId, message))
         result.set_message_id(bytes(message, 16));
     std::uint8_t platform[16]{};
     std::uint8_t node[16]{};
-    if (uuidBytes(platformId, platform))
+    if (service::common::uuidBytes(platformId, platform))
         result.set_platform_id(bytes(platform, 16));
-    if (uuidBytes(nodeId, node))
+    if (service::common::uuidBytes(nodeId, node))
         result.set_node_id(bytes(node, 16));
     return result;
 }
@@ -417,7 +407,7 @@ inline pb::Envelope outbound(std::string_view messageId, std::int64_t createdAtM
 inline void bindSession(pb::Envelope& envelope, std::string_view platformBytes,
                         std::string_view nodeBytes, std::uint64_t epoch,
                         std::uint64_t sequence,
-                        std::uint32_t protocolVersion = kProtocolVersion) {
+                        std::uint32_t protocolVersion = service::message::edge::kProtocolVersion) {
     envelope.set_protocol_version(protocolVersion);
     envelope.set_session_epoch(epoch);
     envelope.set_sequence(sequence);
@@ -427,7 +417,7 @@ inline void bindSession(pb::Envelope& envelope, std::string_view platformBytes,
 
 inline bool decode(std::string_view wire, pb::Envelope& output) {
     output.Clear();
-    if (wire.size() > kMaxMessageSize ||
+    if (wire.size() > service::message::edge::kMaxMessageSize ||
         !output.ParseFromArray(wire.data(), static_cast<int>(wire.size())) ||
         !output.IsInitialized() || !fitsNanopbLimits(output)) {
         output.Clear();
@@ -438,7 +428,7 @@ inline bool decode(std::string_view wire, pb::Envelope& output) {
 
 inline std::string encode(const pb::Envelope& input) {
     const auto size = input.ByteSizeLong();
-    if (size == 0 || size > kMaxMessageSize || !fitsNanopbLimits(input))
+    if (size == 0 || size > service::message::edge::kMaxMessageSize || !fitsNanopbLimits(input))
         return {};
     std::string wire;
     if (!input.SerializeToString(&wire))

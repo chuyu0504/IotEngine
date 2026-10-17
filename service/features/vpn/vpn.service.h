@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <edge.pb.h>
 #include <memory>
 #include <openssl/evp.h>
@@ -15,38 +17,37 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
+#include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/db/db_transaction.h>
-#include <ruvia/web/redis/redis_repository.h>
+#include <ruvia/web/redis/redis_handle.h>
+#include <ruvia/web/model_json.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/common/wireguard.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/projection/projection.entity.h"
 #include "service/features/edge/session/session.service.h"
+#include "service/features/vpn/firewall/firewall.transport.h"
 #include "service/features/vpn/vpn.entity.h"
 #include "service/features/vpn/wireguard/wireguard.config.h"
+#include "service/features/vpn/wireguard/wireguard.transport.h"
+#include "service/middleware/log.h"
 #include "service/utils/network.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 
 namespace service::vpn {
-
-using service::message::vpn::kVirtualLanPool;
-using service::message::vpn::mappedVirtualCidr;
-using service::utils::network::hostAddress;
-using service::utils::network::Ipv4Cidr;
-using service::utils::network::isPrivateIpv4;
-using service::utils::network::networkCidr;
-using service::utils::network::parseCidr;
-using service::utils::network::parseIpv4;
 
 // Newest connection deadline of one desktop client, measured on the Redis clock.
 inline constexpr std::string_view kDesktopSessionDeadlineScript = R"lua(
@@ -57,12 +58,46 @@ if last[2]==nil then return {now,0} end
 return {now,tonumber(last[2])}
 )lua";
 
-// Claim one desktop-session deadline: only the first Worker to present a deadline
-// later than every deadline already handled processes the expiry.
-inline constexpr std::string_view kDesktopExpiryClaimScript = R"lua(
-local handled=tonumber(redis.call('GET',KEYS[1]) or '0')
-if tonumber(ARGV[1])<=handled then return 0 end
-redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[2])
+// A finite score is an actual desktop expiry, failed attempt, or claim recovery
+// deadline. The +inf sentinel makes startup initialization once-per-instance.
+inline constexpr std::string_view kHubScheduleUpdateScript = R"lua(
+local time=redis.call('TIME')
+local now=time[1]*1000+math.floor(time[2]/1000)
+local action=ARGV[1]
+if action=='initialize' then
+  if redis.call('ZSCORE',KEYS[1],'initialized') then return 0 end
+  redis.call('ZADD',KEYS[1],'+inf','initialized',now,'retry')
+elseif action=='attempt' or action=='failed' then
+  redis.call('ZADD',KEYS[1],now+300000,'retry')
+else
+  redis.call('ZREM',KEYS[1],'retry')
+end
+if action=='complete' or action=='failed' then
+  if ARGV[2]~='' then redis.call('ZADD',KEYS[1],ARGV[2],'desktop')
+  else redis.call('ZREM',KEYS[1],'desktop') end
+end
+redis.call('PEXPIRE',KEYS[1],600000)
+redis.call('PUBLISH',KEYS[2],'changed')
+return 1
+)lua";
+
+inline constexpr std::string_view kHubScheduleReadScript = R"lua(
+local time=redis.call('TIME')
+local now=time[1]*1000+math.floor(time[2]/1000)
+local next=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf','9007199254740991','WITHSCORES','LIMIT',0,1)
+return {now,tonumber(next[2]) or 0}
+)lua";
+
+// Leave the claimed member in place at a recovery deadline until reconciliation
+// acknowledges the entire operation. An exception/crash never drops the work.
+inline constexpr std::string_view kHubScheduleClaimScript = R"lua(
+local time=redis.call('TIME')
+local now=time[1]*1000+math.floor(time[2]/1000)
+local due=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',now)
+if not due[1] then return 0 end
+for _,member in ipairs(due) do redis.call('ZADD',KEYS[1],now+300000,member) end
+redis.call('PEXPIRE',KEYS[1],600000)
+redis.call('PUBLISH',KEYS[2],'claimed')
 return 1
 )lua";
 
@@ -87,7 +122,6 @@ struct DesktopDemand final {
     // Earliest Redis-clock millisecond at which an active desktop client's
     // newest session lapses. Empty when no desktop session is active.
     std::optional<std::int64_t> nextExpiryMs;
-    std::int64_t redisNowMs{};
 };
 
 class VpnRuntimeService final {
@@ -115,7 +149,7 @@ class VpnRuntimeService final {
             const auto edgePeerId = feature_detail::rowText(row, 0);
             const auto clientPeerId = feature_detail::rowText(row, 1);
             if (!activeClients.contains(clientPeerId) && !inactiveClients.contains(clientPeerId)) {
-                const auto key = persistence::DesktopSessionSet::key(clientPeerId);
+                const auto key = service::message::vpn::desktopSessionKey(clientPeerId);
                 const std::string_view keys[]{ key };
                 const auto reply = co_await context.redis().eval(
                     kDesktopSessionDeadlineScript,
@@ -125,14 +159,12 @@ class VpnRuntimeService final {
                 if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() != 2 ||
                     reply.array()[0].kind() != ruvia::redis_value::kind_type::integer ||
                     reply.array()[1].kind() != ruvia::redis_value::kind_type::integer) {
-                    service::message::redis::throwValue("desktop VPN demand", reply);
+                    service::utils::redis::throwValue("desktop VPN demand", reply);
                 }
-                const auto now = reply.array()[0].integer();
-                const auto deadline = reply.array()[1].integer();
-                demand.redisNowMs = now;
-                if (deadline > now) {
+                const persistence::DeadlineSnapshot snapshot{ reply.array()[0].integer(), reply.array()[1].integer() };
+                if (snapshot.deadlineMs > snapshot.redisNowMs) {
                     activeClients.insert(clientPeerId);
-                    demand.nextExpiryMs = demand.nextExpiryMs ? std::min(*demand.nextExpiryMs, deadline) : deadline;
+                    demand.nextExpiryMs = demand.nextExpiryMs ? std::min(*demand.nextExpiryMs, snapshot.deadlineMs) : snapshot.deadlineMs;
                 } else {
                     inactiveClients.insert(clientPeerId);
                 }
@@ -144,29 +176,14 @@ class VpnRuntimeService final {
         co_return demand;
     }
 
-    // True for exactly one caller per deadline: the deadline is newer than every
-    // deadline already handled by any Service Worker of any instance.
-    template <typename Context>
-    static ruvia::task<bool> claimDesktopExpiry(Context& context, std::int64_t deadlineMs) {
-        const std::string_view keys[]{ persistence::DesktopExpiryClaim::kKey };
-        const auto deadline = std::to_string(deadlineMs);
-        const auto lifetime = std::to_string(std::chrono::milliseconds(std::chrono::minutes(10)).count());
-        const std::string_view arguments[]{ deadline, lifetime };
-        const auto reply = co_await context.redis().eval(kDesktopExpiryClaimScript, keys, arguments);
-        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("desktop VPN expiry claim", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
     // Ownership of the host's kernel interface: kVpnReconciliation held by a
     // transaction on the Worker-local "vpn-coordination" connection, so business
     // queries keep their ordinary connection without pool self-deadlock. With
     // wait=false the claim fails immediately when another owner holds it.
     // Committing (or destroying) the returned transaction releases ownership.
     template <typename Context>
-    static ruvia::task<std::optional<ruvia::db_transaction>> claimHub(Context& context, bool wait) {
-        auto ownership = co_await context.db("vpn-coordination").begin_transaction();
+    static ruvia::task<std::optional<ruvia::db_transaction>> claimHub(Context& context, bool wait, ruvia::stop_token stop = {}) {
+        auto ownership = co_await context.db("vpn-coordination").with_options({ .stop_token_ = stop }).begin_transaction();
         ruvia::db_query lock(context.pool());
         lock.select(lock.call(wait ? "pg_advisory_xact_lock" : "pg_try_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kVpnReconciliation), ruvia::db_data_type::big_int) }));
         const auto rows = co_await ownership.query(lock);
@@ -174,22 +191,6 @@ class VpnRuntimeService final {
             co_return std::nullopt;
         }
         co_return std::optional<ruvia::db_transaction>(std::move(ownership));
-    }
-
-    // True while this instance's Hub was reconciled within the last lease.
-    template <typename Context>
-    static ruvia::task<bool> reconciliationCurrent(Context& context) {
-        auto schedules = context.redis().template get_repository<persistence::ReconciliationSchedule>();
-        const ruvia::redis_find_options current{ .where_ = persistence::ReconciliationSchedule::field<"id">() == service::runtime::instanceId() };
-        co_return co_await schedules.exists(current);
-    }
-
-    template <typename Context>
-    static ruvia::task<void> recordReconciliation(Context& context, std::chrono::milliseconds lease) {
-        auto schedules = context.redis().template get_repository<persistence::ReconciliationSchedule>();
-        persistence::ReconciliationSchedule schedule(context.pool());
-        schedule.set<"id">(service::runtime::instanceId());
-        (void)co_await schedules.upsert(schedule, ruvia::redis_write_options{ .ttl_ = lease });
     }
 
     template <typename Transaction>
@@ -482,11 +483,11 @@ class VpnEdgeService final {
     // A virtual mapping must not collide with another virtual mapping or with a
     // real target network. Real target networks themselves may repeat: each one
     // is translated behind its owning Edge peer.
-    static bool virtualMappingConflicts(const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& realTarget, const std::optional<Ipv4Cidr>& existingVirtual) noexcept {
+    static bool virtualMappingConflicts(const service::utils::network::Ipv4Cidr& candidate, const std::optional<service::utils::network::Ipv4Cidr>& realTarget, const std::optional<service::utils::network::Ipv4Cidr>& existingVirtual) noexcept {
         return (realTarget && candidate.overlaps(*realTarget)) || (existingVirtual && candidate.overlaps(*existingVirtual));
     }
 
-    static bool realTargetConflictsVirtual(const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& existingVirtual) noexcept {
+    static bool realTargetConflictsVirtual(const service::utils::network::Ipv4Cidr& candidate, const std::optional<service::utils::network::Ipv4Cidr>& existingVirtual) noexcept {
         return existingVirtual && candidate.overlaps(*existingVirtual);
     }
 
@@ -499,7 +500,7 @@ class VpnEdgeService final {
     static ruvia::task<void> syncEdgeRoutes(Context& context, std::string_view peerId, std::string_view networkId, std::string_view edgeNodeId, std::string_view actorId) {
         auto transaction = co_await context.db().begin_transaction();
         co_await VpnRuntimeService::lockAddressAllocation(transaction, context.pool());
-        co_await syncEdgeBridgeRoutes(transaction, peerId, networkId, edgeNodeId, actorId, *context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>());
+        co_await syncEdgeBridgeRoutes(transaction, peerId, networkId, edgeNodeId, actorId, context.template worker_state<service::common::UuidV7State>());
         co_await transaction.commit();
     }
 
@@ -646,16 +647,16 @@ class VpnEdgeService final {
             .add_order_by(routes.column(std::tuple_element_t<Route::column_index<"virtual_cidr">(), Route::columns_type>::name.view()))
             .limit(16);
         const auto routeRows = co_await configuration.query(routes);
-        auto& uuidGenerator = *c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>();
-        const auto requestId = uuidGenerator.next();
+        auto& uuidState = c.template worker_state<service::common::UuidV7State>();
+        const auto requestId = service::utils::nextUuid(uuidState);
         std::uint8_t requestBytes[16]{};
-        if (!service::edge::protocol::uuidBytes(requestId, requestBytes)) {
+        if (!service::common::uuidBytes(requestId, requestBytes)) {
             co_return;
         }
-        auto envelope = service::edge::protocol::outbound(uuidGenerator.next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
+        auto envelope = service::edge::protocol::outbound(service::utils::nextUuid(uuidState), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
         if (!platformId.empty()) {
             std::uint8_t platformBytes[16]{};
-            if (service::edge::protocol::uuidBytes(platformId, platformBytes)) {
+            if (service::common::uuidBytes(platformId, platformBytes)) {
                 envelope.set_platform_id(service::edge::protocol::bytes(platformBytes, sizeof(platformBytes)));
             }
         }
@@ -767,17 +768,17 @@ class VpnEdgeService final {
     // repeat across sites; virtual prefixes remain globally unique so the Hub
     // can route them unambiguously.
     template <typename Db>
-    static ruvia::task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId, std::string_view networkId, std::string_view edgeNodeId, std::string_view actorId, service::common::UuidV7Generator& uuidGenerator) {
+    static ruvia::task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId, std::string_view networkId, std::string_view edgeNodeId, std::string_view actorId, service::common::UuidV7State& uuidState) {
         struct RouteRecord final {
             std::string id;
             std::string lanInterface;
-            std::optional<Ipv4Cidr> target;
-            std::optional<Ipv4Cidr> virtualNetwork;
+            std::optional<service::utils::network::Ipv4Cidr> target;
+            std::optional<service::utils::network::Ipv4Cidr> virtualNetwork;
         };
 
         struct BridgeRecord final {
             std::string lanInterface;
-            Ipv4Cidr target;
+            service::utils::network::Ipv4Cidr target;
         };
 
         using Op = ruvia::db_binary_operator;
@@ -805,8 +806,8 @@ class VpnEdgeService final {
         for (const auto& row : bridgeRows) {
             const auto address = feature_detail::rowText(row, 2);
             const auto prefix = feature_detail::integer(feature_detail::rowText(row, 3));
-            const auto target = networkCidr(address, static_cast<std::uint8_t>(prefix));
-            if (!target || !isPrivateIpv4(*target)) {
+            const auto target = service::utils::network::networkCidr(address, static_cast<std::uint8_t>(prefix));
+            if (!target || !service::utils::network::isPrivateIpv4(*target)) {
                 continue;
             }
             const auto name = feature_detail::rowText(row, 1).empty() ? feature_detail::rowText(row, 0) : feature_detail::rowText(row, 1);
@@ -827,7 +828,7 @@ class VpnEdgeService final {
             };
         };
         const auto routeRecord = [](const auto& row) {
-            return RouteRecord{ feature_detail::rowText(row, 0), feature_detail::rowText(row, 1), parseCidr(feature_detail::rowText(row, 2), 1, 30), parseCidr(feature_detail::rowText(row, 3), 1, 30) };
+            return RouteRecord{ feature_detail::rowText(row, 0), feature_detail::rowText(row, 1), service::utils::network::parseCidr(feature_detail::rowText(row, 2), 1, 30), service::utils::network::parseCidr(feature_detail::rowText(row, 3), 1, 30) };
         };
         ruvia::db_query currentQuery;
         const auto currentColumns = routeColumns(currentQuery);
@@ -852,7 +853,7 @@ class VpnEdgeService final {
             allRoutes.push_back(routeRecord(row));
         }
 
-        const auto conflicts = [&](const Ipv4Cidr& candidate, std::string_view excludedId) {
+        const auto conflicts = [&](const service::utils::network::Ipv4Cidr& candidate, std::string_view excludedId) {
             for (const auto& route : allRoutes) {
                 if (route.id == excludedId) {
                     continue;
@@ -863,17 +864,17 @@ class VpnEdgeService final {
             }
             return false;
         };
-        const auto chooseVirtual = [&](const Ipv4Cidr& target, std::string_view excludedId) -> std::optional<Ipv4Cidr> {
-            if (const auto preferred = mappedVirtualCidr(target);
+        const auto chooseVirtual = [&](const service::utils::network::Ipv4Cidr& target, std::string_view excludedId) -> std::optional<service::utils::network::Ipv4Cidr> {
+            if (const auto preferred = service::message::vpn::mappedVirtualCidr(target);
                 preferred && !preferred->overlaps(target) && !conflicts(*preferred, excludedId)) {
                 return preferred;
             }
-            if (target.prefix < kVirtualLanPool.prefix) {
+            if (target.prefix < service::message::vpn::kVirtualLanPool.prefix) {
                 return std::nullopt;
             }
             const auto blockSize = static_cast<std::uint64_t>(target.size());
-            for (std::uint64_t offset = 0; offset < kVirtualLanPool.size(); offset += blockSize) {
-                const Ipv4Cidr candidate{ static_cast<std::uint32_t>(kVirtualLanPool.network + offset), target.prefix };
+            for (std::uint64_t offset = 0; offset < service::message::vpn::kVirtualLanPool.size(); offset += blockSize) {
+                const service::utils::network::Ipv4Cidr candidate{ static_cast<std::uint32_t>(service::message::vpn::kVirtualLanPool.network + offset), target.prefix };
                 if (!candidate.overlaps(target) && !conflicts(candidate, excludedId)) {
                     return candidate;
                 }
@@ -889,13 +890,13 @@ class VpnEdgeService final {
                      route.lanInterface == bridge.lanInterface);
             });
             std::string routeId;
-            std::optional<Ipv4Cidr> virtualNetwork;
+            std::optional<service::utils::network::Ipv4Cidr> virtualNetwork;
             if (existing != current.end()) {
                 routeId = existing->id;
                 claimed.emplace(routeId);
                 if (existing->virtualNetwork && existing->virtualNetwork->prefix == bridge.target.prefix &&
-                    kVirtualLanPool.contains(existing->virtualNetwork->network) &&
-                    kVirtualLanPool.contains(existing->virtualNetwork->network + existing->virtualNetwork->size() - 1U) &&
+                    service::message::vpn::kVirtualLanPool.contains(existing->virtualNetwork->network) &&
+                    service::message::vpn::kVirtualLanPool.contains(existing->virtualNetwork->network + existing->virtualNetwork->size() - 1U) &&
                     !existing->virtualNetwork->overlaps(bridge.target) && !conflicts(*existing->virtualNetwork, routeId)) {
                     virtualNetwork = existing->virtualNetwork;
                 } else {
@@ -941,7 +942,7 @@ class VpnEdgeService final {
                     }
                 }
             } else {
-                const auto id = uuidGenerator.next();
+                const auto id = service::utils::nextUuid(uuidState);
                 ruvia::db_query route;
                 route
                     .insert_into(Route::table_name(), { std::tuple_element_t<Route::column_index<"id">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"network_id">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"edge_peer_id">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"lan_interface">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"target_cidr">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"virtual_cidr">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"mode">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"nat_mode">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"enabled">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"status">(), Route::columns_type>::name.view(), std::tuple_element_t<Route::column_index<"created_by">(), Route::columns_type>::name.view() })
@@ -951,6 +952,338 @@ class VpnEdgeService final {
             }
         }
     }
+};
+
+// Hub business operations are independent of the worker task driving deadlines.
+class VpnHubService final {
+  public:
+    VpnHubService(wireguard::HubConfig fallback, std::string platformId, std::string instanceId)
+        : fallback_(std::move(fallback)), platformId_(std::move(platformId)), instanceId_(std::move(instanceId)) {}
+
+    [[nodiscard]] std::string scheduleChannel() const {
+        return service::message::vpn::hubScheduleChannel(instanceId_);
+    }
+
+    ruvia::task<void> initialize(ruvia::web_worker_context& context) {
+        co_await updateSchedule(context, "initialize");
+    }
+
+    ruvia::task<std::optional<std::chrono::milliseconds>> nextDeadline(ruvia::web_worker_context& context) {
+        const auto key = service::message::vpn::hubScheduleKey(instanceId_);
+        const std::string_view keys[]{ key };
+        const auto reply = co_await context.redis().eval(kHubScheduleReadScript, keys, std::span<const std::string_view>{});
+        if (reply.kind() != ruvia::redis_value::kind_type::array || reply.array().size() != 2 ||
+            reply.array()[0].kind() != ruvia::redis_value::kind_type::integer ||
+            reply.array()[1].kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("VPN deadline", reply);
+        }
+        const persistence::DeadlineSnapshot snapshot{ reply.array()[0].integer(), reply.array()[1].integer() };
+        if (snapshot.deadlineMs == 0) {
+            co_return std::nullopt;
+        }
+        co_return std::chrono::milliseconds(std::max(std::int64_t{0}, snapshot.deadlineMs - snapshot.redisNowMs));
+    }
+
+    ruvia::task<void> executeDue(ruvia::web_worker_context& context, ruvia::stop_token stop) {
+        if (stop.stop_requested()) {
+            co_return;
+        }
+        const auto key = service::message::vpn::hubScheduleKey(instanceId_);
+        const auto channel = scheduleChannel();
+        const std::string_view keys[]{ key, channel };
+        const auto reply = co_await context.redis().with_options({ .stop_token_ = stop }).eval(
+            kHubScheduleClaimScript, keys, std::span<const std::string_view>{});
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("VPN deadline claim", reply);
+        }
+        if (reply.integer() == 1) {
+            const auto status = co_await reconcile(context, stop);
+            if (status.supported && !status.configured && status.code != "hub_config_missing") {
+                LOG_WARN << "VPN reconciliation is incomplete: " << status.code << ' ' << status.message;
+            }
+        }
+    }
+
+    ruvia::task<std::string> executeOperation(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
+        namespace contract = service::message::vpn;
+        if (stop.stop_requested()) {
+            service::common::fail(10004, "VPN background operation cancelled", 503);
+        }
+
+        if (operation == contract::kQueueEdgeConfigOperation) {
+            const auto request = service::message::rpc::decodeLinePair(payload);
+            if (!request || !service::common::isUuid(request->first) || !service::common::isUuid(request->second)) {
+                service::common::fail(10002, "VPN Edge 配置请求无效", 400);
+            }
+            co_await VpnEdgeService::queueEdgeConfig(context, request->first, request->second, platformId_);
+            co_return "{}";
+        }
+
+        if (operation == contract::kSyncEdgeRoutesOperation) {
+            const auto request = ruvia::from_json<contract::EdgeRouteSync>(payload, { .resource_ = context.pool() });
+            if (!request || !service::common::isUuid(request->get<"peerId">().view()) ||
+                !service::common::isUuid(request->get<"networkId">().view()) ||
+                !service::common::isUuid(request->get<"edgeNodeId">().view()) ||
+                !service::common::isUuid(request->get<"actorId">().view())) {
+                service::common::fail(10002, "VPN 路由同步请求无效", 400);
+            }
+            co_await VpnEdgeService::syncEdgeRoutes(context, request->get<"peerId">().view(), request->get<"networkId">().view(), request->get<"edgeNodeId">().view(), request->get<"actorId">().view());
+            co_return "{}";
+        }
+
+        if (operation == contract::kReconcileOperation) {
+            const auto result = co_await reconcile(context, stop);
+            if (result.supported && !result.configured && result.code != "hub_config_missing") {
+                service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
+            }
+            co_return runtimeStatusJson(result, context.pool());
+        }
+
+        if (operation == contract::kRemovePeerOperation) {
+            co_await removePeer(context, payload);
+            co_return "{}";
+        }
+
+        if (operation == contract::kEdgeCapabilityOperation) {
+            const auto request = ruvia::from_json<contract::EdgeCapability>(payload, { .resource_ = context.pool() });
+            if (!request || !service::common::isUuid(request->get<"nodeId">().view()) ||
+                !service::common::wireguard::validManagedKey(request->get<"publicKey">().view())) {
+                service::common::fail(10002, "VPN Edge 能力通知无效", 400);
+            }
+            const std::string nodeId(request->get<"nodeId">().view());
+            try {
+                co_await activateEdge(context, nodeId, request->get<"publicKey">().view());
+            } catch (const std::exception& error) {
+                LOG_ERROR << "VPN edge capability for node " << nodeId << " failed: " << error.what();
+                throw;
+            }
+            co_return "{}";
+        }
+
+        if (operation == contract::kEdgeConfigResultOperation) {
+            const auto request = ruvia::from_json<contract::EdgeConfigResult>(payload, { .resource_ = context.pool() });
+            if (!request || !service::common::isUuid(request->get<"peerId">().view())) {
+                service::common::fail(10002, "VPN Edge 配置结果无效", 400);
+            }
+            try {
+                co_await VpnEdgeService::applyConfigResult(context, *request);
+            } catch (const std::exception& error) {
+                LOG_ERROR << "VPN edge config result for peer " << request->get<"peerId">().view()
+                          << " failed: " << error.what();
+                throw;
+            }
+            co_return "{}";
+        }
+
+        service::common::fail(10002, "Unknown VPN background operation", 400);
+    }
+
+  private:
+    ruvia::task<void> updateSchedule(ruvia::web_worker_context& context, std::string_view action,
+                                   std::optional<std::int64_t> desktop = std::nullopt) {
+        const auto key = service::message::vpn::hubScheduleKey(instanceId_);
+        const auto channel = scheduleChannel();
+        const auto deadline = desktop ? std::to_string(*desktop) : std::string{};
+        const std::string_view keys[]{ key, channel };
+        const std::string_view arguments[]{ action, deadline };
+        const auto reply = co_await context.redis().eval(kHubScheduleUpdateScript, keys, arguments);
+        if (reply.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("VPN deadline update", reply);
+        }
+    }
+
+
+    // Activation is committed first, so the Hub must learn the reported key even
+    // when a later route synchronization fails; that failure is rethrown after.
+    ruvia::task<void> activateEdge(ruvia::web_worker_context& context, std::string_view nodeId, std::string_view publicKey) {
+        const auto peers = co_await VpnEdgeService::activateEdgePeers(context, nodeId, publicKey);
+        std::exception_ptr failure;
+        try {
+            for (const auto& peer : peers) {
+                co_await VpnEdgeService::syncEdgeRoutes(context, peer.peerId, peer.networkId, nodeId, peer.networkOwner);
+                co_await VpnEdgeService::queueEdgeConfig(context, peer.peerId);
+            }
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (!peers.empty()) {
+            const auto status = co_await reconcile(context);
+            if (status.supported && !status.configured && status.code != "hub_config_missing") {
+                LOG_WARN << "VPN Hub reconciliation after edge capability of node " << nodeId
+                         << " is incomplete: " << status.code << ' ' << status.message;
+            }
+        }
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+    }
+
+    // The host interface and address allocator remain serialized for the entire
+    // snapshot application, including removal of keys before address reuse.
+    ruvia::task<wireguard::RuntimeStatus> reconcile(ruvia::web_worker_context& context, ruvia::stop_token stop = {}) {
+        auto ownership = co_await VpnRuntimeService::claimHub(context, true, stop);
+        // Persist the attempt while holding ownership: a crash or exception
+        // cannot lose the retry or overwrite a newer reconciliation's schedule.
+        co_await updateSchedule(context, "attempt");
+        co_await VpnRuntimeService::lockAddressAllocation(*ownership, context.pool());
+        const auto demand = co_await VpnEdgeService::synchronizeEdgeDemand(context);
+        auto result = co_await applyHub(context);
+        // Missing configuration has no deadline: a configuration RPC will wake
+        // the hub. Only an actual failed application creates a retry deadline.
+        const bool retry = result.supported && !result.configured && result.code != "hub_config_missing";
+        co_await updateSchedule(context, retry ? "failed" : "complete", demand.nextExpiryMs);
+        co_await ownership->commit();
+        co_return result;
+    }
+
+    ruvia::task<void> removePeer(ruvia::web_worker_context& context, std::string_view publicKey) {
+        // Format-only validation: a key already on the interface must stay removable.
+        if (!service::common::wireguard::validKey(publicKey)) {
+            service::common::fail(10002, "WireGuard Peer 公钥无效", 400);
+        }
+        auto ownership = co_await VpnRuntimeService::claimHub(context, true);
+        const auto config = co_await VpnHubKeyService::loadOrInitialize(context, fallback_);
+        if (config) {
+            const auto result = wireguard::controller().removePeer(*config, publicKey);
+            if (result.supported && !result.configured) {
+                service::common::fail(21005, "VPN Hub peer removal failed: " + result.message, 503);
+            }
+        }
+        co_await ownership->commit();
+    }
+
+    static void appendList(std::string_view text, std::vector<std::string>& output) {
+        while (!text.empty()) {
+            const auto separator = text.find(',');
+            auto item = text.substr(0, separator);
+            text = separator == std::string_view::npos ? std::string_view{} : text.substr(separator + 1);
+            if (!item.empty() && item.front() == ' ') {
+                item.remove_prefix(1);
+            }
+            if (!item.empty()) {
+                output.emplace_back(item);
+            }
+        }
+    }
+
+    // Apply the database view of active peers to the kernel interface and the
+    // firewall, then record the handshakes the interface reports.
+    ruvia::task<wireguard::RuntimeStatus> applyHub(ruvia::web_worker_context& context) {
+        const auto config = co_await VpnHubKeyService::loadOrInitialize(context, fallback_);
+        if (!config) {
+            co_return wireguard::RuntimeStatus{ .supported = true,
+                                                .configured = false,
+                                                .code = "hub_config_missing",
+                                                .message = "WireGuard Hub 配置尚未初始化",
+                                                .peerCount = 0 };
+        }
+        auto& controller = wireguard::controller();
+        auto result = controller.configure(*config);
+        if (!result.configured) {
+            co_return result;
+        }
+        const auto peers = co_await VpnRuntimeService::loadActivePeers(context);
+        // Remove obsolete keys before assigning a recycled address to a new peer.
+        // A failed inventory or removal must not grant access to a stale key.
+        const auto currentPeers = controller.peerKeys(*config);
+        if (!currentPeers) {
+            co_return wireguard::RuntimeStatus{ .supported = true,
+                                                .configured = false,
+                                                .code = "peer_inventory_failed",
+                                                .message = "Unable to read WireGuard peers before reconciliation" };
+        }
+        // Only managed keys are granted Hub access: an all-zero key can never
+        // complete a handshake and would only hold an address and its routes.
+        const auto grantable = [](const VpnRuntimeService::Peer& peer) {
+            return service::common::wireguard::validManagedKey(peer.publicKey) && service::utils::network::parseIpv4(peer.assignedIpv4);
+        };
+        std::unordered_set<std::string> expected;
+        for (const auto& peer : peers) {
+            if (grantable(peer)) {
+                expected.insert(peer.publicKey);
+            }
+        }
+        for (const auto& publicKey : *currentPeers) {
+            if (!expected.contains(publicKey)) {
+                const auto removed = controller.removePeer(*config, publicKey);
+                if (!removed.configured) {
+                    co_return removed;
+                }
+            }
+        }
+        std::vector<firewall::ClientAccess> clients;
+        std::vector<wireguard::Peer> configured;
+        std::vector<std::string> expectedRoutes;
+        for (const auto& record : peers) {
+            if (!grantable(record)) {
+                continue;
+            }
+            wireguard::Peer peer;
+            peer.publicKey = record.publicKey;
+            peer.allowedIps.emplace_back(record.assignedIpv4 + "/32");
+            if (record.peerType == "edge") {
+                firewall::ClientAccess client{ .assignedIpv4 = record.assignedIpv4 };
+                appendList(record.sourceRoutes, client.sourceRoutes);
+                peer.allowedIps.insert(peer.allowedIps.end(), client.sourceRoutes.begin(), client.sourceRoutes.end());
+                appendList(record.allowedRoutes, client.allowedRoutes);
+                clients.push_back(std::move(client));
+            } else if (record.peerType == "windows") {
+                firewall::ClientAccess client{ .assignedIpv4 = record.assignedIpv4 };
+                appendList(record.allowedRoutes, client.allowedRoutes);
+                appendList(record.edgeAddresses, client.edgeAddresses);
+                clients.push_back(std::move(client));
+            }
+            expectedRoutes.insert(expectedRoutes.end(), peer.allowedIps.begin(), peer.allowedIps.end());
+            configured.push_back(std::move(peer));
+        }
+
+        const auto firewallResult = firewall::apply(config->interfaceName, clients);
+        if (!firewallResult.configured) {
+            co_return wireguard::RuntimeStatus{ .supported = true,
+                                                .configured = false,
+                                                .code = "firewall_configure_failed",
+                                                .message = firewallResult.message,
+                                                .peerCount = 0 };
+        }
+        // Install the new address permissions before enabling its new key.
+        // Recycled addresses must never inherit a previous client's firewall access.
+        std::size_t configuredPeers = 0;
+        for (const auto& peer : configured) {
+            const auto peerResult = controller.upsertPeer(*config, peer);
+            if (!peerResult.configured) {
+                co_return peerResult;
+            }
+            ++configuredPeers;
+        }
+        const auto routeResult = controller.reconcileRoutes(*config, expectedRoutes);
+        if (!routeResult.configured) {
+            co_return routeResult;
+        }
+        if (const auto handshakes = controller.peerHandshakes(*config)) {
+            for (const auto& [publicKey, seconds] : *handshakes) {
+                if (seconds == 0 || seconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                    continue;
+                }
+                co_await VpnRuntimeService::updatePeerHandshake(context, publicKey, static_cast<std::int64_t>(seconds));
+            }
+        }
+        result.peerCount = configuredPeers;
+        result.message = "WireGuard hub is configured";
+        co_return result;
+    }
+    static std::string runtimeStatusJson(const wireguard::RuntimeStatus& result, std::pmr::memory_resource* resource) {
+        service::message::vpn::RuntimeStatus status(ruvia::model_options{ .resource_ = resource });
+        status.set<"platformSupported">(result.supported)
+            .set<"configured">(result.configured)
+            .set<"code">(result.code)
+            .set<"message">(result.message)
+            .set<"runtimePeerCount">(static_cast<std::int64_t>(result.peerCount));
+        return service::message::rpc::encode(status, resource);
+    }
+
+    const wireguard::HubConfig fallback_;
+    const std::string platformId_;
+    const std::string instanceId_;
 };
 
 } // namespace service::vpn

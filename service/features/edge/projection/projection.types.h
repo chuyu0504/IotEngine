@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,12 @@ struct ProjectionBatch final {
     std::vector<persistence::TelemetryUploadRecord> completedUploads;
     // Telemetry message ID -> derived-point configuration of a raw acquisition.
     std::map<std::string, std::string, std::less<>> rawCalculations;
+};
+
+struct DerivedDeadline final {
+    service::message::ParsedDeviceMessage parsed;
+    std::string config;
+    std::optional<std::int64_t> deadline;
 };
 
 // Lease, Stream and token of one projector Stream this Worker consumes.

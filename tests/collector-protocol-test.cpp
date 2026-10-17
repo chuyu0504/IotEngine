@@ -26,6 +26,8 @@
 
 #include <ruvia/core/event_loop_pool.h>
 
+#include "service/common/uuid.h"
+
 #include "service/features/alert/alert.service.h"
 #include "service/features/collector/collector.protocol.h"
 #include "service/features/edge/projection/projection.service.h"
@@ -43,6 +45,7 @@
 #include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
+#include "service/utils/uuid.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/middleware/log.h"
 
@@ -146,6 +149,13 @@ struct AlertScheduleRedis {
             commands.emplace_back(arguments.begin(), arguments.end());
         }
 
+        void eval_sha(std::string_view sha, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
+            std::vector<std::string> values{ "EVALSHA", std::string(sha), std::to_string(keys.size()) };
+            values.insert(values.end(), keys.begin(), keys.end());
+            values.insert(values.end(), arguments.begin(), arguments.end());
+            commands.push_back(std::move(values));
+        }
+
         ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
             state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(), commands.end());
             std::pmr::vector<ruvia::redis_value> replies;
@@ -189,6 +199,13 @@ struct FailingConfigRedis {
 
         void command(std::span<const std::string_view> arguments) {
             commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        void eval(std::string_view script, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
+            std::vector<std::string> values{ "EVAL", std::string(script), std::to_string(keys.size()) };
+            values.insert(values.end(), keys.begin(), keys.end());
+            values.insert(values.end(), arguments.begin(), arguments.end());
+            commands.push_back(std::move(values));
         }
 
         ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
@@ -277,6 +294,13 @@ struct RecordingLatestRedis {
 
         void command(std::span<const std::string_view> arguments) {
             commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        void eval_sha(std::string_view sha, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
+            std::vector<std::string> values{ "EVALSHA", std::string(sha), std::to_string(keys.size()) };
+            values.insert(values.end(), keys.begin(), keys.end());
+            values.insert(values.end(), arguments.begin(), arguments.end());
+            commands.push_back(std::move(values));
         }
 
         static ruvia::redis_value string(std::string_view value) {
@@ -2362,11 +2386,11 @@ void testAtomicStreamFinalizationContract() {
 }
 
 void testRuntimeProjectionRejectsRedisErrors() {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     FailingConfigRedis redis;
     bool rejected = false;
     try {
-        (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidGenerator));
+        (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidState));
     } catch (const std::runtime_error& error) {
         rejected = std::string_view(error.what()).find("active runtime") !=
             std::string_view::npos;
@@ -2375,9 +2399,9 @@ void testRuntimeProjectionRejectsRedisErrors() {
 }
 
 void testRuntimeProjectionRefreshesPreviousGrace() {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     FailingConfigRedis redis(false, true);
-    (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidGenerator));
+    (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidState));
     const auto refresh = std::ranges::find_if(redis.commands, [](const auto& command) {
         return command.size() >= 4 && command.front() == "ZADD" &&
             command.back() == "previous-version";
@@ -2480,7 +2504,7 @@ void testRealtimeProjectionContract() {
     const auto decoded = service::message::realtime::decodePoint(packed);
     require(decoded.has_value() && decoded->id == "AI1" && decoded->name == "模拟量输入1" && decoded->unit == "mA", "realtime point projection encoding changed");
     require(!service::message::realtime::decodePoint("broken").has_value(), "malformed realtime point projection was accepted");
-    require(service::collector::config::realtimeDeviceKey("version-1", device.id) == "iot:config:runtime:version-1:realtime-device:" + device.id, "realtime device projection key changed");
+    require(service::message::projection::realtimeDeviceKey("version-1", device.id) == "iot:config:runtime:version-1:realtime-device:" + device.id, "realtime device projection key changed");
 
     auto renamed = original;
     renamed.realtimeDevices.front().name = "远程IO-更新";
@@ -2590,7 +2614,7 @@ void testAlertScheduleSkipsInvalidStoredDuration() {
     message.deviceCode = "D1";
     message.observedAtMs = 1700000000000;
 
-    runTask(service::alert::metadata::schedule(redis, std::vector{ message }));
+    runTask(service::alert::metadata::schedule(redis, std::vector{ message }, "alert-test"));
     require(!redis.state->pipelineCommands.empty(), "alert schedule did not issue a Redis pipeline command");
 }
 
@@ -2684,8 +2708,39 @@ void testPacketLog() {
     std::thread([&context] {
         packetLog::write(packetLog::Level::Info, "OTHER_WORKER", context);
     }).join();
+
+    collector::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({.id = "diagnostic-link", .protocol = "Modbus"});
+    const std::map<std::string, std::size_t, std::less<>> linkIndexes{{"diagnostic-link", 0}};
+    std::map<std::string, collector::ProtocolConnectionInfo, std::less<>> connections{
+        {"diagnostic-connection", {.connectionId = "diagnostic-connection", .linkId = "diagnostic-link",
+            .remoteAddress = "127.0.0.1:1502", .sessionEpoch = 19}}};
+    std::map<std::string, std::set<std::string>, std::less<>> routes{
+        {"diagnostic-connection", {"device-a", "device-b"}}};
+    collector::CollectorPacketService packets(5, snapshot, linkIndexes, connections, routes);
+    require(packets.captureBytes(), "collector packet service did not honor the active debug level");
+    collector::IngressPacket ingress{.messageId = "diagnostic-packet", .linkId = "diagnostic-link",
+        .connectionId = "diagnostic-connection", .remoteAddress = "127.0.0.1:1502",
+        .sessionEpoch = 19, .payload = {0xAB, 0xCD}};
+    packets.ingressReceived(ingress);
+    packets.ingressDropped(ingress);
+    service::message::ProtocolTask discovery;
+    discovery.kind = "discovery";
+    discovery.protocol = "Modbus";
+    discovery.linkId = "diagnostic-link";
+    discovery.messageId = "diagnostic-discovery";
+    packets.broadcastTarget(discovery, "diagnostic-connection", "diagnostic-child");
+    collector::ProtocolAction completion{.connectionId = "diagnostic-connection",
+        .commandId = "diagnostic-child", .reason = "response_timeout"};
+    packets.commandCompleted(completion, &discovery, false);
+    // Context attribution observes this Worker's current state, not a stale copy.
+    connections.at("diagnostic-connection").remoteAddress = "127.0.0.1:2502";
+    connections.at("diagnostic-connection").sessionEpoch = 20;
+    packets.deviceBound(completion);
+    packets.deadlineUnresolved("diagnostic-connection");
     packetLog::shutdown();
     require(!packetLog::enabled(packetLog::Level::Error), "packet log stayed enabled after shutdown");
+    require(!packets.captureBytes(), "collector diagnostics stayed enabled after logging shutdown");
 
     std::string content;
     std::size_t files = 0;
@@ -2700,6 +2755,32 @@ void testPacketLog() {
     require(files == 1 && content.find("event=\"OTHER_WORKER\"") != std::string::npos, "packet log writers on different threads did not share one sink");
     require(content.find("event=\"RX_BYTES\"") != std::string::npos && content.find("hex=\"00 FF 7E 01\"") != std::string::npos, "packet log did not preserve unparsed binary bytes");
     require(content.find("event=\"TIMEOUT\"") != std::string::npos && content.find("event=\"BROADCAST_START\"") != std::string::npos, "packet log did not persist timeout and broadcast events");
+    const auto diagnosticLine = [&content](std::string_view event) {
+        const auto eventAt = content.find("event=\"" + std::string(event) + "\"");
+        require(eventAt != std::string::npos, "collector diagnostic event was not persisted");
+        const auto start = content.rfind('\n', eventAt);
+        return content.substr(start == std::string::npos ? 0 : start + 1,
+            content.find('\n', eventAt) - (start == std::string::npos ? 0 : start + 1));
+    };
+    const auto dropped = diagnosticLine("RX_DROPPED");
+    require(dropped.find("worker_id=5") != std::string::npos &&
+        dropped.find("device_code=\"device-a,device-b\"") != std::string::npos &&
+        dropped.find("protocol=\"Modbus\"") != std::string::npos &&
+        dropped.find("session_epoch=19") != std::string::npos &&
+        dropped.find("hex=\"AB CD\"") != std::string::npos &&
+        dropped.find("reason=\"raw_ingress_backpressure\"") != std::string::npos,
+        "collector ingress diagnostics lost packet ownership, attribution, bytes, or rejection reason");
+    const auto target = diagnosticLine("BROADCAST_TARGET");
+    require(target.find("message_id=\"diagnostic-child\"") != std::string::npos &&
+        target.find("causation_id=\"diagnostic-discovery\"") != std::string::npos,
+        "collector broadcast diagnostics did not distinguish child and parent identities");
+    const auto bound = diagnosticLine("DEVICE_BOUND");
+    require(bound.find("remote=\"127.0.0.1:2502\"") != std::string::npos &&
+        bound.find("session_epoch=20") != std::string::npos,
+        "collector action diagnostics retained a stale connection snapshot");
+    require(content.find("reason=\"deadline_expired_without_protocol_action\"") != std::string::npos &&
+        content.find("reason=\"response_timeout\"") != std::string::npos,
+        "collector diagnostic service lost deadline or command failure events");
     std::filesystem::remove_all(directory, ignored);
 }
 
@@ -2875,9 +2956,9 @@ void testTcpServerListenersAreWorkerLocal() {
     const auto noDisconnect = [](std::string, std::string) {
     };
 
-    service::common::UuidV7Generator firstWorkerUuids;
+    service::common::UuidV7State firstWorkerUuids;
     collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
-    service::common::UuidV7Generator secondWorkerUuids;
+    service::common::UuidV7State secondWorkerUuids;
     collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
     firstWorker.reload(snapshot);
     secondWorker.reload(snapshot);
@@ -2955,7 +3036,7 @@ void testTcpClientTargetReconcile() {
 
     std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
     std::vector<std::string> disconnected;
-    service::common::UuidV7Generator tcpUuids;
+    service::common::UuidV7State tcpUuids;
     collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectedByTarget](collector::ProtocolConnectionInfo info) {
         connectedByTarget[info.targetId].push_back(std::move(info.connectionId));
     },
@@ -3053,7 +3134,7 @@ void testTcpClientTargetsUseConnectionClaim() {
     };
     const auto noState = [](collector::LinkState) {
     };
-    service::common::UuidV7Generator firstWorkerUuids;
+    service::common::UuidV7State firstWorkerUuids;
     collector::TcpTransport firstWorker(firstWorkerUuids,
         io,
         scheduler0,
@@ -3070,7 +3151,7 @@ void testTcpClientTargetsUseConnectionClaim() {
         claim,
         release
     );
-    service::common::UuidV7Generator secondWorkerUuids;
+    service::common::UuidV7State secondWorkerUuids;
     collector::TcpTransport secondWorker(secondWorkerUuids,
         io,
         scheduler1,
@@ -3125,7 +3206,7 @@ void testTcpClientLateClaimCompletionAfterStop() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    service::common::UuidV7Generator tcpUuids;
+    service::common::UuidV7State tcpUuids;
     collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
     },
                                 [](collector::IngressPacket) {
@@ -3204,7 +3285,7 @@ void testTcpClientRevokePendingConnect() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    service::common::UuidV7Generator tcpUuids;
+    service::common::UuidV7State tcpUuids;
     collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
     },
                                 [](collector::IngressPacket) {
@@ -3253,7 +3334,7 @@ void testTcpCloseDuringPendingWrite() {
 
     std::string connectionId;
     int writeCompletions = 0;
-    service::common::UuidV7Generator tcpUuids;
+    service::common::UuidV7State tcpUuids;
     collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectionId](collector::ProtocolConnectionInfo info) {
         connectionId = std::move(info.connectionId);
     },
@@ -3433,7 +3514,7 @@ void testEdgeParsedMessageContract() {
     auto* record = batch.add_records();
     record->set_record_id(std::string(16, '\x01'));
     std::uint8_t deviceBytes[16]{};
-    require(service::edge::protocol::uuidBytes(parsed.deviceId, deviceBytes), "invalid edge fixture device id");
+    require(service::common::uuidBytes(parsed.deviceId, deviceBytes), "invalid edge fixture device id");
     record->set_device_id(service::edge::protocol::bytes(deviceBytes, sizeof(deviceBytes)));
     record->set_protocol(service::edge::pb::PROTOCOL_S7);
     record->set_observed_at_ms(parsed.observedAtMs);
@@ -3479,7 +3560,7 @@ void testEdgeParsedMessageContract() {
     auto* configured = configuration[0].mutable_device();
     configured->set_device_id(record->device_id()); configured->set_protocol(pb::PROTOCOL_S7);
     std::uint8_t linkBytes[16]{};
-    require(service::edge::protocol::uuidBytes(parsed.linkId, linkBytes), "invalid raw link fixture");
+    require(service::common::uuidBytes(parsed.linkId, linkBytes), "invalid raw link fixture");
     configured->set_endpoint_id(linkBytes, 16);
     auto* area = configuration[1].mutable_s7_area();
     area->set_device_id(record->device_id()); area->set_element_id("word");
@@ -3588,14 +3669,14 @@ void testAtomicPendingCommandDispatch() {
 }
 
 void testCollectorUuidOwnership() {
-    service::common::UuidV7Generator firstWorker;
-    service::common::UuidV7Generator secondWorker;
+    service::common::UuidV7State firstWorker;
+    service::common::UuidV7State secondWorker;
     std::set<std::string> identities;
     std::string previousFirst;
     std::string previousSecond;
     for (std::size_t index = 0; index < 2048; ++index) {
-        const auto first = firstWorker.next();
-        const auto second = secondWorker.next();
+        const auto first = service::utils::nextUuid(firstWorker);
+        const auto second = service::utils::nextUuid(secondWorker);
         require(service::common::isUuid(first) && first[14] == '7', "Collector identity must remain UUIDv7");
         require(service::common::isUuid(second) && second[14] == '7', "second Collector identity must remain UUIDv7");
         require(previousFirst < first && previousSecond < second, "each Collector UUID sequence must be monotonic");
@@ -3603,8 +3684,35 @@ void testCollectorUuidOwnership() {
         previousFirst = first;
         previousSecond = second;
     }
-    service::common::UuidV7Generator restartedWorker;
-    require(identities.insert(restartedWorker.next()).second, "recreated Collector must not reuse an identity");
+    service::common::UuidV7State restartedWorker;
+    require(identities.insert(service::utils::nextUuid(restartedWorker)).second, "recreated Collector must not reuse an identity");
+
+    // Keep the logical timestamp ahead of the clock to exercise rollback and
+    // carry without relying on the speed of this test or a clock override.
+    service::common::UuidV7State rollbackWorker{ .timestamp = firstWorker.timestamp + 60'000 };
+    rollbackWorker.sequence[2] = 0x3F;
+    for (std::size_t index = 3; index < rollbackWorker.sequence.size(); ++index)
+        rollbackWorker.sequence[index] = 0xFF;
+    const auto logicalTimestamp = rollbackWorker.timestamp;
+    const auto carried = service::utils::nextUuid(rollbackWorker);
+    require(rollbackWorker.timestamp == logicalTimestamp, "clock rollback must retain the logical timestamp");
+    require(rollbackWorker.sequence[1] == 1 && rollbackWorker.sequence[2] == 0 &&
+                rollbackWorker.sequence.back() == 0,
+            "UUID sequence carry must skip the variant bits");
+    require(carried[14] == '7' && carried[19] == '8', "sequence carry corrupted the UUID version or variant");
+    const auto afterCarry = service::utils::nextUuid(rollbackWorker);
+    require(carried < afterCarry, "UUID generation must remain monotonic while the clock is behind");
+
+    rollbackWorker.sequence.fill(0xFF);
+    rollbackWorker.sequence[0] = 0x0F;
+    rollbackWorker.sequence[2] = 0x3F;
+    const auto overflowed = service::utils::nextUuid(rollbackWorker);
+    require(rollbackWorker.timestamp == logicalTimestamp + 1,
+            "exhausting the 74-bit sequence must advance the logical timestamp");
+    require(afterCarry < overflowed && overflowed[14] == '7' &&
+                (overflowed[19] == '8' || overflowed[19] == '9' ||
+                 overflowed[19] == 'a' || overflowed[19] == 'b'),
+            "sequence overflow corrupted UUID ordering or layout");
 }
 
 } // namespace

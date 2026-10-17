@@ -13,6 +13,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/serial_debug/serial_debug.entity.h"
@@ -244,7 +245,7 @@ class Service final {
             co_return false;
         }
         request.set_session_id(bytes.data(), bytes.size());
-        auto envelope = protocol::outbound(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, ticket.nodeId);
+        auto envelope = protocol::outbound(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), c.template worker_state<service::edge::config::PlatformIdentity>().id, ticket.nodeId);
         envelope.set_session_epoch(parsed->epoch);
         envelope.set_protocol_version(parsed->protocolVersion);
         *envelope.mutable_serial_debug_request() = std::move(request);
@@ -268,7 +269,7 @@ class Service final {
             event.sequence() == 0) {
             co_return;
         }
-        const auto id = protocol::uuidText(event.session_id());
+        const auto id = service::common::uuidText(event.session_id());
         const auto ownerKey = SessionRecord::key(nodeId, id);
         const auto outputKey = service::message::serial_debug::outputKey(nodeId, id);
         const auto currentKey = service::message::edge::sessionKey(nodeId);
@@ -279,7 +280,7 @@ class Service final {
         const std::string_view args[]{ nodeSession, json, topic, service::message::live::kWorkerStreamCapacity, service::message::live::kWorkerStreamTtlMilliseconds };
         const auto reply = co_await c.redis().eval(kSaveSerialEventScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("save edge serial event", reply);
+            service::utils::redis::throwValue("save edge serial event", reply);
         }
     }
 
@@ -291,7 +292,7 @@ class Service final {
         const std::string_view args[]{ ticket.nodeSession };
         const auto reply = co_await c.redis().eval(kReleaseScript, keys, args);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("release edge serial session", reply);
+            service::utils::redis::throwValue("release edge serial session", reply);
         }
     }
 
@@ -299,7 +300,7 @@ class Service final {
     static ruvia::task<void> deleteKeys(Context& c, std::span<const std::string_view> keys) {
         const auto reply = co_await c.redis().eval(kDeleteKeysScript, keys, std::span<const std::string_view>{});
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-            service::message::redis::throwValue("delete edge serial browser state", reply);
+            service::utils::redis::throwValue("delete edge serial browser state", reply);
         }
     }
 };

@@ -30,6 +30,7 @@
 #include "service/common/message.h"
 #include "service/common/mqtt_report.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/edge_node/edge_node.entity.h"
 #include "service/utils/rpc_client.h"
@@ -957,7 +958,7 @@ class ProtocolService {
         validateConfig(protocol, *body.get<"config">(), true);
         (void)validateDerivedPoints(*body.get<"config">());
         co_await ensureNameAvailable(c, name, std::nullopt);
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto& config = body.get<"config">();
         const auto& remark = body.get<"remark">();
         const bool enabled = body.get<"enabled">().value_or(ruvia::bool_value{true}).value_;
@@ -975,7 +976,7 @@ class ProtocolService {
             configuration.set_null<"remark">();
         }
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().insert(configuration);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -1053,7 +1054,7 @@ class ProtocolService {
             service::common::database::activeId<entities::ProtocolConfigEntity>(id),
             changes
         );
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         try {
             (void)co_await service::utils::callRpc(c, "telemetry", "project-protocol", std::string(id));
@@ -1087,7 +1088,7 @@ class ProtocolService {
         if (!previous) throw std::runtime_error("invalid stored protocol configuration");
         const auto points = previous->template get<ruvia::json_value>("points");
         if (!points || !points->is_array()) throw std::runtime_error("invalid stored protocol points");
-        const auto pointId = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto pointId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto requestJson = ruvia::to_json(body);
         const auto request = ruvia::json_value::parse(requestJson);
         if (!request) throw std::runtime_error("invalid serialized point request");
@@ -1142,7 +1143,7 @@ class ProtocolService {
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().update(
             service::common::database::activeId<entities::ProtocolConfigEntity>(id), configurationChanges);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "updated", id,
-            c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         try {
             (void)co_await service::utils::callRpc(c, "telemetry", "project-protocol", std::string(id));
@@ -1182,7 +1183,7 @@ class ProtocolService {
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().update(
             service::common::database::activeId<entities::ProtocolConfigEntity>(id), deletionChanges
         );
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "protocol", "deleted", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 

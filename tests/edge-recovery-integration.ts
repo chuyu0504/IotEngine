@@ -13,8 +13,11 @@ const oldWorker = '3';
 const activeWorker = '4';
 const group = 'iot-engine:edge-projector';
 const registry = 'iot:v3:edge:projector:streams';
+const deadlines = `iot:v3:edge:projector:deadlines:test:${suffix}`;
 const oldStream = `iot:v3:edge:projector:${oldInstance}:${oldWorker}`;
 const activeStream = `iot:v3:edge:projector:${activeInstance}:${activeWorker}`;
+const pendingDeadline = `iot:consumer:pending:${group}:${oldStream}`;
+const deadlineChannel = `iot:consumer:deadline:${group}:${oldStream}`;
 const oldLease = `iot:v3:edge:projector:lease:${oldInstance}:${oldWorker}`;
 const activeLease = `iot:v3:edge:projector:lease:${activeInstance}:${activeWorker}`;
 const wake = `iot:service:worker:${recoveryInstance}:${oldWorker}:wake`;
@@ -40,32 +43,16 @@ async function waitForExpired(key: string) {
 }
 
 try {
-    const runtimePath = 'service/features/edge/projection/projection.runtime.h';
+    const projectionPath = 'service/features/edge/projection/projection.service.h';
     const publishPath = 'service/features/edge/edge.service.h';
-    const redisPath = 'service/utils/redis.h';
-    const claimRecovery = await sourceScript(runtimePath, 'kClaimLeaseScript =');
-    const fencedAck = await sourceScript(runtimePath, 'kAcknowledgeFencedScript =');
-    const eraseDead = await sourceScript(runtimePath, 'kEraseDeadStreamScript =');
+    const claimRecovery = await sourceScript(projectionPath, 'kClaimLeaseScript =');
+    const renewLease = await sourceScript(projectionPath, 'kRenewLeaseScript =');
+    const dueStreams = await sourceScript(projectionPath, 'kDueRecoveryStreamsScript =');
+    const nextDeadline = await sourceScript(projectionPath, 'kNextRecoveryDeadlineScript =');
+    const fencedAck = await sourceScript(projectionPath, 'kAcknowledgeFencedScript =');
+    const eraseDead = await sourceScript(projectionPath, 'kEraseDeadStreamScript =');
     const fencedPublish = await sourceScript(publishPath, 'kFencedPublishScript =');
 
-    assert(!fencedPublish.includes("local arguments = {'MAXLEN'"));
-    for (const consumerRuntime of [
-        'service/features/access/access.runtime.h',
-        'service/features/telemetry/telemetry.runtime.h',
-        'service/features/command/command.runtime.h',
-        'service/features/configuration/configuration.runtime.h',
-    ]) {
-        const consumerSource = await Bun.file(consumerRuntime).text();
-        assert(!consumerSource.includes('repairLegacyReadSet'), `${consumerRuntime} retains legacy read-set repair`);
-        assert(consumerSource.includes('kPendingRecoveryInterval'), `${consumerRuntime} has no periodic pending recovery deadline`);
-    }
-
-    // A discovered dead stream must not be recreated after it was drained and
-    // removed while recovery was being prepared.
-    const redisSource = await Bun.file(redisPath).text();
-    const groupHelper = redisSource.slice(redisSource.indexOf('ensureGroupIfPresent'));
-    const groupCreate = groupHelper.match(/\{\s*"XGROUP"[\s\S]*?\}\s*\);/)?.[0];
-    assert(groupCreate && !groupCreate.includes('MKSTREAM'));
     const missingStream = `iot:v3:edge:projector:${suffix}:missing`;
     let missingRejected = false;
     try {
@@ -111,23 +98,46 @@ try {
     await redis.send('SET', [activeLease, activeToken, 'PX', '5000', 'NX']);
     const activeClaim = await redis.send('EVAL', [
         claimRecovery,
-        '1',
+        '2',
         activeLease,
+        deadlines,
         recoveryToken,
         '2000',
+        activeStream,
     ]);
     assert.equal(Number(activeClaim), 0, 'active owner lease was stolen');
     assert.equal(await redis.send('GET', [activeLease]), activeToken);
 
     const claimed = await redis.send('EVAL', [
         claimRecovery,
-        '1',
+        '2',
         oldLease,
+        deadlines,
         recoveryToken,
         '2000',
+        oldStream,
     ]);
     assert.equal(Number(claimed), 1, 'dead owner recovery lease was not claimed');
     assert.equal(await redis.send('GET', [oldLease]), recoveryToken);
+    const initialDeadline = Number(await redis.send('ZSCORE', [deadlines, oldStream]));
+    assert(initialDeadline > Date.now(), 'claim did not schedule lease expiry recovery');
+    assert.deepEqual(await redis.send('EVAL', [dueStreams, '1', deadlines]), []);
+    assert(Number(await redis.send('EVAL', [nextDeadline, '1', deadlines])) > 0);
+    const staleRenew = await redis.send('EVAL', [
+        renewLease, '2', oldLease, deadlines, oldToken, '4000', oldStream,
+    ]);
+    assert.equal(Number(staleRenew), 0, 'stale owner renewed recovery lease');
+    assert.equal(Number(await redis.send('ZSCORE', [deadlines, oldStream])), initialDeadline);
+    const renewed = await redis.send('EVAL', [
+        renewLease, '2', oldLease, deadlines, recoveryToken, '4000', oldStream,
+    ]);
+    assert.equal(Number(renewed), 1);
+    assert(Number(await redis.send('ZSCORE', [deadlines, oldStream])) > initialDeadline);
+
+    // The deadline query returns only expired candidates, not the registry.
+    await redis.send('ZADD', [deadlines, String(Date.now() - 1), activeStream]);
+    assert.deepEqual(await redis.send('EVAL', [dueStreams, '1', deadlines]), [activeStream]);
+    await redis.send('ZREM', [deadlines, activeStream]);
 
     // The crashed gateway still has the old token.  Its ingress write must be
     // rejected atomically after recovery claims the lease.
@@ -166,12 +176,15 @@ try {
     const recoveredIds = (claimedEntries[1] as unknown[]).map((entry) =>
         Array.isArray(entry) ? String(entry[0]) : '');
     assert(recoveredIds.includes(oldMessage), 'old pending entry was not recovered');
+    await redis.send('ZADD', [pendingDeadline, String(Date.now()), oldMessage]);
 
     const acknowledged = await redis.send('EVAL', [
         fencedAck,
-        '2',
+        '4',
         oldLease,
         oldStream,
+        pendingDeadline,
+        deadlineChannel,
         recoveryToken,
         group,
         oldMessage,
@@ -180,6 +193,7 @@ try {
     assert.equal(Number(await redis.send('XLEN', [oldStream])), 0);
     const pendingSummary = await redis.send('XPENDING', [oldStream, group]) as unknown[];
     assert.equal(Number(pendingSummary[0]), 0);
+    assert.equal(await redis.send('ZSCORE', [pendingDeadline, oldMessage]), null);
 
     // A live, fenced producer must refuse a full data stream instead of
     // approximately trimming entries that have not reached the database.
@@ -231,10 +245,11 @@ try {
     // lease, and registry entry only after the stream is fully drained.
     const erased = await redis.send('EVAL', [
         eraseDead,
-        '3',
+        '4',
         oldLease,
         oldStream,
         registry,
+        deadlines,
         recoveryToken,
     ]);
     assert.equal(Number(erased), 1, 'drained dead stream was not removed');
@@ -242,6 +257,7 @@ try {
     assert.equal(Number(await redis.send('EXISTS', [oldLease])), 0);
     const registered = await redis.send('SISMEMBER', [registry, oldStream]);
     assert.equal(Number(registered), 0);
+    assert.equal(await redis.send('ZSCORE', [deadlines, oldStream]), null);
 
     console.log('PASS Edge owner recovery, live lease exclusion, and fencing');
 } finally {
@@ -251,6 +267,8 @@ try {
         oldLease,
         activeLease,
         wake,
+        deadlines,
+        pendingDeadline,
         `iot:v3:edge:projector:${suffix}:missing`,
     ]);
     await redis.send('SREM', [registry, oldStream, activeStream]);

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <string>
+#include <ruvia/web/dotenv.h>
 #include "service/features/packet_log/packet_log.types.h"
 
 namespace service::packet_log {
@@ -37,6 +38,14 @@ inline Level parseLevel(std::string_view value, Level fallback = Level::Debug) n
         return Level::Off;
     }
     return fallback;
+}
+
+inline Config fromEnv(const ruvia::env& env, const std::filesystem::path& runtime) {
+    Config config;
+    const auto directory = env.get("PACKET_LOG_DIRECTORY");
+    config.directory = directory ? std::filesystem::path(*directory) : runtime / "logs";
+    config.level = parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
+    return config;
 }
 
 } // namespace service::packet_log

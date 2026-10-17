@@ -21,6 +21,7 @@
 #include <ruvia/web/model_object.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/database.h"
 #include "service/common/http.h"
@@ -39,6 +40,7 @@
 #include "service/utils/json.h"
 #include "service/utils/number.h"
 #include "service/utils/text.h"
+#include "service/utils/uuid.h"
 
 namespace service::open_access {
 
@@ -145,7 +147,7 @@ class AccessService final {
         const auto remark = trimAccessText(payload.get<"remark">());
         co_await ensureKeyNameAvailable(c, name, std::nullopt);
 
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto rawKey = service::open_access::generateAccessKey();
         const auto prefix = rawKey.substr(0, 14);
         const auto keyHash = service::utils::sha256(rawKey);
@@ -158,7 +160,7 @@ class AccessService final {
             .values({ db::uuid(insert, id), insert.value(name), insert.value(prefix), insert.value(keyHash), insert.value(status), insert.cast(insert.value(scopeJson), ruvia::db_data_type::jsonb), insert.cast(insert.null_if(insert.value(expiresAtValue), insert.value("")), ruvia::db_data_type::timestamp_tz), insert.null_if(insert.value(remarkValue), insert.value("")), db::uuid(insert, c.userId) });
         (void)co_await transaction.execute(insert);
         co_await replaceDevices(transaction, id, devices);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         co_await refreshProjection(c);
 
@@ -198,7 +200,7 @@ class AccessService final {
         if (payload.get<"deviceIds">()) {
             co_await replaceDevices(transaction, id, devices);
         }
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         co_await refreshProjection(c);
     }
@@ -218,7 +220,7 @@ class AccessService final {
             .set(service::open_access::entities::OpenAccessKeyEntity::column<"updated_at">().name(), update.call("now"))
             .where(db::andAll(update, update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenAccessKeyEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(update);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "rotated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "rotated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         co_await refreshProjection(c);
         co_return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" + service::utils::jsonQuoted(existing.name) +
@@ -249,7 +251,7 @@ class AccessService final {
             .set(service::open_access::entities::OpenAccessKeyEntity::column<"updated_at">().name(), keyUpdate.call("now"))
             .where(db::andAll(keyUpdate, keyUpdate.binary(keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(keyUpdate, id)), keyUpdate.unary(ruvia::db_unary_operator::is_null, keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(keyUpdate);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "deleted", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         co_await refreshProjection(c);
     }
@@ -296,7 +298,7 @@ class AccessService final {
         const auto events = payload.get<"eventTypes">() ? accessStringSet(*payload.get<"eventTypes">()) : std::set<std::string, std::less<>>{"device.data.reported"};
         const auto secret = trimAccessText(payload.get<"secret">());
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::nullopt);
-        const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto id = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         const auto eventJson = stringArrayJson(events);
         const auto secretValue = secret.value_or("");
         auto transaction = co_await c.db().begin_transaction();
@@ -304,7 +306,7 @@ class AccessService final {
         insert.insert_into(service::open_access::entities::OpenWebhookEntity::table_name(), { service::open_access::entities::OpenWebhookEntity::column<"id">().name(), service::open_access::entities::OpenWebhookEntity::column<"access_key_id">().name(), service::open_access::entities::OpenWebhookEntity::column<"name">().name(), service::open_access::entities::OpenWebhookEntity::column<"url">().name(), service::open_access::entities::OpenWebhookEntity::column<"status">().name(), service::open_access::entities::OpenWebhookEntity::column<"timeout_seconds">().name(), service::open_access::entities::OpenWebhookEntity::column<"skip_tls_verify">().name(), service::open_access::entities::OpenWebhookEntity::column<"headers">().name(), service::open_access::entities::OpenWebhookEntity::column<"event_types">().name(), service::open_access::entities::OpenWebhookEntity::column<"secret">().name() })
             .values({ db::uuid(insert, id), db::uuid(insert, accessKeyId), insert.value(name), insert.value(url), insert.value(status), insert.value(timeout), insert.value(skipTlsVerify), insert.cast(insert.value(headers), ruvia::db_data_type::jsonb), insert.cast(insert.value(eventJson), ruvia::db_data_type::jsonb), insert.null_if(insert.value(secretValue), insert.value("")) });
         (void)co_await transaction.execute(insert);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "created", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
         co_return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"accessKeyId\":" + service::utils::jsonQuoted(accessKeyId) +
             ",\"name\":" + service::utils::jsonQuoted(name) + ",\"url\":" + service::utils::jsonQuoted(url) +
@@ -347,7 +349,7 @@ class AccessService final {
             .set(service::open_access::entities::OpenWebhookEntity::column<"updated_at">().name(), update.call("now"))
             .where(db::andAll(update, update.binary(update.column(service::open_access::entities::OpenWebhookEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenWebhookEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(update);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "updated", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -362,7 +364,7 @@ class AccessService final {
             .set(service::open_access::entities::OpenWebhookEntity::column<"updated_at">().name(), update.call("now"))
             .where(db::andAll(update, update.binary(update.column(service::open_access::entities::OpenWebhookEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(update, id)), update.unary(ruvia::db_unary_operator::is_null, update.column(service::open_access::entities::OpenWebhookEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(update);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "deleted", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -450,7 +452,7 @@ class AccessService final {
         if (id) duplicate.and_where(duplicate.binary(duplicate.column(E::column<"id">().name()),ruvia::db_binary_operator::not_equal,db::uuid(duplicate,*id)));
         const auto duplicateRows = co_await c.db().query(duplicate);
         if (!duplicateRows.empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
-        const auto targetId = id.value_or(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        const auto targetId = id.value_or(service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         const auto eventJson = stringArrayJson(events);
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query q(c.pool());
@@ -472,7 +474,7 @@ class AccessService final {
                     q.value(payload.get<"status">()->view()),q.value(payload.get<"timeoutSeconds">()->value_),eventValue});
         }
         (void)co_await transaction.execute(q);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt",id ? "updated" : "created",targetId,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt",id ? "updated" : "created",targetId,service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -486,7 +488,7 @@ class AccessService final {
             .returning({q.column(E::column<"id">().name())});
         const auto existingRows = co_await transaction.query(q);
         if (existingRows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -824,10 +826,7 @@ class AccessService final {
         }
         const auto latestKey = service::message::telemetry::latestKey(device->id);
         const std::vector<std::string> latestArguments{ "HGETALL", latestKey };
-        const auto latest = co_await service::message::redis::command(
-            c.redis(),
-            latestArguments
-        );
+        const auto latest = co_await c.redis().command(std::vector<std::string_view>(latestArguments.begin(), latestArguments.end()));
         std::map<std::string_view, std::string_view, std::less<>> latestFields;
         if (latest.kind() == ruvia::redis_value::kind_type::array) {
             const auto values = latest.array();
@@ -838,7 +837,7 @@ class AccessService final {
                 }
             }
         } else {
-            service::message::redis::throwValue("read realtime device values", latest);
+            service::utils::redis::throwValue("read realtime device values", latest);
         }
         std::string body = "{\"device\":{\"id\":" + service::utils::jsonQuoted(deviceId) +
             ",\"code\":" + service::utils::jsonQuoted(device->code) +
@@ -904,7 +903,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
             co_return std::nullopt;
         }
         if (reply.kind() != ruvia::redis_value::kind_type::string) {
-            service::message::redis::throwValue("load projected access session", reply);
+            service::utils::redis::throwValue("load projected access session", reply);
         }
         co_return service::message::access::session::decode(reply.string());
     }
@@ -915,16 +914,16 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         std::string_view field
     ) {
         if (value.kind() != ruvia::redis_value::kind_type::array) {
-            service::message::redis::throwValue(operation, value);
+            service::utils::redis::throwValue(operation, value);
         }
         const auto& values = value.array();
         if (values.size() % 2 != 0) {
-            service::message::redis::throwValue(operation, value);
+            service::utils::redis::throwValue(operation, value);
         }
         for (std::size_t index = 0; index < values.size(); index += 2) {
             if (values[index].kind() != ruvia::redis_value::kind_type::string ||
                 values[index + 1].kind() != ruvia::redis_value::kind_type::string) {
-                service::message::redis::throwValue(operation, value);
+                service::utils::redis::throwValue(operation, value);
             }
             if (values[index].string() == field) {
                 return values[index + 1].string();
@@ -938,15 +937,12 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         std::string_view deviceId
     ) {
         const std::vector<std::string> versionReplyArguments{ "GET", std::string(service::message::projection::kRuntimeActiveVersionKey) };
-        const auto versionReply = co_await service::message::redis::command(
-            c.redis(),
-            versionReplyArguments
-        );
+        const auto versionReply = co_await c.redis().command(std::vector<std::string_view>(versionReplyArguments.begin(), versionReplyArguments.end()));
         if (versionReply.null()) {
             throw std::runtime_error("runtime is not ready");
         }
         if (versionReply.kind() != ruvia::redis_value::kind_type::string) {
-            service::message::redis::throwValue("GET active runtime", versionReply);
+            service::utils::redis::throwValue("GET active runtime", versionReply);
         }
         const auto version = versionReply.string();
         const std::vector<std::vector<std::string>> commands{
@@ -975,13 +971,13 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
             co_return std::nullopt;
         }
         if (replies[1].kind() != ruvia::redis_value::kind_type::array) {
-            service::message::redis::throwValue("read realtime device points", replies[1]);
+            service::utils::redis::throwValue("read realtime device points", replies[1]);
         }
         const auto& points = replies[1].array();
         result.points.reserve(points.size());
         for (const auto& point : points) {
             if (point.kind() != ruvia::redis_value::kind_type::string) {
-                service::message::redis::throwValue("read realtime device points", replies[1]);
+                service::utils::redis::throwValue("read realtime device points", replies[1]);
             }
             const auto decoded = service::message::realtime::decodePoint(point.string());
             if (!decoded) {

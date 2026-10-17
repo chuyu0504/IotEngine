@@ -13,6 +13,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/common/worker.h"
 #include "service/utils/change_feed.h"
 #include "service/utils/number.h"
@@ -57,7 +58,7 @@ ruvia::task<std::string> callRpc(Context& context, std::string_view component, s
     if (!topology.index) {
         throw std::logic_error("service worker index is not initialized");
     }
-    const auto id = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+    const auto id = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
     const auto replyKey = Contract::reply(id);
     const auto deadline = Contract::now() +
         std::chrono::duration_cast<std::chrono::milliseconds>(Contract::timeout).count();

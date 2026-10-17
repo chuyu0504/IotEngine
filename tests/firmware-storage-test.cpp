@@ -19,6 +19,7 @@
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/edge/gateway/gateway.service.h"
 
 namespace {
@@ -166,7 +167,7 @@ struct FakeContext {
 class FirmwareDirectory final {
   public:
     FirmwareDirectory()
-        : path_(std::filesystem::absolute(std::filesystem::temp_directory_path() / ("iot-engine-firmware-storage-" + generator_.next())).lexically_normal()) {
+        : path_(std::filesystem::absolute(std::filesystem::temp_directory_path() / ("iot-engine-firmware-storage-" + service::utils::nextUuid(uuidState_))).lexically_normal()) {
         std::filesystem::create_directories(path_);
     }
 
@@ -181,7 +182,7 @@ class FirmwareDirectory final {
     [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
 
     std::filesystem::path managed(std::string& id) {
-        id = generator_.next();
+        id = service::utils::nextUuid(uuidState_);
         return path_ / (id + ".bin");
     }
 
@@ -194,7 +195,7 @@ class FirmwareDirectory final {
     }
 
   private:
-    service::common::UuidV7Generator generator_;
+    service::common::UuidV7State uuidState_;
     std::filesystem::path path_;
 };
 
@@ -264,7 +265,8 @@ void testClaimedCleanup() {
     std::string expiredId;
     const auto expiredPath = directory.managed(expiredId);
     FirmwareDirectory::write(expiredPath, kExpired);
-    state.expired.rows.push_back(row({ service::common::UuidV7Generator().next(), "/outside/firmware/directory.bin" }));
+    service::common::UuidV7State outsideUuidState;
+    state.expired.rows.push_back(row({ service::utils::nextUuid(outsideUuidState), "/outside/firmware/directory.bin" }));
     state.expired.rows.push_back(row({ expiredId, expiredPath.string() }));
     std::string ignored;
     const auto orphan = directory.managed(ignored);

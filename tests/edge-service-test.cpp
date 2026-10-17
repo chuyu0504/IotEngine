@@ -23,6 +23,33 @@ int main() {
         if (!pending || pending->status != "pending") {
             throw std::runtime_error("gateway enrollment record changed pending status");
         }
+        {
+            const service::edge::gateway::ConnectionIdentity session{ "node-1", 42, 6, 3 };
+            service::edge::pb::Envelope envelope;
+            envelope.mutable_serial_debug_request();
+            envelope.set_session_epoch(session.epoch);
+            envelope.set_protocol_version(session.protocolVersion);
+            envelope.set_created_at_ms(100000);
+            const auto current = [&](std::uint64_t now) {
+                return service::edge::gateway::GatewayService::queuedEnvelopeIsCurrent(envelope, session, now);
+            };
+            if (!current(100000) || !current(115000) || current(115001) || current(99999)) {
+                throw std::runtime_error("serial debug queue freshness boundary changed");
+            }
+            envelope.set_session_epoch(session.epoch + 1);
+            if (current(100000)) {
+                throw std::runtime_error("serial debug request from a replaced session was accepted");
+            }
+            envelope.set_session_epoch(session.epoch);
+            envelope.set_protocol_version(session.protocolVersion - 1);
+            if (current(100000)) {
+                throw std::runtime_error("serial debug request from a different protocol session was accepted");
+            }
+            envelope.mutable_ping();
+            if (!current(115001)) {
+                throw std::runtime_error("ordinary queued task incorrectly acquired serial debug expiry");
+            }
+        }
         service::edge::pb::CommandRequest capableCommand;
         capableCommand.set_timeout_ms(5000);
         constexpr std::int64_t persistedDeadlineMs = 1780000000123;

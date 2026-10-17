@@ -73,7 +73,7 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
     }
     const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
     const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
-    service::message::redis::queueEval(pipeline, kAddAndWakeScript, keys, arguments);
+    pipeline.eval(kAddAndWakeScript, keys, arguments);
 }
 
 template <typename Redis>

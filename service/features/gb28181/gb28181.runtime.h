@@ -26,6 +26,9 @@
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
+#include "service/utils/worker_task.h"
+#include "service/utils/uuid.h"
 #include "service/features/gb28181/device/device.runtime.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/gb28181.service.h"
@@ -45,7 +48,7 @@ class CollectorRuntime final {
   public:
     using OwnerIndex = std::size_t;
 
-    CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, Config config, ruvia::event_loop loop, ruvia::redis_handle redis, OwnerIndex index, OwnerIndex count);
+    CollectorRuntime(ruvia::event_loop loop, ruvia::redis_handle redis, Config config, common::WorkerIdentity identity);
     CollectorRuntime(const CollectorRuntime&) = delete;
     CollectorRuntime& operator=(const CollectorRuntime&) = delete;
     ~CollectorRuntime();
@@ -58,9 +61,6 @@ class CollectorRuntime final {
     // Beyond this many pending barriers the actor refuses new ones, so the SIP
     // peer or the Service caller retries instead of growing the queue.
     static constexpr std::size_t kProjectionBarrierCapacity = 1024;
-    // A directed receipt normally completes the wait.  This bound only
-    // re-checks the durable receipt and repairs a lost stream entry.
-    static constexpr std::chrono::seconds kProjectionReceiptRecheck{ 5 };
     // Idle Collector streams refresh their incarnation lifetime at this interval.
     static constexpr std::chrono::seconds kCollectorStreamRefresh{ 60 };
 
@@ -74,7 +74,8 @@ class CollectorRuntime final {
         bool renewing{ false };
     };
 
-    service::common::UuidV7Generator& uuidGenerator_;
+    common::UuidV7State uuidState_;
+    const common::WorkerIdentity identity_;
     Config config_;
     ruvia::event_loop loop_;
     ruvia::worker_handle worker_;
@@ -94,7 +95,6 @@ class CollectorRuntime final {
     std::unordered_map<std::string, bool> streamOnline_;
     std::unordered_map<std::string, std::string> previewOwners_;
     ProjectionQueue projectionQueue_{ kProjectionBarrierCapacity };
-    std::unordered_map<std::string, ruvia::one_shot_completion<bool>> projectionReceipts_;
     bool projectionDrainRunning_{ false };
     bool acceptingProjection_{ true };
     bool projectionBackpressure_{ false };
@@ -118,7 +118,6 @@ class CollectorRuntime final {
     void startProjectionDrain();
     [[nodiscard]] ruvia::task<void> drainProjection();
     [[nodiscard]] ruvia::task<void> controlLoop();
-    [[nodiscard]] ruvia::task<void> receiptLoop();
     [[nodiscard]] ruvia::task<void>
     handleControl(const service::message::StreamMessage& message);
     [[nodiscard]] ruvia::task<void> refreshOwnerLeases();
@@ -148,35 +147,24 @@ class GbProjectionRuntime final : public GbProjectionService {
   public:
     using OwnerIndex = std::size_t;
 
-    GbProjectionRuntime() = default;
+    explicit GbProjectionRuntime(common::WorkerIdentity identity) : identity_(std::move(identity)) {}
     GbProjectionRuntime(const GbProjectionRuntime&) = delete;
     GbProjectionRuntime& operator=(const GbProjectionRuntime&) = delete;
 
     ~GbProjectionRuntime() { stop(); }
 
-    void start(ruvia::web_worker_handle worker, OwnerIndex workerIndex);
+    void start(ruvia::web_worker_handle worker);
     void stop() noexcept;
 
   private:
     static constexpr std::size_t kBatchSize = 64;
-    // Entries left pending by a stopped consumer are claimed after this idle
-    // time; the sweep runs at the same interval while the worker is idle.
-    static constexpr std::chrono::seconds kPendingRecovery{ 60 };
-
-    struct State final {
-        ruvia::stop_source stop;
-    };
-
     [[nodiscard]] ruvia::task<void>
-    consume(ruvia::web_worker_context& context, const std::shared_ptr<State>& state);
+    consume(ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop);
     [[nodiscard]] ruvia::task<void> project(ruvia::web_worker_context& context, const ruvia::redis_handle& redis, std::string_view stream, const service::message::StreamMessage& message);
 
-    std::atomic_bool running_{ false };
-    mutable std::mutex lifecycleMutex_;
-    ruvia::web_worker_handle worker_;
-    OwnerIndex workerIndex_{ 0 };
-    std::shared_ptr<State> state_;
-    std::shared_future<void> stopped_;
+    const common::WorkerIdentity identity_;
+    ruvia::stop_source stop_;
+    std::future<void> stopped_;
 };
 
 } // namespace service::gb28181

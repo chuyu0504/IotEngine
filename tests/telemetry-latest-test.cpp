@@ -78,18 +78,18 @@ ruvia::task<void> verifyLatest(const ruvia::redis_handle& redis) {
     require(entries.size() == 2 && entries[0] == std::pair<std::string, std::string>{ "device.realtime", "device-a" } && entries[1] == std::pair<std::string, std::string>{ "device.realtime", "device-b" }, "initialization did not publish its device id");
 
     // device-c has no runtime projection, so the script leaves it untouched.
-    co_await latest::update(redis, { report("device-a", now), report("device-a", now + 1), report("device-c", now) });
+    co_await latest::update(redis, { report("device-a", now), report("device-a", now + 1), report("device-c", now) }, "test-instance");
     entries = co_await changes(redis);
     require(entries.size() == 3 && entries[2] == std::pair<std::string, std::string>{ "device.realtime", "device-a" }, "a batch must publish one change naming only the touched devices");
     require((co_await field(redis, service::message::telemetry::runtimeKey("device-a"), "state")) == "online", "update did not mark the reporting device online");
 
     // A stale report touches nothing and publishes nothing.
-    co_await latest::update(redis, { report("device-a", now - 600000) });
+    co_await latest::update(redis, { report("device-a", now - 600000) }, "test-instance");
     require((co_await changes(redis)).size() == 3, "an older report published a change");
 
     // The cached SHA survives a flushed script cache: NOSCRIPT reloads and retries once.
     (void)co_await command(redis, { "SCRIPT", "FLUSH" });
-    co_await latest::update(redis, { report("device-b", now + 2) });
+    co_await latest::update(redis, { report("device-b", now + 2) }, "test-instance");
     entries = co_await changes(redis);
     require(entries.size() == 4 && entries[3] == std::pair<std::string, std::string>{ "device.realtime", "device-b" }, "update did not recover from a flushed script cache");
 

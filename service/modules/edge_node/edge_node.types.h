@@ -3,6 +3,7 @@
 #include <any>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,11 @@
 #include "service/common/uuid.h"
 
 namespace service::edge_node {
+
+struct FirmwareStorageConfig final {
+    const std::string publicBaseUrl;
+    const std::filesystem::path directory;
+};
 
 inline constexpr auto kDefaultDtu = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultLogs = RUVIA_DEFAULT(false){};

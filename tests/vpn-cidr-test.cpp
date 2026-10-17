@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include "service/common/message.h"
+#include "service/utils/network.h"
 #include "service/features/vpn/firewall/firewall.transport.h"
 #include "service/features/vpn/vpn.service.h"
 #include "service/features/vpn/wireguard/wireguard.transport.h"
@@ -22,32 +24,32 @@ void require(bool condition, std::string_view message) {
 } // namespace
 
 int main() {
-    const auto overlay = service::vpn::parseCidr("100.96.0.0/24", 16, 30);
-    const auto virtualLan = service::vpn::parseCidr("172.31.1.0/24", 1, 30);
-    const auto realLan = service::vpn::parseCidr("192.168.1.0/24", 1, 30);
+    const auto overlay = service::utils::network::parseCidr("100.96.0.0/24", 16, 30);
+    const auto virtualLan = service::utils::network::parseCidr("172.31.1.0/24", 1, 30);
+    const auto realLan = service::utils::network::parseCidr("192.168.1.0/24", 1, 30);
     require(overlay && overlay->text() == "100.96.0.0/24", "overlay CIDR parsing");
-    require(service::vpn::kVirtualLanPool.text() == "172.16.0.0/12", "virtual LAN pool size");
-    require(virtualLan && service::vpn::kVirtualLanPool.contains(virtualLan->network), "virtual LAN pool membership");
-    require(realLan && service::vpn::isPrivateIpv4(*realLan), "private LAN detection");
-    const auto mapped = realLan ? service::vpn::mappedVirtualCidr(*realLan) : std::nullopt;
+    require(service::message::vpn::kVirtualLanPool.text() == "172.16.0.0/12", "virtual LAN pool size");
+    require(virtualLan && service::message::vpn::kVirtualLanPool.contains(virtualLan->network), "virtual LAN pool membership");
+    require(realLan && service::utils::network::isPrivateIpv4(*realLan), "private LAN detection");
+    const auto mapped = realLan ? service::message::vpn::mappedVirtualCidr(*realLan) : std::nullopt;
     require(mapped && mapped->text() == "172.24.1.0/24", "automatic network mapping");
-    require(mapped && service::vpn::hostAddress(*mapped, 50).value() == 0xac180132U && service::vpn::hostAddress(*realLan, 50).value() == 0xc0a80132U, "host offset is preserved");
-    const auto smallerReal = service::vpn::parseCidr("192.168.1.128/25", 1, 30);
-    const auto smallerMapped = smallerReal ? service::vpn::mappedVirtualCidr(*smallerReal)
+    require(mapped && service::utils::network::hostAddress(*mapped, 50).value() == 0xac180132U && service::utils::network::hostAddress(*realLan, 50).value() == 0xc0a80132U, "host offset is preserved");
+    const auto smallerReal = service::utils::network::parseCidr("192.168.1.128/25", 1, 30);
+    const auto smallerMapped = smallerReal ? service::message::vpn::mappedVirtualCidr(*smallerReal)
                                            : std::nullopt;
     require(smallerMapped && smallerMapped->text() == "172.24.1.128/25", "automatic mapping preserves subnet bits");
-    const auto expandedReal = service::vpn::parseCidr("192.168.0.0/16", 1, 30);
-    const auto expandedMapped = expandedReal ? service::vpn::mappedVirtualCidr(*expandedReal)
+    const auto expandedReal = service::utils::network::parseCidr("192.168.0.0/16", 1, 30);
+    const auto expandedMapped = expandedReal ? service::message::vpn::mappedVirtualCidr(*expandedReal)
                                              : std::nullopt;
     require(expandedMapped && expandedMapped->text() == "172.24.0.0/16", "automatic mapping follows an expanded bridge prefix");
-    const auto outsideVirtualPool = service::vpn::parseCidr("172.168.1.0/24", 1, 30);
-    require(outsideVirtualPool && !service::vpn::kVirtualLanPool.contains(outsideVirtualPool->network), "public 172/8 space is excluded from the virtual LAN pool");
-    require(overlay && service::vpn::parseCidr("100.96.0.1/24", 16, 30) == std::nullopt, "non-canonical CIDR rejection");
+    const auto outsideVirtualPool = service::utils::network::parseCidr("172.168.1.0/24", 1, 30);
+    require(outsideVirtualPool && !service::message::vpn::kVirtualLanPool.contains(outsideVirtualPool->network), "public 172/8 space is excluded from the virtual LAN pool");
+    require(overlay && service::utils::network::parseCidr("100.96.0.1/24", 16, 30) == std::nullopt, "non-canonical CIDR rejection");
     require(virtualLan && realLan && virtualLan->prefix == realLan->prefix, "equal-prefix route contract");
-    require(virtualLan && service::vpn::hostAddress(*virtualLan, 2).value() == 0xac1f0102U, "host address allocation");
-    const auto moduleReal = service::vpn::parseCidr("192.168.1.0/24", 1, 30);
-    const auto moduleVirtual = service::vpn::parseCidr("172.31.1.0/24", 1, 30);
-    const auto otherVirtual = service::vpn::parseCidr("172.31.2.0/24", 1, 30);
+    require(virtualLan && service::utils::network::hostAddress(*virtualLan, 2).value() == 0xac1f0102U, "host address allocation");
+    const auto moduleReal = service::utils::network::parseCidr("192.168.1.0/24", 1, 30);
+    const auto moduleVirtual = service::utils::network::parseCidr("172.31.1.0/24", 1, 30);
+    const auto otherVirtual = service::utils::network::parseCidr("172.31.2.0/24", 1, 30);
     require(moduleReal && !service::vpn::VpnEdgeService::realTargetConflictsVirtual(*moduleReal, std::nullopt), "duplicate real LANs remain independent across Edge peers");
     require(moduleVirtual && moduleReal && service::vpn::VpnEdgeService::virtualMappingConflicts(*moduleVirtual, moduleReal, moduleVirtual) && !service::vpn::VpnEdgeService::virtualMappingConflicts(*moduleVirtual, moduleReal, otherVirtual), "virtual mapping conflicts are checked independently");
 

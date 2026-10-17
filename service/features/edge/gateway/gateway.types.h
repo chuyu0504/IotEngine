@@ -1,13 +1,55 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <memory_resource>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include <edge.pb.h>
+
 namespace service::edge::gateway {
+
+struct Enrollment final {
+    std::string nodeId;
+    bool approved{};
+};
+
+struct ConnectionIdentity final {
+    std::string_view nodeId;
+    std::uint64_t epoch{};
+    std::uint32_t protocolVersion{};
+    std::size_t workerIndex{};
+};
+
+enum class IngressStatus { Accepted, SessionReplaced, WorkerLeaseLost };
+
+struct EgressQueues final {
+    std::string configuration;
+    std::string terminal;
+    std::string serialDebug;
+    std::string command;
+    std::string task;
+};
+
+struct QueuedEnvelope final {
+    explicit QueuedEnvelope(std::pmr::string bytes) : wire(std::move(bytes)) {}
+    std::pmr::string wire;
+    ::iot::edge::v1::Envelope envelope;
+    bool deliver{};
+};
+
+struct FirmwareTransfer final {
+    std::array<std::uint8_t, 16> requestId{};
+    std::filesystem::path path;
+    std::uint64_t size{};
+    bool loaded{};
+};
 
 // Maximum firmware bytes carried by one FirmwareChunk over the node WebSocket.
 inline constexpr std::size_t kFirmwareChunkSize{ 8192 };

@@ -19,6 +19,7 @@
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/middleware/log.h"
 #include "service/utils/number.h"
@@ -154,7 +155,7 @@ class LiveChangeRuntime final {
                 "10000",
                 "*",
                 "message_id",
-                context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next(),
+                service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()),
                 "worker_id",
                 std::to_string(collectorIndex),
                 "created_at_ms",

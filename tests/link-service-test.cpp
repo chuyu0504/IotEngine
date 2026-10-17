@@ -14,6 +14,7 @@
 #include <ruvia/core/event_loop_pool.h>
 
 #include "service/modules/link/link.service.h"
+#include "service/utils/uuid.h"
 
 namespace {
 
@@ -159,14 +160,14 @@ struct FakeContext {
     std::string userId = "01970000-0000-7000-8000-000000000001";
     Recorder recorder;
     FakeDatabase database{ &recorder };
-    std::unique_ptr<service::common::UuidV7Generator> uuid = std::make_unique<service::common::UuidV7Generator>();
+    service::common::UuidV7State uuid = service::common::UuidV7State{};
 
     std::pmr::memory_resource* pool() { return std::pmr::new_delete_resource(); }
     FakeDatabase& db() { return database; }
 
     template <typename State>
     State& worker_state() {
-        static_assert(std::is_same_v<State, std::unique_ptr<service::common::UuidV7Generator>>);
+        static_assert(std::is_same_v<State, service::common::UuidV7State>);
         return uuid;
     }
 };

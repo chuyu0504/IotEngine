@@ -1,13 +1,15 @@
 #pragma once
 
 #include <cstddef>
-#include <optional>
+#include <string>
 
-namespace service {
+namespace service::common {
 
-struct ServiceWorkerTopology final {
+// Immutable process incarnation and worker position, supplied by the owner.
+struct WorkerIdentity final {
+    const std::string instanceId;
+    const std::size_t index;
     const std::size_t count;
-    std::optional<std::size_t> index;
 };
 
-} // namespace service
+} // namespace service::common

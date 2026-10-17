@@ -2,15 +2,17 @@
 
 #include <functional>
 #include <stdexcept>
+#include <memory>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include <ruvia/web/web_worker.h>
+
 #include "service/features/observability/observability.service.h"
 
-namespace service::application {
+namespace service::observability {
 
 struct Component {
     std::string name;
@@ -30,6 +32,16 @@ class ComponentLifecycle final {
         if (!names_.insert(component.name).second)
             throw std::invalid_argument("duplicate application component: " + component.name);
         components_.push_back(std::move(component));
+    }
+
+    template <typename Runtime>
+    void addRuntime(std::string name, std::shared_ptr<Runtime> runtime,
+                    ruvia::web_worker_handle worker) {
+        add(Component{
+            .name = std::move(name),
+            .start = [runtime, worker] { runtime->start(worker); },
+            .stop = [runtime] { runtime->stop(); }
+        });
     }
 
     void start() {
@@ -101,4 +113,4 @@ class ComponentLifecycle final {
     std::vector<Component*> started_;
 };
 
-} // namespace service::application
+} // namespace service::observability

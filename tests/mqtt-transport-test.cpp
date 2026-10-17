@@ -3,6 +3,7 @@
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/mqtt/mqtt.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
+#include "service/utils/uuid.h"
 
 namespace {
 using namespace service::collector;
@@ -19,7 +20,7 @@ void testBrokerReconnect() {
     asio::ip::tcp::socket peer(io);
     asio::steady_timer timeout(io, std::chrono::seconds(8));
     DeadlineScheduler scheduler(io);
-    service::common::UuidV7Generator uuid;
+    service::common::UuidV7State uuid;
     RuntimeSnapshot snapshot;
     LinkDefinition link{ .id = "wire-link", .mode = "TCP Client", .protocol = "MQTT", .status = "enabled" };
     link.targets.push_back({ .id = "broker", .ip = "localhost", .port = broker.local_endpoint().port(), .status = "enabled", .mqttConfig = R"({"clientId":"platform-wire-test","keepAliveSeconds":60})" });

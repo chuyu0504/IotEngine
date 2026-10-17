@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/common/uuid.h"
 #include "service/features/collector/dlt645/dlt645.protocol.h"
 #include "service/features/collector/fins/fins.protocol.h"
 #include "service/features/collector/mc/mc.protocol.h"
@@ -24,9 +25,9 @@ class RawAcquisition final {
         if (!configured) {
             throw std::invalid_argument("edge acquisition device is not configured");
         }
-        result.id = protocol::uuidText(id);
+        result.id = service::common::uuidText(id);
         result.code = configured->device_code();
-        result.linkId = protocol::uuidText(configured->endpoint_id());
+        result.linkId = service::common::uuidText(configured->endpoint_id());
         result.protocol = protocol::TelemetryValues::protocolName(configured->protocol());
         result.timezone = configured->timezone();
         result.sl651ResponseMode = "M" + std::to_string(std::max(1U, configured->sl651_response_mode()));
@@ -153,7 +154,7 @@ class RawAcquisition final {
                     throw std::invalid_argument("invalid SL651 business request");
                 }
                 collector::ProtocolInput input;
-                const auto identity = protocol::uuidText(record.record_id()) + ':' + std::to_string(index);
+                const auto identity = service::common::uuidText(record.record_id()) + ':' + std::to_string(index);
                 if (!request.empty()) {
                     session.restoreAcquisitionRequest(request, identity);
                 }

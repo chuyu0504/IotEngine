@@ -4,9 +4,9 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -14,35 +14,266 @@
 #include <system_error>
 #include <tuple>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
+#include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/command/command.entity.h"
 #include "service/features/edge/edge.protocol.h"
+#include "service/features/edge/edge.service.h"
 #include "service/features/edge/gateway/gateway.entity.h"
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/features/edge/projection/projection.entity.h"
+#include "service/features/edge/serial_debug/serial_debug.service.h"
+#include "service/features/edge/session/session.service.h"
+#include "service/features/edge/terminal/terminal.service.h"
 #include "service/features/live/live.service.h"
 #include "service/utils/number.h"
+#include "service/utils/uuid.h"
 
 namespace service::edge::gateway {
 
 class GatewayService final {
   public:
-    static ruvia::task<EnrollmentRecord> loadEnrollment(ruvia::context& c, std::string_view imei, std::string_view pendingNodeId = {}) {
-        const auto value = co_await c.redis().get(service::message::edge::authKey(imei));
-        if (value) {
-            const auto record = EnrollmentRecord::decode(std::string_view(value->data(), value->size()));
-            if (record) {
-                co_return *record;
+    // The hello is durably handed to this Worker's projector before enrollment
+    // is consulted, including for nodes that are still pending approval.
+    static ruvia::task<std::optional<Enrollment>> acceptHello(
+        ruvia::context& c, std::size_t workerIndex, std::string_view wire, std::string_view imei
+    ) {
+        const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        if (!co_await projector_stream::publishIngress(
+                c.redis(), workerIndex, wire, service::message::utcNowMilliseconds(), worker.instanceId
+            )) {
+            co_return std::nullopt;
+        }
+        co_return co_await loadEnrollment(c, imei);
+    }
+
+    static ruvia::task<IngressStatus> openSession(ruvia::context& c, const ConnectionIdentity& identity) {
+        const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        if (!co_await session_state::claim(
+                c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+            )) {
+            co_return IngressStatus::SessionReplaced;
+        }
+        // Metadata must precede all subsequent payloads on the same durable
+        // Worker-isolated stream so reconnects rebuild the local projection.
+        if (!co_await projector_stream::publishMetadata(c.redis(), identity.workerIndex, identity.nodeId, worker.instanceId)) {
+            co_await closeSession(c, identity);
+            co_return IngressStatus::WorkerLeaseLost;
+        }
+        co_return IngressStatus::Accepted;
+    }
+
+    static ruvia::task<bool> renewSession(ruvia::context& c, const ConnectionIdentity& identity) {
+        const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        co_return co_await session_state::refresh(
+            c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+        );
+    }
+
+    static ruvia::task<void> closeSession(ruvia::context& c, const ConnectionIdentity& identity) {
+        const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        (void)co_await session_state::release(
+            c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+        );
+    }
+
+    static ruvia::task<IngressStatus> acceptIngress(
+        ruvia::context& c,
+        const ConnectionIdentity& identity,
+        const pb::Envelope& envelope,
+        std::string_view wire,
+        bool freshTelemetry
+    ) {
+        const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        if (!co_await renewSession(c, identity)) {
+            co_return IngressStatus::SessionReplaced;
+        }
+        if (freshTelemetry && projectedPayload(envelope) &&
+            !co_await projector_stream::publishIngress(
+                c.redis(), identity.workerIndex, wire, service::message::utcNowMilliseconds(), worker.instanceId
+            )) {
+            co_return IngressStatus::WorkerLeaseLost;
+        }
+        co_return IngressStatus::Accepted;
+    }
+
+    // Transport acknowledgements are produced only after the corresponding
+    // business operation has accepted the payload.
+    static ruvia::task<void> acceptPayload(
+        ruvia::context& c,
+        const ConnectionIdentity& identity,
+        const pb::Envelope& input,
+        bool capabilitySeen,
+        std::uint64_t configSentAtMs
+    ) {
+        const terminal_state::ConnectionIdentity terminalIdentity{
+            identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex
+        };
+        switch (input.payload_case()) {
+            case pb::Envelope::kHeartbeat: {
+                constexpr std::uint64_t retryIntervalMs = 30000;
+                const auto now = service::message::utcNowMilliseconds();
+                if (capabilitySeen && (configSentAtMs == 0 || now - configSentAtMs >= retryIntervalMs)) {
+                    (void)co_await ConfigService::requeueIfStale(
+                        c, identity.nodeId, input.heartbeat().active_config_version()
+                    );
+                }
+                break;
+            }
+            case pb::Envelope::kRawPacket:
+                if (input.raw_packet().packet_id().size() == 16) {
+                    co_await ConfigService::storeDebugPacket(c, identity.nodeId, input.raw_packet());
+                }
+                break;
+            case pb::Envelope::kSerialDebugEvent:
+                co_await serial_debug::Service::saveEvent(
+                    c, identity.nodeId,
+                    session_state::value(identity.epoch, identity.protocolVersion, identity.workerIndex, c.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId),
+                    input.serial_debug_event()
+                );
+                break;
+            case pb::Envelope::kTerminalData:
+                co_await terminal_state::TerminalService::saveTerminalData(c, terminalIdentity, input.terminal_data());
+                break;
+            case pb::Envelope::kTerminalDataAck:
+                co_await terminal_state::TerminalService::saveTerminalDataAck(c, terminalIdentity, input.terminal_data_ack());
+                break;
+            case pb::Envelope::kTerminalOpened:
+                co_await terminal_state::TerminalService::saveTerminalOpened(c, terminalIdentity, input.terminal_opened());
+                break;
+            case pb::Envelope::kTerminalClose:
+                co_await terminal_state::TerminalService::saveTerminalClose(c, terminalIdentity, input.terminal_close());
+                break;
+            case pb::Envelope::kLogResult:
+                co_await saveLogResult(c, identity.nodeId, input.log_result());
+                break;
+            case pb::Envelope::kLogLevelResult:
+                co_await saveLogLevelResult(c, input.log_level_result());
+                break;
+            default:
+                break;
+        }
+    }
+
+    static bool queuedEnvelopeIsCurrent(
+        const pb::Envelope& envelope,
+        const ConnectionIdentity& identity,
+        std::uint64_t now
+    ) {
+        return !envelope.has_serial_debug_request() ||
+            (envelope.session_epoch() == identity.epoch &&
+             envelope.protocol_version() == identity.protocolVersion &&
+             envelope.created_at_ms() <= now && now - envelope.created_at_ms() <= 15000);
+    }
+
+    static EgressQueues egressQueues(std::string_view nodeId) {
+        return {
+            service::message::edge::configKey(nodeId),
+            service::message::terminal::terminalInputKey(nodeId),
+            service::message::serial_debug::inputKey(nodeId),
+            service::message::edge::commandQueueKey(nodeId),
+            service::message::edge::egressKey(nodeId),
+        };
+    }
+
+    // One pop per call preserves the bounded drain's treatment of invalid and
+    // stale entries. Device commands claim their persisted attempt exactly once.
+    static ruvia::task<std::optional<QueuedEnvelope>> takeQueuedEnvelope(
+        ruvia::context& c,
+        const ConnectionIdentity& identity,
+        std::string_view key,
+        bool supportsCommandStartBefore
+    ) {
+        auto wire = co_await c.redis().lpop(key);
+        if (!wire) {
+            co_return std::nullopt;
+        }
+        QueuedEnvelope result{ std::move(*wire) };
+        if (!protocol::decode(result.wire, result.envelope) ||
+            !queuedEnvelopeIsCurrent(result.envelope, identity, service::message::utcNowMilliseconds())) {
+            co_return result;
+        }
+        if (result.envelope.has_command_request()) {
+            const auto id = service::common::uuidText(result.envelope.command_request().command_id());
+            const auto deadlineMs = co_await claimCommand(c, id, identity.nodeId);
+            if (!deadlineMs) {
+                co_return result;
+            }
+            applyCommandDeadline(*result.envelope.mutable_command_request(), supportsCommandStartBefore, deadlineMs);
+        }
+        result.deliver = true;
+        co_return result;
+    }
+
+    static ruvia::task<void> returnUndelivered(
+        ruvia::context& c,
+        std::string_view key,
+        const QueuedEnvelope& item
+    ) {
+        // Physical commands cannot be replayed after claiming transmission;
+        // serial requests belong to a short-lived session. Other tasks retain
+        // their existing reconnect/retry contract and original unbound bytes.
+        if (!item.envelope.has_command_request() && !item.envelope.has_serial_debug_request()) {
+            (void)co_await c.redis().lpush(key, item.wire);
+        }
+    }
+
+    static ruvia::task<pb::FirmwareChunk> firmwareChunk(
+        ruvia::context& c,
+        std::string_view nodeId,
+        FirmwareTransfer& transfer,
+        const pb::FirmwareChunkRequest& request
+    ) {
+        const bool sameRequest = transfer.loaded &&
+            std::memcmp(transfer.requestId.data(), request.request_id().data(), 16) == 0;
+        if (!sameRequest) {
+            transfer.loaded = false;
+            transfer.path.clear();
+            transfer.size = 0;
+            const auto requestId = service::common::uuidText(request.request_id());
+            if (const auto source = co_await loadFirmwareSource(c, requestId, nodeId)) {
+                std::memcpy(transfer.requestId.data(), request.request_id().data(), 16);
+                transfer.path = std::filesystem::path(source->storagePath);
+                transfer.size = source->sizeBytes;
+                transfer.loaded = true;
             }
         }
-        co_return EnrollmentRecord{ pendingNodeId.empty() ? c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next() : std::string(pendingNodeId), "pending" };
+        pb::FirmwareChunk chunk;
+        chunk.set_request_id(request.request_id());
+        chunk.set_offset(request.offset());
+        if (!transfer.loaded) {
+            chunk.set_error("firmware transfer source is unavailable");
+            co_return chunk;
+        }
+        auto value = readFirmwareChunk(transfer.path, transfer.size, request.offset());
+        if (!value.error.empty()) {
+            chunk.set_error(value.error);
+        } else {
+            chunk.set_data(std::move(value.data));
+            chunk.set_eof(value.eof);
+        }
+        co_return chunk;
+    }
+
+    static ruvia::task<Enrollment> loadEnrollment(ruvia::context& c, std::string_view imei, std::string_view pendingNodeId = {}) {
+        const auto value = co_await c.redis().get(service::message::edge::authKey(imei));
+        if (value) {
+            auto record = EnrollmentRecord::decode(std::string_view(value->data(), value->size()));
+            if (record) {
+                co_return Enrollment{ std::move(record->nodeId), record->status == "approved" };
+            }
+        }
+        co_return Enrollment{ pendingNodeId.empty() ? service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()) : std::string(pendingNodeId), false };
     }
 
     static ruvia::task<void> saveLogResult(ruvia::context& c, std::string_view nodeId, const pb::LogResult& result) {
@@ -53,7 +284,7 @@ class GatewayService final {
         if (!result.SerializeToString(&record.protobufBytes)) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         ruvia::redis_set_options options;
         options.expiration_ =
             ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
@@ -75,7 +306,7 @@ class GatewayService final {
         if (!result.SerializeToString(&record.protobufBytes)) {
             co_return;
         }
-        const auto id = protocol::uuidText(result.request_id());
+        const auto id = service::common::uuidText(result.request_id());
         ruvia::redis_set_options options;
         options.expiration_ =
             ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
@@ -438,7 +669,41 @@ class GatewayService final {
         co_return delay;
     }
 
+    static ruvia::task<std::string> scheduleFirmwareCleanup(
+        ruvia::web_worker_context& context,
+        std::string_view operation,
+        std::string_view payload,
+        ruvia::stop_token
+    ) {
+        if (operation != service::message::edge::firmware::kScheduleCleanupOperation || !payload.empty()) {
+            service::common::fail(10002, "Invalid firmware cleanup request", 400);
+        }
+        context.worker_state<FirmwareCleanupSignal>().request();
+        co_return std::string{};
+    }
+
   private:
+    static bool projectedPayload(const pb::Envelope& input) {
+        switch (input.payload_case()) {
+            case pb::Envelope::kHeartbeat:
+            case pb::Envelope::kCapabilityReport:
+            case pb::Envelope::kNetworkConfigResult:
+            case pb::Envelope::kVpnConfigResult:
+            case pb::Envelope::kFirmwareUpdateResult:
+            case pb::Envelope::kModemControlResult:
+            case pb::Envelope::kPlatformConfigResult:
+            case pb::Envelope::kConfigApplied:
+            case pb::Envelope::kConfigRejected:
+            case pb::Envelope::kTelemetryBatch:
+            case pb::Envelope::kCommandResult:
+            case pb::Envelope::kDeviceStatusReport:
+            case pb::Envelope::kDtuStatus:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     static constexpr std::string_view kRetentionInterval{ "1 hour" };
 
     template <typename Entity, ruvia::fixed_string Name>

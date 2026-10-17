@@ -17,6 +17,7 @@
 #include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/middleware/log.h"
@@ -67,9 +68,9 @@ MediaHandle publishPcm(const char* app, const std::string& stream) {
 }
 
 ruvia::task<OpenRtpServerResult> openOwnedRtp(std::shared_ptr<ZlmSdk> sdk, std::size_t owner) {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     ZlmSdk::OwnerScope scope(owner);
-    auto result = sdk->openRtpServer("callback-device", "channel", "2000000001", uuidGenerator.next());
+    auto result = sdk->openRtpServer("callback-device", "channel", "2000000001", service::utils::nextUuid(uuidState));
     require(result.has_value(), "owned callback test RTP server did not open");
     co_return std::move(*result);
 }
@@ -145,7 +146,7 @@ void verifySdkCallbackOwners(const MediaConfig& config) {
 } // namespace
 
 int main() {
-    service::common::UuidV7Generator uuidGenerator;
+    service::common::UuidV7State uuidState;
     try {
         namespace packetLog = service::packet_log;
         packetLog::Config packetConfig;
@@ -229,7 +230,7 @@ int main() {
                 "embedded ZLM media deregistration queried an unsafe reader count");
         require(unexpectedOwner.load() == 0, "a stream no Collector opened reported an owner");
 
-        const auto sessionId = uuidGenerator.next();
+        const auto sessionId = service::utils::nextUuid(uuidState);
         const auto opened = sdk.openRtpServer("34020000002000000001", "34020000001320000001", "2000000001", sessionId);
         require(opened.has_value(), "embedded ZLM RTP server did not open");
         require(opened->streamId == "gb_34020000002000000001_34020000001320000001_2000000001_" + sessionId, "RTP stream did not preserve the caller session identity");
@@ -254,11 +255,11 @@ int main() {
         std::optional<OpenRtpServerResult> firstOwned, secondOwned;
         {
             ZlmSdk::OwnerScope owner(0);
-            firstOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", uuidGenerator.next());
+            firstOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", service::utils::nextUuid(uuidState));
         }
         {
             ZlmSdk::OwnerScope owner(1);
-            secondOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", uuidGenerator.next());
+            secondOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", service::utils::nextUuid(uuidState));
             require(firstOwned && secondOwned && firstOwned->streamId != secondOwned->streamId, "different Collector sessions collided in the SDK");
             require(!sdk.closeRtpServer(firstOwned->streamId), "a Collector closed another Collector's RTP server");
             require(sdk.closeRtpServer(secondOwned->streamId), "the calling Collector could not close its RTP server");

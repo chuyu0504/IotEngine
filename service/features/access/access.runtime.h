@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <asio.hpp>
-#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -35,8 +34,9 @@
 #include "service/common/uuid.h"
 #include "service/features/access/access.service.h"
 #include "service/features/access/access.transport.h"
-#include "service/features/messaging/messaging.transport.h"
-#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/common/worker.h"
+#include "service/utils/redis.h"
+#include "service/utils/worker_task.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
 #include "service/utils/text.h"
@@ -51,65 +51,25 @@ class DeliveryRuntime final {
 
     ~DeliveryRuntime() { stop(); }
 
-    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
-        if (running_.exchange(true)) {
+    void start(ruvia::web_worker_handle worker) {
+        if (stopped_.valid()) {
             return;
         }
-        worker_ = std::move(worker);
-        workerIndex_ = workerIndex;
-        serviceWorkerCount_ = serviceWorkerCount;
-        if (!worker_.valid() || serviceWorkerCount_ == 0 ||
-            workerIndex_ >= serviceWorkerCount_) {
-            running_.store(false);
-            worker_ = {};
+        if (!worker.valid()) {
             throw std::runtime_error("access webhook runtime requires valid Service Workers");
         }
-        auto ready = std::make_shared<std::promise<void>>();
-        auto stopped = std::make_shared<std::promise<void>>();
-        auto readiness = ready->get_future();
-        stopped_ = stopped->get_future().share();
-        const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::web_worker_context& context) {
-                return run(context, workerIndex_, ready, stopped);
-            }
-        );
-        if (!posted.accepted()) {
-            stopped->set_value();
-            running_.store(false);
-            worker_ = {};
-            stopped_ = {};
-            throw std::runtime_error("service worker rejected access webhook runtime");
-        }
-        try {
-            readiness.get();
-        } catch (...) {
-            stop();
-            throw;
-        }
+        stop_ = std::make_unique<ruvia::stop_source>();
+        utils::startWorkerTask(worker, stop_->token(), stopped_,
+            [this](ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
+                return run(context, ready, stop);
+            });
     }
 
     void stop() noexcept {
-        if (!running_.exchange(false)) {
-            return;
+        if (stop_) {
+            utils::stopWorkerTask(*stop_, stopped_);
+            stop_.reset();
         }
-        if (worker_.valid()) {
-            const auto worker = worker_;
-            const auto wakeAccepted = worker.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                                                service::messaging::workerStreamMultiplexer().signal(
-                                                    service::message::WorkerStreamTask::Webhook
-                                                );
-                                                co_return;
-                                            })
-                                          .accepted();
-            if (!wakeAccepted) {
-                // A closed worker already propagates its stop token to the task.
-            }
-        }
-        if (stopped_.valid()) {
-            stopped_.wait();
-        }
-        stopped_ = {};
-        worker_ = {};
     }
 
   private:
@@ -131,9 +91,10 @@ class DeliveryRuntime final {
         Event
     };
 
-    ruvia::task<void> run(ruvia::web_worker_context& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
-        try {
-            const auto redis = context.redis();
+    ruvia::task<void> run(ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
+            const auto& identity = context.worker_state<std::optional<common::WorkerIdentity>>().value();
+            const auto index = identity.index;
+            const auto redis = context.redis().with_options({ .stop_token_ = stop });
             std::map<std::string, StreamKind, std::less<>> streamKinds;
             streamKinds.emplace(
                 service::message::access::stream::catalogChanges(index),
@@ -147,102 +108,39 @@ class DeliveryRuntime final {
             streams.reserve(streamKinds.size());
             for (const auto& [streamName, kind] : streamKinds) {
                 (void)kind;
-                co_await message::redis::ensureGroup(redis, streamName, kGroup);
+                co_await utils::redis::ensureGroup(redis, streamName, kGroup);
                 streams.push_back(streamName);
             }
+            co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop,
+                [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             DeliveryClient http;
             co_await session::ensure(context);
             auto catalog = co_await delivery::loadCatalog(context);
-            ready->set_value();
+            ready.set_value();
             bool recovering = true;
-            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
+            const auto consumer = identity.instanceId + ":service-" + std::to_string(index);
             const auto catalogReceiptConsumer =
                 std::string(kGroup) + ":catalog:" + std::to_string(index);
             const auto sessionReceiptConsumer = std::string(kGroup) + ":session";
-            static constexpr auto kPendingRecoveryInterval =
-                std::chrono::milliseconds(5000);
-            auto nextRecoverySweep = std::chrono::steady_clock::now();
-            while (running_.load() && !context.get_stop_token().stop_requested()) {
-                std::vector<message::redis::StreamBatch> batches;
+            while (!stop.stop_requested()) {
+                std::vector<utils::redis::StreamBatch> batches;
                 bool readFailed = false;
-                bool groupMissing = false;
                 try {
-                    if (recovering ||
-                        std::chrono::steady_clock::now() >= nextRecoverySweep) {
-                        batches = co_await message::redis::claimGroupMany(
-                            redis,
-                            streams,
-                            kGroup,
-                            consumer,
-                            kBatchSize
-                        );
-                        nextRecoverySweep = std::chrono::steady_clock::now() +
-                            kPendingRecoveryInterval;
-                        if (batches.empty()) {
-                            // A wake may coincide with pending recovery. An empty
-                            // pending set must still drain newly published work.
-                            recovering = false;
-                            batches = co_await message::redis::readGroupMany(
-                                redis,
-                                streams,
-                                kGroup,
-                                consumer,
-                                ">",
-                                kBatchSize
-                            );
-                        }
-                    } else {
-                        batches = co_await message::redis::readGroupMany(
-                            redis,
-                            streams,
-                            kGroup,
-                            consumer,
-                            ">",
-                            kBatchSize
-                        );
-                    }
+                    batches = co_await utils::redis::consumeGroup(redis, streams, kGroup,
+                        consumer, recovering, notifications, stop, std::nullopt, kBatchSize);
                 } catch (const std::exception& error) {
-                    if (!running_.load() || context.get_stop_token().stop_requested()) {
+                    if (stop.stop_requested()) {
                         break;
                     }
                     std::cerr << "open webhook stream read failed: " << error.what() << '\n';
                     recovering = true;
                     readFailed = true;
-                    groupMissing = std::string_view(error.what()).find("NOGROUP") !=
-                        std::string_view::npos;
-                }
-                if (readFailed && running_.load() &&
-                    !context.get_stop_token().stop_requested()) {
-                    try {
-                        if (groupMissing) {
-                            for (const auto& streamName : streams) {
-                                co_await message::redis::ensureGroup(
-                                    redis,
-                                    streamName,
-                                    kGroup
-                                );
-                            }
-                            readFailed = false;
-                        }
-                    } catch (const std::exception& ensureError) {
-                        std::cerr << "open webhook stream group recovery failed: "
-                                  << ensureError.what() << '\n';
-                    }
-                }
-                if (!running_.load() || context.get_stop_token().stop_requested()) {
-                    break;
                 }
                 if (readFailed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250), stop);
                     continue;
                 }
                 if (batches.empty()) {
-                    co_await service::messaging::workerStreamMultiplexer().wait(
-                        index,
-                        service::message::WorkerStreamTask::Webhook,
-                        context.get_stop_token(),
-                        kPendingRecoveryInterval
-                    );
                     continue;
                 }
                 bool failed = false;
@@ -272,7 +170,7 @@ class DeliveryRuntime final {
                             kind != StreamKind::Session) {
                             continue;
                         }
-                        co_await message::redis::acknowledgeAndDeleteMany(
+                        co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
                             batch.stream,
                             kGroup,
@@ -284,7 +182,7 @@ class DeliveryRuntime final {
                             continue;
                         }
                         co_await delivery::persistResults(context, batch.messages);
-                        co_await message::redis::acknowledgeAndDeleteMany(
+                        co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
                             batch.stream,
                             kGroup,
@@ -296,7 +194,7 @@ class DeliveryRuntime final {
                             continue;
                         }
                         co_await delivery::persistAudits(context, batch.messages);
-                        co_await message::redis::acknowledgeAndDeleteMany(
+                        co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
                             batch.stream,
                             kGroup,
@@ -307,27 +205,21 @@ class DeliveryRuntime final {
                         if (streamKinds.at(batch.stream) != StreamKind::Event) {
                             continue;
                         }
-                        co_await deliverEvents(context, batch.stream, batch.messages, catalog, http);
+                        co_await deliverEvents(context, batch.stream, batch.messages, catalog, http, stop);
                     }
                 } catch (const std::exception& error) {
+                    if (stop.stop_requested()) {
+                        break;
+                    }
                     std::cerr << "open webhook dispatch failed: " << error.what() << '\n';
                     recovering = true;
                     failed = true;
                 }
                 if (failed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(5));
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(5), stop);
                 }
             }
-        } catch (...) {
-            try {
-                ready->set_exception(std::current_exception());
-            } catch (...) {
-            }
-        }
-        try {
-            stopped->set_value();
-        } catch (...) {
-        }
+                });
     }
 
     struct DeliveryAttempt final {
@@ -341,9 +233,12 @@ class DeliveryRuntime final {
         bool blocked{ false };
     };
 
-    ruvia::task<void> deliverCaptured(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http, DeliveryAttempt& attempt) {
+    ruvia::task<void> deliverCaptured(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http, DeliveryAttempt& attempt, ruvia::stop_token stop) {
         try {
-            co_await deliver(context, message, catalog, http);
+            co_await deliver(context, message, catalog, http, stop);
+            if (stop.stop_requested()) {
+                throw std::runtime_error("webhook delivery cancelled");
+            }
             attempt.succeeded = true;
         } catch (const std::exception& error) {
             attempt.error = error.what();
@@ -357,7 +252,8 @@ class DeliveryRuntime final {
         std::string_view sourceStream,
         const std::vector<message::StreamMessage>& messages,
         const Catalog& catalog,
-        DeliveryClient& http
+        DeliveryClient& http,
+        ruvia::stop_token stop
     ) {
         if (messages.empty()) {
             co_return;
@@ -374,7 +270,7 @@ class DeliveryRuntime final {
         std::vector<message::StreamMessage> completed;
         completed.reserve(messages.size());
         std::string firstError;
-        while (true) {
+        while (!stop.stop_requested()) {
             std::vector<DeviceEventQueue*> selected;
             selected.reserve(kEventConcurrency);
             for (auto& [deviceId, queue] : queues) {
@@ -397,7 +293,7 @@ class DeliveryRuntime final {
             );
             for (std::size_t index = 0; index < selected.size(); ++index) {
                 const auto messageIndex = selected[index]->indexes[selected[index]->next];
-                scope.spawn(deliverCaptured(context, messages[messageIndex], catalog, http, attempts[index]));
+                scope.spawn(deliverCaptured(context, messages[messageIndex], catalog, http, attempts[index], stop));
             }
             co_await scope.join();
             for (std::size_t index = 0; index < selected.size(); ++index) {
@@ -415,7 +311,7 @@ class DeliveryRuntime final {
             }
         }
         if (!completed.empty()) {
-            co_await message::redis::acknowledgeAndDeleteMany(
+            co_await utils::redis::acknowledgeAndDeleteMany(
                 context.redis(),
                 sourceStream,
                 kGroup,
@@ -427,7 +323,7 @@ class DeliveryRuntime final {
         }
     }
 
-    ruvia::task<void> deliver(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http) {
+    ruvia::task<void> deliver(ruvia::web_worker_context& context, const message::StreamMessage& message, const Catalog& catalog, DeliveryClient& http, ruvia::stop_token stop) {
         const auto eventType = message.get("event_type");
         const auto deviceId = message.get("device_id");
         if (!service::message::supportedEvent(eventType) || !service::common::isUuid(deviceId)) {
@@ -460,20 +356,20 @@ class DeliveryRuntime final {
         if (targets.empty()) {
             co_return;
         }
-        for (std::size_t offset = 0; offset < targets.size(); offset += kTargetConcurrency) {
+        for (std::size_t offset = 0; offset < targets.size() && !stop.stop_requested(); offset += kTargetConcurrency) {
             const auto end = std::min(targets.size(), offset + kTargetConcurrency);
             ruvia::task_scope scope(
                 context.worker(),
                 ruvia::task_scope_options{ .resource_ = context.pool() }
             );
             for (auto index = offset; index < end; ++index) {
-                scope.spawn(deliverTarget(context, http, *targets[index], delivery));
+                scope.spawn(deliverTarget(context, http, *targets[index], delivery, stop));
             }
             co_await scope.join();
         }
     }
 
-    ruvia::task<void> deliverTarget(ruvia::web_worker_context& context, DeliveryClient& http, const Target& target, const Delivery& delivery) {
+    ruvia::task<void> deliverTarget(ruvia::web_worker_context& context, DeliveryClient& http, const Target& target, const Delivery& delivery, ruvia::stop_token stop) {
         if (target.mqtt) {
             DeliveryResponse response;
             try {
@@ -485,11 +381,14 @@ class DeliveryRuntime final {
                     service::message::openMqttTopic(delivery.deviceId),
                     delivery.body, std::chrono::seconds(target.timeout),
                     [shared](DeliveryResponse result) mutable { (void)shared->complete(std::move(result)); });
-                auto outcome = co_await receiver.wait();
+                auto outcome = co_await receiver.wait(stop);
                 if (outcome.has_value()) response = std::move(outcome).take_value();
                 else response.error = "MQTT publish was cancelled";
             } catch (const std::exception& error) {
                 response.error = error.what();
+            }
+            if (stop.stop_requested()) {
+                throw std::runtime_error("MQTT delivery cancelled");
             }
             const bool success = response.error.empty();
             co_await delivery::DeliveryService::enqueueResult(context, target, delivery, response, success);
@@ -515,7 +414,7 @@ class DeliveryRuntime final {
             http.post(url, DeliveryClient::request(url, delivery.body, headers), std::chrono::seconds(target.timeout), target.skipTlsVerify, [shared](DeliveryResponse result) mutable {
                 (void)shared->complete(std::move(result));
             });
-            auto outcome = co_await receiver.wait();
+            auto outcome = co_await receiver.wait(stop);
             if (outcome.has_value()) {
                 response = std::move(outcome).take_value();
             } else {
@@ -523,6 +422,9 @@ class DeliveryRuntime final {
             }
         } catch (const std::exception& error) {
             response.error = error.what();
+        }
+        if (stop.stop_requested()) {
+            throw std::runtime_error("webhook delivery cancelled");
         }
         const bool success =
             response.error.empty() && response.status >= 200 && response.status < 300;
@@ -550,11 +452,8 @@ class DeliveryRuntime final {
         return result;
     }
 
-    ruvia::web_worker_handle worker_;
-    std::shared_future<void> stopped_;
-    std::size_t workerIndex_ = 0;
-    std::size_t serviceWorkerCount_ = 0;
-    std::atomic_bool running_{ false };
+    std::unique_ptr<ruvia::stop_source> stop_;
+    std::future<void> stopped_;
 };
 
 } // namespace service::access

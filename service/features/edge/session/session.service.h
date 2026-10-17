@@ -15,6 +15,7 @@
 
 #include <ruvia/core/task.h>
 #include <ruvia/web/redis/redis_types.h>
+#include <ruvia/web/redis/redis_handle.h>
 
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/uuid.h"
@@ -79,20 +80,20 @@ ruvia::task<void> expireSessions(const Redis& redis) {
     const std::string_view args[]{prefix};
     const auto reply = co_await redis.eval(kExpireScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer)
-        service::message::redis::throwValue("expire edge sessions", reply);
+        service::utils::redis::throwValue("expire edge sessions", reply);
 }
 
 // Earliest session deadline (Redis clock, ms), or nullopt when none is armed.
 template <typename Redis>
 ruvia::task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
     const std::vector<std::string> arguments{"ZRANGE", std::string(kDeadlines), "0", "0", "WITHSCORES"};
-    const auto reply = co_await service::message::redis::command(redis, arguments);
+    const auto reply = co_await redis.command(std::vector<std::string_view>(arguments.begin(), arguments.end()));
     if (reply.kind() != ruvia::redis_value::kind_type::array)
-        service::message::redis::throwValue("read next edge session deadline", reply);
+        service::utils::redis::throwValue("read next edge session deadline", reply);
     if (reply.array().empty())
         co_return std::nullopt;
     if (reply.array().size() != 2 || reply.array()[1].kind() != ruvia::redis_value::kind_type::string)
-        service::message::redis::throwValue("parse next edge session deadline", reply);
+        service::utils::redis::throwValue("parse next edge session deadline", reply);
     const auto text = reply.array()[1].string();
     std::int64_t score{};
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), score);
@@ -104,30 +105,30 @@ ruvia::task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
 template <typename Redis>
 ruvia::task<bool> mutate(const Redis& redis, std::string_view script,
     std::string_view nodeId, std::uint64_t epoch, std::uint32_t protocolVersion,
-    std::size_t workerIndex) {
+    std::size_t workerIndex, std::string_view instance) {
     const auto sessionKey=service::message::edge::sessionKey(nodeId);
-    const auto expected=value(epoch,protocolVersion,workerIndex,service::runtime::instanceId());
+    const auto expected=value(epoch,protocolVersion,workerIndex,instance);
     const std::string_view keys[]{sessionKey,kDeadlines,service::message::live::kChanges};
     const std::string_view args[]{expected,nodeId};
     const auto reply=co_await redis.eval(script,keys,args);
     if(reply.kind()!=ruvia::redis_value::kind_type::integer)
-        service::message::redis::throwValue("edge session transition",reply);
+        service::utils::redis::throwValue("edge session transition",reply);
     co_return reply.integer()==1;
 }
 template <typename Redis>
 ruvia::task<bool> claim(const Redis& redis, std::string_view nodeId, std::uint64_t epoch,
-                        std::uint32_t protocolVersion, std::size_t workerIndex) {
-    co_return co_await mutate(redis,kClaimScript,nodeId,epoch,protocolVersion,workerIndex);
+                        std::uint32_t protocolVersion, std::size_t workerIndex, std::string_view instance) {
+    co_return co_await mutate(redis,kClaimScript,nodeId,epoch,protocolVersion,workerIndex,instance);
 }
 template <typename Redis>
 ruvia::task<bool> refresh(const Redis& redis, std::string_view nodeId, std::uint64_t epoch,
-                          std::uint32_t protocolVersion, std::size_t workerIndex) {
-    co_return co_await mutate(redis,kRefreshScript,nodeId,epoch,protocolVersion,workerIndex);
+                          std::uint32_t protocolVersion, std::size_t workerIndex, std::string_view instance) {
+    co_return co_await mutate(redis,kRefreshScript,nodeId,epoch,protocolVersion,workerIndex,instance);
 }
 template <typename Redis>
 ruvia::task<bool> release(const Redis& redis, std::string_view nodeId, std::uint64_t epoch,
-                          std::uint32_t protocolVersion, std::size_t workerIndex) {
-    co_return co_await mutate(redis,kReleaseScript,nodeId,epoch,protocolVersion,workerIndex);
+                          std::uint32_t protocolVersion, std::size_t workerIndex, std::string_view instance) {
+    co_return co_await mutate(redis,kReleaseScript,nodeId,epoch,protocolVersion,workerIndex,instance);
 }
 
 } // namespace service::edge::session_state
@@ -152,14 +153,14 @@ ruvia::task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
     const std::vector<service::message::StreamField> fields{
         { "kind", std::string(service::message::edge::dispatch::kNodeKind) }, { "node_id", std::string(nodeId) }
     };
-    (void)co_await service::message::redis::publish(
+    (void)co_await service::utils::redis::add(
         redis,
         service::message::edge::dispatch::stream(owner->workerIndex, owner->instanceId),
         fields,
         10000
     );
     const std::vector<service::message::StreamField> wakeFields{{ "task", "edge-dispatcher" }};
-    (void)co_await service::message::redis::publish(redis, service::message::workerWakeStream(owner->workerIndex, owner->instanceId), wakeFields, 10000);
+    (void)co_await service::utils::redis::add(redis, service::message::workerWakeStream(owner->workerIndex, owner->instanceId), wakeFields, 10000);
 }
 
 template <typename Redis>

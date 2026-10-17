@@ -27,11 +27,6 @@ extern char** environ;
 
 namespace service::vpn::firewall {
 
-using service::message::vpn::kOverlayPool;
-using service::message::vpn::kVirtualLanPool;
-using service::utils::network::parseCidr;
-using service::utils::network::parseIpv4;
-
 inline bool validInterface(std::string_view value) noexcept {
     if (value.empty() || value.size() > 15) {
         return false;
@@ -77,16 +72,16 @@ inline Result render(std::string_view interfaceName, const std::vector<ClientAcc
         "flush table inet iot_vpn\n"
         "add chain inet iot_vpn forward { type filter hook forward priority 0; policy accept; }\n";
     for (const auto& client : clients) {
-        const auto assigned = parseIpv4(client.assignedIpv4);
-        if (!assigned || !kOverlayPool.contains(*assigned)) {
+        const auto assigned = service::utils::network::parseIpv4(client.assignedIpv4);
+        if (!assigned || !service::message::vpn::kOverlayPool.contains(*assigned)) {
             return { .configured = false, .message = "invalid VPN client address" };
         }
         std::vector<std::string> sources{ ipv4Text(*assigned) + "/32" };
         sources.reserve(client.sourceRoutes.size() + 1);
         for (const auto& routeText : client.sourceRoutes) {
-            const auto route = parseCidr(routeText, kVirtualLanPool.prefix, 30);
-            if (!route || !kVirtualLanPool.contains(route->network) ||
-                !kVirtualLanPool.contains(route->network + route->size() - 1U)) {
+            const auto route = service::utils::network::parseCidr(routeText, service::message::vpn::kVirtualLanPool.prefix, 30);
+            if (!route || !service::message::vpn::kVirtualLanPool.contains(route->network) ||
+                !service::message::vpn::kVirtualLanPool.contains(route->network + route->size() - 1U)) {
                 return { .configured = false, .message = "invalid VPN client source route" };
             }
             if (std::find(sources.begin(), sources.end(), route->text()) == sources.end()) {
@@ -96,16 +91,16 @@ inline Result render(std::string_view interfaceName, const std::vector<ClientAcc
         std::vector<std::string> routes;
         routes.reserve(client.allowedRoutes.size() + client.edgeAddresses.size());
         for (const auto& routeText : client.allowedRoutes) {
-            const auto route = parseCidr(routeText, kVirtualLanPool.prefix, 30);
-            if (!route || !kVirtualLanPool.contains(route->network) ||
-                !kVirtualLanPool.contains(route->network + route->size() - 1U)) {
+            const auto route = service::utils::network::parseCidr(routeText, service::message::vpn::kVirtualLanPool.prefix, 30);
+            if (!route || !service::message::vpn::kVirtualLanPool.contains(route->network) ||
+                !service::message::vpn::kVirtualLanPool.contains(route->network + route->size() - 1U)) {
                 return { .configured = false, .message = "invalid VPN client route" };
             }
             routes.push_back(route->text());
         }
         for (const auto& addressText : client.edgeAddresses) {
-            const auto address = parseIpv4(addressText);
-            if (!address || !kOverlayPool.contains(*address)) {
+            const auto address = service::utils::network::parseIpv4(addressText);
+            if (!address || !service::message::vpn::kOverlayPool.contains(*address)) {
                 return { .configured = false, .message = "invalid VPN Edge address" };
             }
             const auto route = ipv4Text(*address) + "/32";

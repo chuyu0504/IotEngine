@@ -22,6 +22,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/access/access.service.h"
 #include "service/features/configuration/configuration.entity.h"
 #include "service/features/live/live.service.h"
@@ -95,7 +96,7 @@ return copied
 
 // 每条遥测只解析、规范化与修复 UTF-8 一次，整批一次 EVAL 复制到全部消费者流。
 template <class Redis>
-ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMessage>& messages) {
+ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMessage>& messages, std::string_view instanceId) {
     if (messages.empty()) {
         co_return;
     }
@@ -116,7 +117,7 @@ ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMe
         argumentCount += 1 + fields.size() * 2;
         entries.push_back(std::move(fields));
     }
-    const auto wakeStream = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
+    const auto wakeStream = message::workerWakeStream(std::nullopt, instanceId);
     std::vector<std::string_view> keys{ message::telemetry::kHistoryStream, message::telemetry::kLatestStream, message::telemetry::kAlertsStream, message::telemetry::kDeliveryStream, wakeStream };
     keys.reserve(keys.size() + receipts.size());
     for (const auto& receipt : receipts) {
@@ -134,12 +135,19 @@ ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMe
     }
     const auto reply = co_await redis.eval(kFanoutScript, keys, arguments);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
-        message::redis::throwValue("telemetry fanout", reply);
+        utils::redis::throwValue("telemetry fanout", reply);
     }
 }
 
 class TelemetryService {
   public:
+    template <typename Redis>
+    static ruvia::task<std::optional<std::int64_t>> retireExpiredFreshness(const Redis& redis) {
+        co_await latest::expireStale(redis);
+        co_await latest::expireConnections(redis);
+        co_return co_await latest::nextDeadline(redis);
+    }
+
     static ruvia::task<std::string> executeProjection(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
         if (stop.stop_requested()) {
             service::common::fail(10004, "Telemetry operation cancelled", 503);
@@ -165,7 +173,7 @@ class TelemetryService {
     }
 
     static ruvia::task<void> ingest(ruvia::web_worker_context& context, const std::vector<message::StreamMessage>& messages) {
-        co_await fanout(context.redis(), messages);
+        co_await fanout(context.redis(), messages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
     }
 
     // 消费者副本已由 Dispatch 规范化并修复 UTF-8；这里只解码流字段，并对升级前未修复的副本按需修复（合法文本不复制）。
@@ -202,10 +210,10 @@ class TelemetryService {
                 break;
             }
             case Consumer::Latest:
-                co_await latest::update(redis, parsedMessages);
+                co_await latest::update(redis, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
                 break;
             case Consumer::Delivery:
-                co_await service::access::event::publishMany(redis, parsedMessages);
+                co_await service::access::event::publishMany(redis, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
                 break;
             case Consumer::Dispatch:
                 break;

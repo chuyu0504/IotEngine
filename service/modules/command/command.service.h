@@ -24,6 +24,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/utils/uuid.h"
 #include "service/modules/command/command.entity.h"
 #include "service/modules/command/command.types.h"
 #include "service/modules/device/device.entity.h"
@@ -772,7 +773,7 @@ class CommandService final {
             result.template set<"commandIds">(std::move(ids)).template set<"status">("ACCEPTED");
             co_return result;
         }
-        const auto requestId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        const auto requestId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
         ruvia::db_query requestQuery(context.pool());
         requestQuery
             .insert_into(service::command::entities::CommandRequestEntity::table_name(), { service::command::entities::CommandRequestEntity::column<"id">().name(), service::command::entities::CommandRequestEntity::column<"actor">().name(), service::command::entities::CommandRequestEntity::column<"idempotency_key">().name(), service::command::entities::CommandRequestEntity::column<"device_id">().name(), service::command::entities::CommandRequestEntity::column<"payload">().name() })
@@ -868,7 +869,7 @@ class CommandService final {
                 .insert_into(service::command::entities::CommandAttemptEntity::table_name(), { service::command::entities::CommandAttemptEntity::column<"operation_id">().name(), service::command::entities::CommandAttemptEntity::column<"queue_key">().name(), service::command::entities::CommandAttemptEntity::column<"queue_kind">().name(), service::command::entities::CommandAttemptEntity::column<"payload">().name(), service::command::entities::CommandAttemptEntity::column<"submitted_by">().name(), service::command::entities::CommandAttemptEntity::column<"node_id">().name(), service::command::entities::CommandAttemptEntity::column<"max_length">().name() })
                 .values({ attemptQuery.cast(attemptQuery.value(id), ruvia::db_data_type::uuid), attemptQuery.value(batch->template get<"queue">().view()), attemptQuery.value(kind), attemptQuery.cast(attemptQuery.value(payload), ruvia::db_data_type::jsonb), attemptQuery.value(submittedBy), attemptQuery.value(batch->template get<"nodeId">().view()), attemptQuery.value(static_cast<std::int32_t>(maximum)) });
             (void)co_await transaction.execute(attemptQuery);
-            const auto eventId = context.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+            const auto eventId = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
             ruvia::db_query eventSource(context.pool());
             const auto jsonKey = [&](std::string_view key) {
                 return eventSource.cast(eventSource.value(key), ruvia::db_data_type::text);

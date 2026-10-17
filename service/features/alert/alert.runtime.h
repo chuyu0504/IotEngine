@@ -1,13 +1,9 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <future>
-#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -15,293 +11,185 @@
 #include <utility>
 #include <vector>
 
+#include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
 #include <ruvia/core/timer.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
-#include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/alert/alert.service.h"
-#include "service/features/messaging/messaging.transport.h"
-#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/middleware/log.h"
+#include "service/utils/redis.h"
+#include "service/utils/worker_task.h"
 
 namespace service::alert {
 
-// 每个 Service Worker 运行相同的两项告警任务，工作经 Redis 消费组与认领脚本分配：
-// 1. 消费 telemetry 的告警复制流（service::message::telemetry::kAlertsStream）并评估规则；
-// 2. 维护：启动时刷新元数据并投递积压的告警事件，之后消费设备配置变更通知刷新元数据、认领到期离线截止。
+// Each Worker owns its tasks; consumer groups claim durable telemetry and
+// configuration work, while offline evaluations run only at actual deadlines.
 class AlertRuntime final {
   public:
     AlertRuntime() = default;
     AlertRuntime(const AlertRuntime&) = delete;
     AlertRuntime& operator=(const AlertRuntime&) = delete;
-
     ~AlertRuntime() { stop(); }
 
-    void start(ruvia::web_worker_handle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
-        if (running_.exchange(true)) {
+    void start(ruvia::web_worker_handle worker) {
+        if (maintenance_.valid() || telemetry_.valid()) {
             return;
         }
-        worker_ = std::move(worker);
-        workerIndex_ = workerIndex;
-        serviceWorkerCount_ = serviceWorkerCount;
-        if (!worker_.valid() || serviceWorkerCount_ == 0 || workerIndex_ >= serviceWorkerCount_) {
-            running_.store(false);
-            worker_ = {};
-            throw std::runtime_error("alert runtime requires Service Workers");
+        if (!worker.valid()) {
+            throw std::runtime_error("alert runtime requires a Service Worker");
         }
-        std::vector<std::future<void>> readiness;
+        stop_ = ruvia::stop_source{};
         try {
-            for (const auto task : { Task::Maintenance, Task::Telemetry }) {
-                auto ready = std::make_shared<std::promise<void>>();
-                auto stopped = std::make_shared<std::promise<void>>();
-                readiness.push_back(ready->get_future());
-                stopped_.push_back(stopped->get_future().share());
-                const auto posted = worker_.post([this, task, ready, stopped](ruvia::web_worker_context& context) {
-                    return task == Task::Maintenance ? maintain(context, ready, stopped) : consumeTelemetry(context, ready, stopped);
+            service::utils::startWorkerTask(worker, stop_.token(), maintenance_,
+                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                    return maintain(context, ready, stop);
                 });
-                if (!posted.accepted()) {
-                    stopped->set_value();
-                    stop();
-                    throw std::runtime_error("service worker rejected alert runtime");
-                }
-            }
-            for (auto& ready : readiness) {
-                ready.get();
-            }
+            service::utils::startWorkerTask(worker, stop_.token(), telemetry_,
+                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                    return consumeTelemetry(context, ready, stop);
+                });
         } catch (...) {
-            stop();
+            this->stop();
             throw;
         }
     }
 
     void stop() noexcept {
-        if (!running_.exchange(false)) {
-            return;
-        }
-        if (worker_.valid()) {
-            // A closed worker already propagates its stop token to these tasks.
-            (void)worker_.post([](ruvia::web_worker_context&) -> ruvia::task<void> {
-                             service::messaging::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::TelemetryAlerts);
-                             service::messaging::workerStreamMultiplexer().signal(service::message::WorkerStreamTask::FreshnessAlerts);
-                             co_return;
-                         })
-                .accepted();
-        }
-        for (const auto& stopped : stopped_) {
-            if (stopped.valid()) {
-                stopped.wait();
-            }
-        }
-        stopped_.clear();
-        worker_ = {};
+        service::utils::stopWorkerTask(stop_, maintenance_);
+        service::utils::stopWorkerTask(stop_, telemetry_);
     }
 
   private:
-    enum class Task { Maintenance,
-                      Telemetry };
-
-    // 沿用 telemetry 时期的组名，升级时已投递未确认的条目仍由同一消费组认领。
+    // Preserve deployed consumer groups so upgrades recover pending messages.
     static constexpr std::string_view kTelemetryGroup{ "iot-engine:telemetry-persistence:alerts" };
     static constexpr std::string_view kMetadataGroup{ "iot-engine:alert-metadata" };
-    static constexpr std::size_t kBatchSize = 256;
-    static constexpr auto kPendingRecoveryInterval = std::chrono::milliseconds(5000);
     static constexpr auto kFailureBackoff = std::chrono::milliseconds(250);
 
-    struct ReadState final {
-        bool recovering{ true };
-        std::chrono::steady_clock::time_point nextRecoverySweep{ std::chrono::steady_clock::now() };
-    };
-
-    // 恢复期或到达认领周期时先认领本消费者与超时的待确认条目，否则读取新条目。
-    template <typename Redis>
-    static ruvia::task<std::vector<service::message::redis::StreamBatch>> readBatches(
-        const Redis& redis,
-        const std::vector<std::string>& streams,
-        std::string_view group,
-        std::string_view consumer,
-        ReadState& state
-    ) {
-        if (state.recovering || std::chrono::steady_clock::now() >= state.nextRecoverySweep) {
-            auto claimed = co_await service::message::redis::claimGroupMany(redis, streams, group, consumer, kBatchSize);
-            state.nextRecoverySweep = std::chrono::steady_clock::now() + kPendingRecoveryInterval;
-            if (!claimed.empty()) {
-                co_return claimed;
-            }
-            state.recovering = false;
-        }
-        co_return co_await service::message::redis::readGroupMany(redis, streams, group, consumer, ">", kBatchSize);
+    static std::string consumerName(const service::common::WorkerIdentity& identity) {
+        return identity.instanceId + ":service-" + std::to_string(identity.index);
     }
 
-    // 读取失败后的恢复：消费组被删除时重建；返回 false 表示仍需退避。
-    template <typename Redis>
-    ruvia::task<bool> recoverRead(const Redis& redis, std::string_view stream, std::string_view group, bool groupMissing) {
-        if (!groupMissing || !running_.load()) {
-            co_return false;
-        }
-        try {
-            co_await service::message::redis::ensureGroup(redis, stream, group);
-            co_return true;
-        } catch (const std::exception& error) {
-            LOG_ERROR << "alert stream group recovery failed for " << stream << ": " << error.what();
-        }
-        co_return false;
-    }
-
-    std::string consumerName() const {
-        return service::runtime::instanceId() + ":service-" + std::to_string(workerIndex_);
-    }
-
-    ruvia::task<void> consumeTelemetry(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
-        try {
-            const auto redis = context.redis();
-            const std::vector<std::string> streams{ std::string(service::message::telemetry::kAlertsStream) };
-            co_await service::message::redis::ensureGroup(redis, streams.front(), kTelemetryGroup);
-            ready->set_value();
-            const auto consumer = consumerName();
-            ReadState state;
-            while (running_.load() && !context.get_stop_token().stop_requested()) {
-                std::vector<service::message::redis::StreamBatch> batches;
-                bool readFailed = false;
-                bool groupMissing = false;
-                try {
-                    batches = co_await readBatches(redis, streams, kTelemetryGroup, consumer, state);
-                } catch (const std::exception& error) {
-                    if (!running_.load() || context.get_stop_token().stop_requested()) {
-                        break;
-                    }
-                    LOG_ERROR << "alert telemetry stream read failed for service worker " << workerIndex_ << ": " << error.what();
-                    state.recovering = true;
-                    readFailed = true;
-                    groupMissing = std::string_view(error.what()).find("NOGROUP") != std::string_view::npos;
-                }
-                if (readFailed && co_await recoverRead(redis, streams.front(), kTelemetryGroup, groupMissing)) {
-                    readFailed = false;
-                }
-                if (!running_.load() || context.get_stop_token().stop_requested()) {
-                    break;
-                }
-                if (readFailed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), kFailureBackoff);
-                    continue;
-                }
-                if (batches.empty()) {
-                    co_await service::messaging::workerStreamMultiplexer().wait(
-                        workerIndex_,
-                        service::message::WorkerStreamTask::TelemetryAlerts,
-                        context.get_stop_token(),
-                        kPendingRecoveryInterval
-                    );
-                    continue;
-                }
-                bool failed = false;
+    ruvia::task<void> consumeTelemetry(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        const auto redis = context.redis();
+        const std::vector<std::string> streams{ std::string(service::message::telemetry::kAlertsStream) };
+        const auto consumer = consumerName(identity);
+        co_await service::utils::redis::ensureGroup(redis, streams.front(), kTelemetryGroup);
+        bool recovering = true;
+        co_await service::utils::redis::withConsumerNotifications(
+            redis, context.worker(), streams, kTelemetryGroup, stop,
+            [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        ready.set_value();
+        while (!stop.stop_requested()) {
+            bool failed = false;
+            try {
+                const auto batches = co_await service::utils::redis::consumeGroup(
+                    redis, streams, kTelemetryGroup, consumer, recovering, notifications, stop);
                 for (const auto& batch : batches) {
-                    try {
-                        // 整批评估成功后一次 XACK+XDEL；失败时整批保留待确认，由认领重放。
-                        co_await AlertEvaluationService::evaluateTelemetry(context, batch.messages);
-                        co_await service::message::redis::acknowledgeAndDeleteMany(redis, batch.stream, kTelemetryGroup, batch.messages);
-                    } catch (const std::exception& error) {
-                        LOG_ERROR << "alert telemetry evaluation failed for service worker " << workerIndex_ << ": " << error.what();
-                        state.recovering = true;
-                        failed = true;
-                    }
-                }
-                if (failed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), kFailureBackoff);
-                }
-            }
-        } catch (...) {
-            try {
-                ready->set_exception(std::current_exception());
-            } catch (...) {
-            }
-        }
-        try {
-            stopped->set_value();
-        } catch (...) {
-        }
-    }
-
-    ruvia::task<void> maintain(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
-        try {
-            const auto redis = context.redis();
-            const std::vector<std::string> streams{ std::string(service::message::alert::kMetadataChangesStream) };
-            co_await metadata::refresh(context);
-            co_await AlertEvaluationService::drainOutbox(context);
-            co_await service::message::redis::ensureGroup(redis, streams.front(), kMetadataGroup);
-            ready->set_value();
-            const auto consumer = consumerName();
-            ReadState state;
-            while (running_.load() && !context.get_stop_token().stop_requested()) {
-                bool failed = false;
-                bool groupMissing = false;
-                bool changed = false;
-                std::optional<std::chrono::milliseconds> wait;
-                try {
-                    // 一批设备配置变更只刷新一次元数据；刷新提交后才确认通知。
-                    const auto batches = co_await readBatches(redis, streams, kMetadataGroup, consumer, state);
-                    if (!batches.empty()) {
-                        co_await metadata::refresh(context);
-                        for (const auto& batch : batches) {
-                            co_await service::message::redis::acknowledgeAndDeleteMany(redis, batch.stream, kMetadataGroup, batch.messages);
-                        }
-                        changed = true;
-                    }
-                    // 离线截止是共享可用性队列；认领脚本保证每个到期成员只由一个 Worker 评估。
-                    co_await AlertEvaluationService::evaluateOfflineDue(context);
-                    const auto deadline = co_await metadata::nextOfflineDeadline(redis);
-                    wait = kPendingRecoveryInterval;
-                    if (deadline) {
-                        const auto remaining = *deadline - service::message::utcNowMilliseconds();
-                        wait = std::min(*wait, std::chrono::milliseconds(std::max<std::int64_t>(remaining, 0)));
-                    }
-                } catch (const std::exception& error) {
-                    if (!running_.load() || context.get_stop_token().stop_requested()) {
+                    if (stop.stop_requested()) {
                         break;
                     }
-                    LOG_ERROR << "alert maintenance failed for service worker " << workerIndex_ << ": " << error.what();
-                    state.recovering = true;
-                    failed = true;
-                    groupMissing = std::string_view(error.what()).find("NOGROUP") != std::string_view::npos;
+                    // Commit the complete evaluation before acknowledging it.
+                    co_await AlertEvaluationService::evaluateTelemetry(context, batch.messages);
+                    co_await service::utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kTelemetryGroup, batch.messages);
                 }
-                if (failed && co_await recoverRead(redis, streams.front(), kMetadataGroup, groupMissing)) {
-                    continue;
-                }
-                if (!running_.load() || context.get_stop_token().stop_requested()) {
+            } catch (const std::exception& error) {
+                if (stop.stop_requested()) {
                     break;
                 }
-                if (failed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), kFailureBackoff);
-                    continue;
-                }
-                if (changed || wait->count() == 0) {
-                    continue;
-                }
-                co_await service::messaging::workerStreamMultiplexer().wait(
-                    workerIndex_,
-                    service::message::WorkerStreamTask::FreshnessAlerts,
-                    context.get_stop_token(),
-                    wait
-                );
+                LOG_ERROR << "alert telemetry evaluation failed for service worker " << identity.index << ": " << error.what();
+                recovering = true;
+                failed = true;
             }
-        } catch (...) {
-            try {
-                ready->set_exception(std::current_exception());
-            } catch (...) {
+            if (failed) {
+                (void)co_await ruvia::sleep_for(context.worker(), kFailureBackoff, stop);
             }
         }
-        try {
-            stopped->set_value();
-        } catch (...) {
-        }
+            });
     }
 
-    ruvia::web_worker_handle worker_;
-    std::vector<std::shared_future<void>> stopped_;
-    std::size_t workerIndex_ = 0;
-    std::size_t serviceWorkerCount_ = 0;
-    std::atomic_bool running_{ false };
+    ruvia::task<void> maintain(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        const auto redis = context.redis();
+        const std::vector<std::string> streams{
+            std::string(service::message::alert::kMetadataChangesStream),
+            service::message::workerWakeStream(std::nullopt, identity.instanceId)
+        };
+        const auto consumer = consumerName(identity);
+        for (const auto& stream : streams) {
+            co_await service::utils::redis::ensureGroup(redis, stream, kMetadataGroup);
+        }
+        co_await metadata::refresh(context);
+        co_await AlertEvaluationService::drainOutbox(context);
+        auto deadline = co_await metadata::nextOfflineDeadline(redis);
+        bool recovering = true;
+        bool scheduleChanged = false;
+        co_await service::utils::redis::withConsumerNotifications(
+            redis, context.worker(), streams, kMetadataGroup, stop,
+            [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        ready.set_value();
+        while (!stop.stop_requested()) {
+            bool failed = false;
+            try {
+                if (scheduleChanged) {
+                    deadline = co_await metadata::nextOfflineDeadline(redis);
+                    scheduleChanged = false;
+                }
+                if (deadline && *deadline <= service::message::utcNowMilliseconds()) {
+                    // The shared deadline queue atomically claims each due member.
+                    co_await AlertEvaluationService::evaluateOfflineDue(context);
+                    deadline = co_await metadata::nextOfflineDeadline(redis);
+                    continue;
+                }
+                std::optional<std::chrono::milliseconds> wait;
+                if (deadline) {
+                    wait = std::chrono::milliseconds(std::max<std::int64_t>(0, *deadline - service::message::utcNowMilliseconds()));
+                }
+                const auto batches = co_await service::utils::redis::consumeGroup(
+                    redis, streams, kMetadataGroup, consumer, recovering, notifications, stop, wait);
+                for (const auto& batch : batches) {
+                    if (stop.stop_requested()) {
+                        break;
+                    }
+                    if (batch.stream == streams.front()) {
+                        co_await metadata::refresh(context);
+                        co_await service::utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kMetadataGroup, batch.messages);
+                        scheduleChanged = true;
+                    } else {
+                        for (const auto& message : batch.messages) {
+                            // Preserve the shared wake entry while completing this group's claim.
+                            co_await service::utils::redis::acknowledge(redis, batch.stream, kMetadataGroup, message.id);
+                            if (message.get("task") == "freshness-alerts") {
+                                scheduleChanged = true;
+                            }
+                        }
+                    }
+                }
+                if (scheduleChanged) {
+                    deadline = co_await metadata::nextOfflineDeadline(redis);
+                    scheduleChanged = false;
+                }
+            } catch (const std::exception& error) {
+                if (stop.stop_requested()) {
+                    break;
+                }
+                LOG_ERROR << "alert maintenance failed for service worker " << identity.index << ": " << error.what();
+                recovering = true;
+                failed = true;
+            }
+            if (failed) {
+                (void)co_await ruvia::sleep_for(context.worker(), kFailureBackoff, stop);
+            }
+        }
+            });
+    }
+
+    ruvia::stop_source stop_;
+    std::future<void> maintenance_;
+    std::future<void> telemetry_;
 };
 
 } // namespace service::alert
