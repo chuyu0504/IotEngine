@@ -3,8 +3,8 @@
 
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/command/command.types.h"
 #include "service/modules/command/command.service.h"
+#include "service/modules/command/command.types.h"
 
 namespace service::command {
 class CommandController final {
@@ -18,7 +18,7 @@ class CommandController final {
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& id = c.req().validated<CommandStatusQuery>().get<"id">();
-        co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(request, co_await commandService().create(request, id.view(), c.req().validated<SubmitCommandBody>())));
+        co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(request, co_await CommandService::instance().create(request, id.view(), c.req().validated<SubmitCommandBody>())));
     }
 };
 } // namespace service::command

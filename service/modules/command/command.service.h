@@ -44,6 +44,11 @@ class CommandService final {
     explicit CommandService(service::device::DeviceAccessService& accessService)
         : accessService_(accessService) {}
 
+    static CommandService& instance() {
+        static thread_local CommandService service(service::device::DeviceAccessService::instance());
+        return service;
+    }
+
     template <typename Context>
     ruvia::task<service::device::DeviceCommandCreateDto>
     create(Context& context, std::string_view deviceId, const SubmitCommandBody& body) {
@@ -945,10 +950,5 @@ class CommandService final {
 
     service::device::DeviceAccessService& accessService_;
 };
-
-inline CommandService& commandService() {
-    static thread_local CommandService service(service::device::DeviceAccessService::instance());
-    return service;
-}
 
 } // namespace service::command

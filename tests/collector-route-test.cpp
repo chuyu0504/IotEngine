@@ -540,7 +540,8 @@ ruvia::task<void> verifyOwnershipDeadlines(const ruvia::redis_handle& redis, con
     (void)co_await ruvia::sleep_for(worker, *initial.nextLeaseWait + std::chrono::milliseconds(40));
     const auto acquired = co_await ownership::retain(redis, desired, kInstanceId, leases);
     require(acquired.snapshot.links.size() == 2 && acquired.snapshot.devices.size() == 2 && acquired.ownershipChanged && acquired.nextLeaseWait && *acquired.nextLeaseWait <= std::chrono::seconds(5), "the expired foreign process link was not acquired on its actual deadline");
-    require((co_await command(redis, { "GET", foreignKey })).string() == kInstanceId, "takeover did not persist the new process owner");
+    const auto newOwner = co_await command(redis, { "GET", foreignKey });
+    require(newOwner.string() == kInstanceId, "takeover did not persist the new process owner");
     const auto removed = co_await ownership::retain(redis, RuntimeSnapshot{}, kInstanceId, leases);
     require(removed.snapshot.links.empty() && !removed.nextLeaseWait && leases.empty() && removed.ownershipChanged, "an empty configuration retained an ownership wake deadline");
     (void)co_await command(redis, { "DEL", ownedKey, foreignKey });
