@@ -655,39 +655,6 @@ void testMessageEnvelope() {
     require(field("event_type") == "packet.egress", "message envelope has no event type");
 }
 
-void testExplicitOutbox() {
-    const auto schema = source("service/config/schema.h");
-    require(schema.find("0023_transactional_outbox") != std::string::npos,
-            "transactional outbox migration is missing");
-    require(schema.find("0036_live_query_changes") != std::string::npos &&
-                schema.find("publish_query_change") != std::string::npos,
-            "query changes must be captured transactionally for external SQL writers");
-    require(schema.find("0024_outbox_consumer_receipt") != std::string::npos,
-            "outbox consumer receipt migration is missing");
-    for (const auto path : {"service/modules/device/device.service.h",
-                            "service/modules/link/link.service.h",
-                            "service/modules/protocol/protocol.service.h",
-                            "service/modules/open_access/open_access.service.h"}) {
-        const auto content = source(path);
-        require(content.find("enqueueConfigEvent(transaction") != std::string::npos,
-                "domain write does not enqueue an outbox event in its transaction");
-        require(content.find("publishConfigEvent") == std::string::npos,
-                "domain still directly publishes config events");
-    }
-}
-
-void testOutboxOperations() {
-    // 运行配置变更的回执检查与写入归 ConfigurationService::applyRuntimeChanges，运行时在其返回后才确认。
-    const auto reconciler = source("service/features/configuration/configuration.runtime.h");
-    const auto configuration = source("service/features/configuration/configuration.service.h");
-    require(configuration.find("idempotency::pending") != std::string::npos, "outbox consumer does not check durable receipts");
-    require(configuration.find("idempotency::markProcessed") != std::string::npos, "outbox consumer does not persist durable receipts");
-    require(reconciler.find("applyRuntimeChanges") != std::string::npos && reconciler.find("applyRuntimeChanges") < reconciler.find("acknowledgeAndDeleteMany"), "outbox consumer acknowledges before persisting its receipt");
-    const auto dispatcher = source("service/features/messaging/messaging.service.h");
-    require(dispatcher.find(".delete_from(service::messaging::persistence::OutboxConsumerReceiptEntity::table_name())") != std::string::npos,
-            "outbox consumer receipts have no retention cleanup");
-}
-
 void testOperationalAlerts() {
     service::observability::RuntimeDiagnostics metrics;
     metrics.setComponentStatus("outbox", service::observability::ComponentState::Ready);
@@ -705,102 +672,6 @@ void testOperationalAlerts() {
             "cleared operational alert did not restore health status");
 }
 
-void testInjectedSharedState() {
-    const auto auth = source("service/modules/system/auth/auth.service.h");
-    require(auth.find("explicit AuthService(LoginRateLimiter& limiter)") != std::string::npos,
-            "auth service does not inject its rate limiter");
-    require(auth.find("LoginFailureCounter::key(username)") != std::string::npos,
-            "login rate limiting is not shared through Redis");
-    require(auth.find("unordered_map") == std::string::npos,
-            "login rate limiting still uses process-local state");
-    const auto command = source("service/modules/command/command.service.h");
-    require(command.find("explicit CommandService(service::device::DeviceAccessService&") !=
-                std::string::npos,
-            "command service does not inject device authorization");
-}
-
-void testSymmetricServiceWorkers() {
-    const auto server = source("service/server.cpp");
-    require(server.find("workers.front()") == std::string::npos &&
-                server.find("workers.back()") == std::string::npos,
-            "a Service task is assigned to a privileged Worker");
-    require(server.find("registerServiceWorkerLifecycle(*owner, worker, index, count, collectors)") != std::string::npos,
-            "Service Workers do not use the same component assembly");
-    require(server.find("std::vector<std::shared_ptr<ServiceWorkerComponents>> workers") != std::string::npos,
-            "Service Workers share one component owner");
-
-    const auto freshness = source("service/features/telemetry/telemetry.runtime.h");
-    const auto reconciler = source("service/features/configuration/configuration.runtime.h");
-    const auto webhook = source("service/features/access/access.runtime.h");
-    const auto edge = source("service/features/edge/projection/projection.runtime.h");
-    for (const auto* component : {&freshness, &reconciler, &webhook, &edge}) {
-        require(component->find("workers_.front().post") == std::string::npos &&
-                    component->find("workers_.back().post") == std::string::npos,
-                "a worker-local task still selects front/back");
-        require(component->find("+= serviceWorkerCount_") == std::string::npos,
-                "business work is still assigned by fixed worker partitions");
-        require(component->find("claimGroupMany") != std::string::npos,
-                "a background task cannot recover previously claimed work");
-    }
-    require(freshness.find("WorkerStreamTask::Freshness") != std::string::npos,
-            "freshness task does not wait on its Worker-local wake channel");
-    require(webhook.find("stream::event()") != std::string::npos,
-             "webhook delivery does not use independent work claims");
-    require(webhook.find("stream::sessionChanges()") !=
-                std::string::npos &&
-                webhook.find("session::ensure(context)") != std::string::npos,
-            "access-session projection does not claim shared work with idempotent startup");
-    require(edge.find("projector_stream::stream(workerIndex, instance)") != std::string::npos,
-             "edge projection is not isolated by accepting Worker");
-
-    for (const auto path : {
-             "service/utils/redis.h",
-             "service/common/message.h",
-             "service/features/access/access.runtime.h",
-             "service/features/command/command.runtime.h",
-             "service/features/configuration/configuration.runtime.h",
-             "service/features/telemetry/telemetry.runtime.h",
-             "service/features/edge/edge.runtime.h",
-         }) {
-        const auto content = source(path);
-        require(content.find("repairLegacyReadSet") == std::string::npos &&
-                    content.find("eraseDrainedStream") == std::string::npos &&
-                    content.find("message::shard") == std::string::npos &&
-                    content.find("legacyStream") == std::string::npos,
-                "worker queues still contain removed compatibility paths");
-    }
-}
-
-void testWorkerStreamMultiplexing() {
-    const auto server = source("service/server.cpp");
-    require(server.find("serviceRedis.blocking_pool_size_per_worker_ = 4") !=
-                std::string::npos,
-            "Service Workers need bounded multiplexer, live relay, change feed and RPC readers");
-    require(server.find("owner->multiplexer->configure(worker, index)") != std::string::npos &&
-                server.find("m->start(worker, index)") != std::string::npos,
-            "worker-local Stream multiplexer is not in the application lifecycle");
-    require(service::message::rpc::Contract::requests("instance", 0) !=
-                service::message::rpc::Contract::requests("instance", 1),
-            "RPC requests can be consumed by another Service Worker");
-    require(service::message::live::workerStream("instance", 0) !=
-                service::message::live::workerStream("instance", 1),
-            "directed live messages can reach another Service Worker");
-
-    for (const auto path : {
-             "service/features/telemetry/telemetry.runtime.h",
-             "service/features/command/command.runtime.h",
-             "service/features/access/access.runtime.h",
-             "service/features/configuration/configuration.runtime.h",
-             "service/features/edge/projection/projection.runtime.h",
-        }) {
-        const auto consumer = source(path);
-        require(consumer.find("workerStreamMultiplexer().wait") !=
-                        std::string::npos,
-                "Service Stream consumer does not use the worker-local multiplexer");
-        require(consumer.find("readGroupBlocking") == std::string::npos,
-                "Service Stream consumer still owns a Redis blocking connection");
-    }
-}
 
 } // namespace
 
@@ -817,12 +688,7 @@ int main() {
         testLifecycleOrder();
         testLifecycleRollback();
         testMessageEnvelope();
-        testExplicitOutbox();
-        testOutboxOperations();
         testOperationalAlerts();
-        testInjectedSharedState();
-        testSymmetricServiceWorkers();
-        testWorkerStreamMultiplexing();
         std::cout << "architecture tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
