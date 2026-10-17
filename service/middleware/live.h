@@ -227,6 +227,12 @@ class LiveSubscription final {
                             accept(*event);
                         }
                     }
+                    // Queries already in flight may have repopulated the cache
+                    // after loss was observed. Auth messages published in that
+                    // unpositioned interval were not delivered to this socket.
+                    // Re-establish the authorization generation before exposing
+                    // readiness or allowing a recovery snapshot to use the cache.
+                    authorization.invalidate();
                     ready_ = true;
                     pending_.recovered = connected;
                     connected = true;

@@ -277,9 +277,17 @@ class AccessController final {
                             }
                             next = co_await query();
                         } catch (const ruvia::http_error& failure) {
+                            if (revision == 0) {
+                                // No SSE frame has committed yet: admission and
+                                // scope failures keep their original HTTP/JSON contract.
+                                throw;
+                            }
                             const auto info = failure.info();
                             error = service::middleware::modelJson(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
                         } catch (const std::exception& failure) {
+                            if (revision == 0) {
+                                throw;
+                            }
                             LOG_WARN << "Public SSE query failed: " << failure.what();
                             error = "{\"code\":10004,\"message\":\"Subscription interrupted\"}";
                         }

@@ -159,7 +159,13 @@ class RpcConsumerRuntime final {
                     const auto values = co_await redis.mget(views);
                     for (std::size_t index = 0; index < active.size(); ++index) if (values[index]) active[index]->stop.request_stop();
                 }
-                if (!initialized) { ready.set_value(); initialized = true; }
+                if (!initialized) {
+                    // Own the group and its expiry atomically before any
+                    // monitor or consumer can report business readiness.
+                    co_await service::utils::redis::ensureGroup(redis, stream_, kGroup, kStreamLifetime);
+                    ready.set_value();
+                    initialized = true;
+                }
                 while (auto event = co_await subscription.read()) {
                     if (event->kind() != ruvia::redis_pubsub_event_kind::message) continue;
                     for (const auto& [entry, pending] : pending_) if (pending->requestId == event->payload()) pending->stop.request_stop();
@@ -177,16 +183,22 @@ class RpcConsumerRuntime final {
     ruvia::task<void> monitor(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
         auto [sender, receiver] = ruvia::make_channel<int>(context.worker(), { .capacity_ = 1 });
         wake_.emplace(Wake{ std::move(sender), std::move(receiver) });
+        const auto redis = context.redis().with_options({ .stop_token_ = stop });
+        auto nextLeaseAttempt = service::message::rpc::Contract::now() + 60000;
         ready.set_value();
-        auto nextLease = std::int64_t{ 0 };
         while (!stop.stop_requested()) {
             const auto now = service::message::rpc::Contract::now();
-            if (now >= nextLease) {
-                try { (void)co_await context.redis().expire(stream_, std::chrono::seconds(86400)); }
-                catch (const std::exception& error) { if (!stop.stop_requested()) LOG_WARN << "RPC stream lease: " << error.what(); }
-                nextLease = now + 60000;
+            if (now >= nextLeaseAttempt) {
+                bool leased = false;
+                try {
+                    co_await service::utils::redis::ensureGroup(redis, stream_, kGroup, kStreamLifetime);
+                    leased = true;
+                } catch (const std::exception& error) {
+                    if (!stop.stop_requested()) LOG_WARN << "RPC stream lease: " << error.what();
+                }
+                nextLeaseAttempt = now + (leased ? 60000 : 1000);
             }
-            auto next = nextLease;
+            auto next = nextLeaseAttempt;
             for (const auto& [entry, pending] : pending_) {
                 if (pending->deadline <= now) pending->stop.request_stop();
                 else next = std::min(next, pending->deadline);
@@ -200,7 +212,6 @@ class RpcConsumerRuntime final {
     ruvia::task<void> run(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
         const auto redis = context.redis().with_options({ .stop_token_ = stop });
         const std::vector<std::string> streams{ stream_ };
-        co_await service::utils::redis::ensureGroup(redis, stream_, kGroup);
         std::exception_ptr failure;
         try {
         co_await service::utils::redis::withConsumerNotifications(
@@ -216,7 +227,8 @@ class RpcConsumerRuntime final {
                             continue;
                         }
                         auto batches = co_await service::utils::redis::consumeGroup(
-                            redis, streams, kGroup, "control", recovering, notifications, stop, std::nullopt, 32);
+                            redis, streams, kGroup, "control", recovering, notifications, stop, std::nullopt, 32,
+                            std::chrono::minutes(1), false, kStreamLifetime);
                         for (auto& batch : batches) {
                             for (auto& message : batch.messages) {
                                 if (pending_.contains(message.id)) continue;
@@ -252,6 +264,7 @@ class RpcConsumerRuntime final {
     }
 
     static constexpr std::string_view kGroup = "control";
+    static constexpr auto kStreamLifetime = std::chrono::seconds(86400);
     std::string stream_;
     std::map<std::string, Handler> handlers_;
     std::map<std::string, std::shared_ptr<Pending>> pending_;

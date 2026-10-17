@@ -33,6 +33,87 @@ async function pubsubIds() {
         return id ? [id] : [];
     }));
 }
+
+async function waitForLock(relation: string) {
+    const deadline = Date.now()+10000;
+    for (;;) {
+        const [row] = await sql`SELECT EXISTS (
+            SELECT 1 FROM pg_locks WHERE relation=${relation}::regclass AND NOT granted
+        ) AS waiting`;
+        if (row.waiting) return;
+        assert(Date.now()<deadline,`SSE query did not reach the ${relation} barrier`);
+        await Bun.sleep(10);
+    }
+}
+
+async function holdTable(table: 'device' | 'sys_role') {
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const transaction = sql.begin(async connection => {
+        await connection`SET LOCAL lock_timeout='10s'`;
+        if (table === 'device') await connection`LOCK TABLE device IN ACCESS EXCLUSIVE MODE`;
+        else await connection`LOCK TABLE sys_role IN ACCESS EXCLUSIVE MODE`;
+        locked.resolve();
+        await release.promise;
+    });
+    void transaction.catch(locked.reject);
+    await locked.promise;
+    return async () => { release.resolve(); await transaction; };
+}
+
+async function revokeDuringUnpositionedReload(roleId: string, events: SnapshotSubscription, clientId: string) {
+    // This fault test has its own fixture and RUN_SERIAL: CLIENT PAUSE affects
+    // the Redis server, not only this fixture's selected database.
+    let releaseDevice: (() => Promise<void>) | undefined;
+    let releaseRole: (() => Promise<void>) | undefined;
+    let paused = false;
+    let pauseStartedAt = 0;
+    try {
+        releaseDevice = await holdTable('device');
+        await redis.send('PUBLISH',['iot:live:topic:auth','']);
+        await waitForLock('device');
+        // The first snapshot loaded its grant before waiting on device rows.
+        // Gate the *later* groups permission loader, after the cache is cleared.
+        releaseRole = await holdTable('sys_role');
+        assert.equal(Number(await redis.send('CLIENT',['KILL','ID',clientId])),1);
+        await redis.send('CLIENT',['PAUSE','10000','ALL']);
+        paused = true;
+        pauseStartedAt = Date.now();
+        // Allow the owning Worker to observe loss and enter its one-second
+        // reconnect backoff. The next SUBSCRIBE cannot confirm while paused.
+        await Bun.sleep(1200);
+        await releaseDevice(); releaseDevice = undefined;
+        await waitForLock('sys_role');
+        releaseDevice = await holdTable('device');
+        await releaseRole(); releaseRole = undefined;
+        // Groups are denied. Realtime then reloads the still-positive device
+        // permission and waits on device rows: this proves the cache was
+        // repopulated while the notification socket was unpositioned.
+        await waitForLock('device');
+        await sql.begin(async transaction => {
+            await transaction`SET LOCAL session_replication_role=replica`;
+            await transaction`UPDATE sys_role SET permissions='[]'::jsonb WHERE id=${roleId}`;
+        });
+        await releaseDevice(); releaseDevice = undefined;
+        assert(Date.now()-pauseStartedAt<9000,'fault window expired before the unpositioned cache reload and revocation completed');
+        await redis.send('CLIENT',['UNPAUSE']);
+        paused = false;
+        const recovered = new Map<string, any>();
+        for (let count=0;count<4;count++) {
+            const event = await events.next();
+            recovered.set(event.event,JSON.parse(event.data));
+        }
+        assert.equal(recovered.get('devices').code,11007,'recovery reused a positive permission cached during the lost interval');
+        assert.equal(recovered.get('realtime').code,11007);
+        assert.equal(recovered.get('groups').code,11007);
+        assert.equal(recovered.get('user').data.permissions.includes('iot:device:query'),false);
+        await events.expectQuiet(1600);
+    } finally {
+        if (paused) await redis.send('CLIENT',['UNPAUSE']);
+        await releaseRole?.();
+        await releaseDevice?.();
+    }
+}
 let stream: SnapshotSubscription | undefined;
 try {
     await request('POST', '/v1/roles', { name: tag, code: tag, permissions: [] });
@@ -68,6 +149,7 @@ try {
     }
     assert.equal(grantedChannels.has('groups'), false);
     assert.equal(grantedChannels.get('devices').code, 0);
+    assert.deepEqual(grantedChannels.get('devices').data.list,[],'fault fixture must not require Redis enrichment while commands are paused');
     assert.equal(grantedChannels.get('realtime').code, 0);
     assert(grantedChannels.get('user').data.permissions.includes('iot:device:query'));
     // If a telemetry notification incorrectly reloads the profile, this
@@ -98,23 +180,7 @@ try {
     await stream.expectQuiet(1000);
     await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
     for (let count = 0; count < 3; count++) await stream.next();
-    // Simulate a permission change in the missed interval: there is deliberately
-    // no auth event to invalidate the old positive cache. Losing the dedicated
-    // subscription itself must invalidate it before any recovery query.
-    await sql.begin(async transaction => {
-        await transaction`SET LOCAL session_replication_role = replica`;
-        await transaction`UPDATE sys_role SET permissions='[]'::jsonb WHERE id=${role.id}`;
-    });
-    assert.equal(Number(await redis.send('CLIENT', ['KILL', 'ID', ownedSubscriptions[0]])), 1);
-    const recoveryChannels = new Map<string, any>();
-    for (let count = 0; count < 4; count++) {
-        const event = await stream.next(); recoveryChannels.set(event.event, JSON.parse(event.data));
-    }
-    assert.equal(recoveryChannels.get('devices').code, 11007);
-    assert.equal(recoveryChannels.get('realtime').code, 11007);
-    assert.equal(recoveryChannels.get('groups').code, 11007, 'identical denied channels also receive the recovery snapshot');
-    assert.equal(recoveryChannels.get('user').data.permissions.includes('iot:device:query'), false);
-    await stream.expectQuiet(1600);
+    await revokeDuringUnpositionedReload(role.id,stream,ownedSubscriptions[0]);
     await stream.close();
     console.log('PASS page SSE shares user profile, permission changes and scoped queries without an extra auth connection');
     stream = await openSnapshotSubscription('/v1/device/events', token(user.id, 2), { includeUser: true });
