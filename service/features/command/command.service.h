@@ -451,7 +451,7 @@ class PreparationService final {
         applied = routeQuery.binary(applied, Op::and_value, boolean(text(service::edge::persistence::EdgeNodeEntity::column<"capability">().expression(routeQuery, "n"), "deviceConfig")));
         applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(routeQuery.coalesce({ text(nodeConfig, "state"), routeQuery.value("idle") }), Op::equal, routeQuery.value("applied")));
         applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(version("activeVersion"), Op::equal, version("desiredVersion")));
-        routeQuery.select({ routeQuery.coalesce({ routeQuery.cast(service::configuration::persistence::LinkEntity::column<"edge_node_id">().expression(routeQuery, "l"), Type::text), routeQuery.value("") }), text(parameters, "device_code"), service::configuration::persistence::DeviceModelEntity::column<"protocol">().expression(routeQuery, "p"), routeQuery.case_when({ { routeQuery.binary(parameters, Op::json_has_key, routeQuery.value("remote_control")), boolean(text(parameters, "remote_control")) } }, routeQuery.value(true)), routeQuery.coalesce({ applied, routeQuery.value(false) }), routeQuery.coalesce({ routeQuery.null_if(text(service::configuration::persistence::DeviceModelEntity::column<"config">().expression(routeQuery, "p"), "commandFastReadDuration"), routeQuery.value("")), routeQuery.value("60") }), routeQuery.coalesce({ routeQuery.null_if(text(service::configuration::persistence::DeviceModelEntity::column<"config">().expression(routeQuery, "p"), "commandFastReadInterval"), routeQuery.value("")), routeQuery.value("1") }) })
+        routeQuery.select({ routeQuery.coalesce({ routeQuery.cast(service::configuration::persistence::LinkEntity::column<"edge_node_id">().expression(routeQuery, "l"), Type::text), routeQuery.value("") }), routeQuery.case_when({ { routeQuery.binary(parameters, Op::json_has_key, routeQuery.value("remote_control")), boolean(text(parameters, "remote_control")) } }, routeQuery.value(true)), routeQuery.coalesce({ applied, routeQuery.value(false) }) })
             .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
             .join(ruvia::db_join_type::inner, service::configuration::persistence::LinkEntity::table_name(), routeQuery.binary(service::configuration::persistence::LinkEntity::column<"id">().expression(routeQuery, "l"), Op::equal, service::configuration::persistence::DeviceEntity::column<"link_id">().expression(routeQuery, "d")), "l")
             .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), routeQuery.binary(service::configuration::persistence::DeviceModelEntity::column<"device_id">().expression(routeQuery, "p"), Op::equal, service::configuration::persistence::DeviceEntity::column<"id">().expression(routeQuery, "d")), "p")
@@ -468,10 +468,10 @@ class PreparationService final {
             if (!mqttMessageId.empty()) {
                 service::common::fail(18010, "MQTT 消息选择不适用于边缘协议", 400);
             }
-            if (edge.front()[4].value().value_or(std::string_view{}) != "t") {
+            if (edge.front()[2].value().value_or(std::string_view{}) != "t") {
                 service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
             }
-            co_return co_await enqueueEdgeDevice(context, deviceId, std::move(requested), edge.front()[0].value().value_or(std::string_view{}), edge.front()[1].value().value_or(std::string_view{}), edge.front()[2].value().value_or(std::string_view{}), edge.front()[3].value().value_or(std::string_view{}) == "t", boundedUnsigned(edge.front()[5].value().value_or(std::string_view{}), 60, 0), boundedUnsigned(edge.front()[6].value().value_or(std::string_view{}), 1, 1), transaction);
+            co_return co_await enqueueEdgeDevice(context, deviceId, std::move(requested), edge.front()[0].value().value_or(std::string_view{}), edge.front()[1].value().value_or(std::string_view{}) == "t", transaction);
         }
 
         auto devices = co_await service::configuration::loadDeviceDefinitions(transaction, deviceId);
@@ -528,7 +528,7 @@ class PreparationService final {
     }
 
     static ruvia::task<Prepared>
-    enqueueEdgeDevice(ruvia::web_worker_context& context, std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested, std::string_view nodeId, std::string_view deviceCode, std::string_view protocol, bool remoteControl, std::uint32_t fastReadDurationSec, std::uint32_t fastReadIntervalSec, ruvia::db_transaction& transaction) {
+    enqueueEdgeDevice(ruvia::web_worker_context& context, std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested, std::string_view nodeId, bool remoteControl, ruvia::db_transaction& transaction) {
         if (!remoteControl) {
             service::common::fail(18005, "设备未开启远程控制", 403);
         }
@@ -536,11 +536,18 @@ class PreparationService final {
             service::common::fail(18013, "边缘节点离线，无法下发设备命令", 409);
         }
 
-        service::collector::DeviceDefinition device;
-        device.id = std::string(deviceId);
-        device.code = std::string(deviceCode);
-        device.protocol = std::string(protocol);
-        co_await loadEdgeElements(transaction, device);
+        using Device = service::configuration::persistence::DeviceEntity;
+        using Link = service::configuration::persistence::LinkEntity;
+        auto query = service::configuration::deviceModelsQuery();
+        query.and_where(query.binary(Device::column<"id">().expression(query, "d"), ruvia::db_binary_operator::equal, query.cast(query.value(deviceId), ruvia::db_data_type::uuid)))
+            .and_where(query.binary(Link::column<"execution">().expression(query, "l"), ruvia::db_binary_operator::equal, query.value("edge")))
+            .and_where(query.binary(Link::column<"edge_node_id">().expression(query, "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(query, "l")));
+        auto models = co_await service::configuration::loadDeviceModels(transaction, query);
+        if (models.empty()) {
+            service::common::fail(18010, "边缘设备协议配置不可用", 400);
+        }
+        const auto& device = models.front().device;
         service::collector::command::ResolvedCommand resolved;
         try {
             resolved = service::collector::command::resolve(device, requested);
@@ -583,8 +590,8 @@ class PreparationService final {
             }
             command->set_timeout_ms(5000);
             command->set_readback_count(1);
-            command->set_fast_read_duration_sec(fastReadDurationSec);
-            command->set_fast_read_interval_sec(fastReadIntervalSec);
+            command->set_fast_read_duration_sec(static_cast<std::uint32_t>(device.commandFastReadDuration));
+            command->set_fast_read_interval_sec(static_cast<std::uint32_t>(device.commandFastReadInterval));
             for (const auto& element : elements) {
                 if (element.elementId.size() > 64 || element.value.size() > 128) {
                     service::common::fail(
@@ -614,92 +621,6 @@ class PreparationService final {
         };
     }
 
-    static ruvia::task<void> loadEdgeElements(ruvia::db_transaction& transaction, service::collector::DeviceDefinition& device) {
-        using Op = ruvia::db_binary_operator;
-        using Type = ruvia::db_data_type;
-        if (device.protocol != "Modbus" && device.protocol != "S7" && device.protocol != "SL651" &&
-            device.protocol != "MC" && device.protocol != "FINS" && device.protocol != "DLT645") {
-            service::common::fail(18010, "边缘节点不支持该设备协议", 400);
-        }
-        ruvia::db_query elements;
-        const auto field = [&](std::string_view key) {
-            return elements.binary(elements.column("item"), Op::json_get_text, elements.value(key));
-        };
-        const auto integer = [&](std::string_view key, int fallback) {
-            const auto value = field(key);
-            return elements.coalesce({ elements.case_when({ { elements.binary(elements.coalesce({ value, elements.value("") }), Op::regex, elements.value("^-?[0-9]{1,18}$")), elements.cast(value, Type::integer) } }), elements.value(fallback) });
-        };
-        const auto functionText = [&](std::string_view key) {
-            return elements.binary(elements.column("func"), Op::json_get_text, elements.value(key));
-        };
-        const auto isIndustrial = device.protocol == "MC" || device.protocol == "FINS" || device.protocol == "DLT645";
-        const auto isDlt645 = device.protocol == "DLT645";
-        const auto isSl651 = device.protocol == "SL651";
-        const auto isS7 = device.protocol == "S7";
-        const auto writable = elements.binary(elements.call("lower", { elements.coalesce({ field("writable"), elements.value("") }) }), Op::in, elements.list({ elements.value("true"), elements.value("t"), elements.value("1"), elements.value("yes"), elements.value("y"), elements.value("on") }));
-        elements.select({ field("id"), field("name"), elements.coalesce({ field("unit"), elements.value("") }), isSl651 ? elements.value("") : isS7 ? elements.coalesce({ field("dataType"), elements.value("BOOL") })
-                                                                                                                                                    : field("dataType"),
-                          isSl651 ? functionText("dir") : elements.value(""),
-                          (isSl651 || isDlt645) ? integer("length", 1) : isS7 ? integer("size", 1)
-                                                                              : elements.value(0),
-                          (isSl651 || isDlt645) ? integer("digits", 0) : elements.value(0),
-                          isSl651 ? elements.binary(functionText("dir"), Op::equal, elements.value("DOWN")) : writable,
-                          isSl651 ? elements.column("response_element") : elements.cast(elements.value(false), Type::boolean),
-                          isSl651 ? functionText("funcCode") : elements.value(""),
-                          isSl651 ? field("encode") : isDlt645 ? field("dataType")
-                                                               : elements.value("") })
-            .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::configuration::persistence::LinkEntity::table_name(), elements.binary(service::configuration::persistence::LinkEntity::column<"id">().expression(elements, "l"), Op::equal, service::configuration::persistence::DeviceEntity::column<"link_id">().expression(elements, "d")), "l")
-            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), elements.binary(service::configuration::persistence::DeviceModelEntity::column<"device_id">().expression(elements, "p"), Op::equal, service::configuration::persistence::DeviceEntity::column<"id">().expression(elements, "d")), "p")
-            .join_function(ruvia::db_join_type::cross, elements.call("jsonb_array_elements", { elements.coalesce({ elements.binary(service::configuration::persistence::DeviceModelEntity::column<"config">().expression(elements, "p"), Op::json_get, elements.value(isSl651 ? "funcs" : isS7 ? "areas"
-                                                                                                                                                                                                                                                                          : isIndustrial       ? "points"
-                                                                                                                                                                                                                                                                                               : "registers")),
-                                                                                                                   elements.cast(elements.value("[]"), Type::jsonb) }) }),
-                           {},
-                           isSl651 ? "func" : "item",
-                           { .lateral_ = true })
-            .and_where(elements.binary(service::configuration::persistence::DeviceEntity::column<"id">().expression(elements, "d"), Op::equal, elements.cast(elements.value(device.id), Type::uuid)))
-            .and_where(elements.binary(service::configuration::persistence::DeviceModelEntity::column<"protocol">().expression(elements, "p"), Op::equal, elements.value(device.protocol)))
-            .and_where(elements.binary(service::configuration::persistence::LinkEntity::column<"execution">().expression(elements, "l"), Op::equal, elements.value("edge")))
-            .and_where(elements.unary(ruvia::db_unary_operator::is_null, service::configuration::persistence::LinkEntity::column<"deleted_at">().expression(elements, "l")));
-        if (isSl651) {
-            const auto functionFields = [](std::string_view key, bool response) {
-                ruvia::db_query query;
-                query.select({ query.alias(query.column("value"), "item"), query.alias(query.cast(query.value(response), Type::boolean), "response_element") })
-                    .from_function(query.call("jsonb_array_elements", { query.coalesce({ query.binary(query.column("func"), Op::json_get, query.value(key)), query.cast(query.value("[]"), Type::jsonb) }) }), "field");
-                return query;
-            };
-            auto fields = functionFields("elements", false);
-            const auto response = functionFields("responseElements", true);
-            fields.combine(ruvia::db_set_operation::union_all, response);
-            elements.join(ruvia::db_join_type::cross, fields, {}, "configured", { .lateral_ = true });
-        }
-        const auto rows = co_await transaction.query(elements);
-        for (const auto& row : rows) {
-            service::collector::ElementDefinition element;
-            element.id = std::string(row[0].value().value_or(std::string_view{}));
-            element.name = std::string(row[1].value().value_or(std::string_view{}));
-            element.unit = std::string(row[2].value().value_or(std::string_view{}));
-            element.dataType = std::string(row[3].value().value_or(std::string_view{}));
-            element.direction = std::string(row[4].value().value_or(std::string_view{}));
-            element.size = parseInteger(row[5].value().value_or(std::string_view{}));
-            element.length = parseInteger(row[5].value().value_or(std::string_view{}));
-            element.digits = parseInteger(row[6].value().value_or(std::string_view{}));
-            element.writable = row[7].value().value_or(std::string_view{}) == "t";
-            element.responseElement = row[8].value().value_or(std::string_view{}) == "t";
-            element.functionCode = std::string(row[9].value().value_or(std::string_view{}));
-            element.encoding = std::string(row[10].value().value_or(std::string_view{}));
-            device.elements.push_back(std::move(element));
-        }
-    }
-
-    static std::int64_t parseInteger(std::string_view value) {
-        std::int64_t output{};
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), output);
-        return error == std::errc{} && end == value.data() + value.size() ? output : 0;
-    }
-
     static bool setUuid(std::string* output, std::string_view text) {
         std::uint8_t value[16]{};
         if (!service::common::uuidBytes(text, value)) {
@@ -707,17 +628,6 @@ class PreparationService final {
         }
         output->assign(service::edge::protocol::bytes(value, sizeof(value)));
         return true;
-    }
-
-    static std::uint32_t boundedUnsigned(std::string_view value, std::uint32_t fallback, std::uint32_t minimum) {
-        std::uint32_t result{};
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size() ||
-            result < minimum || result > 3600U) {
-            return fallback;
-        }
-        return result;
     }
 };
 

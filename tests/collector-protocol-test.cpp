@@ -2426,14 +2426,9 @@ void testRuntimeProjectionRefreshesPreviousGrace() {
     require(refresh->size() == 4 && (*refresh)[2] != "NX", "runtime projection did not restart the previous snapshot grace window");
 }
 
-void testRuntimeSetOrderingContract() {
-    const auto first = service::collector::config::detail::sortedStrings(
-        { "element:c", "element:a", "element:b" }
-    );
-    const auto second = service::collector::config::detail::sortedStrings(
-        { "element:b", "element:c", "element:a" }
-    );
-    require(first == second && first == std::vector<std::string>{ "element:a", "element:b", "element:c" }, "runtime Redis Set members were not canonicalized");
+void testRuntimeElementOrderingContract() {
+    const std::vector<std::string> first{ "element:c", "element:a", "element:b" };
+    const auto second = first;
 
     collector::RuntimeSnapshot previous;
     collector::LinkDefinition link;
@@ -2458,7 +2453,10 @@ void testRuntimeSetOrderingContract() {
         next.devices.front().elements.push_back({ .configKey = id, .id = id });
     }
     const auto plan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, next);
-    require(plan.affectedLinks.empty() && plan.restartLinks.empty(), "equivalent Redis Set order restarted an unrelated TCP Server link");
+    require(plan.affectedLinks.empty() && plan.restartLinks.empty(), "unchanged array order restarted a TCP Server link");
+    std::swap(next.devices.front().elements[0], next.devices.front().elements[1]);
+    const auto reordered = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, next);
+    require(reordered.affectedLinks.contains(link.id), "changed protocol element order was ignored");
 }
 
 void testRealtimeProjectionContract() {
@@ -3917,7 +3915,7 @@ int main() {
         run("atomic stream finalization contract", testAtomicStreamFinalizationContract);
         run("runtime projection Redis errors", testRuntimeProjectionRejectsRedisErrors);
         run("runtime projection previous grace", testRuntimeProjectionRefreshesPreviousGrace);
-        run("runtime set ordering contract", testRuntimeSetOrderingContract);
+        run("runtime element ordering contract", testRuntimeElementOrderingContract);
         run("realtime projection contract", testRealtimeProjectionContract);
         run("BOOL point value contract", testBooleanPointValueContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -65,6 +66,41 @@ struct ElementDefinition {
     bool responseElement = false;
     std::string positionMode = "GUIDE";
     std::int64_t byteOffset = 0;
+    // 一个 pointId 可以在多个 SL651 函数中出现；Redis Hash 的字段由 occurrence
+    // 前缀限定，外部 ID、configKey 与实际 Redis key 保持不变。
+    inline static constexpr std::array<std::string_view, 26> kFieldNames{
+        "config_key",
+        "id",
+        "name",
+        "unit",
+        "data_type",
+        "byte_order",
+        "register_type",
+        "mqtt_field",
+        "address",
+        "quantity",
+        "decimals",
+        "writable",
+        "area",
+        "db_number",
+        "start",
+        "start_bit",
+        "size",
+        "function_code",
+        "direction",
+        "guide_hex",
+        "position_mode",
+        "byte_offset",
+        "encoding",
+        "length",
+        "digits",
+        "response_element"
+    };
+
+    [[nodiscard]] std::array<std::string, kFieldNames.size()> fieldValues() const {
+        return { configKey.empty() ? id : configKey, id, name, unit, dataType, byteOrder, registerType, mqttField, std::to_string(address), std::to_string(quantity), std::to_string(decimals), writable ? "1" : "0", area, std::to_string(dbNumber), std::to_string(start), std::to_string(startBit), std::to_string(size), functionCode, direction, guideHex, positionMode, std::to_string(byteOffset), encoding, std::to_string(length), std::to_string(digits), responseElement ? "1" : "0" };
+    }
+
     bool operator==(const ElementDefinition&) const = default;
 };
 

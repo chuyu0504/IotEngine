@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <google/protobuf/io/coded_stream.h>
@@ -33,7 +32,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/features/configuration/configuration.entity.h"
+#include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.protocol.h"
@@ -183,10 +182,6 @@ inline ruvia::db_query::expr_type toJsonb(ruvia::db_query& query, ruvia::db_quer
 
 inline ruvia::db_query::expr_type toJsonbText(ruvia::db_query& query, std::string_view value) {
     return toJsonb(query, query.cast(query.value(value), ruvia::db_data_type::text));
-}
-
-inline ruvia::db_query::expr_type nullableDefault(ruvia::db_query& query, ruvia::db_query::expr_type value, std::string_view fallback) {
-    return query.coalesce({ std::move(value), query.cast(query.value(fallback), ruvia::db_data_type::text) });
 }
 
 inline ruvia::db_query::expr_type textDefault(ruvia::db_query& query, ruvia::db_query::expr_type value, std::string_view fallback) {
@@ -340,409 +335,6 @@ inline ruvia::db_query rejectBuildQuery(std::string_view message, std::string_vi
     return query;
 }
 
-inline ruvia::db_query buildItemsQuery(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto protocolParams = query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d");
-    const auto modelConfig = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto endpoint = query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l");
-    const auto packetConfig = jsonGet(query, modelConfig, "packet");
-    const auto connectionConfig = jsonGet(query, modelConfig, "connection");
-    const auto heartbeatConfig = jsonGet(query, protocolParams, "heartbeat");
-    const auto deviceEnabled = query.binary(
-        query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"status">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
-        ruvia::db_binary_operator::equal,
-        query.value(std::string_view{ "enabled" })
-    );
-    const auto linkEnabled = query.binary(
-        query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"status">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"),
-        ruvia::db_binary_operator::equal,
-        query.value(std::string_view{ "enabled" })
-    );
-
-    query
-        .select({
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
-            jsonText(query, protocolParams, "device_code"),
-            query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"),
-            textDefault(query, jsonText(query, protocolParams, "timezone"), service::message::device::kDefaultTimezone),
-            textDefault(query, jsonText(query, modelConfig, "readInterval"), "300"),
-            textDefault(query, jsonText(query, protocolParams, "online_timeout"), "300"),
-            textDefault(query, jsonText(query, protocolParams, "slave_id"), "1"),
-            nullableDefault(query, jsonText(query, protocolParams, "modbus_mode"), "TCP"),
-            jsonText(query, endpoint, "transport"),
-            jsonText(query, endpoint, "interface"),
-            nullableDefault(query, jsonText(query, endpoint, "mode"), ""),
-            nullableDefault(query, jsonText(query, endpoint, "ip"), ""),
-            textDefault(query, jsonText(query, endpoint, "port"), "0"),
-            textDefault(query, jsonText(query, endpoint, "baud_rate"), "9600"),
-            textDefault(query, jsonText(query, endpoint, "data_bits"), "8"),
-            textDefault(query, jsonText(query, endpoint, "stop_bits"), "1"),
-            nullableDefault(query, jsonText(query, endpoint, "parity"), "none"),
-            booleanText(query, jsonText(query, endpoint, "rs485")),
-            textDefault(query, jsonText(query, packetConfig, "mergeGap"), "0"),
-            textDefault(query, jsonText(query, packetConfig, "maxQuantity"), "125"),
-            nullableDefault(query, jsonText(query, connectionConfig, "mode"), "RACK_SLOT"),
-            nullableDefault(query, jsonText(query, connectionConfig, "connectionType"), "PG"),
-            textDefault(query, jsonText(query, connectionConfig, "rack"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "slot"), "1"),
-            nullableDefault(query, jsonText(query, connectionConfig, "localTSAP"), ""),
-            nullableDefault(query, jsonText(query, connectionConfig, "remoteTSAP"), ""),
-            nullableDefault(query, jsonText(query, heartbeatConfig, "mode"), "OFF"),
-            nullableDefault(query, jsonText(query, heartbeatConfig, "content"), ""),
-            query.binary(query.binary(deviceEnabled, ruvia::db_binary_operator::and_value, query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"enabled">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p")), ruvia::db_binary_operator::and_value, linkEnabled),
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            textDefault(query, jsonText(query, modelConfig, "commandFastReadDuration"), "60"),
-            textDefault(query, jsonText(query, modelConfig, "commandFastReadInterval"), "1"),
-            query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"name">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"),
-            linkEnabled,
-            textDefault(query, jsonText(query, modelConfig, "responseMode"), "M1"),
-            query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"debug_enabled">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"),
-            query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"debug_enabled">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"),
-            textDefault(query, jsonText(query, connectionConfig, "frame"), "3E"),
-            textDefault(query, jsonText(query, connectionConfig, "version"), "2007"),
-            textDefault(query, jsonText(query, connectionConfig, "network"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "station"), "255"),
-            textDefault(query, jsonText(query, connectionConfig, "moduleIo"), "1023"),
-            textDefault(query, jsonText(query, connectionConfig, "multidrop"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "monitoringTimer"), "16"),
-            textDefault(query, jsonText(query, connectionConfig, "destinationNetwork"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "destinationNode"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "destinationUnit"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "sourceNetwork"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "sourceNode"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "sourceUnit"), "0"),
-            textDefault(query, jsonText(query, connectionConfig, "wakeupBytes"), "4"),
-            textDefault(query, jsonText(query, connectionConfig, "writePassword"), ""),
-            textDefault(query, jsonText(query, connectionConfig, "operatorCode"), ""),
-            query.cast(modelConfig, ruvia::db_data_type::text),
-        })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"))
-            ),
-            "p"
-        )
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"));
-    return query;
-}
-
-inline ruvia::db_query appendModbusQuery(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto config = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto itemSource = query.call(
-        "jsonb_array_elements",
-        { query.coalesce({ jsonGet(query, config, "registers"), query.cast(query.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    const auto item = query.column("item");
-    query
-        .select({
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            jsonText(query, item, "id"),
-            jsonText(query, item, "name"),
-            nullableDefault(query, jsonText(query, item, "unit"), ""),
-            jsonText(query, item, "registerType"),
-            jsonText(query, item, "dataType"),
-            query.coalesce({ jsonText(query, item, "byteOrder"), jsonText(query, config, "byteOrder"), query.value(std::string_view{ "BIG_ENDIAN" }) }),
-            textDefault(query, jsonText(query, item, "address"), "0"),
-            textDefault(query, jsonText(query, item, "quantity"), "1"),
-            query.value("1"),
-            textDefault(query, jsonText(query, item, "decimals"), "-1"),
-            booleanText(query, jsonText(query, item, "writable")),
-        })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "Modbus" }))
-            ),
-            "p"
-        )
-        .join_function(ruvia::db_join_type::cross, itemSource, {}, "item", { .lateral_ = true })
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
-        .add_order_by(jsonText(query, item, "id"));
-    return query;
-}
-
-inline ruvia::db_query appendS7Query(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto config = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto itemSource = query.call(
-        "jsonb_array_elements",
-        { query.coalesce({ jsonGet(query, config, "areas"), query.cast(query.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    const auto item = query.column("item");
-    query
-        .select({
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            jsonText(query, item, "id"),
-            jsonText(query, item, "name"),
-            nullableDefault(query, jsonText(query, item, "unit"), ""),
-            jsonText(query, item, "area"),
-            textDefault(query, jsonText(query, item, "dbNumber"), "0"),
-            textDefault(query, jsonText(query, item, "start"), "0"),
-            textDefault(query, jsonText(query, item, "startBit"), "0"),
-            textDefault(query, jsonText(query, item, "size"), "1"),
-            nullableDefault(query, jsonText(query, item, "dataType"), "BOOL"),
-            textDefault(query, jsonText(query, item, "decimals"), "-1"),
-            booleanText(query, jsonText(query, item, "writable")),
-        })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "S7" }))
-            ),
-            "p"
-        )
-        .join_function(ruvia::db_join_type::cross, itemSource, {}, "item", { .lateral_ = true })
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
-        .add_order_by(jsonText(query, item, "id"));
-    return query;
-}
-
-inline ruvia::db_query appendIndustrialQuery(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto config = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto itemSource = query.call(
-        "jsonb_array_elements",
-        { query.coalesce({ jsonGet(query, config, "points"), query.cast(query.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    const auto item = query.column("item");
-    query
-        .select({
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            jsonText(query, item, "id"),
-            jsonText(query, item, "name"),
-            nullableDefault(query, jsonText(query, item, "unit"), ""),
-            textDefault(query, jsonText(query, item, "area"), ""),
-            textDefault(query, jsonText(query, item, "dataType"), "UINT16"),
-            textDefault(query, jsonText(query, item, "byteOrder"), "BIG_ENDIAN"),
-            textDefault(query, jsonText(query, item, "address"), "0"),
-            textDefault(query, jsonText(query, item, "bit"), "0"),
-            query.value("1"),
-            textDefault(query, jsonText(query, item, "decimals"), "-1"),
-            textDefault(query, jsonText(query, item, "identifier"), ""),
-            textDefault(query, jsonText(query, item, "length"), "4"),
-            textDefault(query, jsonText(query, item, "digits"), "2"),
-            booleanText(query, jsonText(query, item, "writable")),
-        })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::in, query.list({ query.value("MC"), query.value("FINS"), query.value("DLT645") }))
-            ),
-            "p"
-        )
-        .join_function(ruvia::db_join_type::cross, itemSource, {}, "item", { .lateral_ = true })
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
-        .add_order_by(jsonText(query, item, "id"));
-    return query;
-}
-
-inline ruvia::db_query appendSl651FunctionsQuery(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto config = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto functionSource = query.call(
-        "jsonb_array_elements",
-        { query.coalesce({ jsonGet(query, config, "funcs"), query.cast(query.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    const auto function = query.column("func");
-    query
-        .select({ query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text), jsonText(query, function, "funcCode"), jsonText(query, function, "name"), jsonText(query, function, "dir") })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "SL651" }))
-            ),
-            "p"
-        )
-        .join_function(ruvia::db_join_type::cross, functionSource, {}, "func", { .lateral_ = true })
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
-        .add_order_by(jsonText(query, function, "funcCode"));
-    return query;
-}
-
-inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
-    ruvia::db_query query;
-    const auto config = query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p");
-    const auto functionSource = query.call(
-        "jsonb_array_elements",
-        { query.coalesce({ jsonGet(query, config, "funcs"), query.cast(query.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    const auto function = query.column("func");
-    ruvia::db_query elementRows;
-    const auto elementSource = elementRows.call(
-        "jsonb_array_elements",
-        { elementRows.coalesce({ jsonGet(elementRows, elementRows.column("func"), "elements"), elementRows.cast(elementRows.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    elementRows
-        .select({ elementRows.alias(elementRows.column("value", "element_value"), "element"), elementRows.alias(elementRows.cast(elementRows.value(false), ruvia::db_data_type::boolean), "response_element") })
-        .from_function(elementSource, "element_value", { .lateral_ = false, .columns_ = { { .name_ = "value" } } });
-
-    ruvia::db_query responseRows;
-    const auto responseElementSource = responseRows.call(
-        "jsonb_array_elements",
-        { responseRows.coalesce({ jsonGet(responseRows, responseRows.column("func"), "responseElements"), responseRows.cast(responseRows.value(std::string_view{ "[]" }), ruvia::db_data_type::jsonb) }) }
-    );
-    responseRows
-        .select({ responseRows.alias(responseRows.column("value", "response_value"), "element"), responseRows.alias(responseRows.cast(responseRows.value(true), ruvia::db_data_type::boolean), "response_element") })
-        .from_function(responseElementSource, "response_value", { .lateral_ = false, .columns_ = { { .name_ = "value" } } });
-    elementRows.combine(ruvia::db_set_operation::union_all, responseRows);
-    const auto element = query.column("element", "values");
-    const auto responseElement = query.column("response_element", "values");
-    const auto functionCode = jsonText(query, function, "funcCode");
-
-    query
-        .select({
-            query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), ruvia::db_data_type::text),
-            functionCode,
-            jsonText(query, element, "id"),
-            jsonText(query, element, "name"),
-            nullableDefault(query, jsonText(query, element, "unit"), ""),
-            jsonText(query, element, "encode"),
-            textDefault(query, jsonText(query, element, "length"), "0"),
-            textDefault(query, jsonText(query, element, "digits"), "0"),
-            nullableDefault(query, jsonText(query, element, "guideHex"), ""),
-            responseElement,
-            query.binary(jsonText(query, function, "dir"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "DOWN" })),
-            nullableDefault(query, jsonText(query, element, "positionMode"), "GUIDE"),
-            textDefault(query, jsonText(query, element, "byteOffset"), "0"),
-        })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::LinkEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"link_id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(
-                    query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "edge" })),
-                    ruvia::db_binary_operator::and_value,
-                    query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"))
-                )
-            ),
-            "l"
-        )
-        .join(
-            ruvia::db_join_type::inner,
-            service::configuration::persistence::DeviceModelEntity::table_name(),
-            query.binary(
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")),
-                ruvia::db_binary_operator::and_value,
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), ruvia::db_binary_operator::equal, query.value(std::string_view{ "SL651" }))
-            ),
-            "p"
-        )
-        .join_function(ruvia::db_join_type::cross, functionSource, {}, "func", { .lateral_ = true })
-        .join(ruvia::db_join_type::cross, elementRows, {}, "values", { .lateral_ = true })
-        .where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"edge_node_id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .order_by(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
-        .add_order_by(functionCode)
-        .add_order_by(responseElement)
-        .add_order_by(jsonText(query, element, "id"));
-    return query;
-}
 } // namespace config::detail
 
 } // namespace service::edge
@@ -1141,28 +733,6 @@ class ConfigService final {
         return result;
     }
 
-    static std::int64_t integer(std::string_view value, std::int64_t fallback = 0) {
-        if (value.empty()) {
-            return fallback;
-        }
-        std::int64_t result{};
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), result);
-        return error == std::errc{} && end == value.data() + value.size() ? result : fallback;
-    }
-
-    static std::uint32_t positiveCeil(std::string_view value, double fallback = 300.0) {
-        double parsed = protocol::number(value, fallback);
-        if (parsed < 1.0) {
-            parsed = 1.0;
-        }
-        const auto maximum = static_cast<double>(std::numeric_limits<std::uint32_t>::max());
-        if (parsed > maximum) {
-            return std::numeric_limits<std::uint32_t>::max();
-        }
-        return static_cast<std::uint32_t>(std::ceil(parsed));
-    }
-
     static pb::Protocol protocolValue(std::string_view value) {
         if (value == "Modbus") {
             return pb::PROTOCOL_MODBUS;
@@ -1399,12 +969,18 @@ class ConfigService final {
             }
             items.push_back(std::move(item));
         }
-        const auto devices =
-            co_await c.db().query(config::detail::buildItemsQuery(nodeId));
+        using Link = service::configuration::persistence::LinkEntity;
+        using Model = service::configuration::persistence::DeviceModelEntity;
+        auto selection = service::configuration::deviceModelsQuery();
+        selection.and_where(selection.binary(Link::column<"execution">().expression(selection, "l"), ruvia::db_binary_operator::equal, selection.value("edge")))
+            .and_where(selection.binary(Link::column<"edge_node_id">().expression(selection, "l"), ruvia::db_binary_operator::equal, selection.cast(selection.value(nodeId), ruvia::db_data_type::uuid)))
+            .and_where(selection.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(selection, "l")))
+            .and_where(selection.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(selection, "p")));
+        auto database = c.db();
+        const auto devices = co_await service::configuration::loadDeviceModels(database, selection);
         if (calculations) {
-            for (const auto& row : devices) {
-                (*calculations)[std::string(row[0].value().value_or(""))] =
-                    std::string(row[54].value().value_or("{}"));
+            for (const auto& model : devices) {
+                (*calculations)[model.device.id] = model.device.calculationConfig;
             }
         }
         ruvia::db_query capability;
@@ -1415,293 +991,217 @@ class ConfigService final {
         const bool derivedSupported = !supported.empty() && supported.front()[0].value().value_or("") == "true";
         appendConfiguredDevices(items, devices, derivedSupported);
 
-        co_await appendModbus(c, nodeId, items);
-        co_await appendS7(c, nodeId, items);
-        co_await appendIndustrial(c, nodeId, items);
-        co_await appendSl651(c, nodeId, items);
         co_return items;
     }
 
-  private:
-    template <typename Rows>
-    static void appendConfiguredDevices(std::vector<pb::ConfigItem>& items, const Rows& devices, bool derivedSupported) {
+    // Edge 保留停用对象，显式发送 enabled=false；所有协议参数均来自 configuration。
+    static void appendConfiguredDevices(std::vector<pb::ConfigItem>& items, const std::vector<service::configuration::DeviceModel>& devices, bool derivedSupported) {
         std::set<std::string> endpoints;
-        for (const auto& row : devices) {
-            const auto protocol = protocolValue(row[3].value().value_or(std::string_view{}));
-            pb::ConfigItem endpoint;
-            endpoint.set_kind(pb::CONFIG_ITEM_ENDPOINT);
-            auto* endpointValue = endpoint.mutable_endpoint();
-            if (!setUuid(endpointValue->mutable_endpoint_id(), row[30].value().value_or(std::string_view{}))) {
-                throw std::runtime_error("invalid edge link UUID");
+        for (const auto& model : devices) {
+            const auto& definition = model.device;
+            const auto& link = model.endpoint;
+            const auto protocol = protocolValue(definition.protocol);
+            if (protocol == pb::PROTOCOL_UNSPECIFIED) {
+                throw std::invalid_argument("unsupported edge device protocol: " + definition.protocol);
             }
-            endpointValue->set_name(row[33].value().value_or(std::string_view{}));
-            endpointValue->set_interface_name(row[10].value().value_or(std::string_view{}));
-            endpointValue->set_protocol(protocol);
-            endpointValue->set_debug_enabled(row[36].value().value_or("") == "t");
-            endpointValue->set_enabled(row[34].value().value_or(std::string_view{}) == "t");
-            if (row[9].value().value_or(std::string_view{}) == "serial") {
-                endpointValue->set_transport(pb::TRANSPORT_SERIAL);
-                endpointValue->set_mode(pb::LINK_MODE_SERIAL);
-                auto* serial = endpointValue->mutable_serial();
-                serial->set_channel(row[10].value().value_or(std::string_view{}));
-                serial->set_baud_rate(
-                    static_cast<std::uint32_t>(integer(row[14].value().value_or(std::string_view{}), 9600))
-                );
-                serial->set_data_bits(
-                    static_cast<std::uint32_t>(integer(row[15].value().value_or(std::string_view{}), 8))
-                );
-                serial->set_stop_bits(
-                    static_cast<std::uint32_t>(integer(row[16].value().value_or(std::string_view{}), 1))
-                );
-                serial->set_parity(row[17].value().value_or(std::string_view{}));
-            } else {
-                endpointValue->set_transport(pb::TRANSPORT_ETHERNET);
-                endpointValue->set_mode(row[11].value().value_or(std::string_view{}) == "TCP Server" ? pb::LINK_MODE_TCP_SERVER : pb::LINK_MODE_TCP_CLIENT);
-                endpointValue->set_ip(row[12].value().value_or(std::string_view{}));
-                endpointValue->set_port(
-                    static_cast<std::uint32_t>(integer(row[13].value().value_or(std::string_view{})))
-                );
+            if (endpoints.emplace(definition.linkId).second) {
+                pb::ConfigItem item;
+                item.set_kind(pb::CONFIG_ITEM_ENDPOINT);
+                auto* value = item.mutable_endpoint();
+                if (!setUuid(value->mutable_endpoint_id(), definition.linkId)) {
+                    throw std::runtime_error("invalid edge link UUID");
+                }
+                value->set_name(link.name);
+                value->set_interface_name(link.interfaceName);
+                value->set_protocol(protocol);
+                value->set_debug_enabled(link.debugEnabled);
+                value->set_enabled(link.enabled);
+                if (link.transport == "serial") {
+                    value->set_transport(pb::TRANSPORT_SERIAL);
+                    value->set_mode(pb::LINK_MODE_SERIAL);
+                    auto* serial = value->mutable_serial();
+                    serial->set_channel(link.interfaceName);
+                    serial->set_baud_rate(static_cast<std::uint32_t>(link.baudRate));
+                    serial->set_data_bits(static_cast<std::uint32_t>(link.dataBits));
+                    serial->set_stop_bits(static_cast<std::uint32_t>(link.stopBits));
+                    serial->set_parity(link.parity);
+                } else {
+                    value->set_transport(pb::TRANSPORT_ETHERNET);
+                    value->set_mode(link.mode == "TCP Server" ? pb::LINK_MODE_TCP_SERVER : pb::LINK_MODE_TCP_CLIENT);
+                    value->set_ip(link.ip);
+                    value->set_port(static_cast<std::uint32_t>(link.port));
+                }
+                items.push_back(std::move(item));
             }
-            if (endpoints.emplace(row[30].value().value_or("")).second) {
-                items.push_back(std::move(endpoint));
-            }
-
             pb::ConfigItem device;
             device.set_kind(pb::CONFIG_ITEM_DEVICE);
-            auto* deviceValue = device.mutable_device();
-            setUuid(deviceValue->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            setUuid(deviceValue->mutable_endpoint_id(), row[30].value().value_or(std::string_view{}));
-            deviceValue->set_device_code(row[2].value().value_or(std::string_view{}));
-            deviceValue->set_name(row[1].value().value_or(std::string_view{}));
-            deviceValue->set_protocol(protocol);
+            auto* value = device.mutable_device();
+            setUuid(value->mutable_device_id(), definition.id);
+            setUuid(value->mutable_endpoint_id(), definition.linkId);
+            value->set_device_code(definition.code);
+            value->set_name(definition.name);
+            value->set_protocol(protocol);
+            value->set_debug_enabled(definition.debugEnabled);
+            value->set_timezone(definition.timezone);
             if (protocol == pb::PROTOCOL_MC || protocol == pb::PROTOCOL_FINS || protocol == pb::PROTOCOL_DLT645) {
-                auto* connection = deviceValue->mutable_industrial();
-                connection->set_mc_four_e(row[38].value().value_or("3E") == "4E");
-                connection->set_dlt645_version(static_cast<std::uint32_t>(integer(row[39].value().value_or("2007"), 2007)));
-                connection->set_mc_network(static_cast<std::uint32_t>(integer(row[40].value().value_or("0"), 0)));
-                connection->set_mc_station(static_cast<std::uint32_t>(integer(row[41].value().value_or("255"), 255)));
-                connection->set_mc_module_io(static_cast<std::uint32_t>(integer(row[42].value().value_or("1023"), 1023)));
-                connection->set_mc_multidrop(static_cast<std::uint32_t>(integer(row[43].value().value_or("0"), 0)));
-                connection->set_mc_monitoring_timer(static_cast<std::uint32_t>(integer(row[44].value().value_or("16"), 16)));
-                connection->set_fins_destination_network(static_cast<std::uint32_t>(integer(row[45].value().value_or("0"), 0)));
-                connection->set_fins_destination_node(static_cast<std::uint32_t>(integer(row[46].value().value_or("0"), 0)));
-                connection->set_fins_destination_unit(static_cast<std::uint32_t>(integer(row[47].value().value_or("0"), 0)));
-                connection->set_fins_source_network(static_cast<std::uint32_t>(integer(row[48].value().value_or("0"), 0)));
-                connection->set_fins_source_node(static_cast<std::uint32_t>(integer(row[49].value().value_or("0"), 0)));
-                connection->set_fins_source_unit(static_cast<std::uint32_t>(integer(row[50].value().value_or("0"), 0)));
-                connection->set_dlt645_wakeup_bytes(static_cast<std::uint32_t>(integer(row[51].value().value_or("4"), 4)));
-                protocol::packet(connection->mutable_dlt645_write_password(), "HEX", row[52].value().value_or(""), "meter password");
-                protocol::packet(connection->mutable_dlt645_operator_code(), "HEX", row[53].value().value_or(""), "meter operator");
+                auto* connection = value->mutable_industrial();
+                const auto& mc = definition.mcConnection;
+                const auto& fins = definition.finsConnection;
+                const auto& dlt = definition.dlt645Connection;
+                connection->set_mc_four_e(mc.frame == service::collector::mc::FrameFormat::Binary4E);
+                connection->set_mc_network(mc.network);
+                connection->set_mc_station(mc.station);
+                connection->set_mc_module_io(mc.moduleIo);
+                connection->set_mc_multidrop(mc.multidrop);
+                connection->set_mc_monitoring_timer(mc.monitoringTimer);
+                connection->set_fins_destination_network(fins.destinationNetwork);
+                connection->set_fins_destination_node(fins.destinationNode);
+                connection->set_fins_destination_unit(fins.destinationUnit);
+                connection->set_fins_source_network(fins.sourceNetwork);
+                connection->set_fins_source_node(fins.sourceNode);
+                connection->set_fins_source_unit(fins.sourceUnit);
+                connection->set_dlt645_version(dlt.version == service::collector::dlt645::Version::V1997 ? 1997 : 2007);
+                connection->set_dlt645_wakeup_bytes(dlt.wakeupBytes);
+                protocol::packet(connection->mutable_dlt645_write_password(), "HEX", dlt.writePassword, "meter password");
+                protocol::packet(connection->mutable_dlt645_operator_code(), "HEX", dlt.operatorCode, "meter operator");
             }
-            deviceValue->set_debug_enabled(row[37].value().value_or("") == "t");
-            deviceValue->set_timezone(row[4].value().value_or(std::string_view{}));
             if (protocol == pb::PROTOCOL_SL651) {
-                const auto mode = row[35].value().value_or(std::string_view{ "M1" });
+                const auto& mode = definition.sl651ResponseMode;
                 if (mode.size() != 2 || mode[0] != 'M' || mode[1] < '1' || mode[1] > '4') {
                     throw std::invalid_argument("invalid SL651 response mode");
                 }
-                deviceValue->set_sl651_response_mode(static_cast<std::uint32_t>(mode[1] - '0'));
+                value->set_sl651_response_mode(static_cast<std::uint32_t>(mode[1] - '0'));
             }
-            // Zero selects the configured read/report interval on updated firmware.
-            // Legacy firmware accepts zero and retains its old one-second scheduler,
-            // so rollout does not reject the entire device configuration.
-            deviceValue->set_io_interval_ms(0);
-            deviceValue->set_report_interval_sec(positiveCeil(row[5].value().value_or(std::string_view{})));
-            deviceValue->set_online_timeout_sec(
-                static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}), 300))
-            );
-            deviceValue->set_modbus_slave_id(
-                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}), 1))
-            );
-            deviceValue->set_modbus_mode(row[8].value().value_or(std::string_view{}));
-            deviceValue->set_modbus_merge_gap(
-                static_cast<std::uint32_t>(integer(row[19].value().value_or(std::string_view{})))
-            );
-            deviceValue->set_modbus_max_quantity(
-                static_cast<std::uint32_t>(integer(row[20].value().value_or(std::string_view{}), 125))
-            );
-            deviceValue->set_s7_connection_mode(row[21].value().value_or(std::string_view{}));
-            deviceValue->set_s7_connection_type(row[22].value().value_or(std::string_view{}));
-            deviceValue->set_s7_rack(
-                static_cast<std::uint32_t>(integer(row[23].value().value_or(std::string_view{})))
-            );
-            deviceValue->set_s7_slot(
-                static_cast<std::uint32_t>(integer(row[24].value().value_or(std::string_view{}), 1))
-            );
-            deviceValue->set_s7_local_tsap(row[25].value().value_or(std::string_view{}));
-            deviceValue->set_s7_remote_tsap(row[26].value().value_or(std::string_view{}));
-            deviceValue->set_command_fast_read_duration_sec(static_cast<std::uint32_t>(std::clamp<std::int64_t>(integer(row[31].value().value_or(std::string_view{}), 60), 0, 3600)));
-            deviceValue->set_command_fast_read_interval_sec(static_cast<std::uint32_t>(std::clamp<std::int64_t>(integer(row[32].value().value_or(std::string_view{}), 1), 1, 3600)));
-            protocol::packet(deviceValue->mutable_heartbeat_payload(), row[27].value().value_or(std::string_view{}), row[28].value().value_or(std::string_view{}), "heartbeat_payload");
-            deviceValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
+            // 新固件 0 跟随 report_interval_sec；旧固件保留其兼容的一秒调度。
+            value->set_io_interval_ms(0);
+            value->set_report_interval_sec(static_cast<std::uint32_t>(definition.readInterval));
+            value->set_online_timeout_sec(static_cast<std::uint32_t>(definition.onlineTimeout));
+            value->set_modbus_slave_id(definition.slaveId);
+            value->set_modbus_mode(definition.modbusMode);
+            value->set_modbus_merge_gap(static_cast<std::uint32_t>(definition.modbusMergeGap));
+            value->set_modbus_max_quantity(static_cast<std::uint32_t>(definition.modbusMaxQuantity));
+            value->set_s7_connection_mode(definition.s7ConnectionMode);
+            value->set_s7_connection_type(definition.s7ConnectionType);
+            value->set_s7_rack(static_cast<std::uint32_t>(definition.s7Rack));
+            value->set_s7_slot(static_cast<std::uint32_t>(definition.s7Slot));
+            value->set_s7_local_tsap(definition.s7LocalTsap);
+            value->set_s7_remote_tsap(definition.s7RemoteTsap);
+            value->set_command_fast_read_duration_sec(static_cast<std::uint32_t>(definition.commandFastReadDuration));
+            value->set_command_fast_read_interval_sec(static_cast<std::uint32_t>(definition.commandFastReadInterval));
+            value->set_heartbeat_payload(protocol::bytes(definition.heartbeatBytes.data(), definition.heartbeatBytes.size()));
+            value->set_enabled(model.enabled);
             items.push_back(std::move(device));
-            const auto configuration = ruvia::json_value::parse(row[54].value().value_or("{}"));
-            if (!configuration) {
-                throw std::runtime_error("invalid device model configuration");
-            }
-            for (const auto& point : service::common::orderDerivedPoints(*configuration)) {
+            for (const auto& point : model.derivedPoints) {
                 if (!derivedSupported) {
                     throw std::runtime_error("边缘固件尚不支持派生点，请先升级固件");
                 }
-                pb::ConfigItem derived;
-                derived.set_kind(pb::CONFIG_ITEM_DERIVED_POINT);
-                auto* value = derived.mutable_derived_point();
-                setUuid(value->mutable_device_id(), row[0].value().value_or(""));
-                value->set_point_id(point.id);
-                value->set_name(point.name);
-                value->set_unit(point.unit);
-                value->set_kind(point.kind);
-                value->set_expression(point.expression);
-                value->set_boolean_result(point.valueType == "boolean");
-                value->set_source_alias(point.sourceAlias);
-                value->set_window_seconds(static_cast<std::uint32_t>(point.windowSeconds));
-                value->set_max_age_seconds(static_cast<std::uint32_t>(point.maxAgeSeconds));
-                value->set_hidden(!point.visible);
+                pb::ConfigItem item;
+                item.set_kind(pb::CONFIG_ITEM_DERIVED_POINT);
+                auto* target = item.mutable_derived_point();
+                setUuid(target->mutable_device_id(), definition.id);
+                target->set_point_id(point.id);
+                target->set_name(point.name);
+                target->set_unit(point.unit);
+                target->set_kind(point.kind);
+                target->set_expression(point.expression);
+                target->set_boolean_result(point.valueType == "boolean");
+                target->set_source_alias(point.sourceAlias);
+                target->set_window_seconds(static_cast<std::uint32_t>(point.windowSeconds));
+                target->set_max_age_seconds(static_cast<std::uint32_t>(point.maxAgeSeconds));
+                target->set_hidden(!point.visible);
                 for (const auto& [alias, id] : point.inputs) {
-                    auto* input = value->add_inputs();
+                    auto* input = target->add_inputs();
                     input->set_alias(alias);
                     input->set_point_id(id);
                 }
                 for (const auto& rule : point.unitRules) {
-                    auto* unit = value->add_unit_rules();
+                    auto* unit = target->add_unit_rules();
                     unit->set_condition(rule.condition);
                     unit->set_unit(rule.unit);
                 }
-                items.push_back(std::move(derived));
+                items.push_back(std::move(item));
             }
-        }
-    }
-
-    template <typename Context>
-    static ruvia::task<void> appendModbus(Context& c, std::string_view nodeId, std::vector<pb::ConfigItem>& items) {
-        const auto rows =
-            co_await c.db().query(config::detail::appendModbusQuery(nodeId));
-        for (const auto& row : rows) {
-            pb::ConfigItem item;
-            item.set_kind(pb::CONFIG_ITEM_MODBUS_REGISTER);
-            auto* value = item.mutable_modbus_register();
-            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            value->set_element_id(row[1].value().value_or(std::string_view{}));
-            value->set_name(row[2].value().value_or(std::string_view{}));
-            value->set_unit(row[3].value().value_or(std::string_view{}));
-            value->set_register_type(row[4].value().value_or(std::string_view{}));
-            value->set_data_type(row[5].value().value_or(std::string_view{}));
-            value->set_byte_order(row[6].value().value_or(std::string_view{}));
-            value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}))));
-            value->set_quantity(
-                static_cast<std::uint32_t>(integer(row[8].value().value_or(std::string_view{}), 1))
-            );
-            value->set_scale(1.0);
-            value->set_decimals(
-                static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1))
-            );
-            value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
-            items.push_back(std::move(item));
-        }
-    }
-
-    template <typename Context>
-    static ruvia::task<void> appendS7(Context& c, std::string_view nodeId, std::vector<pb::ConfigItem>& items) {
-        const auto rows =
-            co_await c.db().query(config::detail::appendS7Query(nodeId));
-        for (const auto& row : rows) {
-            pb::ConfigItem item;
-            item.set_kind(pb::CONFIG_ITEM_S7_AREA);
-            auto* value = item.mutable_s7_area();
-            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            value->set_element_id(row[1].value().value_or(std::string_view{}));
-            value->set_name(row[2].value().value_or(std::string_view{}));
-            value->set_unit(row[3].value().value_or(std::string_view{}));
-            value->set_area(row[4].value().value_or(std::string_view{}));
-            value->set_db_number(
-                static_cast<std::uint32_t>(integer(row[5].value().value_or(std::string_view{})))
-            );
-            value->set_start(static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}))));
-            value->set_start_bit(
-                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{})))
-            );
-            value->set_size(
-                static_cast<std::uint32_t>(integer(row[8].value().value_or(std::string_view{}), 1))
-            );
-            value->set_data_type(row[9].value().value_or(std::string_view{}));
-            value->set_scale(1.0);
-            value->set_decimals(
-                static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1))
-            );
-            value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
-            items.push_back(std::move(item));
-        }
-    }
-
-    template <typename Context>
-    static ruvia::task<void> appendIndustrial(Context& c, std::string_view nodeId, std::vector<pb::ConfigItem>& items) {
-        const auto rows = co_await c.db().query(config::detail::appendIndustrialQuery(nodeId));
-        for (const auto& row : rows) {
-            pb::ConfigItem item;
-            item.set_kind(pb::CONFIG_ITEM_INDUSTRIAL_POINT);
-            auto* value = item.mutable_industrial_point();
-            setUuid(value->mutable_device_id(), row[0].value().value_or(""));
-            value->set_element_id(row[1].value().value_or(""));
-            value->set_name(row[2].value().value_or(""));
-            value->set_unit(row[3].value().value_or(""));
-            value->set_area(row[4].value().value_or(""));
-            value->set_data_type(row[5].value().value_or(""));
-            value->set_byte_order(row[6].value().value_or(""));
-            value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or("0"))));
-            value->set_bit(static_cast<std::uint32_t>(integer(row[8].value().value_or("0"))));
-            value->set_scale(1.0);
-            value->set_decimals(static_cast<std::int32_t>(integer(row[10].value().value_or("-1"), -1)));
-            value->set_identifier(row[11].value().value_or(""));
-            value->set_length(static_cast<std::uint32_t>(integer(row[12].value().value_or("4"), 4)));
-            value->set_digits(static_cast<std::uint32_t>(integer(row[13].value().value_or("2"), 2)));
-            value->set_writable(row[14].value().value_or("") == "t");
-            items.push_back(std::move(item));
-        }
-    }
-
-    template <typename Context>
-    static ruvia::task<void> appendSl651(Context& c, std::string_view nodeId, std::vector<pb::ConfigItem>& items) {
-        const auto functions = co_await c.db().query(
-            config::detail::appendSl651FunctionsQuery(nodeId)
-        );
-        for (const auto& row : functions) {
-            pb::ConfigItem item;
-            item.set_kind(pb::CONFIG_ITEM_SL651_FUNCTION);
-            auto* value = item.mutable_sl651_function();
-            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            value->set_function_code(row[1].value().value_or(std::string_view{}));
-            value->set_name(row[2].value().value_or(std::string_view{}));
-            value->set_direction(row[3].value().value_or(std::string_view{}));
-            items.push_back(std::move(item));
-        }
-
-        const auto elements = co_await c.db().query(
-            config::detail::appendSl651ElementsQuery(nodeId)
-        );
-        for (const auto& row : elements) {
-            pb::ConfigItem item;
-            item.set_kind(pb::CONFIG_ITEM_SL651_ELEMENT);
-            auto* value = item.mutable_sl651_element();
-            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            value->set_function_code(row[1].value().value_or(std::string_view{}));
-            value->set_element_id(row[2].value().value_or(std::string_view{}));
-            value->set_name(row[3].value().value_or(std::string_view{}));
-            value->set_unit(row[4].value().value_or(std::string_view{}));
-            value->set_encoding(row[5].value().value_or(std::string_view{}));
-            value->set_length(
-                static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{})))
-            );
-            value->set_digits(
-                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{})))
-            );
-            const auto guide =
-                protocol::packetBytes("HEX", row[8].value().value_or(std::string_view{}), "sl651_guide");
-            value->set_guide(protocol::bytes(guide.data(), guide.size()));
-            value->set_fixed_position(row[11].value().value_or(std::string_view{}) == "OFFSET");
-            value->set_byte_offset(static_cast<std::uint32_t>(integer(row[12].value().value_or(std::string_view{}))));
-            value->set_response_element(row[9].value().value_or(std::string_view{}) == "t");
-            value->set_writable(row[10].value().value_or(std::string_view{}) == "t" && !value->response_element());
-            items.push_back(std::move(item));
+            for (const auto& function : model.functions) {
+                pb::ConfigItem item;
+                item.set_kind(pb::CONFIG_ITEM_SL651_FUNCTION);
+                auto* target = item.mutable_sl651_function();
+                setUuid(target->mutable_device_id(), definition.id);
+                target->set_function_code(function.code);
+                target->set_name(function.name);
+                target->set_direction(function.direction);
+                items.push_back(std::move(item));
+            }
+            for (const auto& element : definition.elements) {
+                pb::ConfigItem item;
+                if (protocol == pb::PROTOCOL_MODBUS) {
+                    item.set_kind(pb::CONFIG_ITEM_MODBUS_REGISTER);
+                    auto* target = item.mutable_modbus_register();
+                    setUuid(target->mutable_device_id(), definition.id);
+                    target->set_element_id(element.id);
+                    target->set_name(element.name);
+                    target->set_unit(element.unit);
+                    target->set_register_type(element.registerType);
+                    target->set_data_type(element.dataType);
+                    target->set_byte_order(element.byteOrder);
+                    target->set_address(static_cast<std::uint32_t>(element.address));
+                    target->set_quantity(static_cast<std::uint32_t>(element.quantity));
+                    target->set_scale(1.0);
+                    target->set_decimals(static_cast<std::int32_t>(element.decimals));
+                    target->set_writable(element.writable);
+                } else if (protocol == pb::PROTOCOL_S7) {
+                    item.set_kind(pb::CONFIG_ITEM_S7_AREA);
+                    auto* target = item.mutable_s7_area();
+                    setUuid(target->mutable_device_id(), definition.id);
+                    target->set_element_id(element.id);
+                    target->set_name(element.name);
+                    target->set_unit(element.unit);
+                    target->set_area(element.area);
+                    target->set_db_number(static_cast<std::uint32_t>(element.dbNumber));
+                    target->set_start(static_cast<std::uint32_t>(element.start));
+                    target->set_start_bit(static_cast<std::uint32_t>(element.startBit));
+                    target->set_size(static_cast<std::uint32_t>(element.size));
+                    target->set_data_type(element.dataType);
+                    target->set_scale(1.0);
+                    target->set_decimals(static_cast<std::int32_t>(element.decimals));
+                    target->set_writable(element.writable);
+                } else if (protocol == pb::PROTOCOL_SL651) {
+                    item.set_kind(pb::CONFIG_ITEM_SL651_ELEMENT);
+                    auto* target = item.mutable_sl651_element();
+                    setUuid(target->mutable_device_id(), definition.id);
+                    target->set_function_code(element.functionCode);
+                    target->set_element_id(element.id);
+                    target->set_name(element.name);
+                    target->set_unit(element.unit);
+                    target->set_encoding(element.encoding);
+                    target->set_length(static_cast<std::uint32_t>(element.length));
+                    target->set_digits(static_cast<std::uint32_t>(element.digits));
+                    const auto guide = protocol::packetBytes("HEX", element.guideHex, "sl651_guide");
+                    target->set_guide(protocol::bytes(guide.data(), guide.size()));
+                    target->set_fixed_position(element.positionMode == "OFFSET");
+                    target->set_byte_offset(static_cast<std::uint32_t>(element.byteOffset));
+                    target->set_response_element(element.responseElement);
+                    target->set_writable(element.writable);
+                } else {
+                    item.set_kind(pb::CONFIG_ITEM_INDUSTRIAL_POINT);
+                    auto* target = item.mutable_industrial_point();
+                    setUuid(target->mutable_device_id(), definition.id);
+                    target->set_element_id(element.id);
+                    target->set_name(element.name);
+                    target->set_unit(element.unit);
+                    target->set_area(element.area);
+                    target->set_data_type(element.dataType);
+                    target->set_byte_order(element.byteOrder);
+                    target->set_address(static_cast<std::uint32_t>(element.address));
+                    target->set_bit(static_cast<std::uint32_t>(element.startBit));
+                    target->set_scale(1.0);
+                    target->set_decimals(static_cast<std::int32_t>(element.decimals));
+                    target->set_identifier(element.guideHex);
+                    target->set_length(static_cast<std::uint32_t>(element.length));
+                    target->set_digits(static_cast<std::uint32_t>(element.digits));
+                    target->set_writable(element.writable);
+                }
+                items.push_back(std::move(item));
+            }
         }
     }
 };

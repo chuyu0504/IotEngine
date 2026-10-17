@@ -60,9 +60,8 @@ inline std::string metadataKey(std::string_view version) {
     return prefix(version) + ":metadata";
 }
 
-// A deterministic content signature makes periodic Service reconciliation cheap and
-// idempotent. It is not a security hash; length-prefixed FNV-1a is sufficient to distinguish
-// runtime snapshots and remains stable across process restarts.
+// 确定性的内容签名用于按需投影去重，不是安全散列。格式标识也参与签名，
+// 确保旧无序 Set 快照在启动投影时一次切换为有序 List，而不复用旧活动版本。
 inline std::string signature(const RuntimeSnapshot& snapshot) {
     std::uint64_t value = 14695981039346656037ULL;
     const auto byte = [&value](std::uint8_t input) {
@@ -90,6 +89,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         number(static_cast<std::uint64_t>(input));
     };
 
+    text("ordered-device-model-occurrences-v1");
     number(snapshot.links.size());
     for (const auto& link : snapshot.links) {
         text(link.id);
@@ -275,47 +275,18 @@ execute(const Redis& redis, const std::vector<std::vector<std::string>>& command
     if (commands.empty()) {
         co_return std::pmr::vector<ruvia::redis_value>{};
     }
-    if constexpr (requires { redis.pipeline(); }) {
-        auto pipeline = redis.pipeline();
-        for (const auto& command : commands) {
-            std::vector<std::string_view> views(command.begin(), command.end());
-            pipeline.command(views);
-        }
-        auto replies = co_await std::move(pipeline).exec();
-        for (const auto& reply : replies) {
-            if (reply.kind() == ruvia::redis_value::kind_type::error) {
-                service::utils::redis::throwValue("runtime pipeline", reply);
-            }
-        }
-        co_return replies;
-    } else {
-        static constexpr std::string_view script = R"lua(
-local replies = {}
-for index = 1, #ARGV, 2 do
-  replies[#replies + 1] = redis.call(ARGV[index], ARGV[index + 1])
-end
-return replies
-)lua";
-        std::vector<std::string> arguments;
-        arguments.reserve(commands.size() * 2);
-        for (const auto& command : commands) {
-            if (command.size() != 2 || (command[0] != "HGETALL" && command[0] != "SMEMBERS")) {
-                throw std::runtime_error("unsupported runtime batch command");
-            }
-            arguments.insert(arguments.end(), command.begin(), command.end());
-        }
-        std::vector<std::string_view> views(arguments.begin(), arguments.end());
-        const auto reply = co_await redis.eval(script, {}, views);
-        if (reply.kind() != ruvia::redis_value::kind_type::array) {
-            service::utils::redis::throwValue("runtime batch", reply);
-        }
-        std::pmr::vector<ruvia::redis_value> replies;
-        replies.reserve(reply.array().size());
-        for (const auto& value : reply.array()) {
-            replies.push_back(value);
-        }
-        co_return replies;
+    auto pipeline = redis.pipeline();
+    for (const auto& command : commands) {
+        std::vector<std::string_view> views(command.begin(), command.end());
+        pipeline.command(views);
     }
+    auto replies = co_await std::move(pipeline).exec();
+    for (const auto& reply : replies) {
+        if (reply.kind() == ruvia::redis_value::kind_type::error) {
+            service::utils::redis::throwValue("runtime pipeline", reply);
+        }
+    }
+    co_return replies;
 }
 
 template <typename Redis>
@@ -601,7 +572,8 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
     }
 
     for (const auto& device : snapshot.devices) {
-        detail::appendId(commands, version, devicesKey, device.id);
+        commands.push_back({ "RPUSH", devicesKey, device.id });
+        detail::appendRememberedKey(commands, version, devicesKey);
         detail::appendHash(commands, version, deviceKey(version, device.id), ConnectionConfig::fields(device));
         detail::appendHash(
             commands,
@@ -644,10 +616,24 @@ ruvia::task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
               { "command_fast_read_interval", std::to_string(device.commandFastReadInterval) } }
         );
         const auto elementsKey = deviceKey(version, device.id) + ":elements";
-        for (const auto& element : device.elements) {
+        for (std::size_t ordinal = 0; ordinal < device.elements.size(); ++ordinal) {
+            const auto& element = device.elements[ordinal];
             const auto& configKey = element.configKey.empty() ? element.id : element.configKey;
-            detail::appendId(commands, version, elementsKey, configKey);
-            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "mqtt_field", element.mqttField }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
+            commands.push_back({ "RPUSH", elementsKey, configKey });
+            detail::appendRememberedKey(commands, version, elementsKey);
+            const auto key = elementKey(version, device.id, configKey);
+            const auto fieldPrefix = std::to_string(ordinal) + ":";
+            auto values = element.fieldValues();
+            std::vector<std::string> command{ "HSET", key };
+            command.reserve(2 + 2 * ElementDefinition::kFieldNames.size());
+            for (std::size_t field = 0; field < ElementDefinition::kFieldNames.size(); ++field) {
+                auto fieldName = fieldPrefix;
+                fieldName.append(ElementDefinition::kFieldNames[field]);
+                command.push_back(std::move(fieldName));
+                command.push_back(std::move(values[field]));
+            }
+            commands.push_back(std::move(command));
+            detail::appendRememberedKey(commands, version, key);
             if (commands.size() >= pipelineSize) {
                 co_await detail::flush(redis, commands);
             }
@@ -734,18 +720,22 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
         snapshot.links.push_back(std::move(link));
     }
 
-    const auto deviceIds = co_await detail::members(redis, prefix(version) + ":devices");
+    const auto deviceIds = detail::stringArray(
+        co_await redis.command("LRANGE", prefix(version) + ":devices", "0", "-1"),
+        "ordered runtime devices"
+    );
     std::vector<std::vector<std::string>> deviceCommands;
     deviceCommands.reserve(deviceIds.size() * 2);
     for (const auto& deviceId : deviceIds) {
         deviceCommands.push_back({ "HGETALL", deviceKey(version, deviceId) });
-        deviceCommands.push_back({ "SMEMBERS", deviceKey(version, deviceId) + ":elements" });
+        deviceCommands.push_back({ "LRANGE", deviceKey(version, deviceId) + ":elements", "0", "-1" });
     }
     const auto deviceReplies = co_await detail::execute(redis, deviceCommands);
 
     struct ElementLoad {
         std::size_t deviceIndex;
         std::string key;
+        std::size_t ordinal;
     };
 
     std::vector<ElementLoad> elementLoads;
@@ -754,12 +744,10 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
         snapshot.devices.push_back(
             detail::device(detail::hashFields(deviceReplies[index * 2], "device config"))
         );
-        const auto elements = detail::sortedStrings(
-            detail::stringArray(deviceReplies[index * 2 + 1], "device element ids")
-        );
+        const auto elements = detail::stringArray(deviceReplies[index * 2 + 1], "ordered device element ids");
         const auto deviceIndex = snapshot.devices.size() - 1;
-        for (const auto& elementId : elements) {
-            elementLoads.push_back({ deviceIndex, elementKey(version, deviceIds[index], elementId) });
+        for (std::size_t ordinal = 0; ordinal < elements.size(); ++ordinal) {
+            elementLoads.push_back({ deviceIndex, elementKey(version, deviceIds[index], elements[ordinal]), ordinal });
         }
     }
 
@@ -769,11 +757,33 @@ ruvia::task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
         std::vector<std::vector<std::string>> elementCommands;
         elementCommands.reserve(end - offset);
         for (std::size_t index = offset; index < end; ++index) {
-            elementCommands.push_back({ "HGETALL", elementLoads[index].key });
+            const auto& load = elementLoads[index];
+            std::vector<std::string> command{ "HMGET", load.key };
+            command.reserve(2 + ElementDefinition::kFieldNames.size());
+            const auto prefix = std::to_string(load.ordinal) + ":";
+            for (const auto field : ElementDefinition::kFieldNames) {
+                auto fieldName = prefix;
+                fieldName.append(field);
+                command.push_back(std::move(fieldName));
+            }
+            elementCommands.push_back(std::move(command));
         }
         const auto elementReplies = co_await detail::execute(redis, elementCommands);
         for (std::size_t index = offset; index < end; ++index) {
-            auto fields = detail::hashFields(elementReplies[index - offset], "element config");
+            const auto& reply = elementReplies[index - offset];
+            if (reply.kind() != ruvia::redis_value::kind_type::array ||
+                reply.array().size() != ElementDefinition::kFieldNames.size()) {
+                service::utils::redis::throwValue("ordered element config", reply);
+            }
+            std::vector<message::StreamField> fields;
+            fields.reserve(ElementDefinition::kFieldNames.size());
+            for (std::size_t field = 0; field < ElementDefinition::kFieldNames.size(); ++field) {
+                const auto& value = reply.array()[field];
+                if (value.kind() != ruvia::redis_value::kind_type::string) {
+                    service::utils::redis::throwValue("ordered element field", value);
+                }
+                fields.push_back({ std::string(ElementDefinition::kFieldNames[field]), std::string(value.string()) });
+            }
             snapshot.devices[elementLoads[index].deviceIndex].elements.push_back(
                 detail::element(fields)
             );

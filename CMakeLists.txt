@@ -397,6 +397,10 @@ iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
+iot_engine_add_test(device-model-projection LARGE
+    SOURCES tests/device-model-projection-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
+
 iot_engine_add_test(api-upload LARGE
     SOURCES tests/api-upload-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
@@ -562,6 +566,7 @@ foreach(test_name
         derived-points-integration
         device-endpoint-integration
         device-http-sse-integration
+        device-model-projection-integration
         device-parameter-definitions-migration-integration
         device-parameters-migration-integration
         edge-config-reconnect-integration
