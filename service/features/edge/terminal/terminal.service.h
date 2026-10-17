@@ -429,7 +429,7 @@ class TerminalService final {
         if (result.kind() != ruvia::redis_value::kind_type::integer || result.integer() != 1) {
             service::common::fail(17018, "终端已关闭、尚未就绪或指令队列已满", 409);
         }
-        co_await dispatch::notifyNode(c.redis(), binding.nodeId);
+        co_await dispatch::notifyNode(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, binding.nodeId);
     }
 
     template <typename Context>
@@ -485,7 +485,7 @@ class TerminalService final {
         if (reply.integer() == 0) {
             throw std::runtime_error("edge terminal input backlog exceeded");
         }
-        co_await dispatch::notifyNode(c.redis(), nodeId);
+        co_await dispatch::notifyNode(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, nodeId);
     }
 
     template <typename Context>

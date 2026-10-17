@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { redisUrl } from './architecture-fixture';
 
@@ -9,7 +10,7 @@ const input = `${prefix}:input`;
 const reply = `${prefix}:reply`;
 const missedReply = `${prefix}:missed-reply`;
 const deadlines = `iot:consumer:pending:group:${input}`;
-const deadlineChannel = `iot:consumer:deadline:group:${input}`;
+const deadlineChannel = sharedChannel(redisUrl, `consumer:deadline:group:${input}`);
 const source = await Bun.file('service/features/messaging/rpc/rpc.service.h').text();
 const lua = source.match(/\bkReplyScript\s*=\s*R"lua\(([\s\S]*?)\)lua"/)?.[1];
 assert(lua, 'missing production kReplyScript');

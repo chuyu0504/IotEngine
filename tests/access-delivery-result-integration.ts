@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 
 const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL;
@@ -8,8 +9,8 @@ const prefix = `iot:test:access-result:${crypto.randomUUID()}`;
 const stream = `${prefix}:results`;
 const progress = `${prefix}:progress`;
 const wake = `${prefix}:wake`;
-const inputChannel = `iot:consumer:input:${stream}`;
-const wakeChannel = `iot:consumer:input:${wake}`;
+const inputChannel = sharedChannel(redisUrl, `consumer:input:${stream}`);
+const wakeChannel = sharedChannel(redisUrl, `consumer:input:${wake}`);
 const barrierChannel = `${prefix}:barrier`;
 const notices: { payload: string; channel: string }[] = [];
 let barrier: (() => void) | undefined;

@@ -2935,7 +2935,7 @@ class DebugConnection final {
     ruvia::task<void> run() {
         // Authorization loss fails closed; every connection owns its receiver.
         auto authorization = context_.redis().with_options({ .stop_token_ = tasks_.get_stop_token() }).subscription();
-        const auto authTopic = service::message::live::channel(service::message::live::topic::kAuth);
+        const auto authTopic = service::message::live::channel(context_.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::message::live::topic::kAuth);
         co_await debug::confirmSubscription(authorization, authTopic);
         tasks_.spawn(watchResourceAuthorization(authorization));
         tasks_.spawn(watchTokenExpiry());

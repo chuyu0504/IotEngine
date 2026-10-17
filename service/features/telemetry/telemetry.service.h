@@ -103,7 +103,7 @@ return copied
 
 // 每条遥测只解析、规范化与修复 UTF-8 一次，整批一次 EVAL 复制到全部消费者流。
 template <class Redis>
-ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMessage>& messages, std::string_view instanceId) {
+ruvia::task<void> fanout(const Redis& redis, const service::message::RedisChannelScope& scope, const std::vector<message::StreamMessage>& messages, std::string_view instanceId) {
     if (messages.empty()) {
         co_return;
     }
@@ -126,11 +126,11 @@ ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMe
     }
     const auto wakeStream = message::workerWakeStream(std::nullopt, instanceId);
     const std::string inputChannels[]{
-        message::consumer::inputChannel(message::telemetry::kHistoryStream),
-        message::consumer::inputChannel(message::telemetry::kLatestStream),
-        message::consumer::inputChannel(message::telemetry::kAlertsStream),
-        message::consumer::inputChannel(message::telemetry::kDeliveryStream),
-        message::consumer::inputChannel(wakeStream)
+        message::consumer::inputChannel(scope, message::telemetry::kHistoryStream),
+        message::consumer::inputChannel(scope, message::telemetry::kLatestStream),
+        message::consumer::inputChannel(scope, message::telemetry::kAlertsStream),
+        message::consumer::inputChannel(scope, message::telemetry::kDeliveryStream),
+        message::consumer::inputChannel(scope, wakeStream)
     };
     std::vector<std::string_view> keys;
     keys.reserve(10 + receipts.size());
@@ -160,9 +160,9 @@ ruvia::task<void> fanout(const Redis& redis, const std::vector<message::StreamMe
 class TelemetryService {
   public:
     template <typename Redis>
-    static ruvia::task<std::optional<std::int64_t>> retireExpiredFreshness(const Redis& redis) {
-        co_await latest::expireStale(redis);
-        co_await latest::expireConnections(redis);
+    static ruvia::task<std::optional<std::int64_t>> retireExpiredFreshness(const Redis& redis, const service::message::RedisChannelScope& scope) {
+        co_await latest::expireStale(redis, scope);
+        co_await latest::expireConnections(redis, scope);
         co_return co_await latest::nextDeadline(redis);
     }
 
@@ -176,14 +176,14 @@ class TelemetryService {
             service::common::fail(10002, "Invalid telemetry object identifier", 400);
         }
         if (operation == "initialize" && pair) {
-            co_await latest::initializeDevice(context.redis(), id, pair->second);
+            co_await latest::initializeDevice(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, id, pair->second);
             co_await latest::projectDevice(context, id);
         } else if (operation == "project-device") {
             co_await latest::projectDevice(context, id);
         } else if (operation == "project-protocol") {
             co_await latest::projectProtocol(context, id);
         } else if (operation == "erase-device") {
-            co_await latest::eraseDevice(context.redis(), id);
+            co_await latest::eraseDevice(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, id);
         } else {
             service::common::fail(10002, "Unknown telemetry operation", 400);
         }
@@ -191,7 +191,7 @@ class TelemetryService {
     }
 
     static ruvia::task<void> ingest(ruvia::web_worker_context& context, const std::vector<message::StreamMessage>& messages) {
-        co_await fanout(context.redis(), messages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
+        co_await fanout(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, messages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
     }
 
     // 消费者副本已由 Dispatch 规范化并修复 UTF-8；这里只解码流字段，并对升级前未修复的副本按需修复（合法文本不复制）。
@@ -214,6 +214,7 @@ class TelemetryService {
             co_return;
         }
         const auto redis = context.redis();
+        const auto& scope = context.worker_state<std::optional<common::WorkerIdentity>>().value().channels;
         switch (consumer) {
             case Consumer::History: {
                 co_await persist(context, parsedMessages);
@@ -226,14 +227,14 @@ class TelemetryService {
                 deviceIds.erase(std::unique(deviceIds.begin(), deviceIds.end()), deviceIds.end());
                 // Latest publishes device.realtime for the same samples; History
                 // only tells readers of persisted rows (open history stream).
-                co_await service::live::publish(redis, service::message::live::topic::kDeviceHistory, deviceIds);
+                co_await service::live::publish(redis, scope, service::message::live::topic::kDeviceHistory, deviceIds);
                 break;
             }
             case Consumer::Latest:
-                co_await latest::update(redis, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
+                co_await latest::update(redis, scope, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
                 break;
             case Consumer::Delivery:
-                co_await service::access::event::publishMany(redis, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
+                co_await service::access::event::publishMany(redis, scope, parsedMessages, context.worker_state<std::optional<common::WorkerIdentity>>().value().instanceId);
                 break;
             case Consumer::Dispatch:
                 break;

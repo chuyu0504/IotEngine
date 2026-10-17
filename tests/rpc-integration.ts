@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
 // This test is intentionally limited to the disposable local fixture.
 import assert from 'node:assert/strict';
@@ -374,7 +375,7 @@ async function callPrepareRpc(stream: string) {
         const enqueueSource = await Bun.file('service/utils/rpc_client.h').text();
         const entry = await redis.send('EVAL', [
             productionScript(enqueueSource, 'kEnqueueRpcScript'),
-            '2', stream, `iot:consumer:input:${stream}`,
+            '2', stream, sharedChannel(redisUrl, `consumer:input:${stream}`),
             'version',
             '1',
             'id',
@@ -834,7 +835,7 @@ try {
     await Promise.all(liveStreams.map((stream) => stream.next()));
     const liveSubscriber = new Bun.RedisClient(redisUrl);
     try {
-        const channel = 'iot:live:topic:device';
+        const channel = sharedChannel(redisUrl, 'live:topic:device');
         let changed!: (payload: string) => void;
         const change = new Promise<string>(resolve => { changed = resolve; });
         assert.equal(await liveSubscriber.subscribe(channel, payload => {
@@ -876,7 +877,7 @@ try {
     const liveSource = await Bun.file('service/features/live/live.service.h').text();
     await redis.send('EVAL', [
         productionScript(liveSource, 'kPublishChangeScript'),
-        '3', 'iot:live:topic:runtime-config', 'iot:live:changes', 'iot:consumer:input:iot:live:changes',
+        '3', sharedChannel(redisUrl, 'live:topic:runtime-config'), 'iot:live:changes', sharedChannel(redisUrl, 'consumer:input:iot:live:changes'),
         'runtime-config', '', '20000',
     ]);
     await until(async () => {

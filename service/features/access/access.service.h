@@ -628,8 +628,8 @@ class DeliveryService final {
             resultStream,
             DeliveryProgressRecord::key(delivery.eventType, delivery.id),
             wakeStream,
-            service::message::consumer::inputChannel(resultStream),
-            service::message::consumer::inputChannel(wakeStream)
+            service::message::consumer::inputChannel(context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, resultStream),
+            service::message::consumer::inputChannel(context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, wakeStream)
         };
         const std::vector<std::string> argumentStore{
             target.id,
@@ -680,8 +680,9 @@ namespace service::access::event {
 
 // 将一条开放接入事件按 service::message::access::stream 契约加入 pipeline（scriptSha 为 kPublishEventScript）。
 template <typename Pipeline>
-void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instanceId) {
+void queue(Pipeline& pipeline, const service::message::RedisChannelScope& scope, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instanceId) {
     const auto publication = service::message::access::stream::eventPublication(
+        scope,
         eventId,
         eventType,
         deviceId,
@@ -690,29 +691,30 @@ void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view even
         dataJson,
         instanceId
     );
-    std::array<std::string_view, 22> command{ "EVALSHA", scriptSha, "3" };
+    std::array<std::string_view, 24> command{ "EVALSHA", scriptSha, "5" };
     std::ranges::copy(publication.keys, command.begin() + 3);
-    std::ranges::copy(publication.arguments, command.begin() + 6);
+    std::ranges::copy(publication.arguments, command.begin() + 8);
     pipeline.command(std::span<const std::string_view>(command));
 }
 
 template <typename Redis>
 ruvia::task<void> publishMany(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     const std::vector<message::ParsedDeviceMessage>& messages,
     std::string_view instanceId
 ) {
     if (messages.empty()) {
         co_return;
     }
-    const auto scriptSha = co_await redis.script_load(service::message::access::stream::kPublishEventScript);
+    const auto scriptSha = co_await redis.script_load(service::access::persistence::kPublishEventScript);
     auto pipeline = redis.pipeline();
     for (const auto& parsed : messages) {
         const auto eventType =
             parsed.eventKind == "image"
             ? "device.image.reported"
             : "device.data.reported";
-        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson, instanceId);
+        queue(pipeline, scope, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson, instanceId);
     }
     const auto replies = co_await std::move(pipeline).exec();
     utils::redis::requirePipelineSuccess("publish open-access events", replies);
@@ -725,7 +727,7 @@ namespace service::access::audit {
 inline constexpr std::size_t kCapacity = 100000;
 
 template <typename Redis>
-ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view instanceId, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
+ruvia::task<void> publish(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view logId, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view instanceId, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
     const std::vector<service::message::StreamField> fields{
         { "log_id", std::string(logId) },
         { "access_key_id", std::string(accessKeyId) },
@@ -741,6 +743,7 @@ ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::strin
     };
     (void)co_await service::messaging::stream::addAndWake(
         redis,
+        scope,
         service::message::access::stream::audit(),
         fields,
         std::nullopt,
@@ -785,7 +788,7 @@ class AccessOperationService final {
             const auto deviceId = text(request->get<"deviceId">());
             const auto requestPayload = json(request->get<"requestPayload">());
             const auto responsePayload = json(request->get<"responsePayload">());
-            co_await audit::publish(context.redis(), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, deviceId, requestPayload, responsePayload);
+            co_await audit::publish(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, deviceId, requestPayload, responsePayload);
             co_return "{}";
         }
         service::common::fail(10002, "Unknown access operation", 400);

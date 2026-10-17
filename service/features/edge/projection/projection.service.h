@@ -293,12 +293,12 @@ class ProjectorStreams final {
     }
 
     template <typename Redis>
-    static ruvia::task<bool> acknowledgeFenced(const Redis& redis, const ProjectorStreamOwner& owner, const std::vector<service::message::StreamMessage>& messages) {
+    static ruvia::task<bool> acknowledgeFenced(const Redis& redis, const service::message::RedisChannelScope& scope, const ProjectorStreamOwner& owner, const std::vector<service::message::StreamMessage>& messages) {
         if (messages.empty()) {
             co_return true;
         }
         const auto deadline = service::message::consumer::deadlineKey(owner.stream, kIngressGroup);
-        const auto channel = service::message::consumer::deadlineChannel(owner.stream, kIngressGroup);
+        const auto channel = service::message::consumer::deadlineChannel(scope, owner.stream, kIngressGroup);
         const std::string_view keys[]{ owner.lease, owner.stream, deadline, channel };
         std::vector<std::string_view> arguments;
         arguments.reserve(messages.size() + 2);
@@ -374,6 +374,7 @@ class ProjectionService final {
                 if (prepared) {
                     const auto result = co_await service::telemetry::derived::DerivedService::append(
                         context.redis(),
+                        context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                         *prepared,
                         parsed,
                         context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId,
@@ -411,6 +412,7 @@ class ProjectionService final {
         }
         co_return (co_await service::telemetry::derived::DerivedService::append(
                        context.redis(),
+                       context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                        *prepared,
                        parsed,
                        context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId,
@@ -1938,6 +1940,7 @@ class ProjectionService final {
         }
         (void)co_await service::messaging::stream::publishAndWake(
             context.redis(),
+            context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
             message::commandResultStream(),
             fields,
             std::nullopt,
@@ -1979,7 +1982,7 @@ class ProjectionService final {
             updated.push_back(deviceId);
         }
         if (!updated.empty()) {
-            co_await service::telemetry::latest::publishRealtimeChange(context.redis(), updated);
+            co_await service::telemetry::latest::publishRealtimeChange(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, updated);
         }
     }
 

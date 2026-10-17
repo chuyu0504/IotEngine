@@ -110,7 +110,7 @@ class DeliveryRuntime final {
             co_await utils::redis::ensureGroup(redis, streamName, kGroup);
             streams.push_back(streamName);
         }
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             DeliveryClient http;
             co_await session::ensure(context);
             auto catalog = co_await delivery::loadCatalog(context);
@@ -124,7 +124,7 @@ class DeliveryRuntime final {
                 std::vector<utils::redis::StreamBatch> batches;
                 bool readFailed = false;
                 try {
-                    batches = co_await utils::redis::consumeGroup(redis, streams, kGroup, consumer, recovering, notifications, stop, std::nullopt, kBatchSize);
+                    batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, kGroup, consumer, recovering, notifications, stop, std::nullopt, kBatchSize);
                 } catch (const std::exception& error) {
                     if (stop.stop_requested()) {
                         break;
@@ -169,6 +169,7 @@ class DeliveryRuntime final {
                         }
                         co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
+                            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                             batch.stream,
                             kGroup,
                             batch.messages
@@ -181,6 +182,7 @@ class DeliveryRuntime final {
                         co_await delivery::persistResults(context, batch.messages);
                         co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
+                            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                             batch.stream,
                             kGroup,
                             batch.messages
@@ -193,6 +195,7 @@ class DeliveryRuntime final {
                         co_await delivery::persistAudits(context, batch.messages);
                         co_await utils::redis::acknowledgeAndDeleteMany(
                             redis,
+                            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                             batch.stream,
                             kGroup,
                             batch.messages
@@ -310,6 +313,7 @@ class DeliveryRuntime final {
         if (!completed.empty()) {
             co_await utils::redis::acknowledgeAndDeleteMany(
                 context.redis(),
+                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 sourceStream,
                 kGroup,
                 completed

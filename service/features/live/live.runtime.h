@@ -63,7 +63,7 @@ class LiveChangeRuntime final {
         while (!stop.stop_requested()) {
             std::chrono::milliseconds wait;
             try {
-                wait = co_await expireDueSessions(redis);
+                wait = co_await expireDueSessions(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels);
             } catch (const std::exception& error) {
                 if (stop.stop_requested()) {
                     break;

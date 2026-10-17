@@ -23,6 +23,7 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
+#include "service/features/access/access.entity.h"
 #include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.config.h"
 #include "service/features/messaging/messaging.entity.h"
@@ -35,6 +36,7 @@ namespace service::messaging::outbox {
 template <typename Redis>
 ruvia::task<void> publishConfigEnvelope(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::string_view eventId,
     std::string_view eventType,
     std::string_view aggregate,
@@ -72,6 +74,7 @@ ruvia::task<void> publishConfigEnvelope(
     if (runtimeChange) {
         service::messaging::stream::queueAddAndWake(
             pipeline,
+            scope,
             service::message::configuration::runtimeChangesStream(),
             fields,
             std::nullopt,
@@ -87,6 +90,7 @@ ruvia::task<void> publishConfigEnvelope(
              ++workerIndex) {
             service::messaging::stream::queueAddAndWake(
                 pipeline,
+                scope,
                 service::message::access::stream::catalogChanges(workerIndex),
                 fields,
                 workerIndex,
@@ -99,6 +103,7 @@ ruvia::task<void> publishConfigEnvelope(
     if (accessSessionChange) {
         service::messaging::stream::queueAddAndWake(
             pipeline,
+            scope,
             service::message::access::stream::sessionChanges(),
             fields,
             std::nullopt,
@@ -273,9 +278,10 @@ class OutboxService {
                             ids.emplace_back(id);
                         }
                     }
-                    co_await service::live::publish(context.redis(), event.aggregate, ids);
+                    co_await service::live::publish(context.redis(), identity.channels, event.aggregate, ids);
                 } else if (event.aggregate == "command") {
                     const auto publication = service::message::access::stream::eventPublication(
+                        identity.channels,
                         event.id,
                         event.type,
                         event.aggregateId,
@@ -286,13 +292,13 @@ class OutboxService {
                     );
                     const std::vector<std::string_view> keys(publication.keys.begin(), publication.keys.end());
                     const std::vector<std::string_view> arguments(publication.arguments.begin(), publication.arguments.end());
-                    const auto reply = co_await context.redis().eval(service::message::access::stream::kPublishEventScript, keys, arguments);
+                    const auto reply = co_await context.redis().eval(service::access::persistence::kPublishEventScript, keys, arguments);
                     if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::string) {
                         service::utils::redis::throwValue("publish open-access event", reply);
                     }
-                    co_await service::messaging::stream::wakeWorker(context.redis(), std::nullopt, service::message::WorkerStreamTask::CommandResult, identity.instanceId);
+                    co_await service::messaging::stream::wakeWorker(context.redis(), identity.channels, std::nullopt, service::message::WorkerStreamTask::CommandResult, identity.instanceId);
                 } else {
-                    co_await publishConfigEnvelope(context.redis(), event.id, event.type, event.aggregate, event.aggregateId, event.action, event.schemaVersion, event.occurredAtMs, serviceWorkerCount_, identity.instanceId);
+                    co_await publishConfigEnvelope(context.redis(), identity.channels, event.id, event.type, event.aggregate, event.aggregateId, event.action, event.schemaVersion, event.occurredAtMs, serviceWorkerCount_, identity.instanceId);
                 }
             } catch (const std::exception& error) {
                 publishError = error.what();

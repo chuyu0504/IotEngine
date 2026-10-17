@@ -79,16 +79,16 @@ class PersistenceRuntime final {
         const auto consumer = identity.instanceId + ":service-" + std::to_string(identity.index);
         const std::vector<std::string> streams{ consumerStream(route.consumer) };
         co_await utils::redis::ensureGroup(redis, streams.front(), group);
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, group, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, group, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             ready.set_value();
             bool recovering = true;
             while (!stop.stop_requested()) {
                 bool failed = false;
                 try {
-                    auto batches = co_await utils::redis::consumeGroup(redis, streams, group, consumer, recovering, notifications, stop);
+                    auto batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, group, consumer, recovering, notifications, stop);
                     for (const auto& batch : batches) {
                         co_await TelemetryService::apply(context, route.consumer, batch.messages);
-                        co_await utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, group, batch.messages);
+                        co_await utils::redis::acknowledgeAndDeleteMany(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, group, batch.messages);
                     }
                 } catch (const std::exception& error) {
                     if (stop.stop_requested()) {
@@ -117,8 +117,8 @@ class PersistenceRuntime final {
         for (const auto& stream : streams) {
             co_await utils::redis::ensureGroup(redis, stream, group);
         }
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, group, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
-            auto deadline = co_await TelemetryService::retireExpiredFreshness(redis);
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, group, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+            auto deadline = co_await TelemetryService::retireExpiredFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels);
             ready.set_value();
             bool changed = false;
             bool recovering = true;
@@ -126,18 +126,18 @@ class PersistenceRuntime final {
                 bool failed = false;
                 try {
                     if (changed || (deadline && message::utcNowMilliseconds() >= *deadline)) {
-                        deadline = co_await TelemetryService::retireExpiredFreshness(redis);
+                        deadline = co_await TelemetryService::retireExpiredFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels);
                         changed = false;
                     }
                     const auto wait = deadline
                         ? std::optional(std::chrono::milliseconds(std::max<std::int64_t>(0, *deadline - message::utcNowMilliseconds())))
                         : std::nullopt;
-                    auto batches = co_await utils::redis::consumeGroup(redis, streams, group, consumer, recovering, notifications, stop, wait);
+                    auto batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, group, consumer, recovering, notifications, stop, wait);
                     for (const auto& batch : batches) {
                         for (const auto& item : batch.messages) {
                             changed = changed || item.get("task") == message::workerStreamTaskName(message::WorkerStreamTask::Freshness);
                             // Each consumer group must observe the shared wake entry.
-                            co_await utils::redis::acknowledge(redis, batch.stream, group, item.id);
+                            co_await utils::redis::acknowledge(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, group, item.id);
                         }
                     }
                 } catch (const std::exception& error) {

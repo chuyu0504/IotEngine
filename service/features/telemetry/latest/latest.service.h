@@ -37,8 +37,8 @@ inline constexpr std::string_view kOnlineDeadlinesBase =
 
 // Publishes realtime changes of the given devices; empty ids mean every device.
 template <typename Redis>
-ruvia::task<void> publishRealtimeChange(const Redis& redis, std::span<const std::string> ids = {}) {
-    co_await service::live::publish(redis, service::message::live::topic::kDeviceRealtime, ids);
+ruvia::task<void> publishRealtimeChange(const Redis& redis, const service::message::RedisChannelScope& scope, std::span<const std::string> ids = {}) {
+    co_await service::live::publish(redis, scope, service::message::live::topic::kDeviceRealtime, ids);
 }
 
 inline std::string onlineDeadlinesKey() {
@@ -126,7 +126,7 @@ ruvia::task<bool> executeProjectionPipeline(Pipeline pipeline, std::string_view 
 }
 
 template <typename Redis>
-ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId, std::string_view deviceCode) {
+ruvia::task<void> initializeDevice(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view deviceId, std::string_view deviceCode) {
     const auto now = std::to_string(service::message::utcNowMilliseconds());
     const std::vector<message::StreamField> runtimeFields{
         { "device_id", std::string(deviceId) },
@@ -144,11 +144,11 @@ ruvia::task<void> initializeDevice(const Redis& redis, std::string_view deviceId
     };
     co_await service::utils::redis::setHash(redis, service::message::telemetry::latestKey(deviceId), latestFields);
     const std::string ids[]{ std::string(deviceId) };
-    co_await publishRealtimeChange(redis, ids);
+    co_await publishRealtimeChange(redis, scope, ids);
 }
 
 template <typename Redis>
-ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
+ruvia::task<void> eraseDevice(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view deviceId) {
     const auto connection = service::message::collector::connectionKey(deviceId);
     const auto connectionDeadlines = persistence::DeviceConnectionDeadline::key();
     const std::array<std::string_view, 2> keys{ connection, connectionDeadlines };
@@ -166,13 +166,14 @@ ruvia::task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
     const std::vector<std::string> zremArguments{ "ZREM", onlineDeadlinesKey(), std::string(deviceId) };
     (void)co_await redis.command(std::vector<std::string_view>(zremArguments.begin(), zremArguments.end()));
     const std::string ids[]{ std::string(deviceId) };
-    co_await publishRealtimeChange(redis, ids);
+    co_await publishRealtimeChange(redis, scope, ids);
 }
 
 template <typename Redis>
-ruvia::task<void> signalFreshness(const Redis& redis, std::string_view instance) {
+ruvia::task<void> signalFreshness(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view instance) {
     co_await service::messaging::stream::wakeWorker(
         redis,
+        scope,
         std::nullopt,
         service::message::WorkerStreamTask::Freshness,
         instance
@@ -303,14 +304,14 @@ return 0
 )lua";
 
 template <typename Redis>
-ruvia::task<void> update(const Redis& redis, const std::vector<service::message::ParsedDeviceMessage>& messages, std::string_view instance) {
+ruvia::task<void> update(const Redis& redis, const service::message::RedisChannelScope& scope, const std::vector<service::message::ParsedDeviceMessage>& messages, std::string_view instance) {
     if (messages.empty()) {
         co_return;
     }
     thread_local std::string sha;
     const auto deadlinesKey = onlineDeadlinesKey();
     const auto wakeStream = service::message::workerWakeStream(std::nullopt, instance);
-    const auto inputChannel = service::message::consumer::inputChannel(wakeStream);
+    const auto inputChannel = service::message::consumer::inputChannel(scope, wakeStream);
     std::vector<std::vector<std::string>> calls;
     calls.reserve(messages.size());
     for (const auto& parsed : messages) {
@@ -327,7 +328,7 @@ ruvia::task<void> update(const Redis& redis, const std::vector<service::message:
         co_return;
     }
     const std::vector<std::string> ids(deviceIds.begin(), deviceIds.end());
-    co_await publishRealtimeChange(redis, ids);
+    co_await publishRealtimeChange(redis, scope, ids);
 }
 
 template <typename Redis>
@@ -386,7 +387,7 @@ return 0
 )lua";
 
 template <typename Redis>
-ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey) {
+ruvia::task<void> expireStaleForKey(const Redis& redis, const service::message::RedisChannelScope& scope, std::string deadlineKey) {
     const auto now = std::to_string(co_await deadlineTimeMilliseconds(redis));
     const std::vector<std::string> dueArguments{ "ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000" };
     const auto due = co_await redis.command(std::vector<std::string_view>(dueArguments.begin(), dueArguments.end()));
@@ -412,19 +413,19 @@ ruvia::task<void> expireStaleForKey(const Redis& redis, std::string deadlineKey)
         }
     }
     if (!ids.empty()) {
-        co_await publishRealtimeChange(redis, ids);
+        co_await publishRealtimeChange(redis, scope, ids);
     }
 }
 
 template <typename Redis>
-ruvia::task<void> expireStale(const Redis& redis) {
-    co_await expireStaleForKey(redis, onlineDeadlinesKey());
+ruvia::task<void> expireStale(const Redis& redis, const service::message::RedisChannelScope& scope) {
+    co_await expireStaleForKey(redis, scope, onlineDeadlinesKey());
 }
 
 template <typename Redis>
-ruvia::task<void> expireConnections(const Redis& redis) {
+ruvia::task<void> expireConnections(const Redis& redis, const service::message::RedisChannelScope& scope) {
     const auto deadlines = persistence::DeviceConnectionDeadline::key();
-    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceState);
+    const auto channel = service::message::live::channel(scope, service::message::live::topic::kDeviceState);
     const std::array<std::string_view, 2> keys{
         deadlines,
         channel
@@ -820,13 +821,13 @@ return 1
         co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
     if (notify) {
-        co_await signalFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
+        co_await signalFreshness(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
         std::vector<std::string> projectedIds;
         projectedIds.reserve(devices.size());
         for (const auto& row : devices) {
             projectedIds.emplace_back(row[0].value().value_or(std::string_view{}));
         }
-        co_await publishRealtimeChange(redis, projectedIds);
+        co_await publishRealtimeChange(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, projectedIds);
     }
 }
 
@@ -875,8 +876,8 @@ inline ruvia::task<void> hydrateRecords(ruvia::web_worker_context& context) {
         }
     }
     if (projected) {
-        co_await signalFreshness(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
-        co_await publishRealtimeChange(context.redis());
+        co_await signalFreshness(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
+        co_await publishRealtimeChange(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels);
     }
 }
 

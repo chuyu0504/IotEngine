@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <memory_resource>
 #include <optional>
@@ -23,6 +24,40 @@
 #include "service/common/uuid.h"
 #include "service/utils/json.h"
 #include "service/utils/network.h"
+
+namespace service::message {
+
+// Redis SELECT 不隔离 Pub/Sub；共享频道由实际数据库配置显式派生。
+class RedisChannelScope final {
+  public:
+    explicit RedisChannelScope(std::uint32_t database) noexcept {
+        constexpr std::string_view base{ "iot:db:" };
+        std::copy(base.begin(), base.end(), prefix_.begin());
+        const auto end = std::to_chars(prefix_.data() + base.size(), prefix_.data() + prefix_.size() - 1, database).ptr;
+        *end = ':';
+        size_ = static_cast<std::size_t>(end - prefix_.data()) + 1;
+    }
+
+    [[nodiscard]] std::string name(std::initializer_list<std::string_view> parts) const {
+        auto capacity = size_;
+        for (const auto part : parts) {
+            capacity += part.size();
+        }
+        std::string result;
+        result.reserve(capacity);
+        result.append(prefix_.data(), size_);
+        for (const auto part : parts) {
+            result.append(part);
+        }
+        return result;
+    }
+
+  private:
+    std::array<char, 7 + 10 + 1> prefix_{};
+    std::size_t size_{};
+};
+
+} // namespace service::message
 
 namespace service::message::serial_debug {
 inline std::string inputKey(std::string_view nodeId) {
@@ -758,8 +793,8 @@ inline std::vector<std::string_view> splitIds(std::string_view ids) {
     return result;
 }
 
-inline std::string channel(std::string_view topic) {
-    return "iot:live:topic:" + std::string(topic);
+inline std::string channel(const RedisChannelScope& scope, std::string_view topic) {
+    return scope.name({ "live:topic:", topic });
 }
 
 // Coalesced notifications owned by one live connection, with no I/O or shared
@@ -1164,16 +1199,16 @@ inline std::string snapshotId(std::size_t workerIndex, std::string_view instance
 } // namespace service::message::worker_metrics
 
 namespace service::message::consumer {
-inline std::string inputChannel(std::string_view stream) {
-    return "iot:consumer:input:" + std::string(stream);
+inline std::string inputChannel(const RedisChannelScope& scope, std::string_view stream) {
+    return scope.name({ "consumer:input:", stream });
 }
 
 inline std::string deadlineKey(std::string_view stream, std::string_view group) {
     return "iot:consumer:pending:" + std::string(group) + ":" + std::string(stream);
 }
 
-inline std::string deadlineChannel(std::string_view stream, std::string_view group) {
-    return "iot:consumer:deadline:" + std::string(group) + ":" + std::string(stream);
+inline std::string deadlineChannel(const RedisChannelScope& scope, std::string_view stream, std::string_view group) {
+    return scope.name({ "consumer:deadline:", group, ":", stream });
 }
 } // namespace service::message::consumer
 
@@ -1306,20 +1341,6 @@ inline std::string sessionChanges() {
     return std::string(kSessionChangesBase);
 }
 
-// 开放接入事件发布契约（Webhook/开放 MQTT 消费 event() 流）：同一 eventType + eventId 只写入一次，
-// 幂等键保留 kEventPublicationTtlSeconds；写入后唤醒发布实例的共享 Webhook 任务。
-// KEYS：1=事件流，2=幂等键，3=唤醒流；ARGV：1=事件流长度上限，2=幂等键 TTL 秒，3=唤醒流长度上限，
-// 4=唤醒任务名，5.. 为事件字段名/值。已发布时返回 false。
-inline constexpr std::string_view kPublishEventScript = R"lua(
-if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
-local arguments = {'MAXLEN', '~', ARGV[1], '*'}
-for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
-local id = redis.call('XADD', KEYS[1], unpack(arguments))
-redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
-return id
-)lua";
-
 inline constexpr std::size_t kEventCapacity = 100000;
 inline constexpr std::int64_t kEventPublicationTtlSeconds = 7 * 24 * 60 * 60;
 
@@ -1327,15 +1348,15 @@ inline std::string eventPublicationKey(std::string_view eventId, std::string_vie
     return "iot:open-access:event:published:" + std::string(eventType) + ":" + std::string(eventId);
 }
 
-// kPublishEventScript 的键与参数；事件字段：event_id、event_type、device_id、device_code、occurred_at_ms、data_json。
+// 事件发布的键与参数；事件字段：event_id、event_type、device_id、device_code、occurred_at_ms、data_json。
 struct EventPublication final {
-    std::array<std::string, 3> keys;
+    std::array<std::string, 5> keys;
     std::array<std::string, 16> arguments;
 };
 
-inline EventPublication eventPublication(std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instance) {
-    return EventPublication{
-        .keys = { event(), eventPublicationKey(eventId, eventType), workerWakeStream(std::nullopt, instance) },
+inline EventPublication eventPublication(const RedisChannelScope& scope, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson, std::string_view instance) {
+    EventPublication publication{
+        .keys = { event(), eventPublicationKey(eventId, eventType), workerWakeStream(std::nullopt, instance), {}, {} },
         .arguments = {
             std::to_string(kEventCapacity),
             std::to_string(kEventPublicationTtlSeconds),
@@ -1355,6 +1376,9 @@ inline EventPublication eventPublication(std::string_view eventId, std::string_v
             std::string(dataJson),
         },
     };
+    publication.keys[3] = consumer::inputChannel(scope, publication.keys[0]);
+    publication.keys[4] = consumer::inputChannel(scope, publication.keys[2]);
+    return publication;
 }
 
 } // namespace service::message::access::stream

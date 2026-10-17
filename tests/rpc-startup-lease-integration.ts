@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { copyFile, link } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -112,7 +113,7 @@ async function probeMissingStream(stream: string) {
         assert.equal(await subscriber.subscribe(replyKey, () => notify()), 1);
         await redis.send('DEL', [stream]);
         await redis.send('EVAL', [kEnqueueRpcProbeScript,
-            '2', stream, `iot:consumer:input:${stream}`,
+            '2', stream, sharedChannel(redisUrl, `consumer:input:${stream}`),
             'version', '1', 'id', request, 'component', 'startup-lease-probe',
             'operation', 'unavailable', 'payload', '{}', 'deadline', String(Date.now() + 30000)]);
         await waitFor(notified, 'RPC consumer did not repair its missing request group');

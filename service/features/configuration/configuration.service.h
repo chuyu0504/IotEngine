@@ -460,7 +460,7 @@ class ConfigurationService final {
             co_await service::collector::config::project(context.redis(), snapshot, context.template worker_state<service::common::UuidV7State>());
         co_await transaction.commit();
         if (notify) {
-            co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
+            co_await service::live::publish(context.redis(), context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::message::live::topic::kRuntimeConfig);
         }
         co_return version;
     }
@@ -532,6 +532,7 @@ class ConfigurationService final {
             const std::vector<service::message::StreamField> fields{ { "aggregate", "device" } };
             (void)co_await service::messaging::stream::publishAndWake(
                 context.redis(),
+                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 service::message::alert::kMetadataChangesStream,
                 fields,
                 std::nullopt,

@@ -51,10 +51,10 @@ class RpcReceiptService final {
         co_return std::nullopt;
     }
 
-    static ruvia::task<void> saveAndAcknowledge(const ruvia::redis_handle& redis, const std::string& id, std::string_view requestStream, std::string_view group, std::string_view messageId, const RpcReplyRecord& record) {
+    static ruvia::task<void> saveAndAcknowledge(const ruvia::redis_handle& redis, const service::message::RedisChannelScope& scope, const std::string& id, std::string_view requestStream, std::string_view group, std::string_view messageId, const RpcReplyRecord& record) {
         const auto replyKey = service::message::rpc::Contract::reply(id);
         const auto pending = service::message::consumer::deadlineKey(requestStream, group);
-        const auto changed = service::message::consumer::deadlineChannel(requestStream, group);
+        const auto changed = service::message::consumer::deadlineChannel(scope, requestStream, group);
         const std::string_view keys[]{ replyKey, requestStream, pending, changed };
         const std::string_view args[]{
             record.payload,

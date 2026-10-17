@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { createSocket } from 'node:dgram';
@@ -98,7 +99,7 @@ try {
              local wake=redis.call('XADD',KEYS[2],'MAXLEN','~','1000','*','task','gb28181-projector');
              redis.call('PUBLISH',KEYS[3],id); redis.call('PUBLISH',KEYS[4],wake); return id`,
             '4', 'iot:gb28181:projection', wakeStream,
-            'iot:consumer:input:iot:gb28181:projection', `iot:consumer:input:${wakeStream}`, ...fields,
+            sharedChannel(redisUrl, 'consumer:input:iot:gb28181:projection'), sharedChannel(redisUrl, `consumer:input:${wakeStream}`), ...fields,
         ]) as string;
     }
     console.log('PASS REGISTER 200 follows DB commit and preserves preexisting metadata');
@@ -245,7 +246,7 @@ try {
     await redis.send('EVAL', [
         `local id=redis.call('XADD',KEYS[1],'*',unpack(ARGV));
          redis.call('PUBLISH',KEYS[2],id); return id`,
-        '2', wrongStream, `iot:consumer:input:${wrongStream}`,
+        '2', wrongStream, sharedChannel(redisUrl, `consumer:input:${wrongStream}`),
         'request_id',requestId,'owner_key',ownerKey,'owner_token',owner!,'operation','rename_device',
         'payload',JSON.stringify({device_id:device,name:'Wrong Worker'}),'deadline_ms',String(Date.now()+15000),
         'reply_stream',`iot:gb28181:reply:${requestId}`,
@@ -323,7 +324,7 @@ try {
         'online','1','last_seen_at',new Date().toISOString(),'channel_count','0'];
     const replay = await redis.send('EVAL', [publishLua,'5','iot:gb28181:projection',
         `iot:gb28181:projection:sent:${projectionId}`,wakeStream,
-        'iot:consumer:input:iot:gb28181:projection',`iot:consumer:input:${wakeStream}`,
+        sharedChannel(redisUrl, 'consumer:input:iot:gb28181:projection'),sharedChannel(redisUrl, `consumer:input:${wakeStream}`),
         originalOrder,originalOrder,'gb28181-projector','1000',...replayFields]) as string[];
     assert.equal(replay[0], originalOrder);
     assert.notEqual(replay[1], originalOrder);
@@ -349,7 +350,7 @@ try {
     try {
         const publish = (order = '', current = '') => redis.send('EVAL',
             [publishLua,'5',probeStream,probeSent,probeWake,
-                `iot:consumer:input:${probeStream}`,`iot:consumer:input:${probeWake}`,
+                sharedChannel(redisUrl, `consumer:input:${probeStream}`),sharedChannel(redisUrl, `consumer:input:${probeWake}`),
                 order,current,'gb28181-projector','1000','projection_id',probeProjection]) as Promise<string[]>;
         const first = await publish();
         // Lost first response: retry with no local IDs must recover the marker.

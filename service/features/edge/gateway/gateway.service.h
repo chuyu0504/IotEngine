@@ -103,6 +103,7 @@ class GatewayService final {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         if (!co_await projector_stream::publishIngress(
                 c.redis(),
+                worker.channels,
                 workerIndex,
                 wire,
                 service::message::utcNowMilliseconds(),
@@ -117,6 +118,7 @@ class GatewayService final {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         if (!co_await session_state::claim(
                 c.redis(),
+                worker.channels,
                 identity.nodeId,
                 identity.epoch,
                 identity.protocolVersion,
@@ -127,7 +129,7 @@ class GatewayService final {
         }
         // Metadata must precede all subsequent payloads on the same durable
         // Worker-isolated stream so reconnects rebuild the local projection.
-        if (!co_await projector_stream::publishMetadata(c.redis(), identity.workerIndex, identity.nodeId, worker.instanceId)) {
+        if (!co_await projector_stream::publishMetadata(c.redis(), worker.channels, identity.workerIndex, identity.nodeId, worker.instanceId)) {
             co_await closeSession(c, identity);
             co_return IngressStatus::WorkerLeaseLost;
         }
@@ -138,6 +140,7 @@ class GatewayService final {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         co_return co_await session_state::refresh(
             c.redis(),
+            worker.channels,
             identity.nodeId,
             identity.epoch,
             identity.protocolVersion,
@@ -150,6 +153,7 @@ class GatewayService final {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         (void)co_await session_state::release(
             c.redis(),
+            worker.channels,
             identity.nodeId,
             identity.epoch,
             identity.protocolVersion,
@@ -172,6 +176,7 @@ class GatewayService final {
         if (freshTelemetry && projectedPayload(envelope) &&
             !co_await projector_stream::publishIngress(
                 c.redis(),
+                c.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 identity.workerIndex,
                 wire,
                 service::message::utcNowMilliseconds(),
@@ -368,7 +373,7 @@ class GatewayService final {
         const auto id = service::common::uuidText(result.request_id());
         const auto key = service::message::edge::logResultKey(id);
         const auto snapshot = service::message::edge::logSnapshotKey(nodeId);
-        const auto channel = service::message::live::channel(service::message::live::topic::kEdgeLogs);
+        const auto channel = service::message::live::channel(c.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::message::live::topic::kEdgeLogs);
         const std::string_view keys[]{ key, snapshot, channel };
         const std::string_view args[]{ record.protobufBytes, result.success() ? "1" : "0", nodeId };
         const auto saved = co_await c.redis().eval(kSaveLogResultScript, keys, args);

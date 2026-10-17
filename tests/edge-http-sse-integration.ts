@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
@@ -114,7 +115,7 @@ try {
     for (const item of inventoryNodes) assert(inventoryIds.has(item.id), 'inventory must include nodes beyond the first HTTP page');
     const nextNodes = async () => { for (;;) { const event = await inventory.next(); assert.notEqual(event.event, 'error', event.data); if (event.event === 'nodes') return JSON.parse(event.data); } };
     const commentsBefore = inventory.commentCount;
-    await redis.send('PUBLISH', ['iot:live:topic:edge', inventoryNodes[0].id]);
+    await redis.send('PUBLISH', [sharedChannel(redisUrl, 'live:topic:edge'), inventoryNodes[0].id]);
     await inventory.expectQuiet(300);
     assert.equal(inventory.commentCount, commentsBefore, 'unchanged notification must not send a heartbeat');
     const [renamedNode, removedNode] = inventoryNodes;

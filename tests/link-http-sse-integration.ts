@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
@@ -58,7 +59,7 @@ async function delta(stream: SnapshotSubscription, eventName = 'links') {
     return payload.delta as {upsert:any[];remove:string[]};
 }
 function change(topic: string, ...ids: string[]) {
-    return redis.send('PUBLISH',[`iot:live:topic:${topic}`,ids.join(',')]);
+    return redis.send('PUBLISH',[sharedChannel(redisUrl, `live:topic:${topic}`),ids.join(',')]);
 }
 
 async function pubsubClients() {

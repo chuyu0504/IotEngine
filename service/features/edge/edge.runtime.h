@@ -65,13 +65,13 @@ class DispatcherRuntime final {
             ~SessionCleanup() { dispatcher.clear(); }
         } cleanup{ dispatcher };
 
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, message::edge::dispatch::kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, message::edge::dispatch::kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             ready.set_value();
             bool recovering = true;
             while (!stop.stop_requested()) {
                 bool failed = false;
                 try {
-                    auto batches = co_await utils::redis::consumeGroup(redis, streams, message::edge::dispatch::kGroup, consumer, recovering, notifications, stop);
+                    auto batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, message::edge::dispatch::kGroup, consumer, recovering, notifications, stop);
                     for (const auto& batch : batches) {
                         for (const auto& item : batch.messages) {
                             const auto event = message::edge::dispatch::eventFrom(item);
@@ -79,7 +79,7 @@ class DispatcherRuntime final {
                                 !event.nodeId.empty() && !dispatcher.deliver(event.nodeId)) {
                                 throw std::runtime_error("edge session wake failed");
                             }
-                            co_await utils::redis::acknowledgeAndDelete(redis, batch.stream, message::edge::dispatch::kGroup, item.id);
+                            co_await utils::redis::acknowledgeAndDelete(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, message::edge::dispatch::kGroup, item.id);
                         }
                     }
                 } catch (const std::exception& error) {

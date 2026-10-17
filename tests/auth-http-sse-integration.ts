@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
@@ -70,7 +71,7 @@ async function revokeDuringUnpositionedReload(roleId: string, events: SnapshotSu
     let pauseStartedAt = 0;
     try {
         releaseDevice = await holdTable('device');
-        await redis.send('PUBLISH',['iot:live:topic:auth','']);
+        await redis.send('PUBLISH',[sharedChannel(redisUrl, 'live:topic:auth'),'']);
         await waitForLock('device');
         // The first snapshot loaded its grant before waiting on device rows.
         // Gate the *later* groups permission loader, after the cache is cleared.
@@ -163,7 +164,7 @@ try {
     });
     // Telemetry of a device outside this user's scope must neither reach the
     // realtime channel nor reload any other channel.
-    await redis.send('PUBLISH', ['iot:live:topic:device.realtime', crypto.randomUUID()]);
+    await redis.send('PUBLISH', [sharedChannel(redisUrl, 'live:topic:device.realtime'), crypto.randomUUID()]);
     await stream.expectQuiet();
     // Revoke while this very connection still holds a cached successful
     // permission answer. A separate connection's cache must not keep it alive.
@@ -176,7 +177,7 @@ try {
     assert.equal(revokedChannels.get('realtime').code, 11007);
     assert.equal(revokedChannels.get('user').data.permissions.includes('iot:device:query'), false);
     // Real notifications after revocation cannot resurrect cached access.
-    await redis.send('PUBLISH', ['iot:live:topic:device.realtime', '']);
+    await redis.send('PUBLISH', [sharedChannel(redisUrl, 'live:topic:device.realtime'), '']);
     await stream.expectQuiet(1000);
     await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
     for (let count = 0; count < 3; count++) await stream.next();

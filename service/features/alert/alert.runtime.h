@@ -83,6 +83,7 @@ class AlertRuntime final {
         bool recovering = true;
         co_await service::utils::redis::withConsumerNotifications(
             redis,
+            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
             context.worker(),
             streams,
             kTelemetryGroup,
@@ -94,6 +95,7 @@ class AlertRuntime final {
                     try {
                         const auto batches = co_await service::utils::redis::consumeGroup(
                             redis,
+                            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                             streams,
                             kTelemetryGroup,
                             consumer,
@@ -107,7 +109,7 @@ class AlertRuntime final {
                             }
                             // Commit the complete evaluation before acknowledging it.
                             co_await AlertEvaluationService::evaluateTelemetry(context, batch.messages);
-                            co_await service::utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kTelemetryGroup, batch.messages);
+                            co_await service::utils::redis::acknowledgeAndDeleteMany(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kTelemetryGroup, batch.messages);
                         }
                     } catch (const std::exception& error) {
                         if (stop.stop_requested()) {
@@ -143,6 +145,7 @@ class AlertRuntime final {
         bool scheduleChanged = false;
         co_await service::utils::redis::withConsumerNotifications(
             redis,
+            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
             context.worker(),
             streams,
             kMetadataGroup,
@@ -168,6 +171,7 @@ class AlertRuntime final {
                         }
                         const auto batches = co_await service::utils::redis::consumeGroup(
                             redis,
+                            context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                             streams,
                             kMetadataGroup,
                             consumer,
@@ -182,12 +186,12 @@ class AlertRuntime final {
                             }
                             if (batch.stream == streams.front()) {
                                 co_await metadata::refresh(context);
-                                co_await service::utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kMetadataGroup, batch.messages);
+                                co_await service::utils::redis::acknowledgeAndDeleteMany(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kMetadataGroup, batch.messages);
                                 scheduleChanged = true;
                             } else {
                                 for (const auto& message : batch.messages) {
                                     // Preserve the shared wake entry while completing this group's claim.
-                                    co_await service::utils::redis::acknowledge(redis, batch.stream, kMetadataGroup, message.id);
+                                    co_await service::utils::redis::acknowledge(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kMetadataGroup, message.id);
                                     if (message.get("task") == "freshness-alerts") {
                                         scheduleChanged = true;
                                     }

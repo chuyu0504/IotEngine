@@ -717,7 +717,7 @@ class VpnEdgeService final {
             .and_where(revision.binary(revision.column(std::tuple_element_t<PeerRow::column_index<"id">(), PeerRow::columns_type>::name.view()), Op::equal, revision.cast(revision.value(peerId), ruvia::db_data_type::uuid)));
         (void)co_await configuration.execute(revision);
         co_await configuration.commit();
-        co_await service::edge::dispatch::enqueue(c.redis(), nodeId, wire);
+        co_await service::edge::dispatch::enqueue(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, nodeId, wire);
     }
 
     // Queue a configuration for every edge peer whose last requested enabled

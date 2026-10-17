@@ -21,6 +21,7 @@ return id
 template <typename Redis>
 ruvia::task<std::string> addAndWake(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::string_view stream,
     const std::vector<service::message::StreamField>& fields,
     std::optional<std::size_t> workerIndex,
@@ -35,8 +36,8 @@ ruvia::task<std::string> addAndWake(
     const std::vector<std::string> keyStore{
         std::string(stream),
         wakeStream,
-        service::message::consumer::inputChannel(stream),
-        service::message::consumer::inputChannel(wakeStream)
+        service::message::consumer::inputChannel(scope, stream),
+        service::message::consumer::inputChannel(scope, wakeStream)
     };
     std::vector<std::string> argumentStore{
         std::to_string(maxLength),
@@ -58,13 +59,13 @@ ruvia::task<std::string> addAndWake(
 }
 
 template <typename Pipeline>
-void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vector<service::message::StreamField>& fields, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::size_t maxLength, std::string_view instance) {
+void queueAddAndWake(Pipeline& pipeline, const service::message::RedisChannelScope& scope, std::string_view stream, const std::vector<service::message::StreamField>& fields, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::size_t maxLength, std::string_view instance) {
     if (fields.empty()) {
         throw std::invalid_argument("Redis Stream message must contain fields");
     }
     const auto wakeStream = service::message::workerWakeStream(workerIndex, instance);
-    const auto streamChannel = service::message::consumer::inputChannel(stream);
-    const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
+    const auto streamChannel = service::message::consumer::inputChannel(scope, stream);
+    const auto wakeChannel = service::message::consumer::inputChannel(scope, wakeStream);
     const auto maxLengthText = std::to_string(maxLength);
     const auto wakeCapacityText = std::to_string(service::message::kWorkerWakeCapacity);
     std::vector<std::string_view> command;
@@ -78,14 +79,15 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
 }
 
 template <typename Redis>
-ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::string_view instance) {
+ruvia::task<void> wakeWorker(const Redis& redis, const service::message::RedisChannelScope& scope, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::string_view instance) {
     const std::vector<service::message::StreamField> fields{ { "task", std::string(service::message::workerStreamTaskName(task)) } };
-    (void)co_await service::utils::redis::add(redis, service::message::workerWakeStream(workerIndex, instance), fields, service::message::kWorkerWakeCapacity);
+    (void)co_await service::utils::redis::add(redis, scope, service::message::workerWakeStream(workerIndex, instance), fields, service::message::kWorkerWakeCapacity);
 }
 
 template <typename Redis>
 ruvia::task<std::string> publishAndWake(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::string_view stream,
     const std::vector<service::message::StreamField>& fields,
     std::optional<std::size_t> workerIndex,
@@ -96,12 +98,13 @@ ruvia::task<std::string> publishAndWake(
     if (maxLength == 0) {
         maxLength = 10000;
     }
-    co_return co_await addAndWake(redis, stream, fields, workerIndex, task, maxLength, instance);
+    co_return co_await addAndWake(redis, scope, stream, fields, workerIndex, task, maxLength, instance);
 }
 
 template <typename Redis>
 ruvia::task<bool> publishAllAndAcknowledge(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::span<const StreamPublication> publications,
     std::string_view inputStream,
     std::string_view inputGroup,
@@ -184,12 +187,12 @@ return 1
         ownedKeys.emplace_back(publication.stream);
         const auto wakeStream = publication.wake ? service::message::workerWakeStream(publication.wake->workerIndex, instance) : std::string(publication.stream);
         ownedKeys.push_back(wakeStream);
-        ownedKeys.push_back(service::message::consumer::inputChannel(publication.stream));
-        ownedKeys.push_back(service::message::consumer::inputChannel(wakeStream));
+        ownedKeys.push_back(service::message::consumer::inputChannel(scope, publication.stream));
+        ownedKeys.push_back(service::message::consumer::inputChannel(scope, wakeStream));
     }
     ownedKeys.emplace_back(inputStream);
     ownedKeys.push_back(service::message::consumer::deadlineKey(inputStream, inputGroup));
-    ownedKeys.push_back(service::message::consumer::deadlineChannel(inputStream, inputGroup));
+    ownedKeys.push_back(service::message::consumer::deadlineChannel(scope, inputStream, inputGroup));
     const std::vector<std::string_view> keys(ownedKeys.begin(), ownedKeys.end());
 
     std::size_t argumentCount = 3;
@@ -227,6 +230,7 @@ return 1
 template <typename Redis>
 ruvia::task<bool> publishAndAcknowledge(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::string_view outputStream,
     const std::vector<service::message::StreamField>& outputFields,
     std::size_t outputMaxLength,
@@ -240,6 +244,7 @@ ruvia::task<bool> publishAndAcknowledge(
     const StreamPublication publication{ outputStream, outputFields, outputMaxLength, wake };
     co_return co_await publishAllAndAcknowledge(
         redis,
+        scope,
         std::span<const StreamPublication>(&publication, 1),
         inputStream,
         inputGroup,

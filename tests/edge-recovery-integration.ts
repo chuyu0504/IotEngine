@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { redisUrl } from './architecture-fixture';
 
@@ -21,10 +22,10 @@ const wake = `iot:service:worker:${recoveryInstance}:${oldWorker}:wake`;
 const oldToken = `${oldInstance}:${oldWorker}`;
 const activeToken = `${activeInstance}:${activeWorker}`;
 const recoveryToken = `${recoveryInstance}:recovery:${oldWorker}:${oldInstance}:${oldWorker}`;
-const inputChannel = `iot:consumer:input:${oldStream}`;
-const wakeChannel = `iot:consumer:input:${wake}`;
+const inputChannel = sharedChannel(redisUrl, `consumer:input:${oldStream}`);
+const wakeChannel = sharedChannel(redisUrl, `consumer:input:${wake}`);
 const pendingDeadlines = `iot:consumer:pending:${group}:${oldStream}`;
-const deadlineChannel = `iot:consumer:deadline:${group}:${oldStream}`;
+const deadlineChannel = sharedChannel(redisUrl, `consumer:deadline:${group}:${oldStream}`);
 const recoveryDeadlines = `iot:v3:edge:projector:deadlines:${suffix}`;
 const subscriber = new Bun.RedisClient(redisUrl);
 const notices: { payload: string; channel: string }[] = [];

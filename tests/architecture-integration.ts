@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import { databaseUrl, redisUrl, apiBase, publishFixtureEvent } from './architecture-fixture';
 // Run against the disposable architecture fixture, never a deployed database.
 import { createHmac } from 'node:crypto';
@@ -206,7 +207,7 @@ try {
     const source = await Bun.file('service/features/command/command.entity.h').text();
     const script = source.match(/kPendingBatchDispatchScript = R"lua\(([\s\S]*?)\)lua"/)![1];
     const capacityQueue = `architecture-capacity:${id()}`;
-    const inputChannel = `iot:consumer:input:${capacityQueue}`;
+    const inputChannel = sharedChannel(redisUrl, `consumer:input:${capacityQueue}`);
     const capacitySubscriber = new Bun.RedisClient(redisUrl);
     const inputs: string[] = [];
     const barriers = new Map<string, () => void>();

@@ -29,6 +29,22 @@ end
 return previous or ''
 )lua";
 
+// 开放接入事件发布契约（Webhook/开放 MQTT 消费 event() 流）：同一 eventType + eventId 只写入一次，
+// 幂等键保留 kEventPublicationTtlSeconds；写入后唤醒发布实例的共享 Webhook 任务。
+// KEYS：1=事件流，2=幂等键，3=唤醒流，4=事件输入频道，5=唤醒输入频道；
+// ARGV：1=事件流长度上限，2=幂等键 TTL 秒，3=唤醒流长度上限，4=唤醒任务名，5.. 为事件字段名/值。已发布时返回 false。
+inline constexpr std::string_view kPublishEventScript = R"lua(
+if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[1], '*'}
+for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+local wake = redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
+redis.call('PUBLISH', KEYS[4], id)
+redis.call('PUBLISH', KEYS[5], wake)
+return id
+)lua";
+
 // 投递结果入队与 DeliveryProgressRecord 进度原子写入：KEYS[1]=结果流，KEYS[2]=进度 Hash，KEYS[3]=唤醒流；
 // KEYS[4]=结果流输入通知频道，KEYS[5]=唤醒流输入通知频道。
 // ARGV[1]=目标 ID，ARGV[2]=结果流长度上限，ARGV[3]=进度 TTL 秒，ARGV[4]=唤醒流长度上限，ARGV[5]=唤醒任务名，

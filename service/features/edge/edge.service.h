@@ -367,7 +367,7 @@ inline constexpr std::string_view kMaximumLength{ "100000" };
 // Appends `fields` (name/value pairs) to the projector Stream of one Worker.
 // Returns false when the lease token is not current or the Stream is full.
 template <typename Redis>
-ruvia::task<bool> publishFenced(const Redis& redis, std::size_t workerIndex, std::string_view instance, std::span<const std::string_view> fields, std::string_view operation) {
+ruvia::task<bool> publishFenced(const Redis& redis, const service::message::RedisChannelScope& scope, std::size_t workerIndex, std::string_view instance, std::span<const std::string_view> fields, std::string_view operation) {
     const auto lease = service::message::edge::projector_stream::leaseKey(workerIndex, instance);
     const auto streamName = service::message::edge::projector_stream::stream(workerIndex, instance);
     const std::string registry(service::message::edge::projector_stream::kStreamRegistry);
@@ -375,8 +375,8 @@ ruvia::task<bool> publishFenced(const Redis& redis, std::size_t workerIndex, std
     const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
     const auto task = service::message::workerStreamTaskName(service::message::WorkerStreamTask::EdgeProjector);
     const auto token = service::message::edge::projector_stream::ownerToken(workerIndex, instance);
-    const auto inputChannel = service::message::consumer::inputChannel(streamName);
-    const auto wakeChannel = service::message::consumer::inputChannel(wake);
+    const auto inputChannel = service::message::consumer::inputChannel(scope, streamName);
+    const auto wakeChannel = service::message::consumer::inputChannel(scope, wake);
     const std::string_view keys[]{ lease, streamName, registry, wake, inputChannel, wakeChannel };
     std::vector<std::string_view> arguments{ token, kMaximumLength, wakeCapacity, task };
     arguments.insert(arguments.end(), fields.begin(), fields.end());
@@ -391,16 +391,16 @@ ruvia::task<bool> publishFenced(const Redis& redis, std::size_t workerIndex, std
 }
 
 template <typename Redis>
-ruvia::task<bool> publishIngress(const Redis& redis, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs, std::string_view instanceId) {
+ruvia::task<bool> publishIngress(const Redis& redis, const service::message::RedisChannelScope& scope, std::size_t workerIndex, std::string_view wire, std::int64_t receivedAtMs, std::string_view instanceId) {
     const auto receivedAt = std::to_string(receivedAtMs);
     const std::string_view fields[]{ "kind", service::message::edge::projector_stream::kIngressKind, "wire", wire, "received_at_ms", receivedAt };
-    co_return co_await publishFenced(redis, workerIndex, instanceId, fields, "fenced edge ingress");
+    co_return co_await publishFenced(redis, scope, workerIndex, instanceId, fields, "fenced edge ingress");
 }
 
 template <typename Redis>
-ruvia::task<bool> publishMetadata(const Redis& redis, std::size_t workerIndex, std::string_view nodeId, std::string_view instance) {
+ruvia::task<bool> publishMetadata(const Redis& redis, const service::message::RedisChannelScope& scope, std::size_t workerIndex, std::string_view nodeId, std::string_view instance) {
     const std::string_view fields[]{ "kind", service::message::edge::projector_stream::kMetadataKind, "node_id", nodeId };
-    co_return co_await publishFenced(redis, workerIndex, instance, fields, "fenced edge metadata");
+    co_return co_await publishFenced(redis, scope, workerIndex, instance, fields, "fenced edge metadata");
 }
 
 } // namespace service::edge::projector_stream
@@ -538,7 +538,7 @@ ruvia::task<void> publishNode(Context& context, std::string_view nodeId) {
     }
     const auto owner = session_state::parse(std::string_view(session->data(), session->size()));
     if (owner) {
-        (void)co_await projector_stream::publishMetadata(context.redis(), owner->workerIndex, nodeId, owner->instanceId);
+        (void)co_await projector_stream::publishMetadata(context.redis(), context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, owner->workerIndex, nodeId, owner->instanceId);
     }
 }
 
@@ -609,7 +609,7 @@ class ConfigService final {
             co_return;
         }
         if (packet.payload().empty() && !packet.has_parsed_value() && packet.acquisition_state() != "running") {
-            co_await packet_log::DebugPacketService::finishAcquisition(c.redis(), acquisitionId, packet.acquisition_state());
+            co_await packet_log::DebugPacketService::finishAcquisition(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, acquisitionId, packet.acquisition_state());
             co_return;
         }
         std::string parsedJson;
@@ -627,7 +627,7 @@ class ConfigService final {
             decoded.set_protocol(pb::PROTOCOL_SL651); // Allows existing binary-value formatting; no wire decoding.
             parsedJson = protocol::TelemetryValues::telemetryJson(decoded);
         }
-        co_await packet_log::DebugPacketService::recordPacket(c.redis(), c.template worker_state<service::common::UuidV7State>(), linkId, deviceId, packet.direction(), "edge", packet.client_address(), std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()), packet.observed_at_ms(), captureLink, captureDevice, packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.packet_id()) : std::string{}, packet.status(), packet.reason(), parsedJson, packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.reply_to_packet_id()) : std::string{}, packet.has_parsed_value(), packet.payload_offset(), acquisitionId, nodeId, links.front()[1].value().value_or(""));
+        co_await packet_log::DebugPacketService::recordPacket(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, c.template worker_state<service::common::UuidV7State>(), linkId, deviceId, packet.direction(), "edge", packet.client_address(), std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()), packet.observed_at_ms(), captureLink, captureDevice, packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.packet_id()) : std::string{}, packet.status(), packet.reason(), parsedJson, packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + service::common::uuidText(packet.reply_to_packet_id()) : std::string{}, packet.has_parsed_value(), packet.payload_offset(), acquisitionId, nodeId, links.front()[1].value().value_or(""));
     }
 
     static ruvia::task<std::uint64_t> queueSnapshot(ruvia::web_worker_context& c, std::string_view nodeId, std::string_view actorId) {
@@ -921,7 +921,7 @@ class ConfigService final {
             values.push_back(wire);
         }
         (void)co_await c.redis().eval(config::detail::kReplaceQueueScript, std::span<const std::string_view>(keys), std::span<const std::string_view>(values));
-        co_await dispatch::notifyNode(c.redis(), nodeId);
+        co_await dispatch::notifyNode(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, nodeId);
     }
 
     template <typename Context>
@@ -1276,7 +1276,7 @@ class EdgeControlService final {
         if (wire.empty()) {
             service::common::fail(10002, "Invalid edge control request", 400);
         }
-        co_await dispatch::enqueue(context.redis(), nodeId, wire);
+        co_await dispatch::enqueue(context.redis(), context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, nodeId, wire);
         co_return "{}";
     }
 };

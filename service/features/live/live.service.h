@@ -31,10 +31,10 @@ return redis.call('PUBLISH', KEYS[1], ARGV[2])
 
 // Publishes only committed changes; subscribers query authorized persisted data.
 template <typename Redis>
-ruvia::task<void> publish(const Redis& redis, std::string_view topic, std::span<const std::string> ids = {}) {
-    const auto channel = service::message::live::channel(topic);
+ruvia::task<void> publish(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view topic, std::span<const std::string> ids = {}) {
+    const auto channel = service::message::live::channel(scope, topic);
     const auto joined = service::message::live::joinIds(ids);
-    const auto inputChannel = service::message::consumer::inputChannel(service::message::live::kChanges);
+    const auto inputChannel = service::message::consumer::inputChannel(scope, service::message::live::kChanges);
     const std::string_view keys[]{ channel, service::message::live::kChanges, inputChannel };
     const std::string_view args[]{ topic, joined, service::message::live::kChangesCapacity };
     const auto reply = co_await redis.eval(kPublishChangeScript, keys, args);
@@ -72,7 +72,7 @@ ruvia::task<void> relayConfiguration(Context& context, std::string_view entryId,
     for (std::size_t index = 0; index < collectorCount; ++index) {
         auto stream = service::message::configStream(index, identity.instanceId);
         keys.push_back(stream);
-        keys.push_back(service::message::consumer::inputChannel(stream));
+        keys.push_back(service::message::consumer::inputChannel(identity.channels, stream));
         args.push_back(service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
         args.push_back(std::to_string(index));
     }
@@ -88,9 +88,9 @@ ruvia::task<void> relayConfiguration(Context& context, std::string_view entryId,
 // expiring due sessions it is safe to sleep to the earliest remaining deadline,
 // capped by that lease duration, without periodic scans.
 template <typename Redis>
-ruvia::task<std::chrono::milliseconds> expireDueSessions(const Redis& redis) {
+ruvia::task<std::chrono::milliseconds> expireDueSessions(const Redis& redis, const service::message::RedisChannelScope& scope) {
     constexpr std::chrono::milliseconds lifetime{ 930000 };
-    co_await service::edge::session_state::expireSessions(redis);
+    co_await service::edge::session_state::expireSessions(redis, scope);
     const auto deadline = co_await service::edge::session_state::nextDeadline(redis);
     if (!deadline) {
         co_return lifetime;

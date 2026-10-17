@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
@@ -92,7 +93,7 @@ async function nextPayload(stream: SnapshotSubscription, eventName: string): Pro
     return payload;
 }
 function change(topic: string, ...ids: string[]) {
-    return redis.send('PUBLISH', [`iot:live:topic:${topic}`, ids.join(',')]);
+    return redis.send('PUBLISH', [sharedChannel(redisUrl, `live:topic:${topic}`), ids.join(',')]);
 }
 try {
     await request('GET', '/v1/device', undefined, 11004, null);
@@ -131,7 +132,7 @@ try {
     const reported = Date.now();
     await redis.send('EVAL', [
         "redis.call('HSET',KEYS[1],'last_report_at_ms',ARGV[1]); return redis.call('PUBLISH',KEYS[2],ARGV[2])",
-        '2', `iot:v2:runtime:device:${device}`, 'iot:live:topic:device.realtime', String(reported), device,
+        '2', `iot:v2:runtime:device:${device}`, sharedChannel(redisUrl, 'live:topic:device.realtime'), String(reported), device,
     ]);
     const telemetryEvent = await list.next();
     assert.equal(telemetryEvent.event, 'realtime', 'telemetry must not rebuild metadata or groups');

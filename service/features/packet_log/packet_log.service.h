@@ -14,7 +14,7 @@ namespace service::packet_log {
 class DebugPacketService {
   public:
     template <typename Redis>
-    static ruvia::task<void> finishAcquisition(const Redis& redis, std::string_view acquisitionId, std::string_view state) {
+    static ruvia::task<void> finishAcquisition(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view acquisitionId, std::string_view state) {
         if (acquisitionId.empty() || (state != "success" && state != "partial" && state != "failed")) {
             throw std::invalid_argument("invalid acquisition completion");
         }
@@ -33,11 +33,11 @@ return 1
         if (result.kind() == ruvia::redis_value::kind_type::error) {
             utils::redis::throwValue("finish debug acquisition", result);
         }
-        co_await service::live::publish(redis, service::message::live::topic::kPacketDebug);
+        co_await service::live::publish(redis, scope, service::message::live::topic::kPacketDebug);
     }
 
     template <typename Redis>
-    static ruvia::task<void> recordPacket(const Redis& redis, service::common::UuidV7State& uuidState, std::string_view linkId, std::string_view deviceId, std::string_view direction, std::string_view source, std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time, bool captureLink, bool captureDevice, std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {}, std::string_view parsedJson = {}, std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0, std::string_view acquisitionId = {}, std::string_view edgeNodeId = {}, std::string_view edgeNodeName = {}) {
+    static ruvia::task<void> recordPacket(const Redis& redis, const service::message::RedisChannelScope& scope, service::common::UuidV7State& uuidState, std::string_view linkId, std::string_view deviceId, std::string_view direction, std::string_view source, std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time, bool captureLink, bool captureDevice, std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {}, std::string_view parsedJson = {}, std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0, std::string_view acquisitionId = {}, std::string_view edgeNodeId = {}, std::string_view edgeNodeName = {}) {
         if (acquisitionId.empty()) {
             throw std::invalid_argument("debug packet requires acquisition ID");
         }
@@ -269,7 +269,7 @@ return changed and 1 or 0
         if (!deviceId.empty()) {
             changedIds.emplace_back(deviceId);
         }
-        co_await service::live::publish(redis, service::message::live::topic::kPacketDebug, changedIds);
+        co_await service::live::publish(redis, scope, service::message::live::topic::kPacketDebug, changedIds);
     }
 };
 } // namespace service::packet_log

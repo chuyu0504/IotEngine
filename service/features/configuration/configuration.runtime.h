@@ -61,7 +61,7 @@ class Reconciler final {
         const auto redis = context.redis().with_options({ .stop_token_ = stop });
         const std::vector<std::string> streams{ message::configuration::runtimeChangesStream() };
         co_await utils::redis::ensureGroup(redis, streams.front(), kGroup);
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             auto cleanupAt = co_await ConfigurationService::retireSnapshots(context);
             ready.set_value();
             const auto consumer = identity.instanceId + ":service-" + std::to_string(identity.index);
@@ -76,7 +76,7 @@ class Reconciler final {
                         ? std::optional(std::chrono::milliseconds(std::max<std::int64_t>(0, *cleanupAt - message::utcNowMilliseconds())))
                         : std::nullopt;
                     const auto replaying = recovering;
-                    auto batches = co_await utils::redis::consumeGroup(redis, streams, kGroup, consumer, recovering, notifications, stop, wait, kBatchSize);
+                    auto batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, kGroup, consumer, recovering, notifications, stop, wait, kBatchSize);
                     if (batches.empty()) {
                         continue;
                     }
@@ -88,7 +88,7 @@ class Reconciler final {
                         messageCount += batch.messages.size();
                     }
                     while (!replaying && messageCount < kCoalesceLimit && !stop.stop_requested()) {
-                        auto next = co_await utils::redis::consumeGroup(redis, streams, kGroup, consumer, recovering, notifications, stop, std::chrono::milliseconds(0), std::min(kBatchSize, kCoalesceLimit - messageCount), std::chrono::minutes(1), true);
+                        auto next = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, kGroup, consumer, recovering, notifications, stop, std::chrono::milliseconds(0), std::min(kBatchSize, kCoalesceLimit - messageCount), std::chrono::minutes(1), true);
                         if (next.empty()) {
                             break;
                         }
@@ -106,7 +106,7 @@ class Reconciler final {
                         cleanupAt = co_await ConfigurationService::retireSnapshots(context);
                     }
                     for (const auto& batch : batches) {
-                        co_await utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kGroup, batch.messages);
+                        co_await utils::redis::acknowledgeAndDeleteMany(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kGroup, batch.messages);
                     }
                 } catch (const std::exception& error) {
                     if (stop.stop_requested()) {

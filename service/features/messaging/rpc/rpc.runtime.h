@@ -121,7 +121,7 @@ class RpcConsumerRuntime final {
         while (true) {
             bool failed = false;
             try {
-                co_await RpcReceiptService::saveAndAcknowledge(context.redis(), id, stream_, kGroup, message.id, RpcReplyRecord{ result });
+                co_await RpcReceiptService::saveAndAcknowledge(context.redis(), context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, id, stream_, kGroup, message.id, RpcReplyRecord{ result });
             } catch (const std::exception& error) {
                 failed = true;
                 if (!stop_->token().stop_requested()) {
@@ -252,6 +252,7 @@ class RpcConsumerRuntime final {
         try {
             co_await service::utils::redis::withConsumerNotifications(
                 redis,
+                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 context.worker(),
                 streams,
                 kGroup,
@@ -268,6 +269,7 @@ class RpcConsumerRuntime final {
                             }
                             auto batches = co_await service::utils::redis::consumeGroup(
                                 redis,
+                                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                                 streams,
                                 kGroup,
                                 "control",

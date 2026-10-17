@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
@@ -104,7 +105,7 @@ async function publicFrames(path: string, accessKey: string) {
     return {next,close:()=>{controller.abort();void reader.cancel().catch(()=>{});}};
 }
 const publishChange = (topic: string, ids: string[]) =>
-    redis.send('PUBLISH',[`iot:live:topic:${topic}`,ids.join(',')]);
+    redis.send('PUBLISH',[sharedChannel(redisUrl, `live:topic:${topic}`),ids.join(',')]);
 try {
     await request('GET','/api/open-access-key',undefined,11004,null);
     await publicSseError('/open-api/device/list',undefined,401,19010);

@@ -43,7 +43,7 @@
 namespace service::command {
 
 template <typename Redis>
-ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queueKey, PendingQueueKind kind, const std::vector<PendingDispatch>& dispatches, std::size_t maxLength) {
+ruvia::task<bool> dispatchPendingBatch(const Redis& redis, const message::RedisChannelScope& scope, std::string_view queueKey, PendingQueueKind kind, const std::vector<PendingDispatch>& dispatches, std::size_t maxLength) {
     if (queueKey.empty() || dispatches.empty() || maxLength == 0) {
         throw std::invalid_argument("pending command batch is incomplete");
     }
@@ -75,7 +75,7 @@ ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queu
             arguments.push_back(dispatch.listPayload);
         }
     }
-    const auto inputChannel = kind == PendingQueueKind::Stream ? message::consumer::inputChannel(queueKey) : std::string{};
+    const auto inputChannel = kind == PendingQueueKind::Stream ? message::consumer::inputChannel(scope, queueKey) : std::string{};
     const std::string_view keyViews[]{ queueKey, inputChannel };
     std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
     const auto reply = co_await redis.eval(persistence::kPendingBatchDispatchScript, keyViews, argumentViews);
@@ -199,7 +199,7 @@ class CommandDispatchService final {
                     }
                 }
                 const std::vector<PendingDispatch> pending{ std::move(item) };
-                published = co_await dispatchPendingBatch(context.redis(), cell(1), list ? PendingQueueKind::List : PendingQueueKind::Stream, pending, static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
+                published = co_await dispatchPendingBatch(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(1), list ? PendingQueueKind::List : PendingQueueKind::Stream, pending, static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
                 if (!published) {
                     failure = "queue_capacity_exceeded";
                 }
@@ -223,7 +223,7 @@ class CommandDispatchService final {
             }
             co_await update.commit();
             if (published && !cell(3).empty()) {
-                co_await edge::dispatch::notifyNode(context.redis(), cell(3));
+                co_await edge::dispatch::notifyNode(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(3));
             }
         }
         auto expiry = co_await context.db().begin_transaction();

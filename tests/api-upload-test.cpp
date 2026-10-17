@@ -111,7 +111,8 @@ struct ClaimContext {
         std::in_place,
         "upload-test-instance",
         0,
-        1
+        1,
+        service::message::RedisChannelScope{ 0 }
     };
 
   private:

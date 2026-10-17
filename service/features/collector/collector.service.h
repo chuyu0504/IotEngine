@@ -969,10 +969,10 @@ class CollectorCommandService final {
     static constexpr std::size_t kCommandResultCapacity = 10000;
 
     template <typename Redis>
-    static ruvia::task<void> rejectMessage(const Redis& redis, std::size_t workerIndex, std::string_view instanceId, std::string_view consumer, const message::StreamMessage& message, std::string_view reason, std::string_view detail, std::string_view inputStream, std::string_view inputGroup) {
+    static ruvia::task<void> rejectMessage(const Redis& redis, const message::RedisChannelScope& scope, std::size_t workerIndex, std::string_view instanceId, std::string_view consumer, const message::StreamMessage& message, std::string_view reason, std::string_view detail, std::string_view inputStream, std::string_view inputGroup) {
         auto fields = deadLetterFields(message.fields, message.id, reason, detail, workerIndex);
         const auto outputStream = message::deadLetterStream(workerIndex, instanceId);
-        (void)co_await service::messaging::stream::publishAndAcknowledge(redis, outputStream, fields, kDeadLetterCapacity, inputStream, inputGroup, consumer, message.id, std::nullopt, instanceId);
+        (void)co_await service::messaging::stream::publishAndAcknowledge(redis, scope, outputStream, fields, kDeadLetterCapacity, inputStream, inputGroup, consumer, message.id, std::nullopt, instanceId);
     }
 
     CollectorCommandService(ruvia::redis_handle redis, service::common::UuidV7State& uuidState, const service::common::WorkerIdentity& identity, std::string group, std::string consumer, std::string deadLetterStream)
@@ -1168,6 +1168,7 @@ class CollectorCommandService final {
         );
         (void)co_await service::messaging::stream::publishAndAcknowledge(
             redis_,
+            identity_.channels,
             stream,
             message::protocolTaskFields(task),
             kCommandStreamCapacity,
@@ -1204,6 +1205,7 @@ class CollectorCommandService final {
         if (success) {
             (void)co_await service::messaging::stream::publishAndAcknowledge(
                 redis_,
+                identity_.channels,
                 resultStream,
                 results,
                 kCommandResultCapacity,
@@ -1235,6 +1237,7 @@ class CollectorCommandService final {
         };
         (void)co_await service::messaging::stream::publishAllAndAcknowledge(
             redis_,
+            identity_.channels,
             publications,
             inputStream,
             group_,
@@ -1303,7 +1306,7 @@ class CollectorDerivedService final {
         }
         // 持有本次使用的解析结果；等待 Redis 期间快照更新不会使其失效。
         const auto entry = current->second;
-        const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed, identity_.instanceId);
+        const auto result = co_await telemetry::derived::DerivedService::append(redis_, identity_.channels, *entry.calculation, parsed, identity_.instanceId);
         co_return Outcome{ result.published, result.nextDeadline, entry.revision };
     }
 
@@ -1331,7 +1334,7 @@ class CollectorDerivedService final {
         parsed.valuesJson = "{\"values\":{}}";
         Outcome outcome{ .revision = entry.revision };
         try {
-            const auto result = co_await telemetry::derived::DerivedService::append(redis_, *entry.calculation, parsed, identity_.instanceId, true);
+            const auto result = co_await telemetry::derived::DerivedService::append(redis_, identity_.channels, *entry.calculation, parsed, identity_.instanceId, true);
             outcome.published = result.published;
             outcome.nextDeadline = result.nextDeadline;
         } catch (const std::exception& error) {
@@ -1357,11 +1360,11 @@ class CollectorDerivedService final {
 class CollectorStateService final {
   public:
     template <typename Redis>
-    static ruvia::task<DeviceRouteOwner> bindRoute(const Redis& redis, const ProtocolAction& action, std::uint64_t sessionEpoch, std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId, std::string_view instanceId) {
+    static ruvia::task<DeviceRouteOwner> bindRoute(const Redis& redis, const message::RedisChannelScope& scope, const ProtocolAction& action, std::uint64_t sessionEpoch, std::size_t workerIndex, std::string_view workerInstanceId, std::string linkId, std::string_view instanceId) {
         const auto key = message::collector::connectionKey(action.deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(action.deviceId);
         const auto ownerKey = message::collector::linkOwnerKey(linkId);
-        const auto revisionKey = message::live::channel(message::live::topic::kDeviceState);
+        const auto revisionKey = message::live::channel(scope, message::live::topic::kDeviceState);
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
@@ -1390,15 +1393,15 @@ class CollectorStateService final {
             ? std::string(reply.array()[1].string())
             : std::string{};
         const auto oldInstance = std::string(reply.array()[2].string());
-        co_await service::messaging::stream::wakeWorker(redis, std::nullopt, message::WorkerStreamTask::Freshness, instanceId);
+        co_await service::messaging::stream::wakeWorker(redis, scope, std::nullopt, message::WorkerStreamTask::Freshness, instanceId);
         co_return DeviceRouteOwner{ oldWorker, oldConnection, oldInstance };
     }
 
     template <typename Redis>
-    static ruvia::task<void> markDeviceOffline(const Redis& redis, std::string_view deviceId, std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex, std::string_view workerInstanceId, std::string_view reason, std::string_view instanceId) {
+    static ruvia::task<void> markDeviceOffline(const Redis& redis, const message::RedisChannelScope& scope, std::string_view deviceId, std::string_view connectionId, std::uint64_t sessionEpoch, std::size_t workerIndex, std::string_view workerInstanceId, std::string_view reason, std::string_view instanceId) {
         const auto key = message::collector::connectionKey(deviceId);
         const auto runtimeKey = service::message::telemetry::runtimeKey(deviceId);
-        const auto revisionKey = message::live::channel(message::live::topic::kDeviceState);
+        const auto revisionKey = message::live::channel(scope, message::live::topic::kDeviceState);
         const auto now = std::to_string(message::utcNowMilliseconds());
         const auto worker = std::to_string(workerIndex);
         const auto epoch = std::to_string(sessionEpoch);
@@ -1426,9 +1429,9 @@ class CollectorStateService final {
     }
 
     template <typename Redis>
-    static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const RuntimeSnapshot& snapshot, std::string_view instanceId) {
+    static ruvia::task<void> eraseLegacyRoutes(const Redis& redis, const message::RedisChannelScope& scope, const RuntimeSnapshot& snapshot, std::string_view instanceId) {
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const auto changes = message::live::channel(message::live::topic::kDeviceState);
+        const auto changes = message::live::channel(scope, message::live::topic::kDeviceState);
         for (const auto& device : snapshot.devices) {
             const auto key = service::message::telemetry::runtimeKey(device.id);
             const auto owner = message::collector::linkOwnerKey(device.linkId);
@@ -1740,21 +1743,21 @@ class CollectorPacketService final {
     }
 
     template <typename Redis>
-    static ruvia::task<void> completeAcquisition(const Redis& redis, const ProtocolAction& action) {
+    static ruvia::task<void> completeAcquisition(const Redis& redis, const message::RedisChannelScope& scope, const ProtocolAction& action) {
         if (action.kind == ProtocolActionKind::FinishAcquisition) {
-            co_await packet_log::DebugPacketService::finishAcquisition(redis, action.acquisitionId, action.reason);
+            co_await packet_log::DebugPacketService::finishAcquisition(redis, scope, action.acquisitionId, action.reason);
         } else if (!action.commandId.empty()) {
-            co_await packet_log::DebugPacketService::finishAcquisition(redis, action.commandId, action.kind == ProtocolActionKind::CompleteCommand ? "success" : "failed");
+            co_await packet_log::DebugPacketService::finishAcquisition(redis, scope, action.commandId, action.kind == ProtocolActionKind::CompleteCommand ? "success" : "failed");
         }
     }
 
     template <typename Redis>
-    static ruvia::task<void> recordDebugPacket(const Redis& redis, service::common::UuidV7State& uuidState, const LinkDefinition& link, const DeviceDefinition* device, std::string_view direction, std::string_view address, std::span<const std::uint8_t> bytes, std::int64_t timestamp, bool deviceOnly, std::string_view eventId, std::string_view status, std::string_view reason, std::string_view parsedJson, std::string_view replyToPacketId, std::string_view acquisitionId) {
+    static ruvia::task<void> recordDebugPacket(const Redis& redis, const message::RedisChannelScope& scope, service::common::UuidV7State& uuidState, const LinkDefinition& link, const DeviceDefinition* device, std::string_view direction, std::string_view address, std::span<const std::uint8_t> bytes, std::int64_t timestamp, bool deviceOnly, std::string_view eventId, std::string_view status, std::string_view reason, std::string_view parsedJson, std::string_view replyToPacketId, std::string_view acquisitionId) {
         if (!link.debugEnabled && !(device && device->debugEnabled)) {
             co_return;
         }
         try {
-            co_await packet_log::DebugPacketService::recordPacket(redis, uuidState, link.id, device ? std::string_view(device->id) : std::string_view{}, direction, "collector", address, bytes, timestamp, link.debugEnabled && !deviceOnly, device && device->debugEnabled, eventId, status, reason, parsedJson, replyToPacketId, false, 0, acquisitionId);
+            co_await packet_log::DebugPacketService::recordPacket(redis, scope, uuidState, link.id, device ? std::string_view(device->id) : std::string_view{}, direction, "collector", address, bytes, timestamp, link.debugEnabled && !deviceOnly, device && device->debugEnabled, eventId, status, reason, parsedJson, replyToPacketId, false, 0, acquisitionId);
         } catch (const std::exception& error) {
             LOG_WARN << "[Collector] debug_packet_failed: " << error.what();
         }
@@ -1882,8 +1885,8 @@ class CollectorPacketService final {
 class CollectorTelemetryService final {
   public:
     template <typename Redis>
-    static ruvia::task<void> publishParsed(const Redis& redis, const message::ParsedDeviceMessage& parsed, std::string_view instanceId) {
-        (void)co_await service::messaging::stream::publishAndWake(redis, message::parsedStream(), message::parsedFields(parsed), std::nullopt, message::WorkerStreamTask::Telemetry, 10000, instanceId);
+    static ruvia::task<void> publishParsed(const Redis& redis, const message::RedisChannelScope& scope, const message::ParsedDeviceMessage& parsed, std::string_view instanceId) {
+        (void)co_await service::messaging::stream::publishAndWake(redis, scope, message::parsedStream(), message::parsedFields(parsed), std::nullopt, message::WorkerStreamTask::Telemetry, 10000, instanceId);
     }
 };
 

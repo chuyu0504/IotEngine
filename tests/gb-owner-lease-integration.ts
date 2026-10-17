@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 
 const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL;
@@ -9,7 +10,7 @@ const key = `${ownerPrefix}camera-1`;
 const otherKey = `${ownerPrefix}camera-2`;
 const deadlines = `${prefix}:deadlines`;
 const wake = `${prefix}:wake`;
-const wakeChannel = `iot:consumer:input:${wake}`;
+const wakeChannel = sharedChannel(redisUrl, `consumer:input:${wake}`);
 const subscriber = new Bun.RedisClient(redisUrl);
 const notices: string[] = [];
 const barrierChannel = `${prefix}:barrier`;

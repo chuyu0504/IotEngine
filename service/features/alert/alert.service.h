@@ -26,6 +26,7 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
+#include "service/features/access/access.entity.h"
 #include "service/features/access/access.service.h"
 #include "service/features/alert/alert.entity.h"
 #include "service/features/configuration/configuration.entity.h"
@@ -138,6 +139,7 @@ inline std::string offlineDurationKey(std::string_view deviceId) {
 template <typename Redis>
 ruvia::task<void> schedule(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     const std::vector<service::message::ParsedDeviceMessage>& messages,
     std::string_view instance
 ) {
@@ -147,7 +149,7 @@ ruvia::task<void> schedule(
     const auto scriptSha = co_await redis.script_load(kScheduleScript);
     const auto deadlinesKey = offlineDeadlinesKey();
     const auto wakeStream = service::message::workerWakeStream(std::nullopt, instance);
-    const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
+    const auto wakeChannel = service::message::consumer::inputChannel(scope, wakeStream);
     auto pipeline = redis.pipeline();
     for (const auto& message : messages) {
         const auto durationKey = offlineDurationKey(message.deviceId);
@@ -373,7 +375,7 @@ ruvia::task<void> refresh(Context& context) {
         offlineDeadlinesKey(),
         service::message::workerWakeStream(std::nullopt, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId)
     };
-    keys.push_back(service::message::consumer::inputChannel(keys.back()));
+    keys.push_back(service::message::consumer::inputChannel(context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, keys.back()));
     std::vector<std::string_view> keyViews(keys.begin(), keys.end());
     std::vector<std::string_view> views;
     views.reserve(arguments.size());
@@ -422,7 +424,7 @@ class AlertEvaluationService final {
         }
         const auto metadataState = co_await metadata::activity(context, messages);
         if (metadataState.offlineRules) {
-            co_await metadata::schedule(context.redis(), messages, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
+            co_await metadata::schedule(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, messages, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
         }
         auto active = metadataState.devices;
         std::vector<std::string> previous;
@@ -856,7 +858,7 @@ class AlertEvaluationService final {
         if (events.empty()) {
             co_return;
         }
-        const auto scriptSha = co_await context.redis().script_load(service::message::access::stream::kPublishEventScript);
+        const auto scriptSha = co_await context.redis().script_load(service::access::persistence::kPublishEventScript);
         auto pipeline = context.redis().pipeline();
         for (const auto& event : events) {
             const auto occurredAt = service::utils::parseInt64(
@@ -867,6 +869,7 @@ class AlertEvaluationService final {
             }
             service::access::event::queue(
                 pipeline,
+                context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 scriptSha,
                 event[0].value().value_or(std::string_view{}),
                 event[1].value().value_or(std::string_view{}),

@@ -89,7 +89,7 @@ ruvia::task<std::optional<std::string>> waitForReply(Context& context, const ruv
             }
             if (!enqueued) {
                 const auto requestArguments = service::message::rpc::Contract::requestArguments(requestStream, id, component, operation, std::move(payload), deadline);
-                const auto inputChannel = service::message::consumer::inputChannel(requestStream);
+                const auto inputChannel = service::message::consumer::inputChannel(context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, requestStream);
                 const std::string_view keys[]{ requestStream, inputChannel };
                 const std::vector<std::string_view> arguments(requestArguments.begin() + 3, requestArguments.end());
                 // An uncertain append is never repeated. Its persisted deadline

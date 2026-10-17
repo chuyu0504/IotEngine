@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import { databaseUrl, redisUrl, publishFixtureEvent } from './architecture-fixture';
 // Fault injection uses only the disposable local PostgreSQL/Redis fixture.
 import assert from 'node:assert/strict';
@@ -184,7 +185,7 @@ try {
     const lua = source.match(/kFanoutScript = R"lua\(([\s\S]*?)\)lua"/)![1];
     // KEYS: five actual streams, their five input channels, then one receipt per entry.
     const streams = Array.from({ length: 5 }, (_, i) => `test:fanout:${event}:${i}`);
-    const channels = streams.map(stream => `iot:consumer:input:${stream}`);
+    const channels = streams.map(stream => sharedChannel(redisUrl, `consumer:input:${stream}`));
     const keys = [...streams, ...channels, `test:fanout:${event}:receipt`];
     const subscriber = new Bun.RedisClient(redisUrl);
     const notifications: { channel: string; entry: string }[] = [];

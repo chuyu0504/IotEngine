@@ -1092,6 +1092,7 @@ class GbControlService final {
 
     static ruvia::task<void> publishControlCommand(
         const ruvia::redis_handle& redis,
+        const service::message::RedisChannelScope& scope,
         const std::string& controlKey,
         const std::string& ownerKey,
         std::string_view ownerToken,
@@ -1102,7 +1103,7 @@ class GbControlService final {
             args.push_back(field.name);
             args.push_back(field.value);
         }
-        const auto inputChannel = service::message::consumer::inputChannel(controlKey);
+        const auto inputChannel = service::message::consumer::inputChannel(scope, controlKey);
         const std::string_view keys[]{ controlKey, ownerKey, inputChannel };
         const auto published = co_await redis.eval(kPublishControlCommandScript, keys, args);
         if (published.kind() != ruvia::redis_value::kind_type::integer) {
@@ -1159,6 +1160,7 @@ class GbControlService final {
 
     static ruvia::task<ProjectionPublishResult> publishProjection(
         const ruvia::redis_handle& redis,
+        const service::message::RedisChannelScope& scope,
         const std::string& projectionId,
         std::string_view projectionOrder,
         std::string_view currentEntryId,
@@ -1168,8 +1170,8 @@ class GbControlService final {
         const auto sentKey = control_protocol::stream::projectionSent(projectionId);
         const auto wakeStream = service::message::sharedWakeStream(instanceId);
         const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
-        const auto inputChannel = service::message::consumer::inputChannel(control_protocol::stream::kProjection);
-        const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
+        const auto inputChannel = service::message::consumer::inputChannel(scope, control_protocol::stream::kProjection);
+        const auto wakeChannel = service::message::consumer::inputChannel(scope, wakeStream);
         const std::string_view keys[]{ control_protocol::stream::kProjection, sentKey, wakeStream, inputChannel, wakeChannel };
         std::vector<std::string_view> args;
         args.reserve(4 + fields.size() * 2);
@@ -1230,11 +1232,11 @@ class GbControlService final {
 
     // `deadlineMember` is empty for preview session owners, which have no
     // durable aggregate to reconcile.
-    static ruvia::task<bool> claimOwnerLease(const ruvia::redis_handle& connection, std::string_view key, std::string_view token, std::string_view previousToken, std::string_view deadlineMember, std::string_view instanceId) {
+    static ruvia::task<bool> claimOwnerLease(const ruvia::redis_handle& connection, const service::message::RedisChannelScope& scope, std::string_view key, std::string_view token, std::string_view previousToken, std::string_view deadlineMember, std::string_view instanceId) {
         const auto redis = connection.with_options({ .timeout_ = std::chrono::seconds(3) });
         const auto wakeStream = service::message::sharedWakeStream(instanceId);
         const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
-        const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
+        const auto wakeChannel = service::message::consumer::inputChannel(scope, wakeStream);
         const std::string_view keys[]{ key, control_protocol::stream::kOwnerDeadlines, wakeStream, wakeChannel };
         const std::string_view arguments[]{
             token,
@@ -1277,6 +1279,7 @@ class GbControlService final {
 
     static ruvia::task<void> publishReplyAndAcknowledge(
         const ruvia::redis_handle& redis,
+        const service::message::RedisChannelScope& scope,
         std::string_view replyTopic,
         std::string_view controlStream,
         std::string_view group,
@@ -1290,7 +1293,7 @@ class GbControlService final {
         const std::string result = ControlResultRecord{ std::string(status), std::string(payload) }.encode();
         const std::string_view ttl{ "600" };
         const auto deadlineKey = service::message::consumer::deadlineKey(controlStream, group);
-        const auto deadlineChannel = service::message::consumer::deadlineChannel(controlStream, group);
+        const auto deadlineChannel = service::message::consumer::deadlineChannel(scope, controlStream, group);
         const std::string_view keys[]{ replyTopic, controlStream, resultKey, claimKey, deadlineKey, deadlineChannel };
         const std::string_view arguments[]{ group, messageId, result, ttl, ttl, claimOwner };
         const auto reply = co_await redis.eval(kPublishReplyAndAcknowledgeScript, keys, arguments);
@@ -1319,6 +1322,7 @@ class GbControlService final {
     // `receiptTopic` is the publishing Collector Worker's projection receipt topic.
     static ruvia::task<void> markProjectionDoneAndAcknowledge(
         const ruvia::redis_handle& redis,
+        const service::message::RedisChannelScope& scope,
         std::string_view stream,
         std::string_view group,
         std::string_view messageId,
@@ -1333,7 +1337,7 @@ class GbControlService final {
         const std::string_view appliedValue{ applied ? "1" : "0" };
         const std::string_view ttl{ "600" };
         const auto deadlines = service::message::consumer::deadlineKey(stream, group);
-        const auto deadlineChannel = service::message::consumer::deadlineChannel(stream, group);
+        const auto deadlineChannel = service::message::consumer::deadlineChannel(scope, stream, group);
         const std::string_view keys[]{ doneKey, stream, receiptTopic, deadlines, deadlineChannel };
         const std::string_view arguments[]{ appliedValue, ttl, group, messageId, projectionId };
         const auto reply = co_await redis.eval(kMarkProjectionDoneScript, keys, arguments);
@@ -1531,7 +1535,7 @@ class GbControlService final {
                     // An uncertain XADD must never be retried: the caller
                     // records cancellation and leaves execution owner fencing.
                     publishAttempted = true;
-                    co_await GbControlService::publishControlCommand(redis, controlKey, ownerKey, ownerToken, fields);
+                    co_await GbControlService::publishControlCommand(redis, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, controlKey, ownerKey, ownerToken, fields);
                     published = true;
                 }
                 while (!stop.stop_requested()) {

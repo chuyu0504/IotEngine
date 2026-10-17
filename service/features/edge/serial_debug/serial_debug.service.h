@@ -248,7 +248,7 @@ class Service final {
         if (reply.kind() != ruvia::redis_value::kind_type::integer || reply.integer() != 1) {
             co_return false;
         }
-        co_await dispatch::notifyNode(c.redis(), ticket.nodeId);
+        co_await dispatch::notifyNode(c.redis(), c.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, ticket.nodeId);
         co_return true;
     }
 

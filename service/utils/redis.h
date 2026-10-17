@@ -430,6 +430,7 @@ ruvia::task<void> forwardConsumerNotifications(
 template <typename Redis, typename Operation>
 ruvia::task<void> withConsumerNotifications(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     const ruvia::worker_handle& worker,
     std::span<const std::string> streams,
     std::string_view group,
@@ -439,14 +440,14 @@ ruvia::task<void> withConsumerNotifications(
     std::vector<std::string> channels;
     channels.reserve(streams.size() * 2);
     for (const auto& stream : streams) {
-        channels.push_back(service::message::consumer::inputChannel(stream));
-        channels.push_back(service::message::consumer::deadlineChannel(stream, group));
+        channels.push_back(service::message::consumer::inputChannel(scope, stream));
+        channels.push_back(service::message::consumer::deadlineChannel(scope, stream, group));
     }
     auto [sender, receiver] = ruvia::make_channel<std::uint8_t>(worker, { .capacity_ = 1 });
     auto [ready, initialized] = ruvia::make_one_shot<std::exception_ptr>(worker);
-    ruvia::task_scope scope(worker);
-    const auto combined = ruvia::combine_stop_tokens(stop, scope.get_stop_token());
-    scope.spawn(forwardConsumerNotifications(redis, worker, std::move(channels), std::move(sender), std::move(ready), combined));
+    ruvia::task_scope tasks(worker);
+    const auto combined = ruvia::combine_stop_tokens(stop, tasks.get_stop_token());
+    tasks.spawn(forwardConsumerNotifications(redis, worker, std::move(channels), std::move(sender), std::move(ready), combined));
     std::exception_ptr failure;
     try {
         auto result = co_await initialized.wait(combined);
@@ -460,8 +461,8 @@ ruvia::task<void> withConsumerNotifications(
     } catch (...) {
         failure = std::current_exception();
     }
-    scope.request_stop();
-    co_await scope.join();
+    tasks.request_stop();
+    co_await tasks.join();
     if (failure) {
         std::rethrow_exception(failure);
     }
@@ -470,6 +471,7 @@ ruvia::task<void> withConsumerNotifications(
 template <typename Redis>
 ruvia::task<std::vector<StreamBatch>> consumeGroup(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::span<const std::string> streams,
     std::string_view group,
     std::string_view consumer,
@@ -489,7 +491,7 @@ ruvia::task<std::vector<StreamBatch>> consumeGroup(
     storage.reserve(streams.size() * 2);
     for (const auto& stream : streams) {
         storage.push_back(service::message::consumer::deadlineKey(stream, group));
-        storage.push_back(service::message::consumer::deadlineChannel(stream, group));
+        storage.push_back(service::message::consumer::deadlineChannel(scope, stream, group));
     }
     std::vector<std::string_view> keys;
     keys.reserve(streams.size() * 3);
@@ -619,9 +621,9 @@ return acknowledged
 )lua";
 
 template <typename Redis>
-ruvia::task<void> acknowledge(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
+ruvia::task<void> acknowledge(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view stream, std::string_view group, std::string_view id) {
     const auto pending = service::message::consumer::deadlineKey(stream, group);
-    const auto channel = service::message::consumer::deadlineChannel(stream, group);
+    const auto channel = service::message::consumer::deadlineChannel(scope, stream, group);
     const std::string_view keys[]{ stream, pending, channel };
     const std::string_view arguments[]{ group, id };
     const auto reply = co_await redis.eval(kAcknowledgeScript, keys, arguments);
@@ -653,12 +655,12 @@ return id
 )lua";
 
 template <typename Redis>
-ruvia::task<std::string> add(const Redis& redis, std::string_view stream, const std::vector<service::message::StreamField>& fields, std::size_t maxLength = 100000) {
+ruvia::task<std::string> add(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view stream, const std::vector<service::message::StreamField>& fields, std::size_t maxLength = 100000) {
     if (fields.empty()) {
         throw std::invalid_argument("Redis Stream message must contain fields");
     }
     const auto length = std::to_string(maxLength);
-    const auto channel = service::message::consumer::inputChannel(stream);
+    const auto channel = service::message::consumer::inputChannel(scope, stream);
     const std::string_view keys[]{ stream, channel };
     std::vector<std::string_view> arguments{ length };
     arguments.reserve(1 + fields.size() * 2);
@@ -682,9 +684,9 @@ return acknowledged
 )lua";
 
 template <typename Redis>
-ruvia::task<void> acknowledgeAndDelete(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
+ruvia::task<void> acknowledgeAndDelete(const Redis& redis, const service::message::RedisChannelScope& scope, std::string_view stream, std::string_view group, std::string_view id) {
     const auto pending = service::message::consumer::deadlineKey(stream, group);
-    const auto channel = service::message::consumer::deadlineChannel(stream, group);
+    const auto channel = service::message::consumer::deadlineChannel(scope, stream, group);
     const std::string_view keys[]{ stream, pending, channel };
     const std::string_view arguments[]{ group, id };
     const auto reply = co_await redis.eval(kAcknowledgeDeleteScript, keys, arguments);
@@ -706,6 +708,7 @@ return acknowledged
 template <typename Redis>
 ruvia::task<void> acknowledgeAndDeleteMany(
     const Redis& redis,
+    const service::message::RedisChannelScope& scope,
     std::string_view stream,
     std::string_view group,
     const std::vector<service::message::StreamMessage>& messages
@@ -714,7 +717,7 @@ ruvia::task<void> acknowledgeAndDeleteMany(
         co_return;
     }
     const auto pending = service::message::consumer::deadlineKey(stream, group);
-    const auto channel = service::message::consumer::deadlineChannel(stream, group);
+    const auto channel = service::message::consumer::deadlineChannel(scope, stream, group);
     const std::string_view keys[]{ stream, pending, channel };
     std::vector<std::string_view> arguments;
     arguments.reserve(messages.size() + 1);

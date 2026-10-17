@@ -131,6 +131,7 @@ class ProjectionRuntime final {
                 const auto notificationStreams = reads.streams;
                 co_await service::utils::redis::withConsumerNotifications(
                     context.redis(),
+                    context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                     context.worker(),
                     notificationStreams,
                     kIngressGroup,
@@ -274,6 +275,7 @@ class ProjectionRuntime final {
             const auto delay = std::max(std::chrono::milliseconds(1), std::chrono::duration_cast<std::chrono::milliseconds>(reads.nextDiscovery - std::chrono::steady_clock::now()));
             batches = co_await service::utils::redis::consumeGroup(
                 context.redis(),
+                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,
                 reads.streams,
                 kIngressGroup,
                 consumer,
@@ -382,7 +384,7 @@ class ProjectionRuntime final {
         if (leaseLost_.load()) {
             co_return false;
         }
-        if (!co_await ProjectorStreams::acknowledgeFenced(redis, *owner, batch.messages)) {
+        if (!co_await ProjectorStreams::acknowledgeFenced(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, *owner, batch.messages)) {
             lostLease(context, reads, *owner);
             co_return false;
         }

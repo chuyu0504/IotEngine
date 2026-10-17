@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 
 const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL;
@@ -16,7 +17,7 @@ const claim = async (token: string, deadline: string) =>
     Number(await redis.send('EVAL', [lua, '3', ...keys, token, deadline]));
 const publishLua = script('kPublishControlCommandScript');
 const stream = `${prefix}:commands`;
-const inputChannel = `iot:consumer:input:${stream}`;
+const inputChannel = sharedChannel(redisUrl, `consumer:input:${stream}`);
 const inputSubscriber = new Bun.RedisClient(redisUrl);
 const inputNotices: string[] = [];
 const inputBarrierChannel = `${prefix}:input-barrier`;
@@ -31,7 +32,7 @@ const replyLua = script('kPublishReplyAndAcknowledgeScript');
 const reply = `${prefix}:reply`;
 const result = `${prefix}:result`;
 const deadlineKey = `iot:consumer:pending:group:${stream}`;
-const deadlineChannel = `iot:consumer:deadline:group:${stream}`;
+const deadlineChannel = sharedChannel(redisUrl, `consumer:deadline:group:${stream}`);
 const deadlineSubscriber = new Bun.RedisClient(redisUrl);
 const deadlineNotices: string[] = [];
 let subscriber = new Bun.RedisClient(redisUrl);

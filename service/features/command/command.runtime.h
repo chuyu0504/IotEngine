@@ -62,7 +62,7 @@ class CommandProcessingRuntime final {
         for (const auto& stream : streams) {
             co_await utils::redis::ensureGroup(redis, stream, kGroup);
         }
-        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        co_await utils::redis::withConsumerNotifications(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             ready.set_value();
             const auto consumer = identity.instanceId + ":service-" + std::to_string(identity.index);
             bool recovering = true;
@@ -78,18 +78,18 @@ class CommandProcessingRuntime final {
                     const auto wait = dispatchAt
                         ? std::optional(std::max(std::chrono::milliseconds(0), std::chrono::duration_cast<std::chrono::milliseconds>(*dispatchAt - std::chrono::steady_clock::now())))
                         : std::nullopt;
-                    auto batches = co_await utils::redis::consumeGroup(redis, streams, kGroup, consumer, recovering, notifications, stop, wait);
+                    auto batches = co_await utils::redis::consumeGroup(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, streams, kGroup, consumer, recovering, notifications, stop, wait);
                     for (const auto& batch : batches) {
                         if (batch.stream == results) {
                             co_await CommandResultService::project(context, batch.messages);
-                            co_await utils::redis::acknowledgeAndDeleteMany(redis, batch.stream, kGroup, batch.messages);
+                            co_await utils::redis::acknowledgeAndDeleteMany(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kGroup, batch.messages);
                         } else {
                             for (const auto& item : batch.messages) {
                                 if (item.get("task") == message::workerStreamTaskName(message::WorkerStreamTask::CommandResult)) {
                                     dispatchAt = std::chrono::steady_clock::now();
                                 }
                                 // Wake streams fan out to independent consumer groups.
-                                co_await utils::redis::acknowledge(redis, batch.stream, kGroup, item.id);
+                                co_await utils::redis::acknowledge(redis, context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, batch.stream, kGroup, item.id);
                             }
                         }
                     }

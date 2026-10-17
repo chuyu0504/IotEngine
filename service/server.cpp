@@ -154,7 +154,7 @@ class CollectorWorkers final {
                     pool_->loop(index),
                     redis,
                     gb28181,
-                    service::common::WorkerIdentity{ instance, index, count }
+                    service::common::WorkerIdentity{ instance, index, count, service::message::RedisChannelScope{ redis.database_ } }
                 )));
             }
             std::exception_ptr failure;
@@ -372,7 +372,7 @@ ApplicationComponents createComponents(
         );
         workerComponents.gbProjection = gb28181.enabled
             ? std::make_shared<service::gb28181::GbProjectionRuntime>(
-                  service::common::WorkerIdentity{ components.instanceId, index, budget.service }
+                  service::common::WorkerIdentity{ components.instanceId, index, budget.service, service::message::RedisChannelScope{ components.serviceRedis.database_ } }
               )
             : nullptr;
         workerComponents.alerts = std::make_shared<service::alert::AlertRuntime>();
@@ -480,7 +480,8 @@ auto makeApplicationStart(ruvia::application& app, ApplicationComponents& compon
                                          identity = service::common::WorkerIdentity{
                                              components.instanceId,
                                              index,
-                                             workers.size() },
+                                             workers.size(),
+                                             service::message::RedisChannelScope{ components.serviceRedis.database_ } },
                                          directory = components.edge.firmwareDirectory](ruvia::web_worker_context& context) -> ruvia::task<void> {
                                             context.worker_state<ruvia::web_worker_handle>() = worker;
                                             context.worker_state<std::optional<service::common::WorkerIdentity>>().emplace(identity);

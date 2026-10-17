@@ -23,6 +23,7 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/worker.h"
 #include "service/middleware/request_context.h"
 #include "service/utils/json.h"
 #include "service/utils/log.h"
@@ -173,7 +174,7 @@ class LiveSubscription final {
         std::sort(topics_.begin(), topics_.end());
         topics_.erase(std::unique(topics_.begin(), topics_.end()), topics_.end());
         for (const auto& topic : topics_) {
-            channels_.push_back(service::message::live::channel(topic));
+            channels_.push_back(service::message::live::channel(context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, topic));
         }
     }
 

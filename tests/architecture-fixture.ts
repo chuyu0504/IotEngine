@@ -1,3 +1,5 @@
+import { sharedChannel } from './redis_channel.fixture';
+
 // Endpoints of the disposable fixture started by ports/cmake/integration-fixture.cmake
 // (`ctest -L integration`). Refuse anything but a local fixture database.
 function localUrl(name: string, protocol: string, database?: RegExp) {
@@ -14,6 +16,7 @@ function localUrl(name: string, protocol: string, database?: RegExp) {
 export const databaseUrl = localUrl('ARCHITECTURE_DATABASE_URL', 'postgres:', /^\/iot_architecture_[a-z0-9_]+$/);
 export const redisUrl = localUrl('ARCHITECTURE_REDIS_URL', 'redis:');
 export const apiBase = localUrl('TEST_BASE_URL', 'http:');
+
 // Working directory of the first iot-engine instance; its relative paths such
 // as firmware/ resolve here.
 export const fixtureDirectory = Bun.env.IOT_TEST_FIXTURE_DIRECTORY ?? '';
@@ -34,6 +37,6 @@ export async function publishFixtureEvent(redis: Bun.RedisClient, stream: string
          end;
          return id`,
         String((wakes.length + 1) * 2),
-        ...[stream, ...wakes].flatMap((key) => [key, `iot:consumer:input:${key}`]),
+        ...[stream, ...wakes].flatMap((key) => [key, sharedChannel(redisUrl, `consumer:input:${key}`)]),
         task, ...fields]);
 }

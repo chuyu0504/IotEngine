@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 
 const redisUrl = Bun.env.ARCHITECTURE_REDIS_URL;
@@ -10,10 +11,10 @@ const wake = `${prefix}:wake`;
 const receipt = `${prefix}:receipt`;
 const receipts = `${prefix}:receipts`;
 const group = 'gb-projection-test';
-const inputChannel = `iot:consumer:input:${stream}`;
-const wakeChannel = `iot:consumer:input:${wake}`;
+const inputChannel = sharedChannel(redisUrl, `consumer:input:${stream}`);
+const wakeChannel = sharedChannel(redisUrl, `consumer:input:${wake}`);
 const deadlines = `iot:consumer:pending:${group}:${stream}`;
-const deadlineChannel = `iot:consumer:deadline:${group}:${stream}`;
+const deadlineChannel = sharedChannel(redisUrl, `consumer:deadline:${group}:${stream}`);
 const subscriber = new Bun.RedisClient(redisUrl);
 const notices: { payload: string; channel: string }[] = [];
 const barrierChannel = `${prefix}:barrier`;
