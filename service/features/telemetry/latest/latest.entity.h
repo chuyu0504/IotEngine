@@ -46,18 +46,6 @@ return #expired
 )lua";
 };
 
-RUVIA_DB_ENTITY(DeviceLatestValueEntity, "device_latest_value",
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(element_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(value, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb}),
-    RUVIA_DB_COLUMN(observed_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz}),
-    RUVIA_DB_COLUMN(record_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(DeviceLatestValueEntity, "device_latest_value", RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(element_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .primary_key_ = true }), RUVIA_DB_COLUMN(value, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb }), RUVIA_DB_COLUMN(observed_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz }), RUVIA_DB_COLUMN(record_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
 } // namespace service::telemetry::latest::persistence

@@ -33,13 +33,13 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
-#include "service/utils/uuid.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/gb28181.entity.h"
 #include "service/features/gb28181/gb28181.protocol.h"
 #include "service/features/gb28181/gb28181.types.h"
 #include "service/middleware/log.h"
 #include "service/utils/redis.h"
+#include "service/utils/uuid.h"
 
 namespace service::gb28181 {
 
@@ -1630,9 +1630,7 @@ class GbControlService final {
             if (failure) {
                 std::rethrow_exception(failure);
             }
-            throw std::runtime_error(timerStop.stop_requested()
-                ? "GB28181 operation was cancelled"
-                : "GB28181 Collector did not reply before deadline");
+            throw std::runtime_error(timerStop.stop_requested() ? "GB28181 operation was cancelled" : "GB28181 Collector did not reply before deadline");
         }
         const auto& status = response->status;
         const auto& result = response->payload;

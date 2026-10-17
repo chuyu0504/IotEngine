@@ -41,9 +41,7 @@ class RpcReceiptService final {
         if (previous) {
             co_return RpcReplyRecord{ std::string(*previous) };
         }
-        const auto claimed = co_await redis.set(service::message::rpc::Contract::claim(id), "1",
-            { .condition_ = ruvia::redis_set_condition::if_absent,
-              .expiration_ = ruvia::redis_set_expiration::expires_after(std::chrono::seconds(86400)) });
+        const auto claimed = co_await redis.set(service::message::rpc::Contract::claim(id), "1", { .condition_ = ruvia::redis_set_condition::if_absent, .expiration_ = ruvia::redis_set_expiration::expires_after(std::chrono::seconds(86400)) });
         if (!claimed.applied()) {
             service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
         }

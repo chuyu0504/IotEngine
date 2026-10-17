@@ -24,6 +24,7 @@
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
+
 #include "service/utils/uuid.h"
 #endif
 

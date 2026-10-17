@@ -11,7 +11,7 @@ namespace service::vpn::config {
 
 struct Config final {
     wireguard::HubConfig hub;
-    bool enabled{true};
+    bool enabled{ true };
 };
 
 inline Config fromEnv(const ruvia::env& env) {

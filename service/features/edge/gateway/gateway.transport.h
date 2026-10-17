@@ -16,6 +16,7 @@ namespace service::edge::gateway::transport {
 class Connection final {
   public:
     explicit Connection(ruvia::websocket& socket) : socket_(socket) {}
+
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
 

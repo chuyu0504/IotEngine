@@ -2,22 +2,22 @@
 
 #include <tuple>
 
-#include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/common/message.h"
-#include "service/features/packet_log/packet_log.entity.h"
-#include "service/utils/redis.h"
-#include "service/utils/json.h"
+#include "service/common/uuid.h"
 #include "service/features/live/live.service.h"
+#include "service/features/packet_log/packet_log.entity.h"
+#include "service/utils/json.h"
+#include "service/utils/redis.h"
+#include "service/utils/uuid.h"
 
 namespace service::packet_log {
 class DebugPacketService {
   public:
     template <typename Redis>
-    static ruvia::task<void> finishAcquisition(const Redis& redis, std::string_view acquisitionId,
-        std::string_view state) {
-        if (acquisitionId.empty() || (state != "success" && state != "partial" && state != "failed"))
+    static ruvia::task<void> finishAcquisition(const Redis& redis, std::string_view acquisitionId, std::string_view state) {
+        if (acquisitionId.empty() || (state != "success" && state != "partial" && state != "failed")) {
             throw std::invalid_argument("invalid acquisition completion");
+        }
         static constexpr std::string_view script = R"lua(
 if redis.call('EXISTS',KEYS[1])==0 then return 0 end
 local previous=redis.call('HGET',KEYS[1],'state')
@@ -28,24 +28,22 @@ redis.call('HSET',KEYS[1],'state',ARGV[1],'finished_at_ms',now)
 return 1
 )lua";
         const std::string key = std::string(DebugAcquisitionStorage::prefix) + std::string(acquisitionId);
-        const std::vector<std::string_view> keys{key}, args{state};
+        const std::vector<std::string_view> keys{ key }, args{ state };
         const auto result = co_await redis.eval(script, keys, args);
-        if (result.kind() == ruvia::redis_value::kind_type::error)
+        if (result.kind() == ruvia::redis_value::kind_type::error) {
             utils::redis::throwValue("finish debug acquisition", result);
+        }
         co_await service::live::publish(redis, service::message::live::topic::kPacketDebug);
     }
+
     template <typename Redis>
-    static ruvia::task<void> recordPacket(const Redis& redis, service::common::UuidV7State& uuidState, std::string_view linkId,
-        std::string_view deviceId, std::string_view direction, std::string_view source,
-        std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time,
-        bool captureLink, bool captureDevice, std::string_view eventId = {},
-        std::string_view status = {}, std::string_view reason = {},
-        std::string_view parsedJson = {},
-        std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0,
-        std::string_view acquisitionId = {}, std::string_view edgeNodeId = {},
-        std::string_view edgeNodeName = {}) {
-        if (acquisitionId.empty()) throw std::invalid_argument("debug packet requires acquisition ID");
-        if (linkId.empty()) co_return;
+    static ruvia::task<void> recordPacket(const Redis& redis, service::common::UuidV7State& uuidState, std::string_view linkId, std::string_view deviceId, std::string_view direction, std::string_view source, std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time, bool captureLink, bool captureDevice, std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {}, std::string_view parsedJson = {}, std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0, std::string_view acquisitionId = {}, std::string_view edgeNodeId = {}, std::string_view edgeNodeName = {}) {
+        if (acquisitionId.empty()) {
+            throw std::invalid_argument("debug packet requires acquisition ID");
+        }
+        if (linkId.empty()) {
+            co_return;
+        }
         // 索引保存轮次 ID；每轮持有独立报文集合，状态更新只修改原记录。
         static constexpr std::string_view script = R"lua(
 local fields={}
@@ -207,24 +205,37 @@ return changed and 1 or 0
 
 )lua";
         std::vector<std::string> storage;
-        if (captureLink) storage.push_back(service::message::packet_log::linkIndexKey(linkId));
-        if (captureDevice && !deviceId.empty()) storage.push_back(service::message::packet_log::deviceIndexKey(deviceId));
-        if (storage.empty()) co_return;
+        if (captureLink) {
+            storage.push_back(service::message::packet_log::linkIndexKey(linkId));
+        }
+        if (captureDevice && !deviceId.empty()) {
+            storage.push_back(service::message::packet_log::deviceIndexKey(deviceId));
+        }
+        if (storage.empty()) {
+            co_return;
+        }
         const std::vector<std::string_view> keys(storage.begin(), storage.end());
         // Preserve decimal and 64-bit numeric text while merging per-response values in Redis.
         std::vector<std::string> parsedFields;
         if (!parsedJson.empty()) {
             const auto decoded = ruvia::json_value::parse(parsedJson);
-            if (!decoded) throw std::invalid_argument("invalid debug parsed JSON");
+            if (!decoded) {
+                throw std::invalid_argument("invalid debug parsed JSON");
+            }
             const auto values = decoded->get<ruvia::json_value>("values");
-            if (!values || !values->is_object()) throw std::invalid_argument("invalid debug parsed values");
+            if (!values || !values->is_object()) {
+                throw std::invalid_argument("invalid debug parsed values");
+            }
             const bool valid = values->for_each_field(
                 [&](std::string_view name, const ruvia::json_value& value) {
                     parsedFields.push_back("parsed_value:" + std::string(name));
                     parsedFields.emplace_back(value.view());
                     return true;
-                });
-            if (!valid) throw std::invalid_argument("invalid debug parsed fields");
+                }
+            );
+            if (!valid) {
+                throw std::invalid_argument("invalid debug parsed fields");
+            }
         }
         const auto identity = eventId.empty() ? service::utils::nextUuid(uuidState) : std::string(eventId);
         for (std::size_t offset = 0; offset < std::max<std::size_t>(1, payload.size()); offset += 4096) {
@@ -233,31 +244,32 @@ return changed and 1 or 0
             const auto timestamp = std::to_string(time);
             const auto offsetText = std::to_string(baseOffset + offset);
             const auto& stableId = identity;
-            const auto transportStatus = direction == "RX" ? "received" :
-                status == "failed" && reason == "socket_write_failed" ? "failed" :
-                status == "sending" ? "sending" : "sent";
-            const auto responseStatus = status == "waiting" || status == "success" ? status :
-                status == "failed" && reason != "socket_write_failed" ? std::string_view("failed") : std::string_view{};
-            const auto parseStatus = !parsedJson.empty() ? "success" : status == "parse_failed" ? "failed" :
-                status == "transport_only" ? "not_applicable" : direction == "RX" ? "pending" : "not_applicable";
-            const auto acquisitionState = status == "acquisition_success" ? "success" :
-                status == "acquisition_partial" ? "partial" : status == "acquisition_failed" ? "failed" : "running";
-            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, std::tuple_element_t<DebugAcquisitionHash::column_index<"acquisition_id">(), DebugAcquisitionHash::columns_type>::name.view(), acquisitionId, std::tuple_element_t<DebugPacketHash::column_index<"link_id">(), DebugPacketHash::columns_type>::name.view(), linkId, std::tuple_element_t<DebugPacketHash::column_index<"device_id">(), DebugPacketHash::columns_type>::name.view(), deviceId,
-                std::tuple_element_t<DebugPacketHash::column_index<"direction">(), DebugPacketHash::columns_type>::name.view(), direction, std::tuple_element_t<DebugPacketHash::column_index<"source">(), DebugPacketHash::columns_type>::name.view(), source, std::tuple_element_t<DebugPacketHash::column_index<"address">(), DebugPacketHash::columns_type>::name.view(), address,
-                std::tuple_element_t<DebugPacketHash::column_index<"edge_node_id">(), DebugPacketHash::columns_type>::name.view(), edgeNodeId, std::tuple_element_t<DebugPacketHash::column_index<"edge_node_name">(), DebugPacketHash::columns_type>::name.view(), edgeNodeName,
-                std::tuple_element_t<DebugPacketHash::column_index<"payload_hex">(), DebugPacketHash::columns_type>::name.view(), hex, std::tuple_element_t<DebugPacketHash::column_index<"time_ms">(), DebugPacketHash::columns_type>::name.view(), timestamp, std::tuple_element_t<DebugPacketHash::column_index<"offset">(), DebugPacketHash::columns_type>::name.view(), offsetText,
-                std::tuple_element_t<DebugPacketHash::column_index<"event_id">(), DebugPacketHash::columns_type>::name.view(), stableId, std::tuple_element_t<DebugPacketHash::column_index<"transport_status">(), DebugPacketHash::columns_type>::name.view(), transportStatus, std::tuple_element_t<DebugPacketHash::column_index<"response_status">(), DebugPacketHash::columns_type>::name.view(), responseStatus,
-                std::tuple_element_t<DebugPacketHash::column_index<"parse_status">(), DebugPacketHash::columns_type>::name.view(), parseStatus, std::tuple_element_t<DebugPacketHash::column_index<"reason">(), DebugPacketHash::columns_type>::name.view(), reason, std::tuple_element_t<DebugPacketHash::column_index<"reply_to_packet_id">(), DebugPacketHash::columns_type>::name.view(), replyToPacketId,
-                std::tuple_element_t<DebugPacketHash::column_index<"parsed_json">(), DebugPacketHash::columns_type>::name.view(), parsedJson,
-                "acquisition_state", acquisitionState, "update_only", updateOnly ? "1" : "0"};
-            for (const auto& field : parsedFields) args.push_back(field);
+            const auto transportStatus = direction == "RX" ? "received" : status == "failed" && reason == "socket_write_failed" ? "failed"
+                : status == "sending"                                                                                           ? "sending"
+                                                                                                                                : "sent";
+            const auto responseStatus = status == "waiting" || status == "success" ? status : status == "failed" && reason != "socket_write_failed" ? std::string_view("failed")
+                                                                                                                                                    : std::string_view{};
+            const auto parseStatus = !parsedJson.empty() ? "success" : status == "parse_failed" ? "failed"
+                : status == "transport_only"                                                    ? "not_applicable"
+                : direction == "RX"                                                             ? "pending"
+                                                                                                : "not_applicable";
+            const auto acquisitionState = status == "acquisition_success" ? "success" : status == "acquisition_partial" ? "partial"
+                : status == "acquisition_failed"                                                                        ? "failed"
+                                                                                                                        : "running";
+            std::vector<std::string_view> args{ "acquisition_prefix", DebugAcquisitionStorage::prefix, std::tuple_element_t<DebugAcquisitionHash::column_index<"acquisition_id">(), DebugAcquisitionHash::columns_type>::name.view(), acquisitionId, std::tuple_element_t<DebugPacketHash::column_index<"link_id">(), DebugPacketHash::columns_type>::name.view(), linkId, std::tuple_element_t<DebugPacketHash::column_index<"device_id">(), DebugPacketHash::columns_type>::name.view(), deviceId, std::tuple_element_t<DebugPacketHash::column_index<"direction">(), DebugPacketHash::columns_type>::name.view(), direction, std::tuple_element_t<DebugPacketHash::column_index<"source">(), DebugPacketHash::columns_type>::name.view(), source, std::tuple_element_t<DebugPacketHash::column_index<"address">(), DebugPacketHash::columns_type>::name.view(), address, std::tuple_element_t<DebugPacketHash::column_index<"edge_node_id">(), DebugPacketHash::columns_type>::name.view(), edgeNodeId, std::tuple_element_t<DebugPacketHash::column_index<"edge_node_name">(), DebugPacketHash::columns_type>::name.view(), edgeNodeName, std::tuple_element_t<DebugPacketHash::column_index<"payload_hex">(), DebugPacketHash::columns_type>::name.view(), hex, std::tuple_element_t<DebugPacketHash::column_index<"time_ms">(), DebugPacketHash::columns_type>::name.view(), timestamp, std::tuple_element_t<DebugPacketHash::column_index<"offset">(), DebugPacketHash::columns_type>::name.view(), offsetText, std::tuple_element_t<DebugPacketHash::column_index<"event_id">(), DebugPacketHash::columns_type>::name.view(), stableId, std::tuple_element_t<DebugPacketHash::column_index<"transport_status">(), DebugPacketHash::columns_type>::name.view(), transportStatus, std::tuple_element_t<DebugPacketHash::column_index<"response_status">(), DebugPacketHash::columns_type>::name.view(), responseStatus, std::tuple_element_t<DebugPacketHash::column_index<"parse_status">(), DebugPacketHash::columns_type>::name.view(), parseStatus, std::tuple_element_t<DebugPacketHash::column_index<"reason">(), DebugPacketHash::columns_type>::name.view(), reason, std::tuple_element_t<DebugPacketHash::column_index<"reply_to_packet_id">(), DebugPacketHash::columns_type>::name.view(), replyToPacketId, std::tuple_element_t<DebugPacketHash::column_index<"parsed_json">(), DebugPacketHash::columns_type>::name.view(), parsedJson, "acquisition_state", acquisitionState, "update_only", updateOnly ? "1" : "0" };
+            for (const auto& field : parsedFields) {
+                args.push_back(field);
+            }
             const auto result = co_await redis.eval(script, keys, args);
-            if (result.kind() == ruvia::redis_value::kind_type::error)
+            if (result.kind() == ruvia::redis_value::kind_type::error) {
                 utils::redis::throwValue("append debug packet", result);
+            }
         }
         std::vector<std::string> changedIds{ std::string(linkId) };
-        if (!deviceId.empty()) changedIds.emplace_back(deviceId);
+        if (!deviceId.empty()) {
+            changedIds.emplace_back(deviceId);
+        }
         co_await service::live::publish(redis, service::message::live::topic::kPacketDebug, changedIds);
     }
 };
-}
+} // namespace service::packet_log

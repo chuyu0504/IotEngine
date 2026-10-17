@@ -276,24 +276,35 @@ class TerminalService final {
             const auto& ready = input->get<"ready">();
             const auto& closed = input->get<"closed">();
             const auto cursor = after ? after->value_ : 0;
-            if (cursor < 0) service::common::fail(17018, "终端输出游标无效", 400);
+            if (cursor < 0) {
+                service::common::fail(17018, "终端输出游标无效", 400);
+            }
             bool more = false;
             const auto items = co_await c.redis().lrange(outputKey, 0, -1);
             for (const auto& storedFrame : items) {
-                if (!reliable && events.size() == 32) { more = true; break; }
+                if (!reliable && events.size() == 32) {
+                    more = true;
+                    break;
+                }
                 std::optional<std::pmr::string> consumed;
                 if (!reliable) {
                     consumed = co_await c.redis().lpop(outputKey);
-                    if (!consumed) break;
+                    if (!consumed) {
+                        break;
+                    }
                 }
                 const std::string_view wire = reliable ? std::string_view(storedFrame) : std::string_view(*consumed);
                 webpb::WebTerminalFrame frame;
                 if (!frame.ParseFromArray(wire.data(), static_cast<int>(wire.size()))) {
                     service::common::fail(17018, "终端输出格式无效", 502);
                 }
-                if (reliable && ((frame.has_data() && frame.data().sequence() <= static_cast<std::uint64_t>(cursor)) ||
-                    (frame.has_ready() && ready && ready->value_) || (frame.has_close() && closed && closed->value_))) continue;
-                if (events.size() == 32) { more = true; break; }
+                if (reliable && ((frame.has_data() && frame.data().sequence() <= static_cast<std::uint64_t>(cursor)) || (frame.has_ready() && ready && ready->value_) || (frame.has_close() && closed && closed->value_))) {
+                    continue;
+                }
+                if (events.size() == 32) {
+                    more = true;
+                    break;
+                }
                 auto& event = events.emplace();
                 if (frame.has_ready()) {
                     event.set<"kind">("ready");
@@ -403,7 +414,9 @@ class TerminalService final {
         if (envelope.has_terminal_data_ack()) {
             for (const auto& item : co_await c.redis().lrange(outputKey, 0, -1)) {
                 webpb::WebTerminalFrame frame;
-                if (!frame.ParseFromArray(item.data(), static_cast<int>(item.size()))) service::common::fail(17018, "终端输出格式无效", 502);
+                if (!frame.ParseFromArray(item.data(), static_cast<int>(item.size()))) {
+                    service::common::fail(17018, "终端输出格式无效", 502);
+                }
                 if (frame.has_data() && frame.data().sequence() == envelope.terminal_data_ack().sequence()) {
                     acknowledged.assign(item.data(), item.size());
                     break;
@@ -418,7 +431,6 @@ class TerminalService final {
         }
         co_await dispatch::notifyNode(c.redis(), binding.nodeId);
     }
-
 
     template <typename Context>
     static ruvia::task<InputAckStatus> inputAckStatus(Context& c, std::string_view nodeId, std::string_view terminalId, std::string_view nodeSession, std::uint64_t sequence) {

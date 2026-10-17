@@ -4,14 +4,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <edge.pb.h>
 #include <filesystem>
 #include <functional>
 #include <memory_resource>
 #include <string>
 #include <string_view>
 #include <utility>
-
-#include <edge.pb.h>
 
 namespace service::edge::gateway {
 
@@ -27,7 +26,9 @@ struct ConnectionIdentity final {
     std::size_t workerIndex{};
 };
 
-enum class IngressStatus { Accepted, SessionReplaced, WorkerLeaseLost };
+enum class IngressStatus { Accepted,
+                           SessionReplaced,
+                           WorkerLeaseLost };
 
 struct EgressQueues final {
     std::string configuration;
@@ -39,6 +40,7 @@ struct EgressQueues final {
 
 struct QueuedEnvelope final {
     explicit QueuedEnvelope(std::pmr::string bytes) : wire(std::move(bytes)) {}
+
     std::pmr::string wire;
     ::iot::edge::v1::Envelope envelope;
     bool deliver{};

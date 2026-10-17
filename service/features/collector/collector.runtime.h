@@ -28,7 +28,6 @@
 
 #include "service/common/message.h"
 #include "service/common/worker.h"
-#include "service/utils/uuid.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/dlt645/dlt645.protocol.h"
 #include "service/features/collector/engine/engine.runtime.h"
@@ -40,6 +39,7 @@
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
 #include "service/middleware/log.h"
+#include "service/utils/uuid.h"
 
 namespace service::collector {
 
@@ -97,7 +97,7 @@ class CollectorWorker final {
               }
           ),
           consumer_("collector-" + std::to_string(identity_.index)),
-          commands_(redis_, uuidState_, identity_.index, collectorGroup(), consumer_, message::deadLetterStream(identity_.index, identity_.instanceId)),
+          commands_(redis_, uuidState_, identity_, collectorGroup(), consumer_, message::deadLetterStream(identity_.index, identity_.instanceId)),
           derived_(redis_, uuidState_, identity_),
           packets_(identity_.index, loadedSnapshot_, linkIndexes_, networkConnections_, routes_) {}
 
@@ -116,7 +116,8 @@ class CollectorWorker final {
         desiredSnapshot_ = co_await config::load(redis_, desiredConfigVersion_);
         auto owned = co_await ownership::retain(redis_, desiredSnapshot_, identity_.instanceId, linkLeases_);
         nextOwnershipRefresh_ = owned.nextLeaseWait
-            ? std::optional{std::chrono::steady_clock::now() + *owned.nextLeaseWait} : std::nullopt;
+            ? std::optional{ std::chrono::steady_clock::now() + *owned.nextLeaseWait }
+            : std::nullopt;
         auto snapshot = std::move(owned.snapshot);
         co_await CollectorStateService::eraseLegacyRoutes(redis_, snapshot, identity_.instanceId);
         co_await CollectorStateService::eraseLegacyLinkSnapshots(redis_, snapshot, identity_.instanceId);
@@ -191,6 +192,7 @@ class CollectorWorker final {
     [[nodiscard]] std::size_t index() const noexcept { return identity_.index; }
 
     [[nodiscard]] ruvia::event_loop eventLoop() const { return loop_; }
+
     [[nodiscard]] ruvia::redis_handle redisHandle() const { return redisClient_->with_options({}); }
 
     [[nodiscard]] ruvia::task<void> shutdownRedis() {
@@ -202,7 +204,6 @@ class CollectorWorker final {
         DeadlineScheduler::Token token;
         std::chrono::steady_clock::time_point expiresAt;
     };
-
 
     std::map<std::string, EgressLogContext> debugPendingSends_;
 
@@ -248,20 +249,16 @@ class CollectorWorker final {
 
     [[nodiscard]] std::string controlStream() const { return message::controlStream(identity_.index, identity_.instanceId); }
 
-
     [[nodiscard]] std::string egressStream() const { return message::egressStream(identity_.index, identity_.instanceId); }
 
     [[nodiscard]] std::string linkEventStream() const {
         return message::linkEventStream(identity_.index, identity_.instanceId);
     }
 
-
-
     [[nodiscard]] const DeviceDefinition* findDevice(std::string_view deviceId) const noexcept {
         const auto current = deviceIndexes_.find(deviceId);
         return current == deviceIndexes_.end() ? nullptr : &loadedSnapshot_.devices[current->second];
     }
-
 
     [[nodiscard]] std::string remoteAddress(std::string_view connectionId) const {
         const auto network = networkConnections_.find(connectionId);
@@ -292,11 +289,9 @@ class CollectorWorker final {
         derived_.reload(loadedSnapshot_);
     }
 
-
     [[nodiscard]] const message::ProtocolTask* taskForCausation(std::string_view causationId) const noexcept {
         return commands_.taskForCausation(causationId);
     }
-
 
     [[nodiscard]] std::string targetLeaseOwner(std::string_view connectionId) const {
         return identity_.instanceId + ":worker:" + std::to_string(identity_.index) + ":" + std::string(connectionId);
@@ -400,7 +395,9 @@ class CollectorWorker final {
             }
             return;
         }
-        if (targetRenewalToken_ != 0) return;
+        if (targetRenewalToken_ != 0) {
+            return;
+        }
         targetRenewalToken_ = scheduler_.scheduleAfter(std::chrono::seconds(5), [this] {
             targetRenewalToken_ = 0;
             if (!stopping_) {
@@ -487,10 +484,12 @@ class CollectorWorker final {
         const auto messages = co_await readAvailable(stream, group, configRecovering_, 16);
         const auto now = std::chrono::steady_clock::now();
         const bool changed = (!messages.empty() || needsConfigSnapshot_ ||
-            (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_))
+                              (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_))
             ? co_await refreshConfigState(!messages.empty() || needsConfigSnapshot_)
             : false;
-        if (now >= nextStateRefresh_) co_await renewWorkerState();
+        if (now >= nextStateRefresh_) {
+            co_await renewWorkerState();
+        }
         for (const auto& message : messages) {
             co_await utils::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
         }
@@ -504,74 +503,80 @@ class CollectorWorker final {
             desiredSnapshot_ = std::move(desired);
             desiredConfigVersion_ = version;
         }
-        if (readSnapshot) linkLeases_.clear();
+        if (readSnapshot) {
+            linkLeases_.clear();
+        }
         auto owned = co_await ownership::retain(redis_, desiredSnapshot_, identity_.instanceId, linkLeases_);
         nextOwnershipRefresh_ = owned.nextLeaseWait
-            ? std::optional{std::chrono::steady_clock::now() + *owned.nextLeaseWait} : std::nullopt;
-        if (!readSnapshot && !owned.ownershipChanged) co_return false;
+            ? std::optional{ std::chrono::steady_clock::now() + *owned.nextLeaseWait }
+            : std::nullopt;
+        if (!readSnapshot && !owned.ownershipChanged) {
+            co_return false;
+        }
         auto snapshot = std::move(owned.snapshot);
         bool changed = false;
-            if (version != loadedConfigVersion_ || config::signature(snapshot) != loadedSignature_) {
-                co_await CollectorStateService::eraseLegacyRoutes(redis_, snapshot, identity_.instanceId);
-                co_await CollectorStateService::eraseLegacyLinkSnapshots(redis_, snapshot, identity_.instanceId);
-                const auto plan = engine_.planReconcile(loadedSnapshot_, snapshot);
-                tcp_.reconcile(snapshot, plan);
-                engine_.reloadRetainingSessions(snapshot);
-                std::set<std::string_view> nextLinks;
-                for (const auto& link : snapshot.links) {
-                    nextLinks.insert(link.id);
-                }
-                std::vector<std::string> removedLinks;
-                for (const auto& link : loadedSnapshot_.links) {
-                    if (!nextLinks.contains(link.id)) {
-                        removedLinks.push_back(link.id);
-                    }
-                }
-                nextLinks.clear();
-                // 引擎已同步切换到新快照；在任何 await 之前同步替换 Worker 快照，
-                // 让同时运行的入站排空任务与引擎看到同一代配置。
-                replaceLoadedSnapshot(std::move(snapshot));
-                for (const auto& linkId : removedLinks) {
-                    linkStates_.erase(linkId);
-                    co_await CollectorStateService::eraseLink(redis_, linkId, identity_.index, workerInstanceId_, identity_.instanceId);
-                }
-                auto sessionRefreshes =
-                    engine_.refreshClientSessions(plan.refreshClientSessions);
-                std::erase_if(sessionRefreshes, [this](const auto& refresh) {
-                    const auto sessionEpoch = tcp_.advanceSessionEpoch(refresh.connectionId);
-                    if (sessionEpoch == 0) {
-                        return true;
-                    }
-                    connectionEpochs_[refresh.connectionId] = sessionEpoch;
-                    if (const auto network = networkConnections_.find(refresh.connectionId);
-                        network != networkConnections_.end()) {
-                        network->second.sessionEpoch = sessionEpoch;
-                    }
-                    cancelProtocolDeadlinesForConnection(refresh.connectionId);
-                    return false;
-                });
-                for (auto& refresh : sessionRefreshes) {
-                    co_await applySessionRefresh(std::move(refresh));
-                }
-                loadedConfigVersion_ = desiredConfigVersion_;
-                co_await CollectorStateService::publishWorker(redis_, identity_.index, workerInstanceId_, loadedConfigVersion_, identity_.instanceId);
-                changed = true;
+        if (version != loadedConfigVersion_ || config::signature(snapshot) != loadedSignature_) {
+            co_await CollectorStateService::eraseLegacyRoutes(redis_, snapshot, identity_.instanceId);
+            co_await CollectorStateService::eraseLegacyLinkSnapshots(redis_, snapshot, identity_.instanceId);
+            const auto plan = engine_.planReconcile(loadedSnapshot_, snapshot);
+            tcp_.reconcile(snapshot, plan);
+            engine_.reloadRetainingSessions(snapshot);
+            std::set<std::string_view> nextLinks;
+            for (const auto& link : snapshot.links) {
+                nextLinks.insert(link.id);
             }
+            std::vector<std::string> removedLinks;
+            for (const auto& link : loadedSnapshot_.links) {
+                if (!nextLinks.contains(link.id)) {
+                    removedLinks.push_back(link.id);
+                }
+            }
+            nextLinks.clear();
+            // 引擎已同步切换到新快照；在任何 await 之前同步替换 Worker 快照，
+            // 让同时运行的入站排空任务与引擎看到同一代配置。
+            replaceLoadedSnapshot(std::move(snapshot));
+            for (const auto& linkId : removedLinks) {
+                linkStates_.erase(linkId);
+                co_await CollectorStateService::eraseLink(redis_, linkId, identity_.index, workerInstanceId_, identity_.instanceId);
+            }
+            auto sessionRefreshes =
+                engine_.refreshClientSessions(plan.refreshClientSessions);
+            std::erase_if(sessionRefreshes, [this](const auto& refresh) {
+                const auto sessionEpoch = tcp_.advanceSessionEpoch(refresh.connectionId);
+                if (sessionEpoch == 0) {
+                    return true;
+                }
+                connectionEpochs_[refresh.connectionId] = sessionEpoch;
+                if (const auto network = networkConnections_.find(refresh.connectionId);
+                    network != networkConnections_.end()) {
+                    network->second.sessionEpoch = sessionEpoch;
+                }
+                cancelProtocolDeadlinesForConnection(refresh.connectionId);
+                return false;
+            });
+            for (auto& refresh : sessionRefreshes) {
+                co_await applySessionRefresh(std::move(refresh));
+            }
+            loadedConfigVersion_ = desiredConfigVersion_;
+            co_await CollectorStateService::publishWorker(redis_, identity_.index, workerInstanceId_, loadedConfigVersion_, identity_.instanceId);
+            changed = true;
+        }
         needsConfigSnapshot_ = false;
         co_return changed;
     }
 
     ruvia::task<void> renewWorkerState() {
         nextStateRefresh_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            co_await renewConnectionState();
-            co_await CollectorStateService::renewWorkerSnapshot(redis_, identity_.index, workerInstanceId_, loadedConfigVersion_, identity_.instanceId);
-            for (const auto& link : loadedSnapshot_.links) {
-                const auto state = linkStates_.find(link.id);
-                if (state == linkStates_.end())
-                    continue;
-                const message::StreamMessage snapshot{{}, linkStateFields(state->second)};
-                co_await CollectorStateService::retainLinkSnapshot(redis_, snapshot, identity_.index, identity_.instanceId);
+        co_await renewConnectionState();
+        co_await CollectorStateService::renewWorkerSnapshot(redis_, identity_.index, workerInstanceId_, loadedConfigVersion_, identity_.instanceId);
+        for (const auto& link : loadedSnapshot_.links) {
+            const auto state = linkStates_.find(link.id);
+            if (state == linkStates_.end()) {
+                continue;
             }
+            const message::StreamMessage snapshot{ {}, linkStateFields(state->second) };
+            co_await CollectorStateService::retainLinkSnapshot(redis_, snapshot, identity_.index, identity_.instanceId);
+        }
     }
 
     ruvia::task<bool> consumeCommand(bool high) {
@@ -653,7 +658,10 @@ class CollectorWorker final {
             }
             if (task.kind == "command") {
                 const auto reservation = co_await CollectorCommandService::reserveTransmission(
-                    redis_, task, message::utcNowMilliseconds());
+                    redis_,
+                    task,
+                    message::utcNowMilliseconds()
+                );
                 if (reservation == TransmissionReservation::Expired) {
                     co_await failUndeliverable(stream, message.id, task, "dispatch_deadline_expired");
                     continue;
@@ -685,12 +693,7 @@ class CollectorWorker final {
         co_return !messages.empty();
     }
 
-    ruvia::task<void> captureDebug(std::string_view linkId, std::string_view connectionId,
-        std::string_view address, std::string_view direction, std::span<const std::uint8_t> bytes,
-        std::int64_t timestamp, std::string_view knownDevice = {}, bool deviceOnly = false,
-        std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {},
-        std::string_view parsedJson = {}, std::string_view replyToPacketId = {},
-        std::string_view acquisitionId = {}) {
+    ruvia::task<void> captureDebug(std::string_view linkId, std::string_view connectionId, std::string_view address, std::string_view direction, std::span<const std::uint8_t> bytes, std::int64_t timestamp, std::string_view knownDevice = {}, bool deviceOnly = false, std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {}, std::string_view parsedJson = {}, std::string_view replyToPacketId = {}, std::string_view acquisitionId = {}) {
         // 只有链路或其设备开启调试时才做设备归属与存储；其余报文不进入调试路径。
         if (!debugLinks_.contains(linkId)) {
             co_return;
@@ -700,18 +703,11 @@ class CollectorWorker final {
             co_return;
         }
         const auto connection = networkConnections_.find(connectionId);
-        const std::string peerAddress = !address.empty() ? std::string(address) :
-            connection == networkConnections_.end() ? std::string{} : connection->second.remoteAddress;
+        const std::string peerAddress = !address.empty() ? std::string(address) : connection == networkConnections_.end() ? std::string{}
+                                                                                                                          : connection->second.remoteAddress;
         const auto routes = routes_.find(connectionId);
-        const auto* selected = engine_.identifyDebugDevice(loadedSnapshot_, {
-            .linkId = linkId,
-            .targetId = connection == networkConnections_.end() ? std::string_view{} : connection->second.targetId,
-            .direction = direction, .knownDevice = knownDevice, .deviceOnly = deviceOnly,
-            .bytes = bytes,
-            .boundDevices = routes == routes_.end() ? nullptr : &routes->second});
-        co_await CollectorPacketService::recordDebugPacket(redis_, uuidState_, *link, selected,
-            direction, peerAddress, bytes, timestamp, deviceOnly, eventId, status, reason,
-            parsedJson, replyToPacketId, acquisitionId);
+        const auto* selected = engine_.identifyDebugDevice(loadedSnapshot_, { .linkId = linkId, .targetId = connection == networkConnections_.end() ? std::string_view{} : connection->second.targetId, .direction = direction, .knownDevice = knownDevice, .deviceOnly = deviceOnly, .bytes = bytes, .boundDevices = routes == routes_.end() ? nullptr : &routes->second });
+        co_await CollectorPacketService::recordDebugPacket(redis_, uuidState_, *link, selected, direction, peerAddress, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId, acquisitionId);
     }
 
     void enqueueIngress(IngressPacket packet) {
@@ -885,7 +881,8 @@ class CollectorWorker final {
         }
         const auto connection = networkConnections_.find(packet.connectionId);
         const auto linkId = connection == networkConnections_.end()
-            ? std::string_view{} : std::string_view(connection->second.linkId);
+            ? std::string_view{}
+            : std::string_view(connection->second.linkId);
         if (!co_await ownership::isLinkOwner(redis_, linkId, identity_.instanceId)) {
             tcp_.close(packet.connectionId, "link_ownership_lost");
             co_await utils::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
@@ -937,9 +934,10 @@ class CollectorWorker final {
         }
         egressLog.debugTime = message::utcNowMilliseconds();
         egressLog.awaitResponse = engine_.expectsResponse(egressLog.protocol, egressLog.causationId);
-        if (egressLog.awaitResponse) debugPendingSends_[packet.connectionId] = egressLog;
-        co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress,
-            "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId, egressLog.acquisitionId);
+        if (egressLog.awaitResponse) {
+            debugPendingSends_[packet.connectionId] = egressLog;
+        }
+        co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress, "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId, egressLog.acquisitionId);
         tcp_.send(packet.connectionId, std::move(packet.payload), [this, entryId, egressLog = std::move(egressLog)](bool success) mutable {
             if (!stopping_) {
                 scope_.spawn(
@@ -950,27 +948,25 @@ class CollectorWorker final {
         co_return true;
     }
 
-    ruvia::task<void> finishDebugResponse(std::string_view connectionId, bool success,
-        std::string_view reason = {}, std::string_view commandId = {}) {
+    ruvia::task<void> finishDebugResponse(std::string_view connectionId, bool success, std::string_view reason = {}, std::string_view commandId = {}) {
         const auto found = debugPendingSends_.find(std::string(connectionId));
         if (found == debugPendingSends_.end() ||
-            (!commandId.empty() && found->second.causationId != commandId)) co_return;
+            (!commandId.empty() && found->second.causationId != commandId)) {
+            co_return;
+        }
         auto context = std::move(found->second);
         debugPendingSends_.erase(found);
-        co_await captureDebug(context.linkId, context.connectionId, context.remoteAddress,
-            "TX", context.debugPayload, context.debugTime, context.deviceId, false,
-            context.messageId, success ? "success" : "failed", reason, {}, context.replyToPacketId, context.acquisitionId);
+        co_await captureDebug(context.linkId, context.connectionId, context.remoteAddress, "TX", context.debugPayload, context.debugTime, context.deviceId, false, context.messageId, success ? "success" : "failed", reason, {}, context.replyToPacketId, context.acquisitionId);
     }
 
     ruvia::task<void> completeEgress(std::string entryId, bool success, EgressLogContext egressLog) {
         const auto pending = debugPendingSends_.find(egressLog.connectionId);
         // A response may arrive before the send callback; never overwrite its final status.
         if (!egressLog.awaitResponse || (pending != debugPendingSends_.end() && pending->second.messageId == egressLog.messageId)) {
-            co_await captureDebug(egressLog.linkId, egressLog.connectionId, egressLog.remoteAddress,
-                "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false,
-                egressLog.messageId, success ? (egressLog.awaitResponse ? "waiting" : "sent") : "failed",
-                success ? "" : "socket_write_failed", {}, egressLog.replyToPacketId, egressLog.acquisitionId);
-            if (!success) debugPendingSends_.erase(egressLog.connectionId);
+            co_await captureDebug(egressLog.linkId, egressLog.connectionId, egressLog.remoteAddress, "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, success ? (egressLog.awaitResponse ? "waiting" : "sent") : "failed", success ? "" : "socket_write_failed", {}, egressLog.replyToPacketId, egressLog.acquisitionId);
+            if (!success) {
+                debugPendingSends_.erase(egressLog.connectionId);
+            }
         }
 
         if (!success && egressLog.deviceId.empty() && egressLog.deviceCode.empty()) {
@@ -1017,8 +1013,7 @@ class CollectorWorker final {
                 const auto failure = std::find_if(actions.begin(), actions.end(), [](const auto& value) {
                     return value.kind == ProtocolActionKind::FailCommand || value.kind == ProtocolActionKind::Close;
                 });
-                co_await finishDebugResponse(action.connectionId, *action.responseSuccess,
-                    failure == actions.end() ? std::string_view{} : std::string_view(failure->reason));
+                co_await finishDebugResponse(action.connectionId, *action.responseSuccess, failure == actions.end() ? std::string_view{} : std::string_view(failure->reason));
             }
             switch (action.kind) {
                 case ProtocolActionKind::FinishAcquisition:
@@ -1035,9 +1030,9 @@ class CollectorWorker final {
                                                       .createdAtMs = message::utcNowMilliseconds(),
                                                       .payload = std::move(action.bytes) };
                         packet.replyToPacketId = replyToPacketId;
-                        packet.acquisitionId = !action.acquisitionId.empty() ? action.acquisitionId :
-                            !replyAcquisitionId.empty() ? replyAcquisitionId :
-                            !action.commandId.empty() ? action.commandId : service::utils::nextUuid(uuidState_);
+                        packet.acquisitionId = !action.acquisitionId.empty() ? action.acquisitionId : !replyAcquisitionId.empty() ? replyAcquisitionId
+                            : !action.commandId.empty()                                                                           ? action.commandId
+                                                                                                                                  : service::utils::nextUuid(uuidState_);
                         (void)co_await utils::redis::add(redis_, egressStream(), message::egressFields(packet), kEgressStreamCapacity);
                     } else if (!action.commandId.empty()) {
                         co_await finishCommand(action.commandId, false, "stale_session_epoch");
@@ -1057,31 +1052,33 @@ class CollectorWorker final {
                 case ProtocolActionKind::ObserveParsed:
                 case ProtocolActionKind::DiscardCollection:
                 case ProtocolActionKind::PublishParsed:
-                    if (action.parsed.acquisitionId.empty())
+                    if (action.parsed.acquisitionId.empty()) {
                         action.parsed.acquisitionId = action.commandId.empty() ? service::utils::nextUuid(uuidState_) : action.commandId;
+                    }
                     action.parsed.messageId = action.parsed.acquisitionId;
-                    for (std::size_t index = action.parsed.rawPacketIds.size(); index < action.parsed.rawPayloads.size(); ++index)
+                    for (std::size_t index = action.parsed.rawPacketIds.size(); index < action.parsed.rawPayloads.size(); ++index) {
                         action.parsed.rawPacketIds.push_back(service::utils::nextUuid(uuidState_));
+                    }
                     if (!action.acquisitionSummary) {
                         std::size_t rawIndex = 0;
                         for (const auto& raw : action.parsed.rawPayloads) {
                             const auto& rawId = action.parsed.rawPacketIds[rawIndex++];
-                            co_await captureDebug(action.parsed.linkId, action.connectionId, "", "RX", raw,
-                                action.parsed.occurredAtMs, action.parsed.deviceId, false,
-                                rawId,
-                                action.kind == ProtocolActionKind::DiscardCollection ? "acquisition_partial" :
-                                    action.kind == ProtocolActionKind::PublishParsed ? "acquisition_success" : "received",
-                                action.reason, (rawIndex != action.parsed.rawPayloads.size()) ? std::string_view{} : std::string_view(action.parsed.valuesJson), action.replyToPacketId, action.parsed.acquisitionId);
+                            co_await captureDebug(action.parsed.linkId, action.connectionId, "", "RX", raw, action.parsed.occurredAtMs, action.parsed.deviceId, false, rawId, action.kind == ProtocolActionKind::DiscardCollection ? "acquisition_partial" : action.kind == ProtocolActionKind::PublishParsed ? "acquisition_success"
+                                                                                                                                                                                                                                                                                                              : "received",
+                                                  action.reason,
+                                                  (rawIndex != action.parsed.rawPayloads.size()) ? std::string_view{} : std::string_view(action.parsed.valuesJson),
+                                                  action.replyToPacketId,
+                                                  action.parsed.acquisitionId);
                         }
                     }
-                    if (action.kind != ProtocolActionKind::PublishParsed) break;
+                    if (action.kind != ProtocolActionKind::PublishParsed) {
+                        break;
+                    }
                     packets_.parsed(action.parsed);
-                    if (!co_await calculateDerived(action.parsed, action.connectionId))
-                        co_await CollectorTelemetryService::publishParsed(redis_, action.parsed);
-                    co_await applyActions(action.connectionId,
-                        engine_.parsedPublished(action.connectionId, action.publicationToken), false, {},
-                        action.parsed.rawPacketIds.empty() ? std::string{} : action.parsed.rawPacketIds.front(),
-                        action.parsed.acquisitionId);
+                    if (!co_await calculateDerived(action.parsed, action.connectionId)) {
+                        co_await CollectorTelemetryService::publishParsed(redis_, action.parsed, identity_.instanceId);
+                    }
+                    co_await applyActions(action.connectionId, engine_.parsedPublished(action.connectionId, action.publicationToken), false, {}, action.parsed.rawPacketIds.empty() ? std::string{} : action.parsed.rawPacketIds.front(), action.parsed.acquisitionId);
                     break;
                 case ProtocolActionKind::CompleteCommand: {
                     co_await CollectorPacketService::completeAcquisition(redis_, action);
@@ -1138,8 +1135,10 @@ class CollectorWorker final {
             scheduler_.cancel(existing->second.second);
             derivedDeadlines_.erase(existing);
         }
-        if (!at || stopping_) return;
-        const auto delay = std::chrono::milliseconds((std::max)(std::int64_t{1}, *at - message::utcNowMilliseconds()));
+        if (!at || stopping_) {
+            return;
+        }
+        const auto delay = std::chrono::milliseconds((std::max)(std::int64_t{ 1 }, *at - message::utcNowMilliseconds()));
         const auto token = scheduler_.scheduleAfter(delay, [this, deviceId, connectionId, revision]() mutable {
             derivedDeadlines_.erase(deviceId);
             if (!stopping_) {
@@ -1150,7 +1149,9 @@ class CollectorWorker final {
     }
 
     ruvia::task<void> expireDerived(std::string deviceId, std::string connectionId, std::uint64_t revision) {
-        if (stopping_) co_return;
+        if (stopping_) {
+            co_return;
+        }
         const auto* device = findDevice(deviceId);
         if (!device) {
             co_return;
@@ -1193,24 +1194,41 @@ class CollectorWorker final {
     ruvia::task<void> waitForWork() {
         try {
             const std::vector<std::string> streams{
-                configStream(), controlStream(), commandStream(true),
-                commandStream(false), egressStream(), linkEventStream()
+                configStream(),
+                controlStream(),
+                commandStream(true),
+                commandStream(false),
+                egressStream(),
+                linkEventStream()
             };
             while (!stopping_) {
                 const auto deadline = nextOwnershipRefresh_
-                    ? (std::min)(*nextOwnershipRefresh_, nextStateRefresh_) : nextStateRefresh_;
+                    ? (std::min)(*nextOwnershipRefresh_, nextStateRefresh_)
+                    : nextStateRefresh_;
                 const auto until = (std::max)(std::chrono::milliseconds(1),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        deadline - std::chrono::steady_clock::now()));
+                                              std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  deadline - std::chrono::steady_clock::now()
+                                              ));
                 auto batches = co_await utils::redis::readGroupManyBlockingUntil(
-                    redisBlocking_, streams, collectorGroup(), consumer_,
-                    scope_.get_stop_token(), until, 1);
-                if (stopping_) co_return;
+                    redisBlocking_,
+                    streams,
+                    collectorGroup(),
+                    consumer_,
+                    scope_.get_stop_token(),
+                    until,
+                    1
+                );
+                if (stopping_) {
+                    co_return;
+                }
                 if (batches.empty()) {
                     const auto now = std::chrono::steady_clock::now();
-                    if (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_)
+                    if (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_) {
                         (void)co_await refreshConfigState(false);
-                    if (now >= nextStateRefresh_) co_await renewWorkerState();
+                    }
+                    if (now >= nextStateRefresh_) {
+                        co_await renewWorkerState();
+                    }
                     continue;
                 }
                 for (auto& batch : batches) {
@@ -1221,9 +1239,13 @@ class CollectorWorker final {
                 co_return;
             }
         } catch (const std::exception& error) {
-            if (!stopping_) recoverClaimedMessages(error.what());
+            if (!stopping_) {
+                recoverClaimedMessages(error.what());
+            }
         } catch (...) {
-            if (!stopping_) recoverClaimedMessages("unknown_blocking_read_exception");
+            if (!stopping_) {
+                recoverClaimedMessages("unknown_blocking_read_exception");
+            }
         }
     }
 
@@ -1254,7 +1276,9 @@ class CollectorWorker final {
             if (cancelDerived && current->second.first == connectionId) {
                 scheduler_.cancel(current->second.second);
                 current = derivedDeadlines_.erase(current);
-            } else ++current;
+            } else {
+                ++current;
+            }
         }
         for (auto current = protocolDeadlines_.begin(); current != protocolDeadlines_.end();) {
             if (current->first.first == connectionId) {
@@ -1279,25 +1303,27 @@ class CollectorWorker final {
             std::vector<std::pair<std::string, std::uint64_t>> identities;
             identities.reserve(bound->second.size());
             for (const auto& deviceCode : bound->second) {
-                if (const auto identity = routeEpochs_.find({refresh.connectionId, deviceCode});
-                    identity != routeEpochs_.end())
+                if (const auto identity = routeEpochs_.find({ refresh.connectionId, deviceCode });
+                    identity != routeEpochs_.end()) {
                     identities.emplace_back(deviceCode, identity->second);
+                }
             }
             for (const auto& [deviceCode, epoch] : identities) {
                 if (!nextDeviceCodes.contains(deviceCode)) {
-                    co_await CollectorStateService::markDeviceOffline(redis_, deviceCode,
-                        refresh.connectionId, epoch, identity_.index, workerInstanceId_, "configuration_reloaded", identity_.instanceId);
+                    co_await CollectorStateService::markDeviceOffline(redis_, deviceCode, refresh.connectionId, epoch, identity_.index, workerInstanceId_, "configuration_reloaded", identity_.instanceId);
                 }
-                if (const auto identity = routeEpochs_.find({refresh.connectionId, deviceCode});
+                if (const auto identity = routeEpochs_.find({ refresh.connectionId, deviceCode });
                     identity != routeEpochs_.end() && identity->second == epoch) {
                     routeEpochs_.erase(identity);
-                    if (const auto current = routes_.find(refresh.connectionId); current != routes_.end())
+                    if (const auto current = routes_.find(refresh.connectionId); current != routes_.end()) {
                         current->second.erase(deviceCode);
+                    }
                 }
             }
             if (const auto current = routes_.find(refresh.connectionId);
-                current != routes_.end() && current->second.empty())
+                current != routes_.end() && current->second.empty()) {
                 routes_.erase(current);
+            }
         }
 
         co_await applyActions(refresh.connectionId, std::move(refresh.retiredActions));
@@ -1317,9 +1343,10 @@ class CollectorWorker final {
             for (const auto& deviceCode : devices) {
                 try {
                     co_await eraseRoute(deviceCode, connectionId, reason);
-                    routeEpochs_.erase({std::string(connectionId), deviceCode});
-                    if (const auto current = routes_.find(connectionId); current != routes_.end())
+                    routeEpochs_.erase({ std::string(connectionId), deviceCode });
+                    if (const auto current = routes_.find(connectionId); current != routes_.end()) {
                         current->second.erase(deviceCode);
+                    }
                 } catch (const std::exception& error) {
                     // 身份留待停止时重试；真实 socket 已移除，租约不会再续期并在 15 秒内过期。
                     LOG_WARN << "[Collector] disconnected_route_cleanup_failed: " << error.what();
@@ -1328,15 +1355,17 @@ class CollectorWorker final {
                 }
             }
             if (const auto current = routes_.find(connectionId);
-                current != routes_.end() && current->second.empty())
+                current != routes_.end() && current->second.empty()) {
                 routes_.erase(current);
+            }
         }
     }
 
     ruvia::task<void> failPendingForConnection(std::string_view connectionId, std::string_view reason) {
         const auto commandIds = commands_.pendingForConnection(connectionId);
         const auto failureReason = reason.empty()
-            ? std::string_view("connection_closed_result_unknown") : reason;
+            ? std::string_view("connection_closed_result_unknown")
+            : reason;
         for (const auto& commandId : commandIds) {
             co_await finishCommand(commandId, false, failureReason);
         }
@@ -1347,14 +1376,13 @@ class CollectorWorker final {
         return network != networkConnections_.end() && network->second.sessionEpoch == epoch;
     }
 
-    ruvia::task<void> eraseRoute(std::string_view deviceId, std::string_view connectionId,
-        std::string_view reason) {
-        const auto identity = routeEpochs_.find({std::string(connectionId), std::string(deviceId)});
-        if (identity == routeEpochs_.end())
+    ruvia::task<void> eraseRoute(std::string_view deviceId, std::string_view connectionId, std::string_view reason) {
+        const auto identity = routeEpochs_.find({ std::string(connectionId), std::string(deviceId) });
+        if (identity == routeEpochs_.end()) {
             co_return;
+        }
         const auto epoch = identity->second;
-        co_await CollectorStateService::markDeviceOffline(redis_, deviceId, connectionId,
-            epoch, identity_.index, workerInstanceId_, reason, identity_.instanceId);
+        co_await CollectorStateService::markDeviceOffline(redis_, deviceId, connectionId, epoch, identity_.index, workerInstanceId_, reason, identity_.instanceId);
     }
 
     ruvia::task<void> renewConnectionState() {
@@ -1362,14 +1390,20 @@ class CollectorWorker final {
         const auto identities = routeEpochs_;
         for (const auto& [identity, epoch] : identities) {
             const auto& [connectionId, deviceId] = identity;
-            if (!connectionIsLive(connectionId, epoch))
+            if (!connectionIsLive(connectionId, epoch)) {
                 continue;
+            }
             const auto retained = co_await CollectorStateService::renewRoute(
-                redis_.with_options({.timeout_ = std::chrono::seconds(3)}), deviceId,
-                connectionId, epoch, identity_.index, workerInstanceId_, identity_.instanceId);
+                redis_.with_options({ .timeout_ = std::chrono::seconds(3) }),
+                deviceId,
+                connectionId,
+                epoch,
+                identity_.index,
+                workerInstanceId_,
+                identity_.instanceId
+            );
             if (!connectionIsLive(connectionId, epoch) || stopping_) {
-                co_await CollectorStateService::markDeviceOffline(redis_, deviceId, connectionId,
-                    epoch, identity_.index, workerInstanceId_, "connection_closed_during_renewal", identity_.instanceId);
+                co_await CollectorStateService::markDeviceOffline(redis_, deviceId, connectionId, epoch, identity_.index, workerInstanceId_, "connection_closed_during_renewal", identity_.instanceId);
             } else if (!retained) {
                 tcp_.close(connectionId, "connection_route_lease_expired");
             }
@@ -1384,15 +1418,14 @@ class CollectorWorker final {
         const auto epoch = connected->second;
         // 先登记清理身份：Redis 已执行但回复丢失、或停止取消绑定任务时仍能 CAS 清理。
         routes_[action.connectionId].insert(action.deviceId);
-        routeEpochs_.insert_or_assign({action.connectionId, action.deviceId}, epoch);
+        routeEpochs_.insert_or_assign({ action.connectionId, action.deviceId }, epoch);
         co_await bindRoute(action, epoch);
         // Redis I/O yields to the worker loop. EOF may have removed this connection while the
         // HSET was in flight; compensate before making it locally routable.
         const auto current = connectionEpochs_.find(action.connectionId);
         if (stopping_ || current == connectionEpochs_.end() || current->second != epoch ||
             !connectionIsLive(action.connectionId, epoch)) {
-            co_await CollectorStateService::markDeviceOffline(redis_, action.deviceId,
-                action.connectionId, epoch, identity_.index, workerInstanceId_, "connection_closed_during_registration", identity_.instanceId);
+            co_await CollectorStateService::markDeviceOffline(redis_, action.deviceId, action.connectionId, epoch, identity_.index, workerInstanceId_, "connection_closed_during_registration", identity_.instanceId);
             co_return;
         }
     }
@@ -1403,7 +1436,14 @@ class CollectorWorker final {
             co_return;
         }
         const auto owner = co_await CollectorStateService::bindRoute(
-            redis_, action, sessionEpoch, identity_.index, workerInstanceId_, connection->second.linkId, identity_.instanceId);
+            redis_,
+            action,
+            sessionEpoch,
+            identity_.index,
+            workerInstanceId_,
+            connection->second.linkId,
+            identity_.instanceId
+        );
         const auto& oldWorker = owner.workerId;
         const auto& oldConnection = owner.connectionId;
         const auto worker = std::to_string(identity_.index);
@@ -1416,11 +1456,11 @@ class CollectorWorker final {
             co_return;
         }
         const std::vector<message::StreamField> fields{
-              { "message_id", service::utils::nextUuid(uuidState_) },
-              { "connection_id", oldConnection },
-              { "device_code", action.deviceCode },
-              { "reason", "device_re_registered" },
-              { "created_at_ms", std::to_string(message::utcNowMilliseconds()) }
+            { "message_id", service::utils::nextUuid(uuidState_) },
+            { "connection_id", oldConnection },
+            { "device_code", action.deviceCode },
+            { "reason", "device_re_registered" },
+            { "created_at_ms", std::to_string(message::utcNowMilliseconds()) }
         };
         (void)co_await utils::redis::add(
             redis_,
@@ -1502,7 +1542,6 @@ class CollectorWorker final {
         co_return !messages.empty();
     }
 
-
     // 入站内存队列上限沿用原入站流容量；超出时关闭该连接，由设备重连。
     static constexpr std::size_t kIngressCapacity = 100000;
     // Redis retains ownership for 15 seconds. Stop local I/O before that bound,
@@ -1567,6 +1606,5 @@ class CollectorWorker final {
     bool shutdownStarted_ = false;
     CollectorPacketService packets_;
 };
-
 
 } // namespace service::collector

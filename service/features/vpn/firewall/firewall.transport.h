@@ -130,8 +130,8 @@ inline Result render(std::string_view interfaceName, const std::vector<ClientAcc
     }
     script += "add rule inet iot_vpn forward iifname \"" + std::string(interfaceName) +
         "\" oifname \"" + std::string(interfaceName) +
-        "\" ip saddr { " + kOverlayPool.text() + ", " +
-        kVirtualLanPool.text() + " } drop\n";
+        "\" ip saddr { " + message::vpn::kOverlayPool.text() + ", " +
+        message::vpn::kVirtualLanPool.text() + " } drop\n";
     return { .configured = true, .message = "VPN firewall rules rendered" };
 }
 

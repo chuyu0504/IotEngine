@@ -22,7 +22,6 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/common/wireguard.h"
 #include "service/modules/device/device.entity.h"
 #include "service/modules/edge_node/edge_node.entity.h"
@@ -30,6 +29,7 @@
 #include "service/modules/vpn/vpn.types.h"
 #include "service/utils/json.h"
 #include "service/utils/rpc_client.h"
+#include "service/utils/uuid.h"
 
 namespace service::vpn {
 
@@ -583,6 +583,7 @@ class VpnService final {
     ruvia::task<std::string> desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionBody& payload);
     template <typename Context>
     ruvia::task<std::string> desktopPeerConfig(Context& c, std::string_view id);
+
     // Network of a desktop Peer; vpn change ids are network ids.
     template <typename Context>
     ruvia::task<std::string> desktopPeerNetworkId(Context& c, std::string_view id) {
@@ -596,6 +597,7 @@ class VpnService final {
         const auto rows = co_await c.db().query(query);
         co_return rows.empty() ? std::string{} : detail::rowValue(rows.front(), 0);
     }
+
     template <typename Context>
     ruvia::task<void> desktopDeletePeer(Context& c, std::string_view id);
 

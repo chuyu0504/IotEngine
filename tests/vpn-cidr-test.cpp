@@ -5,11 +5,11 @@
 #include <string_view>
 
 #include "service/common/message.h"
-#include "service/utils/network.h"
 #include "service/features/vpn/firewall/firewall.transport.h"
 #include "service/features/vpn/vpn.service.h"
 #include "service/features/vpn/wireguard/wireguard.transport.h"
 #include "service/modules/vpn/vpn.types.h"
+#include "service/utils/network.h"
 
 namespace {
 

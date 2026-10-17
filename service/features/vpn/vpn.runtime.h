@@ -5,6 +5,7 @@
 #include <exception>
 #include <future>
 #include <iostream>
+#include <optional>
 #include <string_view>
 
 #include <ruvia/core/channel.h>
@@ -25,29 +26,31 @@ namespace service::vpn {
 class VpnHubRuntime final {
   public:
     explicit VpnHubRuntime(VpnHubService& service) : service_(service) {}
+
     VpnHubRuntime(const VpnHubRuntime&) = delete;
     VpnHubRuntime& operator=(const VpnHubRuntime&) = delete;
+
     ~VpnHubRuntime() { stop(); }
 
     void start(ruvia::web_worker_handle worker) {
         if (stopped_.valid()) {
             return;
         }
-        stop_ = ruvia::stop_source{};
-        service::utils::startWorkerTask(worker, stop_.token(), stopped_,
-            [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
-                return run(context, ready, stop);
-            });
+        stop_.emplace();
+        service::utils::startWorkerTask(worker, stop_->token(), stopped_, [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+            return run(context, ready, stop);
+        });
     }
 
     void stop() noexcept {
-        service::utils::stopWorkerTask(stop_, stopped_);
+        if (stop_) {
+            service::utils::stopWorkerTask(*stop_, stopped_);
+            stop_.reset();
+        }
     }
 
   private:
-    static ruvia::task<void> readNotifications(ruvia::redis_subscription& subscription,
-                                              ruvia::channel_sender<bool> sender,
-                                              std::exception_ptr& failure) {
+    static ruvia::task<void> readNotifications(ruvia::redis_subscription& subscription, ruvia::channel_sender<bool> sender, std::exception_ptr& failure) {
         try {
             while (const auto event = co_await subscription.read()) {
                 if (event->kind() == ruvia::redis_pubsub_event_kind::message) {
@@ -138,7 +141,7 @@ class VpnHubRuntime final {
     }
 
     VpnHubService& service_;
-    ruvia::stop_source stop_;
+    std::optional<ruvia::stop_source> stop_;
     std::future<void> stopped_;
 };
 

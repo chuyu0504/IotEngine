@@ -1,20 +1,21 @@
 #pragma once
 
 #include <algorithm>
-#include <map>
 #include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory_resource>
+#include <optional>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <span>
-#include <set>
-#include <optional>
-#include <memory_resource>
+
 #include <ruvia/web/model.h>
 #include <ruvia/web/model_json.h>
 #include <ruvia/web/model_object.h>
@@ -27,9 +28,11 @@ namespace service::message::serial_debug {
 inline std::string inputKey(std::string_view nodeId) {
     return "iot:edge:serial:input:" + std::string(nodeId);
 }
+
 inline std::string outputKey(std::string_view nodeId, std::string_view sessionId) {
     return "iot:edge:serial:output:" + std::string(nodeId) + ":" + std::string(sessionId);
 }
+
 inline std::string eventTopic(std::string_view nodeId, std::string_view sessionId) {
     return "edge-serial:" + std::string(nodeId) + ":" + std::string(sessionId);
 }
@@ -44,7 +47,8 @@ inline constexpr std::string_view kDefaultTimezone{ "+08:00" };
 
 namespace service::message::vpn {
 
-inline constexpr std::int64_t kDesktopSessionLeaseMs{45000};
+inline constexpr std::int64_t kDesktopSessionLeaseMs{ 45000 };
+
 inline std::string desktopSessionKey(std::string_view peerId) {
     return "iot:vpn:desktop:sessions:" + std::string(peerId);
 }
@@ -60,21 +64,22 @@ inline std::string hubScheduleChannel(std::string_view instanceId) {
 // Shared VPN address contract. It contains only immutable values and pure mapping logic.
 using service::utils::network::Ipv4Cidr;
 
-inline constexpr Ipv4Cidr kOverlayPool{0x64600000U, 11}; // 100.96.0.0/11
-inline constexpr Ipv4Cidr kVirtualLanPool{0xac100000U, 12}; // 172.16.0.0/12
+inline constexpr Ipv4Cidr kOverlayPool{ 0x64600000U, 11 };    // 100.96.0.0/11
+inline constexpr Ipv4Cidr kVirtualLanPool{ 0xac100000U, 12 }; // 172.16.0.0/12
 
 inline std::optional<Ipv4Cidr> mappedVirtualCidr(const Ipv4Cidr& real) noexcept {
-    if (real.prefix < kVirtualLanPool.prefix)
+    if (real.prefix < kVirtualLanPool.prefix) {
         return std::nullopt;
+    }
     const auto slotBits = static_cast<unsigned>(real.prefix - kVirtualLanPool.prefix);
-    const auto slotCount = std::uint64_t{1} << slotBits;
+    const auto slotCount = std::uint64_t{ 1 } << slotBits;
     const auto slot = (static_cast<std::uint64_t>(real.network) >> (32U - real.prefix)) &
-                      (slotCount - 1U);
+        (slotCount - 1U);
     const auto network = static_cast<std::uint64_t>(kVirtualLanPool.network) +
-                         slot * static_cast<std::uint64_t>(real.size());
+        slot * static_cast<std::uint64_t>(real.size());
     return network <= 0xffffffffU
-               ? std::optional<Ipv4Cidr>(Ipv4Cidr{static_cast<std::uint32_t>(network), real.prefix})
-               : std::nullopt;
+        ? std::optional<Ipv4Cidr>(Ipv4Cidr{ static_cast<std::uint32_t>(network), real.prefix })
+        : std::nullopt;
 }
 
 } // namespace service::message::vpn
@@ -85,9 +90,10 @@ namespace edge {
 inline constexpr std::uint32_t kProtocolVersion = 6;
 inline constexpr std::uint32_t kOldestCompatibleProtocolVersion = 2;
 inline constexpr std::string_view kDefaultPlatformId{
-    "00000000-0000-7000-8000-000000000001"};
-inline constexpr std::string_view kDefaultPublicBaseUrl{"https://i.a-z.xin"};
-inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
+    "00000000-0000-7000-8000-000000000001"
+};
+inline constexpr std::string_view kDefaultPublicBaseUrl{ "https://i.a-z.xin" };
+inline constexpr std::size_t kMaxMessageSize{ 16U * 1024U };
 
 inline std::string authKey(std::string_view imei) {
     return "iot:edge:auth:" + std::string(imei);
@@ -136,8 +142,12 @@ inline std::string logLevelResultKey(std::string_view requestId) {
 } // namespace edge
 
 inline constexpr std::array<std::string_view, 6> kWebhookEvents{
-    "device.data.reported", "device.image.reported", "device.command.accepted",
-    "device.command.updated", "device.alert.triggered", "device.alert.resolved",
+    "device.data.reported",
+    "device.image.reported",
+    "device.command.accepted",
+    "device.command.updated",
+    "device.alert.triggered",
+    "device.alert.resolved",
 };
 
 inline bool supportedEvent(std::string_view value) {
@@ -148,15 +158,14 @@ inline std::string openMqttTopic(std::string_view deviceId) {
     return "iot/" + std::string(deviceId);
 }
 
-inline std::string webhookEnvelope(std::string_view eventType, std::string_view occurredAt,
-                                    std::string_view deliveryId, std::string_view dataJson) {
+inline std::string webhookEnvelope(std::string_view eventType, std::string_view occurredAt, std::string_view deliveryId, std::string_view dataJson) {
     return "{\"event\":" + service::utils::jsonQuoted(eventType) +
-           ",\"time\":" + service::utils::jsonQuoted(occurredAt) +
-           ",\"deliveryId\":" + service::utils::jsonQuoted(deliveryId) +
-           ",\"data\":" + std::string(dataJson) + "}";
+        ",\"time\":" + service::utils::jsonQuoted(occurredAt) +
+        ",\"deliveryId\":" + service::utils::jsonQuoted(deliveryId) +
+        ",\"data\":" + std::string(dataJson) + "}";
 }
 
-inline constexpr std::string_view kMessageSchemaVersion{"2"};
+inline constexpr std::string_view kMessageSchemaVersion{ "2" };
 
 inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
 inline constexpr std::string_view kEgressStreamPrefix = "iot:channel:socket:egress:worker:";
@@ -165,9 +174,7 @@ inline constexpr std::string_view kLinkEventStreamPrefix = "iot:channel:link:eve
 inline constexpr std::string_view kControlStreamPrefix = "iot:channel:control:worker:";
 inline constexpr std::string_view kDeadLetterStreamPrefix = "iot:channel:dead-letter:worker:";
 
-inline std::string workerStream(std::string_view prefix, std::size_t workerIndex,
-                                std::string_view suffix,
-                                std::string_view instance) {
+inline std::string workerStream(std::string_view prefix, std::size_t workerIndex, std::string_view suffix, std::string_view instance) {
     return std::string(prefix) + std::string(instance) + ":" + std::to_string(workerIndex) + std::string(suffix);
 }
 
@@ -175,18 +182,21 @@ inline std::string configStream(std::size_t workerIndex, std::string_view instan
     return workerStream(kConfigStreamPrefix, workerIndex, {}, instance);
 }
 
-inline std::string parsedStream() { return "iot:v3:telemetry"; }
+inline std::string parsedStream() {
+    return "iot:v3:telemetry";
+}
 
 inline std::string egressStream(std::size_t workerIndex, std::string_view instance) {
     return workerStream(kEgressStreamPrefix, workerIndex, {}, instance);
 }
 
-inline std::string commandStream(std::size_t workerIndex, bool highPriority,
-                                  std::string_view instance) {
+inline std::string commandStream(std::size_t workerIndex, bool highPriority, std::string_view instance) {
     return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal", instance);
 }
 
-inline std::string commandResultStream() { return "iot:v3:command-result"; }
+inline std::string commandResultStream() {
+    return "iot:v3:command-result";
+}
 
 inline std::string linkEventStream(std::size_t workerIndex, std::string_view instance) {
     return workerStream(kLinkEventStreamPrefix, workerIndex, {}, instance);
@@ -210,9 +220,11 @@ struct StreamMessage {
     std::vector<StreamField> fields;
 
     [[nodiscard]] std::string_view get(std::string_view name) const noexcept {
-        for (const auto& field : fields)
-            if (field.name == name)
+        for (const auto& field : fields) {
+            if (field.name == name) {
                 return field.value;
+            }
+        }
         return {};
     }
 };
@@ -278,23 +290,23 @@ struct ProtocolTask {
 
 inline std::int64_t utcNowMilliseconds() noexcept {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
+               std::chrono::system_clock::now().time_since_epoch()
+    )
         .count();
 }
 
-
-inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs,
-                                        std::int64_t occurredAtMs) noexcept {
-    if (occurredAtMs <= 0)
+inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs, std::int64_t occurredAtMs) noexcept {
+    if (occurredAtMs <= 0) {
         return std::max<std::int64_t>(observedAtMs, 0);
-    if (observedAtMs <= 0 || observedAtMs > occurredAtMs)
+    }
+    if (observedAtMs <= 0 || observedAtMs > occurredAtMs) {
         return occurredAtMs;
+    }
     return observedAtMs;
 }
 
 inline std::string toHex(const std::vector<std::uint8_t>& bytes) {
-    static constexpr std::array<char, 16> digits{'0', '1', '2', '3', '4', '5', '6', '7',
-                                                 '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+    static constexpr std::array<char, 16> digits{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
     std::string result;
     result.reserve(bytes.size() * 2);
     for (const auto byte : bytes) {
@@ -306,33 +318,39 @@ inline std::string toHex(const std::vector<std::uint8_t>& bytes) {
 
 inline std::vector<std::uint8_t> fromHex(std::string_view value) {
     auto nibble = [](char character) -> int {
-        if (character >= '0' && character <= '9')
+        if (character >= '0' && character <= '9') {
             return character - '0';
-        if (character >= 'a' && character <= 'f')
+        }
+        if (character >= 'a' && character <= 'f') {
             return character - 'a' + 10;
-        if (character >= 'A' && character <= 'F')
+        }
+        if (character >= 'A' && character <= 'F') {
             return character - 'A' + 10;
+        }
         return -1;
     };
-    if (value.size() % 2 != 0)
+    if (value.size() % 2 != 0) {
         return {};
+    }
     std::vector<std::uint8_t> result;
     result.reserve(value.size() / 2);
     for (std::size_t index = 0; index < value.size(); index += 2) {
         const auto high = nibble(value[index]);
         const auto low = nibble(value[index + 1]);
-        if (high < 0 || low < 0)
+        if (high < 0 || low < 0) {
             return {};
+        }
         result.push_back(static_cast<std::uint8_t>((high << 4) | low));
     }
     return result;
 }
 
 inline std::string rawPayloadsJson(const std::vector<std::vector<std::uint8_t>>& payloads) {
-    std::string result{"["};
+    std::string result{ "[" };
     for (std::size_t index = 0; index < payloads.size(); ++index) {
-        if (index != 0)
+        if (index != 0) {
             result.push_back(',');
+        }
         result.push_back('"');
         result += toHex(payloads[index]);
         result.push_back('"');
@@ -345,13 +363,14 @@ inline std::vector<std::vector<std::uint8_t>> rawPayloadsFromJson(std::string_vi
     std::vector<std::vector<std::uint8_t>> result;
     std::size_t offset = 0;
     const auto skipWhitespace = [&] {
-        while (offset < value.size() && (value[offset] == ' ' || value[offset] == '\n' ||
-                                         value[offset] == '\r' || value[offset] == '\t'))
+        while (offset < value.size() && (value[offset] == ' ' || value[offset] == '\n' || value[offset] == '\r' || value[offset] == '\t')) {
             ++offset;
+        }
     };
     skipWhitespace();
-    if (offset == value.size() || value[offset++] != '[')
+    if (offset == value.size() || value[offset++] != '[') {
         return {};
+    }
     skipWhitespace();
     if (offset < value.size() && value[offset] == ']') {
         ++offset;
@@ -359,52 +378,58 @@ inline std::vector<std::vector<std::uint8_t>> rawPayloadsFromJson(std::string_vi
         return offset == value.size() ? result : std::vector<std::vector<std::uint8_t>>{};
     }
     while (offset < value.size()) {
-        if (value[offset++] != '"')
+        if (value[offset++] != '"') {
             return {};
+        }
         const auto end = value.find('"', offset);
-        if (end == std::string_view::npos)
+        if (end == std::string_view::npos) {
             return {};
+        }
         const auto hex = value.substr(offset, end - offset);
         auto payload = fromHex(hex);
-        if (payload.empty() && !hex.empty())
+        if (payload.empty() && !hex.empty()) {
             return {};
+        }
         result.push_back(std::move(payload));
         offset = end + 1;
         skipWhitespace();
-        if (offset == value.size())
+        if (offset == value.size()) {
             return {};
+        }
         if (value[offset] == ']') {
             ++offset;
             skipWhitespace();
             return offset == value.size() ? result : std::vector<std::vector<std::uint8_t>>{};
         }
-        if (value[offset++] != ',')
+        if (value[offset++] != ',') {
             return {};
+        }
         skipWhitespace();
     }
     return {};
 }
 
 inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
-    return {{"event_id", packet.messageId},
-            {"acquisition_id", packet.acquisitionId},
-            {"reply_to_packet_id", packet.replyToPacketId},
-            {"event_type", "packet.egress"},
-            {"schema_version", std::string(kMessageSchemaVersion)},
-            {"message_id", packet.messageId},
-            {"worker_instance_id", packet.workerInstanceId},
-            {"causation_id", packet.causationId},
-            {"connection_id", packet.connectionId},
-            {"session_epoch", std::to_string(packet.sessionEpoch)},
-            {"created_at_ms", std::to_string(packet.createdAtMs)},
-            {"payload_hex", toHex(packet.payload)}};
+    return { { "event_id", packet.messageId },
+             { "acquisition_id", packet.acquisitionId },
+             { "reply_to_packet_id", packet.replyToPacketId },
+             { "event_type", "packet.egress" },
+             { "schema_version", std::string(kMessageSchemaVersion) },
+             { "message_id", packet.messageId },
+             { "worker_instance_id", packet.workerInstanceId },
+             { "causation_id", packet.causationId },
+             { "connection_id", packet.connectionId },
+             { "session_epoch", std::to_string(packet.sessionEpoch) },
+             { "created_at_ms", std::to_string(packet.createdAtMs) },
+             { "payload_hex", toHex(packet.payload) } };
 }
 
 inline EgressPacket egressFrom(const StreamMessage& message) {
     const auto require = [&message](std::string_view name) {
         const auto value = message.get(name);
-        if (value.empty())
+        if (value.empty()) {
             throw std::runtime_error("Missing egress field: " + std::string(name));
+        }
         return value;
     };
     const auto integer = [&require](std::string_view name) {
@@ -412,8 +437,9 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
         std::int64_t result = 0;
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size() || result < 0)
+        if (error != std::errc{} || end != value.data() + value.size() || result < 0) {
             throw std::runtime_error("Invalid egress integer field: " + std::string(name));
+        }
         return result;
     };
     EgressPacket packet;
@@ -427,47 +453,51 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
     packet.createdAtMs = integer("created_at_ms");
     const auto payload = require("payload_hex");
     packet.payload = fromHex(payload);
-    if (packet.payload.empty())
+    if (packet.payload.empty()) {
         throw std::runtime_error("Invalid or empty egress HEX payload");
+    }
     return packet;
 }
 
 inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message) {
     std::string packetIds = "[";
     for (const auto& id : message.rawPacketIds) {
-        if (packetIds.size() > 1) packetIds += ',';
+        if (packetIds.size() > 1) {
+            packetIds += ',';
+        }
         packetIds += service::utils::jsonQuoted(id);
     }
     packetIds += ']';
-    return {{"event_id", message.messageId},
-            {"acquisition_id", message.acquisitionId},
-            {"raw_packet_ids", packetIds},
-            {"event_type", "device.data.parsed"},
-            {"schema_version", std::string(kMessageSchemaVersion)},
-            {"aggregate_id", message.deviceId},
-            {"model_id", message.modelId},
-             {"event_kind", message.eventKind},
-            {"message_id", message.messageId},
-            {"causation_id", message.causationId},
-            {"link_id", message.linkId},
-            {"device_id", message.deviceId},
-            {"device_code", message.deviceCode},
-            {"protocol", message.protocol},
-            {"connection_id", message.connectionId},
-            {"occurred_at_ms", std::to_string(message.occurredAtMs)},
-            {"observed_at_ms", std::to_string(message.observedAtMs)},
-            {"storage_policy", message.storagePolicy},
-            {"online_window_ms", std::to_string(message.onlineWindowMs)},
-            {"source", message.source},
-            {"values_json", message.valuesJson},
-            {"raw_payload_hex", rawPayloadsJson(message.rawPayloads)}};
+    return { { "event_id", message.messageId },
+             { "acquisition_id", message.acquisitionId },
+             { "raw_packet_ids", packetIds },
+             { "event_type", "device.data.parsed" },
+             { "schema_version", std::string(kMessageSchemaVersion) },
+             { "aggregate_id", message.deviceId },
+             { "model_id", message.modelId },
+             { "event_kind", message.eventKind },
+             { "message_id", message.messageId },
+             { "causation_id", message.causationId },
+             { "link_id", message.linkId },
+             { "device_id", message.deviceId },
+             { "device_code", message.deviceCode },
+             { "protocol", message.protocol },
+             { "connection_id", message.connectionId },
+             { "occurred_at_ms", std::to_string(message.occurredAtMs) },
+             { "observed_at_ms", std::to_string(message.observedAtMs) },
+             { "storage_policy", message.storagePolicy },
+             { "online_window_ms", std::to_string(message.onlineWindowMs) },
+             { "source", message.source },
+             { "values_json", message.valuesJson },
+             { "raw_payload_hex", rawPayloadsJson(message.rawPayloads) } };
 }
 
 inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     const auto require = [&message](std::string_view name) {
         const auto value = message.get(name);
-        if (value.empty())
+        if (value.empty()) {
             throw std::runtime_error("Missing parsed packet field: " + std::string(name));
+        }
         return value;
     };
     const auto integer = [&require](std::string_view name) {
@@ -475,8 +505,9 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
         std::int64_t result = 0;
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size())
+        if (error != std::errc{} || end != value.data() + value.size()) {
             throw std::runtime_error("Invalid parsed packet integer: " + std::string(name));
+        }
         return result;
     };
     ParsedDeviceMessage parsed;
@@ -484,19 +515,27 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     const auto packetIds = message.get("raw_packet_ids");
     if (!packetIds.empty()) {
         const auto array = ruvia::json_value::parse(packetIds);
-        if (!array || !array->is_array()) throw std::runtime_error("Invalid raw packet IDs");
+        if (!array || !array->is_array()) {
+            throw std::runtime_error("Invalid raw packet IDs");
+        }
         const std::string document = "{\"ids\":" + std::string(packetIds) + "}";
         const auto object = ruvia::json_value::parse(document);
         const auto ids = object ? object->get<ruvia::array<ruvia::string>>("ids") : std::nullopt;
-        if (!ids) throw std::runtime_error("Invalid raw packet IDs");
-        for (const auto& id : *ids) parsed.rawPacketIds.emplace_back(id.view());
+        if (!ids) {
+            throw std::runtime_error("Invalid raw packet IDs");
+        }
+        for (const auto& id : *ids) {
+            parsed.rawPacketIds.emplace_back(id.view());
+        }
     }
     parsed.eventKind = message.get("event_kind").empty() ? "sample" : std::string(message.get("event_kind"));
-    if (parsed.eventKind != "sample" && parsed.eventKind != "image")
+    if (parsed.eventKind != "sample" && parsed.eventKind != "image") {
         throw std::runtime_error("Invalid telemetry event kind");
+    }
     parsed.modelId = std::string(message.get("model_id"));
-    if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId))
+    if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId)) {
         throw std::runtime_error("Invalid telemetry model UUID");
+    }
     parsed.messageId = std::string(require("message_id"));
     parsed.causationId = std::string(require("causation_id"));
     parsed.linkId = std::string(require("link_id"));
@@ -508,77 +547,86 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.observedAtMs = integer("observed_at_ms");
     parsed.observedAtMs = effectiveObservedAt(parsed.observedAtMs, parsed.occurredAtMs);
     parsed.storagePolicy = std::string(require("storage_policy"));
-    if (parsed.storagePolicy != "report" && parsed.storagePolicy != "change")
+    if (parsed.storagePolicy != "report" && parsed.storagePolicy != "change") {
         throw std::runtime_error("Invalid parsed packet storage policy");
+    }
     const auto onlineWindow = message.get("online_window_ms");
     if (!onlineWindow.empty()) {
         std::int64_t result = 0;
         const auto [end, error] =
             std::from_chars(onlineWindow.data(), onlineWindow.data() + onlineWindow.size(), result);
-        if (error != std::errc{} || end != onlineWindow.data() + onlineWindow.size())
+        if (error != std::errc{} || end != onlineWindow.data() + onlineWindow.size()) {
             throw std::runtime_error("Invalid parsed packet online window");
+        }
         parsed.onlineWindowMs = std::clamp<std::int64_t>(result, 1000, 2592000000LL);
     }
     parsed.source = std::string(require("source"));
     parsed.valuesJson = std::string(require("values_json"));
     const auto payload = require("raw_payload_hex");
     parsed.rawPayloads = rawPayloadsFromJson(payload);
-    if (parsed.rawPayloads.empty() && payload != "[]")
+    if (parsed.rawPayloads.empty() && payload != "[]") {
         throw std::runtime_error("Invalid parsed packet HEX payload array");
+    }
     return parsed;
 }
 
 inline std::vector<StreamField> protocolTaskFields(const ProtocolTask& task) {
-    std::vector<StreamField> fields{{"event_id", task.messageId},
-                                    {"event_type", "protocol.task"},
-                                    {"schema_version", std::string(kMessageSchemaVersion)},
-                                    {"aggregate_id", task.deviceId},
-                                    {"message_id", task.messageId},
-                                    {"causation_id", task.causationId},
-                                    {"group_key", task.groupKey},
-                                    {"protocol", task.protocol},
-                                    {"transport", task.transport},
-                                    {"kind", task.kind},
-                                    {"link_id", task.linkId},
-                                    {"device_id", task.deviceId},
-                                    {"device_code", task.deviceCode},
-                                    {"connection_id", task.connectionId},
-                                    {"payload_hex", task.payload},
-                                    {"readback_payload_hex", task.readbackPayload},
-                                    {"expected_readback_hex", task.expectedReadbackData},
-                                    {"expected_value", task.expectedValue},
-                                    {"expects_response", task.expectsResponse ? "1" : "0"},
-                                    {"response_timeout_ms", std::to_string(task.responseTimeoutMs)},
-                                    {"created_at_ms", std::to_string(task.createdAtMs)},
-                                    {"attempt", std::to_string(task.attempt)},
-                                    {"max_attempts", std::to_string(task.maxAttempts)},
-                                    {"session_epoch", std::to_string(task.sessionEpoch)}};
-    if (!task.mqttMessageId.empty()) fields.push_back({"mqtt_message_id", task.mqttMessageId});
+    std::vector<StreamField> fields{ { "event_id", task.messageId },
+                                     { "event_type", "protocol.task" },
+                                     { "schema_version", std::string(kMessageSchemaVersion) },
+                                     { "aggregate_id", task.deviceId },
+                                     { "message_id", task.messageId },
+                                     { "causation_id", task.causationId },
+                                     { "group_key", task.groupKey },
+                                     { "protocol", task.protocol },
+                                     { "transport", task.transport },
+                                     { "kind", task.kind },
+                                     { "link_id", task.linkId },
+                                     { "device_id", task.deviceId },
+                                     { "device_code", task.deviceCode },
+                                     { "connection_id", task.connectionId },
+                                     { "payload_hex", task.payload },
+                                     { "readback_payload_hex", task.readbackPayload },
+                                     { "expected_readback_hex", task.expectedReadbackData },
+                                     { "expected_value", task.expectedValue },
+                                     { "expects_response", task.expectsResponse ? "1" : "0" },
+                                     { "response_timeout_ms", std::to_string(task.responseTimeoutMs) },
+                                     { "created_at_ms", std::to_string(task.createdAtMs) },
+                                     { "attempt", std::to_string(task.attempt) },
+                                     { "max_attempts", std::to_string(task.maxAttempts) },
+                                     { "session_epoch", std::to_string(task.sessionEpoch) } };
+    if (!task.mqttMessageId.empty()) {
+        fields.push_back({ "mqtt_message_id", task.mqttMessageId });
+    }
     fields.reserve(fields.size() + task.elements.size());
-    for (const auto& [elementId, value] : task.elements)
-        fields.push_back({"element:" + elementId, value});
+    for (const auto& [elementId, value] : task.elements) {
+        fields.push_back({ "element:" + elementId, value });
+    }
     return fields;
 }
 
 inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
     const auto require = [&message](std::string_view name) {
         const auto value = message.get(name);
-        if (value.empty())
+        if (value.empty()) {
             throw std::runtime_error("Missing protocol task field: " + std::string(name));
+        }
         return value;
     };
     const auto integer = [&message, &require](std::string_view name, bool required = true) {
         const auto value = message.get(name);
         if (value.empty()) {
-            if (required)
+            if (required) {
                 (void)require(name);
-            return std::int64_t{0};
+            }
+            return std::int64_t{ 0 };
         }
         std::int64_t result = 0;
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size())
+        if (error != std::errc{} || end != value.data() + value.size()) {
             throw std::runtime_error("Invalid protocol task integer field: " + std::string(name));
+        }
         return result;
     };
     ProtocolTask task;
@@ -587,8 +635,9 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
     task.groupKey = std::string(require("group_key"));
     task.protocol = std::string(require("protocol"));
     task.transport = std::string(require("transport"));
-    if (task.transport != "TCP" && task.transport != "RTU" && task.transport != "RAW")
+    if (task.transport != "TCP" && task.transport != "RTU" && task.transport != "RAW") {
         throw std::runtime_error("Invalid protocol task transport");
+    }
     task.kind = std::string(require("kind"));
     task.linkId = std::string(require("link_id"));
     task.deviceId = std::string(message.get("device_id"));
@@ -600,27 +649,33 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
     task.expectedValue = std::string(message.get("expected_value"));
     task.mqttMessageId = std::string(message.get("mqtt_message_id"));
     for (const auto& current : message.fields) {
-        if (!current.name.starts_with("element:"))
+        if (!current.name.starts_with("element:")) {
             continue;
+        }
         const auto elementId = std::string_view(current.name).substr(8);
-        if (elementId.empty())
+        if (elementId.empty()) {
             throw std::runtime_error("Invalid protocol task element field");
+        }
         task.elements.emplace_back(elementId, current.value);
     }
-    if (task.payload.empty() && task.elements.empty())
+    if (task.payload.empty() && task.elements.empty()) {
         throw std::runtime_error("Protocol task requires payload_hex or elements");
+    }
     const auto expectsResponse = message.get("expects_response");
     task.expectsResponse = expectsResponse.empty() || expectsResponse == "1";
     task.responseTimeoutMs = integer("response_timeout_ms", false);
-    if (task.responseTimeoutMs == 0)
+    if (task.responseTimeoutMs == 0) {
         task.responseTimeoutMs = 3000;
+    }
     task.createdAtMs = integer("created_at_ms");
     task.attempt = integer("attempt", false);
-    if (task.attempt == 0)
+    if (task.attempt == 0) {
         task.attempt = 1;
+    }
     task.maxAttempts = integer("max_attempts", false);
-    if (task.maxAttempts == 0)
+    if (task.maxAttempts == 0) {
         task.maxAttempts = 3;
+    }
     task.attempt = std::clamp<std::int64_t>(task.attempt, 1, 100);
     task.maxAttempts = std::clamp<std::int64_t>(task.maxAttempts, task.attempt, 100);
     task.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch", false));
@@ -633,9 +688,9 @@ namespace service::message::live {
 
 // Durable runtime-config relay only. UI business changes use topic channels;
 // notifications never replace the authorized database/Redis snapshot.
-inline constexpr std::string_view kChanges{"iot:live:changes"};
-inline constexpr std::string_view kChangesCapacity{"100000"};
-inline constexpr std::string_view kTopicField{"topic"};
+inline constexpr std::string_view kChanges{ "iot:live:changes" };
+inline constexpr std::string_view kChangesCapacity{ "100000" };
+inline constexpr std::string_view kTopicField{ "topic" };
 // Larger batches are published scope-wide instead of carrying every id.
 inline constexpr std::size_t kMaximumIds = 1000;
 
@@ -648,26 +703,26 @@ inline constexpr std::size_t kMaximumIds = 1000;
 // alert-rule → alert rule ids; command → command operation ids; packet-debug →
 // device and link ids; gb28181 → GB28181 device ids; vpn → VPN network ids.
 namespace topic {
-inline constexpr std::string_view kDevice{"device"};
-inline constexpr std::string_view kDeviceGroup{"device-group"};
-inline constexpr std::string_view kDeviceState{"device.state"};
-inline constexpr std::string_view kDeviceRealtime{"device.realtime"};
-inline constexpr std::string_view kDeviceHistory{"device.history"};
-inline constexpr std::string_view kLink{"link"};
-inline constexpr std::string_view kProtocol{"protocol"};
-inline constexpr std::string_view kEdge{"edge"};
-inline constexpr std::string_view kEdgeGroup{"edge-group"};
-inline constexpr std::string_view kEdgeDtu{"edge-dtu"};
-inline constexpr std::string_view kEdgeLogs{"edge-logs"};
-inline constexpr std::string_view kAlert{"alert"};
-inline constexpr std::string_view kAlertRule{"alert-rule"};
-inline constexpr std::string_view kAccess{"access"};
-inline constexpr std::string_view kVpn{"vpn"};
-inline constexpr std::string_view kGb28181{"gb28181"};
-inline constexpr std::string_view kCommand{"command"};
-inline constexpr std::string_view kPacketDebug{"packet-debug"};
-inline constexpr std::string_view kAuth{"auth"};
-inline constexpr std::string_view kRuntimeConfig{"runtime-config"};
+inline constexpr std::string_view kDevice{ "device" };
+inline constexpr std::string_view kDeviceGroup{ "device-group" };
+inline constexpr std::string_view kDeviceState{ "device.state" };
+inline constexpr std::string_view kDeviceRealtime{ "device.realtime" };
+inline constexpr std::string_view kDeviceHistory{ "device.history" };
+inline constexpr std::string_view kLink{ "link" };
+inline constexpr std::string_view kProtocol{ "protocol" };
+inline constexpr std::string_view kEdge{ "edge" };
+inline constexpr std::string_view kEdgeGroup{ "edge-group" };
+inline constexpr std::string_view kEdgeDtu{ "edge-dtu" };
+inline constexpr std::string_view kEdgeLogs{ "edge-logs" };
+inline constexpr std::string_view kAlert{ "alert" };
+inline constexpr std::string_view kAlertRule{ "alert-rule" };
+inline constexpr std::string_view kAccess{ "access" };
+inline constexpr std::string_view kVpn{ "vpn" };
+inline constexpr std::string_view kGb28181{ "gb28181" };
+inline constexpr std::string_view kCommand{ "command" };
+inline constexpr std::string_view kPacketDebug{ "packet-debug" };
+inline constexpr std::string_view kAuth{ "auth" };
+inline constexpr std::string_view kRuntimeConfig{ "runtime-config" };
 } // namespace topic
 
 inline std::string joinIds(std::span<const std::string> ids) {
@@ -753,45 +808,46 @@ struct Contract final {
     static std::string requests(std::string_view instance, std::size_t workerIndex) {
         return "iot:rpc:requests:" + std::string(instance) + ":worker:" + std::to_string(workerIndex);
     }
+
     static std::string reply(std::string_view id) {
         return "iot:rpc:reply:" + std::string(id);
     }
+
     static std::string cancelled(std::string_view id) {
         return "iot:rpc:cancelled:" + std::string(id);
     }
+
     static std::string claim(std::string_view id) {
         return "iot:rpc:claim:" + std::string(id);
     }
+
     static std::int64_t now() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+                   std::chrono::system_clock::now().time_since_epoch()
+        )
+            .count();
     }
+
     static std::string success(std::string_view payload) {
         return "OK\n" + std::string(payload);
     }
-    static std::string failure(std::uint16_t status, std::string_view code,
-                               std::string_view message) {
+
+    static std::string failure(std::uint16_t status, std::string_view code, std::string_view message) {
         return "ERR\n" + std::to_string(status) + "\n" + std::string(code) + "\n" +
-               std::string(message);
+            std::string(message);
     }
+
     // XADD argument vector of one request entry on `requests(instance, worker)`.
-    static std::vector<std::string> requestArguments(std::string_view stream, std::string_view id,
-                                                     std::string_view component,
-                                                     std::string_view operation,
-                                                     std::string payload,
-                                                     std::int64_t deadline) {
-        return {"XADD", std::string(stream), "*", "version", std::string(version),
-                "id", std::string(id), "component", std::string(component),
-                "operation", std::string(operation), "payload", std::move(payload),
-                "deadline", std::to_string(deadline)};
+    static std::vector<std::string> requestArguments(std::string_view stream, std::string_view id, std::string_view component, std::string_view operation, std::string payload, std::int64_t deadline) {
+        return { "XADD", std::string(stream), "*", "version", std::string(version), "id", std::string(id), "component", std::string(component), "operation", std::string(operation), "payload", std::move(payload), "deadline", std::to_string(deadline) };
     }
 };
 
 // Serializes an RPC request or reply model. Every JSON RPC payload is a model below.
 template <typename Model>
 std::string encode(const Model& model, std::pmr::memory_resource* resource) {
-    const auto encoded = ruvia::to_json(model, {.resource_ = resource});
-    return {encoded.data(), encoded.size()};
+    const auto encoded = ruvia::to_json(model, { .resource_ = resource });
+    return { encoded.data(), encoded.size() };
 }
 
 // Text payload "<first>\n<second>"; the first part never contains a newline.
@@ -810,9 +866,10 @@ inline std::string encodeLinePair(std::string_view first, std::string_view secon
 
 inline std::optional<LinePair> decodeLinePair(std::string_view payload) {
     const auto separator = payload.find('\n');
-    if (separator == std::string_view::npos)
+    if (separator == std::string_view::npos) {
         return std::nullopt;
-    return LinePair{payload.substr(0, separator), payload.substr(separator + 1)};
+    }
+    return LinePair{ payload.substr(0, separator), payload.substr(separator + 1) };
 }
 
 } // namespace service::message::rpc
@@ -821,24 +878,24 @@ namespace service::message::lock {
 
 // PostgreSQL advisory lock identities shared by every Service Worker and process.
 // Values are runtime contracts: changing one breaks mutual exclusion during upgrades.
-inline constexpr std::int64_t kConfigurationProjection{5282804697543808067};
-inline constexpr std::int64_t kLatestHydration{5282804697543808074};
-inline constexpr std::int64_t kConfigurationStartup{5282804697543808076};
+inline constexpr std::int64_t kConfigurationProjection{ 5282804697543808067 };
+inline constexpr std::int64_t kLatestHydration{ 5282804697543808074 };
+inline constexpr std::int64_t kConfigurationStartup{ 5282804697543808076 };
 // Default VPN network row: Hub key initialization and default network provisioning.
-inline constexpr std::int64_t kVpnDefaultNetwork{5282804697543808073};
-inline constexpr std::int64_t kVpnAddressAllocation{5282804697543808068};
-inline constexpr std::int64_t kVpnReconciliation{5282804697543808071};
-inline constexpr std::int64_t kAccessSessionProjection{734622};
-inline constexpr std::int64_t kAlertMetadataProjection{734623};
-inline constexpr std::int64_t kOutboxReceiptCleanup{734624};
+inline constexpr std::int64_t kVpnDefaultNetwork{ 5282804697543808073 };
+inline constexpr std::int64_t kVpnAddressAllocation{ 5282804697543808068 };
+inline constexpr std::int64_t kVpnReconciliation{ 5282804697543808071 };
+inline constexpr std::int64_t kAccessSessionProjection{ 734622 };
+inline constexpr std::int64_t kAlertMetadataProjection{ 734623 };
+inline constexpr std::int64_t kOutboxReceiptCleanup{ 734624 };
 // Two-key form pg_advisory_xact_lock(int4, int4) guarding firmware storage.
-inline constexpr std::int32_t kFirmwareStorageClass{17011};
-inline constexpr std::int32_t kFirmwareStorageObject{1};
+inline constexpr std::int32_t kFirmwareStorageClass{ 17011 };
+inline constexpr std::int32_t kFirmwareStorageObject{ 1 };
 // Seeds for hashtextextended(<resource>, seed), which derives per-resource lock keys.
-inline constexpr std::int64_t kVpnEdgeConfigSeed{5282804697543808072};
-inline constexpr std::int64_t kTelemetryDeviceSeed{734621};
-inline constexpr std::int64_t kGb28181OwnerSeed{28181};
-inline constexpr std::int64_t kCommandIdempotencySeed{0};
+inline constexpr std::int64_t kVpnEdgeConfigSeed{ 5282804697543808072 };
+inline constexpr std::int64_t kTelemetryDeviceSeed{ 734621 };
+inline constexpr std::int64_t kGb28181OwnerSeed{ 28181 };
+inline constexpr std::int64_t kCommandIdempotencySeed{ 0 };
 
 } // namespace service::message::lock
 
@@ -870,9 +927,9 @@ inline std::string deviceIndexKey(std::string_view deviceId) {
 namespace service::message::collector {
 
 inline constexpr std::int64_t kConnectionTtlMilliseconds = 15000;
-inline constexpr std::string_view kConnectionPrefix{"iot:v3:device:connection:"};
-inline constexpr std::string_view kConnectionDeadlinesKey{"iot:v3:device:connection:deadlines"};
-inline constexpr std::string_view kLinkOwnerPrefix{"iot:v2:owner:link:"};
+inline constexpr std::string_view kConnectionPrefix{ "iot:v3:device:connection:" };
+inline constexpr std::string_view kConnectionDeadlinesKey{ "iot:v3:device:connection:deadlines" };
+inline constexpr std::string_view kLinkOwnerPrefix{ "iot:v2:owner:link:" };
 
 inline std::string connectionKey(std::string_view deviceId) {
     return std::string(kConnectionPrefix) + std::string(deviceId);
@@ -904,18 +961,34 @@ inline std::string runtimeKey(std::string_view deviceId) {
 }
 
 inline std::string canonicalPointText(std::string_view value, std::string_view dataType) {
-    if (dataType != "BOOL") return std::string(value);
-    if (value == "true" || value == "1") return "1";
-    if (value == "false" || value == "0") return "0";
+    if (dataType != "BOOL") {
+        return std::string(value);
+    }
+    if (value == "true" || value == "1") {
+        return "1";
+    }
+    if (value == "false" || value == "0") {
+        return "0";
+    }
     return std::string(value);
 }
 
 inline std::string canonicalPointJson(std::string_view value, std::string_view dataType) {
-    if (dataType != "BOOL") return std::string(value);
-    if (value == "true" || value == "1") return "1";
-    if (value == "false" || value == "0") return "0";
-    if (value == "\"true\"" || value == "\"1\"") return "\"1\"";
-    if (value == "\"false\"" || value == "\"0\"") return "\"0\"";
+    if (dataType != "BOOL") {
+        return std::string(value);
+    }
+    if (value == "true" || value == "1") {
+        return "1";
+    }
+    if (value == "false" || value == "0") {
+        return "0";
+    }
+    if (value == "\"true\"" || value == "\"1\"") {
+        return "\"1\"";
+    }
+    if (value == "\"false\"" || value == "\"0\"") {
+        return "\"0\"";
+    }
     return std::string(value);
 }
 
@@ -938,18 +1011,16 @@ inline constexpr std::string_view kMetadataChangesStream{ "iot:alert:metadata-ch
 
 namespace service::message::access::session {
 
-inline constexpr std::string_view kActiveVersionKey{"iot:open-access:session:active"};
-inline constexpr std::string_view kVersionPrefix{"iot:open-access:session:version:"};
+inline constexpr std::string_view kActiveVersionKey{ "iot:open-access:session:active" };
+inline constexpr std::string_view kVersionPrefix{ "iot:open-access:session:version:" };
 
-inline std::string encode(std::string_view id, std::string_view name,
-                          std::string_view status, std::string_view expiresAtMs,
-                          std::string_view scopes, std::string_view deviceIds) {
+inline std::string encode(std::string_view id, std::string_view name, std::string_view status, std::string_view expiresAtMs, std::string_view scopes, std::string_view deviceIds) {
     std::string result;
-    result.reserve(id.size() + name.size() + status.size() + expiresAtMs.size() +
-                   scopes.size() + deviceIds.size() + 5);
-    for (const auto field : {id, name, status, expiresAtMs, scopes, deviceIds}) {
-        if (!result.empty())
+    result.reserve(id.size() + name.size() + status.size() + expiresAtMs.size() + scopes.size() + deviceIds.size() + 5);
+    for (const auto field : { id, name, status, expiresAtMs, scopes, deviceIds }) {
+        if (!result.empty()) {
             result.push_back('\0');
+        }
         result.append(field);
     }
     return result;
@@ -959,7 +1030,7 @@ struct Entry final {
     std::string id;
     std::string name;
     std::string status;
-    std::int64_t expiresAtMs{0};
+    std::int64_t expiresAtMs{ 0 };
     std::set<std::string, std::less<>> scopes;
     std::set<std::string, std::less<>> deviceIds;
 };
@@ -967,15 +1038,19 @@ struct Entry final {
 inline std::vector<std::string> parseStringArray(std::string_view json) {
     std::vector<std::string> result;
     const auto array = ruvia::json_value::parse(json);
-    if (!array || !array->is_array()) throw std::runtime_error("invalid projected access-session array");
+    if (!array || !array->is_array()) {
+        throw std::runtime_error("invalid projected access-session array");
+    }
     const std::string document = "{\"values\":" + std::string(json) + "}";
     const auto object = ruvia::json_value::parse(document);
     const auto parsed = object ? object->get<ruvia::array<ruvia::string>>("values") : std::nullopt;
-    if (!parsed)
+    if (!parsed) {
         throw std::runtime_error("invalid projected access-session array");
+    }
     result.reserve(parsed->size());
-    for (const auto& item : *parsed)
+    for (const auto& item : *parsed) {
         result.emplace_back(item.view());
+    }
     return result;
 }
 
@@ -985,8 +1060,9 @@ inline Entry decode(std::string_view encoded) {
     std::size_t begin = 0;
     while (fields.size() < 5) {
         const auto end = encoded.find('\0', begin);
-        if (end == std::string_view::npos)
+        if (end == std::string_view::npos) {
             throw std::runtime_error("invalid projected access-session entry");
+        }
         fields.push_back(encoded.substr(begin, end - begin));
         begin = end + 1;
     }
@@ -998,12 +1074,15 @@ inline Entry decode(std::string_view encoded) {
     const auto expiration = fields[3];
     const auto [end, error] =
         std::from_chars(expiration.data(), expiration.data() + expiration.size(), result.expiresAtMs);
-    if (expiration.empty() || error != std::errc{} || end != expiration.data() + expiration.size())
+    if (expiration.empty() || error != std::errc{} || end != expiration.data() + expiration.size()) {
         throw std::runtime_error("invalid projected access-session expiration");
-    for (auto& scope : parseStringArray(fields[4]))
+    }
+    for (auto& scope : parseStringArray(fields[4])) {
         result.scopes.emplace(std::move(scope));
-    for (auto& device : parseStringArray(fields[5]))
+    }
+    for (auto& device : parseStringArray(fields[5])) {
         result.deviceIds.emplace(std::move(device));
+    }
     return result;
 }
 
@@ -1043,28 +1122,30 @@ inline std::string encodePoint(const Point& point) {
 
 inline std::optional<Point> decodePoint(std::string_view value) {
     const auto first = value.find('\0');
-    if (first == std::string_view::npos)
+    if (first == std::string_view::npos) {
         return std::nullopt;
+    }
     const auto second = value.find('\0', first + 1);
-    if (second == std::string_view::npos)
+    if (second == std::string_view::npos) {
         return std::nullopt;
-    return Point{std::string(value.substr(0, first)),
-                 std::string(value.substr(first + 1, second - first - 1)),
-                 std::string(value.substr(second + 1))};
+    }
+    return Point{ std::string(value.substr(0, first)),
+                  std::string(value.substr(first + 1, second - first - 1)),
+                  std::string(value.substr(second + 1)) };
 }
 
-} // namespace realtime
+} // namespace service::message::realtime
 
 namespace service::message::projection {
 inline constexpr std::string_view kRuntimeActiveVersionKey = "iot:config:runtime:active-version";
 inline constexpr std::string_view kRuntimeVersionsKey = "iot:config:runtime:versions";
 inline constexpr std::string_view kRuntimeVersionPrefix = "iot:config:runtime:";
+
 inline std::string realtimeDeviceKey(std::string_view version, std::string_view deviceId) {
     return std::string(kRuntimeVersionPrefix) + std::string(version) + ":realtime-device:" + std::string(deviceId);
 }
 
-inline std::string realtimeDevicePointsKey(std::string_view version,
-                                           std::string_view deviceId) {
+inline std::string realtimeDevicePointsKey(std::string_view version, std::string_view deviceId) {
     return realtimeDeviceKey(version, deviceId) + ":points";
 }
 
@@ -1074,9 +1155,9 @@ namespace service::message::worker_metrics {
 
 // One atomic, expiring entity per Worker; readers use the same wire columns.
 inline constexpr char kSnapshotTable[] = "iot_worker_snapshot";
-inline constexpr std::chrono::milliseconds kSnapshotTtl{15000};
-inline std::string snapshotId(std::size_t workerIndex,
-    std::string_view instance) {
+inline constexpr std::chrono::milliseconds kSnapshotTtl{ 15000 };
+
+inline std::string snapshotId(std::size_t workerIndex, std::string_view instance) {
     return std::string(instance) + ":worker:" + std::to_string(workerIndex);
 }
 
@@ -1086,9 +1167,11 @@ namespace service::message::consumer {
 inline std::string inputChannel(std::string_view stream) {
     return "iot:consumer:input:" + std::string(stream);
 }
+
 inline std::string deadlineKey(std::string_view stream, std::string_view group) {
     return "iot:consumer:pending:" + std::string(group) + ":" + std::string(stream);
 }
+
 inline std::string deadlineChannel(std::string_view stream, std::string_view group) {
     return "iot:consumer:deadline:" + std::string(group) + ":" + std::string(stream);
 }
@@ -1174,17 +1257,19 @@ namespace service::message::terminal {
 inline std::string terminalEventTopic(std::string_view nodeId, std::string_view terminalId) {
     return "edge-terminal:" + std::string(nodeId) + ":" + std::string(terminalId);
 }
+
 inline std::string terminalAckTopic(std::string_view nodeId, std::string_view terminalId) {
     return terminalEventTopic(nodeId, terminalId) + ":input-ack";
 }
 
 inline std::string terminalInputKey(std::string_view nodeId) {
-        return "iot:edge:terminal:in:" + std::string(nodeId);
-    }
+    return "iot:edge:terminal:in:" + std::string(nodeId);
+}
+
 inline std::string terminalOutputKey(std::string_view nodeId, std::string_view terminalId) {
-        return "iot:edge:terminal:out:" + std::string(nodeId) + ":" +
-            std::string(terminalId);
-    }
+    return "iot:edge:terminal:out:" + std::string(nodeId) + ":" +
+        std::string(terminalId);
+}
 } // namespace service::message::terminal
 
 namespace service::message::access::stream {
@@ -1319,33 +1404,16 @@ inline constexpr std::string_view kScheduleCleanupOperation{ "schedule-cleanup" 
 
 } // namespace service::message::edge::firmware
 
-
 namespace service::message::command {
 
 // command.prepare: Service module request and feature reply.
-RUVIA_MODEL(PrepareRequest,
-    RUVIA_REQUIRED_FIELD(deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(elements, ruvia::array<ruvia::array<ruvia::string>>));
+RUVIA_MODEL(PrepareRequest, RUVIA_REQUIRED_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::string), RUVIA_REQUIRED_FIELD(elements, ruvia::array<ruvia::array<ruvia::string>>));
 
-RUVIA_MODEL(PreparedElement,
-    RUVIA_REQUIRED_FIELD(elementId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(value, ruvia::string));
+RUVIA_MODEL(PreparedElement, RUVIA_REQUIRED_FIELD(elementId, ruvia::string), RUVIA_REQUIRED_FIELD(value, ruvia::string));
 
-RUVIA_MODEL(PreparedCommand,
-    RUVIA_REQUIRED_FIELD(id, ruvia::string),
-    RUVIA_REQUIRED_FIELD(deviceId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(deviceCode, ruvia::string),
-    RUVIA_REQUIRED_FIELD(protocol, ruvia::string),
-    RUVIA_REQUIRED_FIELD(elements, ruvia::boxed_array<PreparedElement>),
-    RUVIA_REQUIRED_FIELD(payload, ruvia::array<ruvia::string>));
+RUVIA_MODEL(PreparedCommand, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(deviceId, ruvia::string), RUVIA_REQUIRED_FIELD(deviceCode, ruvia::string), RUVIA_REQUIRED_FIELD(protocol, ruvia::string), RUVIA_REQUIRED_FIELD(elements, ruvia::boxed_array<PreparedElement>), RUVIA_REQUIRED_FIELD(payload, ruvia::array<ruvia::string>));
 
-RUVIA_MODEL(PreparedBatch,
-    RUVIA_REQUIRED_FIELD(queue, ruvia::string),
-    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
-    RUVIA_REQUIRED_FIELD(maximum, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(commands, ruvia::boxed_array<PreparedCommand>));
+RUVIA_MODEL(PreparedBatch, RUVIA_REQUIRED_FIELD(queue, ruvia::string), RUVIA_REQUIRED_FIELD(kind, ruvia::string), RUVIA_REQUIRED_FIELD(maximum, ruvia::int64), RUVIA_REQUIRED_FIELD(nodeId, ruvia::string), RUVIA_REQUIRED_FIELD(commands, ruvia::boxed_array<PreparedCommand>));
 
 // Collector 命令结果与 Service 命令投影共享的状态语义。
 inline constexpr std::array<std::string_view, 2> kResultAcceptingStatuses{ "DISPATCHING", "AWAITING_RESULT" };
@@ -1422,238 +1490,78 @@ inline constexpr std::string_view kStateMediaCapabilitiesField{ "media_capabilit
 
 // The GB28181 module sends ControlRequest; the feature forwards it unchanged to the
 // owning Collector. Replies carry code, message and an operation-specific data model.
-RUVIA_MODEL(ControlRequest,
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(speed, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(pan, ruvia::double_value),
-    RUVIA_OPTIONAL_FIELD(tilt, ruvia::double_value),
-    RUVIA_OPTIONAL_FIELD(zoom, ruvia::double_value));
+RUVIA_MODEL(ControlRequest, RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD(action, ruvia::string), RUVIA_OPTIONAL_FIELD(speed, ruvia::int64), RUVIA_OPTIONAL_FIELD(pan, ruvia::double_value), RUVIA_OPTIONAL_FIELD(tilt, ruvia::double_value), RUVIA_OPTIONAL_FIELD(zoom, ruvia::double_value));
 
-RUVIA_MODEL(MediaPorts,
-    RUVIA_OPTIONAL_FIELD(http, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(https, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtsps, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtmps, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rtc, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::int64));
+RUVIA_MODEL(MediaPorts, RUVIA_OPTIONAL_FIELD(http, ruvia::int64), RUVIA_OPTIONAL_FIELD(https, ruvia::int64), RUVIA_OPTIONAL_FIELD(rtsp, ruvia::int64), RUVIA_OPTIONAL_FIELD(rtsps, ruvia::int64), RUVIA_OPTIONAL_FIELD(rtmp, ruvia::int64), RUVIA_OPTIONAL_FIELD(rtmps, ruvia::int64), RUVIA_OPTIONAL_FIELD(rtc, ruvia::int64), RUVIA_OPTIONAL_FIELD(srt, ruvia::int64));
 
-RUVIA_MODEL(MediaCapabilities,
-    RUVIA_OPTIONAL_FIELD(faac, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(hls, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(mp4, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(sctp, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(x264, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(tls, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
+RUVIA_MODEL(MediaCapabilities, RUVIA_OPTIONAL_FIELD(faac, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(hls, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(mp4, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("rtp_proxy", rtpProxy, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(srt, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(sctp, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("web_rtc", webRtc, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(x264, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(tls, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
 
-RUVIA_MODEL(Health,
-    RUVIA_OPTIONAL_FIELD(status, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(service, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(started, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(error, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPorts),
-    RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilities));
+RUVIA_MODEL(Health, RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(service, ruvia::string), RUVIA_OPTIONAL_FIELD(enabled, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(started, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(error, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPorts), RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilities));
 
-RUVIA_MODEL(Channel,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::bool_value));
+RUVIA_MODEL(Channel, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string), RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string), RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::bool_value));
 
-RUVIA_MODEL(Device,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(channels, ruvia::boxed_array<Channel>));
+RUVIA_MODEL(Device, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::string), RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::string), RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(channels, ruvia::boxed_array<Channel>));
 
 RUVIA_MODEL(DeviceList, RUVIA_OPTIONAL_FIELD(items, ruvia::boxed_array<Device>));
 
-RUVIA_MODEL(PlayUrls,
-    RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(hls, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(webrtc, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::string));
+RUVIA_MODEL(PlayUrls, RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::string), RUVIA_OPTIONAL_FIELD(hls, ruvia::string), RUVIA_OPTIONAL_FIELD(webrtc, ruvia::string), RUVIA_OPTIONAL_FIELD(rtsp, ruvia::string), RUVIA_OPTIONAL_FIELD(rtmp, ruvia::string));
 
-RUVIA_MODEL(PreviewStart,
-    RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(ssrc, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrls));
+RUVIA_MODEL(PreviewStart, RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string), RUVIA_OPTIONAL_FIELD(ssrc, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrls));
 
-RUVIA_MODEL(PreviewStop,
-    RUVIA_OPTIONAL_FIELD(stopped, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::bool_value));
+RUVIA_MODEL(PreviewStop, RUVIA_OPTIONAL_FIELD(stopped, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::bool_value));
 
-RUVIA_MODEL(Action,
-    RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
+RUVIA_MODEL(Action, RUVIA_OPTIONAL_FIELD(sent, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::string), RUVIA_OPTIONAL_FIELD(recording, ruvia::bool_value));
 
-RUVIA_MODEL(OperationResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string));
+RUVIA_MODEL(OperationResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string));
 
-RUVIA_MODEL(HealthResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(data, Health));
+RUVIA_MODEL(HealthResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, Health));
 
-RUVIA_MODEL(DeviceListResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(data, DeviceList));
+RUVIA_MODEL(DeviceListResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, DeviceList));
 
-RUVIA_MODEL(PreviewStartResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(data, PreviewStart));
+RUVIA_MODEL(PreviewStartResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, PreviewStart));
 
-RUVIA_MODEL(PreviewStopResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(data, PreviewStop));
+RUVIA_MODEL(PreviewStopResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, PreviewStop));
 
-RUVIA_MODEL(ActionResponse,
-    RUVIA_OPTIONAL_FIELD(code, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(data, Action));
+RUVIA_MODEL(ActionResponse, RUVIA_OPTIONAL_FIELD(code, ruvia::int64), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD(data, Action));
 
 } // namespace service::message::gb28181
 
 namespace service::message::access {
 
 // access.audit: open-access request audit forwarded by the module to the feature.
-RUVIA_MODEL(AuditRequest,
-    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(method, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(target, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(requestIp, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(httpStatus, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(requestPayload, ruvia::json_value),
-    RUVIA_OPTIONAL_FIELD(responsePayload, ruvia::json_value));
+RUVIA_MODEL(AuditRequest, RUVIA_OPTIONAL_FIELD(action, ruvia::string), RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::string), RUVIA_OPTIONAL_FIELD(method, ruvia::string), RUVIA_OPTIONAL_FIELD(target, ruvia::string), RUVIA_OPTIONAL_FIELD(requestIp, ruvia::string), RUVIA_OPTIONAL_FIELD(httpStatus, ruvia::int64), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::string), RUVIA_OPTIONAL_FIELD(requestPayload, ruvia::json_value), RUVIA_OPTIONAL_FIELD(responsePayload, ruvia::json_value));
 
 } // namespace service::message::access
 
 namespace service::message::serial_debug {
 
 // edge-serial: browser serial debug operations relayed by the edge node module.
-RUVIA_MODEL(Request,
-    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(userId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(connectionId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(sessionId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(path, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(after, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(command, ruvia::json_value));
+RUVIA_MODEL(Request, RUVIA_REQUIRED_FIELD(nodeId, ruvia::string), RUVIA_REQUIRED_FIELD(userId, ruvia::string), RUVIA_REQUIRED_FIELD(connectionId, ruvia::string), RUVIA_REQUIRED_FIELD(sessionId, ruvia::string), RUVIA_OPTIONAL_FIELD(path, ruvia::string), RUVIA_OPTIONAL_FIELD(after, ruvia::int64), RUVIA_OPTIONAL_FIELD(command, ruvia::json_value));
 
 // The browser command carried in Request.command.
-RUVIA_MODEL(Command,
-    RUVIA_OPTIONAL_FIELD(action, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(requestId, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(baudRate, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(dataBits, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(stopBits, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(parity, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(hex, ruvia::string));
+RUVIA_MODEL(Command, RUVIA_OPTIONAL_FIELD(action, ruvia::string), RUVIA_OPTIONAL_FIELD(requestId, ruvia::int64), RUVIA_OPTIONAL_FIELD(baudRate, ruvia::int64), RUVIA_OPTIONAL_FIELD(dataBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(stopBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(parity, ruvia::string), RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(hex, ruvia::string));
 
 RUVIA_MODEL(OpenReply, RUVIA_REQUIRED_FIELD(id, ruvia::string));
 
-RUVIA_MODEL(Settings,
-    RUVIA_REQUIRED_FIELD(path, ruvia::string),
-    RUVIA_REQUIRED_FIELD(baudRate, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(dataBits, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(stopBits, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(parity, ruvia::string),
-    RUVIA_REQUIRED_FIELD(rs485, ruvia::bool_value));
+RUVIA_MODEL(Settings, RUVIA_REQUIRED_FIELD(path, ruvia::string), RUVIA_REQUIRED_FIELD(baudRate, ruvia::int64), RUVIA_REQUIRED_FIELD(dataBits, ruvia::int64), RUVIA_REQUIRED_FIELD(stopBits, ruvia::int64), RUVIA_REQUIRED_FIELD(parity, ruvia::string), RUVIA_REQUIRED_FIELD(rs485, ruvia::bool_value));
 
 // One event stored in outputKey() and returned to the browser.
-RUVIA_MODEL(Event,
-    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
-    RUVIA_REQUIRED_FIELD(requestId, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(manual, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(direction, ruvia::string),
-    RUVIA_REQUIRED_FIELD(hex, ruvia::string),
-    RUVIA_REQUIRED_FIELD(timestamp, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(sequence, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(droppedBytes, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(message, ruvia::string),
-    RUVIA_REQUIRED_FIELD(settings, Settings));
+RUVIA_MODEL(Event, RUVIA_REQUIRED_FIELD(kind, ruvia::string), RUVIA_REQUIRED_FIELD(requestId, ruvia::int64), RUVIA_REQUIRED_FIELD(manual, ruvia::bool_value), RUVIA_REQUIRED_FIELD(direction, ruvia::string), RUVIA_REQUIRED_FIELD(hex, ruvia::string), RUVIA_REQUIRED_FIELD(timestamp, ruvia::int64), RUVIA_REQUIRED_FIELD(sequence, ruvia::int64), RUVIA_REQUIRED_FIELD(droppedBytes, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(settings, Settings));
 
-RUVIA_MODEL(EventsReply,
-    RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>),
-    RUVIA_REQUIRED_FIELD(cursor, ruvia::int64));
+RUVIA_MODEL(EventsReply, RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>), RUVIA_REQUIRED_FIELD(cursor, ruvia::int64));
 
 } // namespace service::message::serial_debug
 
 namespace service::message::terminal {
 
 // edge-terminal: browser terminal operations relayed by the edge node module.
-RUVIA_MODEL(Request,
-    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(sessionId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(connectionId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(userId, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(columns, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(rows, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(content, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(after, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(ready, ruvia::bool_value),
-    RUVIA_OPTIONAL_FIELD(closed, ruvia::bool_value));
+RUVIA_MODEL(Request, RUVIA_REQUIRED_FIELD(nodeId, ruvia::string), RUVIA_REQUIRED_FIELD(sessionId, ruvia::string), RUVIA_REQUIRED_FIELD(connectionId, ruvia::string), RUVIA_REQUIRED_FIELD(userId, ruvia::string), RUVIA_OPTIONAL_FIELD(columns, ruvia::int64), RUVIA_OPTIONAL_FIELD(rows, ruvia::int64), RUVIA_OPTIONAL_FIELD(content, ruvia::string), RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64), RUVIA_OPTIONAL_FIELD(after, ruvia::int64), RUVIA_OPTIONAL_FIELD(ready, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(closed, ruvia::bool_value));
 
-RUVIA_MODEL(OpenReply,
-    RUVIA_REQUIRED_FIELD(id, ruvia::string),
-    RUVIA_REQUIRED_FIELD(protocolVersion, ruvia::int64));
+RUVIA_MODEL(OpenReply, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(protocolVersion, ruvia::int64));
 
-RUVIA_MODEL(Event,
-    RUVIA_REQUIRED_FIELD(kind, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(reason, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(content, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64));
+RUVIA_MODEL(Event, RUVIA_REQUIRED_FIELD(kind, ruvia::string), RUVIA_OPTIONAL_FIELD(reason, ruvia::string), RUVIA_OPTIONAL_FIELD(content, ruvia::string), RUVIA_OPTIONAL_FIELD(sequence, ruvia::int64));
 
-RUVIA_MODEL(EventsReply,
-    RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>),
-    RUVIA_REQUIRED_FIELD(more, ruvia::bool_value));
+RUVIA_MODEL(EventsReply, RUVIA_REQUIRED_FIELD(events, ruvia::boxed_array<Event>), RUVIA_REQUIRED_FIELD(more, ruvia::bool_value));
 
 RUVIA_MODEL(InputStatusReply, RUVIA_REQUIRED_FIELD(acknowledged, ruvia::bool_value));
 
@@ -1662,75 +1570,43 @@ RUVIA_MODEL(InputStatusReply, RUVIA_REQUIRED_FIELD(acknowledged, ruvia::bool_val
 namespace service::message::vpn {
 
 // vpn.reconcile reply.
-RUVIA_MODEL(RuntimeStatus,
-    RUVIA_REQUIRED_FIELD(platformSupported, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(configured, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(code, ruvia::string),
-    RUVIA_REQUIRED_FIELD(message, ruvia::string),
-    RUVIA_REQUIRED_FIELD(runtimePeerCount, ruvia::int64));
+RUVIA_MODEL(RuntimeStatus, RUVIA_REQUIRED_FIELD(platformSupported, ruvia::bool_value), RUVIA_REQUIRED_FIELD(configured, ruvia::bool_value), RUVIA_REQUIRED_FIELD(code, ruvia::string), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(runtimePeerCount, ruvia::int64));
 
-inline constexpr std::string_view kRpcComponent{"vpn"};
+inline constexpr std::string_view kRpcComponent{ "vpn" };
 
 // VPN module -> VPN feature operations.
 // queue-edge-config: payload rpc::encodeLinePair(peerId, actorId).
-inline constexpr std::string_view kQueueEdgeConfigOperation{"queue-edge-config"};
+inline constexpr std::string_view kQueueEdgeConfigOperation{ "queue-edge-config" };
 // reconcile: empty payload; replies RuntimeStatus.
-inline constexpr std::string_view kReconcileOperation{"reconcile"};
+inline constexpr std::string_view kReconcileOperation{ "reconcile" };
 // wireguard-remove-peer: payload is the WireGuard public key text.
-inline constexpr std::string_view kRemovePeerOperation{"wireguard-remove-peer"};
+inline constexpr std::string_view kRemovePeerOperation{ "wireguard-remove-peer" };
 // sync-edge-routes: payload EdgeRouteSync. The feature takes
 // lock::kVpnAddressAllocation in its own transaction, so the caller must not
 // hold that lock (or any transaction) while it waits for the reply.
-inline constexpr std::string_view kSyncEdgeRoutesOperation{"sync-edge-routes"};
+inline constexpr std::string_view kSyncEdgeRoutesOperation{ "sync-edge-routes" };
 
 // Reconcile vpn_route with the Edge bridge inventory of one edge peer.
 // actorId becomes vpn_route.created_by of newly mapped routes.
-RUVIA_MODEL(EdgeRouteSync,
-    RUVIA_REQUIRED_FIELD(peerId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(networkId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(edgeNodeId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(actorId, ruvia::string));
+RUVIA_MODEL(EdgeRouteSync, RUVIA_REQUIRED_FIELD(peerId, ruvia::string), RUVIA_REQUIRED_FIELD(networkId, ruvia::string), RUVIA_REQUIRED_FIELD(edgeNodeId, ruvia::string), RUVIA_REQUIRED_FIELD(actorId, ruvia::string));
 
 // Edge projection -> VPN feature notifications. The Edge projector appends them
 // to its own Worker's RPC request stream after committing the source change and
 // does not wait for the reply. A failed append leaves the projector entry
 // unacknowledged; its retry sends the event again, so handlers are idempotent.
 // The VPN handler logs failures itself because nobody reads the stored reply.
-inline constexpr std::string_view kEdgeCapabilityOperation{"edge-capability"};
-inline constexpr std::string_view kEdgeConfigResultOperation{"edge-config-result"};
+inline constexpr std::string_view kEdgeCapabilityOperation{ "edge-capability" };
+inline constexpr std::string_view kEdgeConfigResultOperation{ "edge-config-result" };
 
 // An approved EdgeNode reported VPN support with a managed WireGuard public key
 // (common/wireguard.h validManagedKey). The VPN feature activates the edge peer,
 // synchronizes bridge routes, queues the VPN config and reconciles the Hub.
-RUVIA_MODEL(EdgeCapability,
-    RUVIA_REQUIRED_FIELD(nodeId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(publicKey, ruvia::string));
+RUVIA_MODEL(EdgeCapability, RUVIA_REQUIRED_FIELD(nodeId, ruvia::string), RUVIA_REQUIRED_FIELD(publicKey, ruvia::string));
 
 // A VPN config task reached a terminal state on the Edge side. edge_task has
 // already been transitioned by the Edge projector (a retried projection resends
 // the event for the persisted terminal state); the VPN feature projects the
 // result onto vpn_route when configVersion still equals vpn_peer.config_revision.
-RUVIA_MODEL(EdgeConfigResult,
-    RUVIA_REQUIRED_FIELD(peerId, ruvia::string),
-    RUVIA_REQUIRED_FIELD(configVersion, ruvia::int64),
-    RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(applied, ruvia::bool_value),
-    RUVIA_REQUIRED_FIELD(errorMessage, ruvia::string));
+RUVIA_MODEL(EdgeConfigResult, RUVIA_REQUIRED_FIELD(peerId, ruvia::string), RUVIA_REQUIRED_FIELD(configVersion, ruvia::int64), RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value), RUVIA_REQUIRED_FIELD(applied, ruvia::bool_value), RUVIA_REQUIRED_FIELD(errorMessage, ruvia::string));
 
 } // namespace service::message::vpn
-
-namespace service::message::consumer {
-
-inline std::string inputChannel(std::string_view stream) {
-    return "iot:consumer:input:" + std::string(stream);
-}
-
-inline std::string deadlineKey(std::string_view stream, std::string_view group) {
-    return "iot:consumer:pending:" + std::string(group) + ":" + std::string(stream);
-}
-
-inline std::string deadlineChannel(std::string_view stream, std::string_view group) {
-    return "iot:consumer:deadline:" + std::string(group) + ":" + std::string(stream);
-}
-
-} // namespace service::message::consumer

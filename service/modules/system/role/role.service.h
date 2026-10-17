@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,10 +13,10 @@
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/role/role.types.h"
 #include "service/modules/system/user/user.entity.h"
+#include "service/utils/uuid.h"
 
 namespace service::role {
 
@@ -178,10 +178,12 @@ class RoleService {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
         const ruvia::db_assignment deletionChanges[]{
-            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+            { "deleted_at", expressions.call("now") },
+            { "updated_at", expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::RoleEntity>().update(
-            entities::RoleEntity::column<"id">() == id, deletionChanges
+            entities::RoleEntity::column<"id">() == id,
+            deletionChanges
         );
     }
 

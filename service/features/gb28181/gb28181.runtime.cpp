@@ -12,10 +12,10 @@
 #include "service/common/http.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/features/gb28181/gb28181.protocol.h"
 #include "service/middleware/log.h"
 #include "service/utils/redis.h"
+#include "service/utils/uuid.h"
 
 namespace service::gb28181 {
 
@@ -32,82 +32,106 @@ std::string receiptStreamFor(std::string_view ownerToken) {
     return control_protocol::stream::projectionReceipts(*owner, *instance);
 }
 
-
 } // namespace
 
 void GbProjectionRuntime::start(ruvia::web_worker_handle worker) {
-    if (stopped_.valid()) throw std::logic_error("GB28181 projection runtime is already started");
-    stop_ = ruvia::stop_source{};
-    utils::startWorkerTask(worker, stop_.token(), stopped_,
-        [this](ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
-            return consume(context, ready, stop);
-        });
+    if (stopped_.valid()) {
+        throw std::logic_error("GB28181 projection runtime is already started");
+    }
+    stop_.emplace();
+    utils::startWorkerTask(worker, stop_->token(), stopped_, [this](ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
+        return consume(context, ready, stop);
+    });
 }
 
 void GbProjectionRuntime::stop() noexcept {
-    utils::stopWorkerTask(stop_, stopped_);
+    if (stop_) {
+        utils::stopWorkerTask(*stop_, stopped_);
+        stop_.reset();
+    }
 }
 
 ruvia::task<void> GbProjectionRuntime::consume(
-    ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
+    ruvia::web_worker_context& context,
+    utils::WorkerReady& ready,
+    ruvia::stop_token stop
+) {
     const auto redis = context.redis().with_options({ .stop_token_ = stop });
     const std::string stream(control_protocol::stream::kProjection);
     const auto group = control_protocol::stream::kProjectionGroup;
     const auto consumer = identity_.instanceId + ":service:" + std::to_string(identity_.index);
     const std::vector<std::string> streams{
-        stream, service::message::sharedWakeStream(identity_.instanceId) };
+        stream,
+        service::message::sharedWakeStream(identity_.instanceId)
+    };
     for (const auto& input : streams) {
         co_await service::utils::redis::ensureGroup(redis, input, group);
     }
     co_await service::utils::redis::withConsumerNotifications(
-        redis, context.worker(), streams, group, stop,
+        redis,
+        context.worker(),
+        streams,
+        group,
+        stop,
         [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
-    co_await seedOwnerDeadlines(context);
-    ready.set_value();
-    bool recovering = true;
-    bool checkOwners = true;
-    std::optional<std::chrono::steady_clock::time_point> ownerDeadline;
-    while (!stop.stop_requested()) {
-        std::string failure;
-        try {
-        if (checkOwners || (ownerDeadline && std::chrono::steady_clock::now() >= *ownerDeadline)) {
-            const auto wait = co_await expireDueOwners(context);
-            ownerDeadline = wait ? std::optional(std::chrono::steady_clock::now() + *wait) : std::nullopt;
-            checkOwners = false;
-        }
-        const auto timeout = ownerDeadline
-            ? std::optional(std::max(std::chrono::milliseconds(0),
-                std::chrono::ceil<std::chrono::milliseconds>(*ownerDeadline - std::chrono::steady_clock::now())))
-            : std::nullopt;
-        const auto batches = co_await service::utils::redis::consumeGroup(
-            redis, streams, group, consumer, recovering, notifications, stop, timeout, kBatchSize);
-        for (const auto& batch : batches) {
-            for (const auto& message : batch.messages) {
-                if (stop.stop_requested()) co_return;
-                if (batch.stream == stream) {
-                    co_await project(context, redis, batch.stream, message);
-                    checkOwners = true;
-                } else {
-                    if (message.get("task") == service::message::workerStreamTaskName(
-                            service::message::WorkerStreamTask::Gb28181Projector)) {
-                        checkOwners = true;
+            co_await seedOwnerDeadlines(context);
+            ready.set_value();
+            bool recovering = true;
+            bool checkOwners = true;
+            std::optional<std::chrono::steady_clock::time_point> ownerDeadline;
+            while (!stop.stop_requested()) {
+                std::string failure;
+                try {
+                    if (checkOwners || (ownerDeadline && std::chrono::steady_clock::now() >= *ownerDeadline)) {
+                        const auto wait = co_await expireDueOwners(context);
+                        ownerDeadline = wait ? std::optional(std::chrono::steady_clock::now() + *wait) : std::nullopt;
+                        checkOwners = false;
                     }
-                    co_await service::utils::redis::acknowledge(redis, batch.stream, group, message.id);
+                    const auto timeout = ownerDeadline
+                        ? std::optional(std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(*ownerDeadline - std::chrono::steady_clock::now())))
+                        : std::nullopt;
+                    const auto batches = co_await service::utils::redis::consumeGroup(
+                        redis,
+                        streams,
+                        group,
+                        consumer,
+                        recovering,
+                        notifications,
+                        stop,
+                        timeout,
+                        kBatchSize
+                    );
+                    for (const auto& batch : batches) {
+                        for (const auto& message : batch.messages) {
+                            if (stop.stop_requested()) {
+                                co_return;
+                            }
+                            if (batch.stream == stream) {
+                                co_await project(context, redis, batch.stream, message);
+                                checkOwners = true;
+                            } else {
+                                if (message.get("task") == service::message::workerStreamTaskName(service::message::WorkerStreamTask::Gb28181Projector)) {
+                                    checkOwners = true;
+                                }
+                                co_await service::utils::redis::acknowledge(redis, batch.stream, group, message.id);
+                            }
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    if (stop.stop_requested()) {
+                        co_return;
+                    }
+                    failure = error.what();
+                }
+                if (!failure.empty()) {
+                    LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: " << failure;
+                    recovering = true;
+                    checkOwners = true;
+                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250), stop);
                 }
             }
         }
-        } catch (const std::exception& error) {
-            if (stop.stop_requested()) co_return;
-            failure = error.what();
-        }
-        if (!failure.empty()) {
-            LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: " << failure;
-            recovering = true;
-            checkOwners = true;
-            (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(250), stop);
-        }
-    }
-    });
+    );
 }
 
 ruvia::task<void> GbProjectionRuntime::project(ruvia::web_worker_context& context, const ruvia::redis_handle& redis, std::string_view stream, const service::message::StreamMessage& message) {
@@ -500,17 +524,29 @@ ruvia::task<bool> CollectorRuntime::persistProjection(
             co_await subscription.subscribe(topics);
             while (!stop.stop_requested()) {
                 const auto event = co_await subscription.read();
-                if (!event) throw std::runtime_error("GB28181 projection receipt subscription closed");
-                if (event->kind() == ruvia::redis_pubsub_event_kind::subscribed) break;
+                if (!event) {
+                    throw std::runtime_error("GB28181 projection receipt subscription closed");
+                }
+                if (event->kind() == ruvia::redis_pubsub_event_kind::subscribed) {
+                    break;
+                }
             }
-            if (stop.stop_requested()) break;
+            if (stop.stop_requested()) {
+                break;
+            }
             // Reconnecting performs one durable recovery read. It cannot lose a
             // completion between this read and the following subscribed wait.
             if (const auto done = co_await GbControlService::projectionReceipt(redis, projectionId)) {
                 co_return *done;
             }
             const auto result = co_await GbControlService::publishProjection(
-                redis, projectionId, projectionOrder, currentEntryId, fields, identity_.instanceId);
+                redis,
+                projectionId,
+                projectionOrder,
+                currentEntryId,
+                fields,
+                identity_.instanceId
+            );
             if (!projectionOrder.empty() && projectionOrder != result.order) {
                 throw std::runtime_error("GB28181 projection ordering ID changed during repair");
             }
@@ -518,8 +554,12 @@ ruvia::task<bool> CollectorRuntime::persistProjection(
             currentEntryId = result.current;
             while (!stop.stop_requested()) {
                 const auto event = co_await subscription.read();
-                if (!event) throw std::runtime_error("GB28181 projection receipt subscription disconnected");
-                if (event->kind() != ruvia::redis_pubsub_event_kind::message) continue;
+                if (!event) {
+                    throw std::runtime_error("GB28181 projection receipt subscription disconnected");
+                }
+                if (event->kind() != ruvia::redis_pubsub_event_kind::message) {
+                    continue;
+                }
                 if (const auto done = co_await GbControlService::projectionReceipt(redis, projectionId)) {
                     co_return *done;
                 }
@@ -963,45 +1003,59 @@ ruvia::task<void> CollectorRuntime::drainProjection() {
 ruvia::task<void> CollectorRuntime::controlLoop() {
     requireCurrentLoop();
     const std::vector<std::string> streams{
-        control_protocol::stream::control(index_, identity_.instanceId) };
+        control_protocol::stream::control(index_, identity_.instanceId)
+    };
     const auto group = control_protocol::stream::kControlGroup;
     const auto stop = scope_.get_stop_token();
     const auto redis = redis_.with_options({ .stop_token_ = stop });
     co_await GbControlService::ensureCollectorStream(redis, streams[0], group);
     co_await service::utils::redis::withConsumerNotifications(
-        redis, worker_, streams, group, stop,
+        redis,
+        worker_,
+        streams,
+        group,
+        stop,
         [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
-    bool recovering = true;
-    auto refreshAt = std::chrono::steady_clock::now() + kCollectorStreamRefresh;
-    while (!stop.stop_requested()) {
-        std::string failure;
-        try {
-        const auto batches = co_await service::utils::redis::consumeGroup(
-            redis, streams, group, ownerToken_, recovering, notifications, stop,
-            std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(
-                refreshAt - std::chrono::steady_clock::now())), 32);
-        for (const auto& batch : batches) {
-            for (const auto& message : batch.messages) {
-                co_await handleControl(message);
+            bool recovering = true;
+            auto refreshAt = std::chrono::steady_clock::now() + kCollectorStreamRefresh;
+            while (!stop.stop_requested()) {
+                std::string failure;
+                try {
+                    const auto batches = co_await service::utils::redis::consumeGroup(
+                        redis,
+                        streams,
+                        group,
+                        ownerToken_,
+                        recovering,
+                        notifications,
+                        stop,
+                        std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(refreshAt - std::chrono::steady_clock::now())),
+                        32
+                    );
+                    for (const auto& batch : batches) {
+                        for (const auto& message : batch.messages) {
+                            co_await handleControl(message);
+                        }
+                    }
+                    if (std::chrono::steady_clock::now() >= refreshAt && !stop.stop_requested()) {
+                        co_await GbControlService::refreshCollectorStream(redis, streams[0]);
+                        refreshAt = std::chrono::steady_clock::now() + kCollectorStreamRefresh;
+                    }
+                } catch (const std::exception& error) {
+                    if (stop.stop_requested()) {
+                        co_return;
+                    }
+                    failure = error.what();
+                }
+                if (!failure.empty()) {
+                    LOG_WARN << "[GB28181] control consumer: " << failure;
+                    recovering = true;
+                    (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), stop);
+                }
             }
         }
-        if (std::chrono::steady_clock::now() >= refreshAt && !stop.stop_requested()) {
-            co_await GbControlService::refreshCollectorStream(redis, streams[0]);
-            refreshAt = std::chrono::steady_clock::now() + kCollectorStreamRefresh;
-        }
-        } catch (const std::exception& error) {
-            if (stop.stop_requested()) co_return;
-            failure = error.what();
-        }
-        if (!failure.empty()) {
-            LOG_WARN << "[GB28181] control consumer: " << failure;
-            recovering = true;
-            (void)co_await ruvia::sleep_for(worker_, std::chrono::milliseconds(250), stop);
-        }
-    }
-    });
+    );
 }
-
 
 ruvia::task<void> CollectorRuntime::handleControl(
     const service::message::StreamMessage& message

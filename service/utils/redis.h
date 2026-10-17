@@ -3,30 +3,29 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
-#include <exception>
 #include <cstdint>
-#include <optional>
+#include <exception>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
 #include <ruvia/core/channel.h>
 #include <ruvia/core/one_shot.h>
-#include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
-
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
+#include <ruvia/core/task_scope.h>
+#include <ruvia/core/timer.h>
 #include <ruvia/web/redis/redis.h>
 #include <ruvia/web/redis/redis_types.h>
 
 #include "service/common/message.h"
 
 namespace service::utils::redis {
-
 
 [[noreturn]] inline void throwValue(std::string_view operation, const ruvia::redis_value& value) {
     std::string message(operation);
@@ -65,8 +64,7 @@ return 1
 )lua";
 
 template <typename Redis>
-ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group,
-                             std::optional<std::chrono::seconds> streamTtl = std::nullopt) {
+ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group, std::optional<std::chrono::seconds> streamTtl = std::nullopt) {
     if (streamTtl && streamTtl->count() <= 0) {
         throw std::invalid_argument("consumer stream expiry must be positive");
     }
@@ -350,9 +348,12 @@ return {batches, nearest, now}
 
 template <typename Redis>
 ruvia::task<void> forwardConsumerNotifications(
-    Redis redis, const ruvia::worker_handle& worker,
-    std::vector<std::string> channels, ruvia::channel_sender<std::uint8_t> sender,
-    ruvia::one_shot_completion<std::exception_ptr> ready, ruvia::stop_token stop
+    Redis redis,
+    const ruvia::worker_handle& worker,
+    std::vector<std::string> channels,
+    ruvia::channel_sender<std::uint8_t> sender,
+    ruvia::one_shot_completion<std::exception_ptr> ready,
+    ruvia::stop_token stop
 ) {
     bool initialized = false;
     auto backoff = std::chrono::milliseconds(250);
@@ -428,9 +429,12 @@ ruvia::task<void> forwardConsumerNotifications(
 // subscription reads never time out; only the local channel waits for deadlines.
 template <typename Redis, typename Operation>
 ruvia::task<void> withConsumerNotifications(
-    const Redis& redis, const ruvia::worker_handle& worker,
-    std::span<const std::string> streams, std::string_view group,
-    ruvia::stop_token stop, Operation operation
+    const Redis& redis,
+    const ruvia::worker_handle& worker,
+    std::span<const std::string> streams,
+    std::string_view group,
+    ruvia::stop_token stop,
+    Operation operation
 ) {
     std::vector<std::string> channels;
     channels.reserve(streams.size() * 2);
@@ -442,8 +446,7 @@ ruvia::task<void> withConsumerNotifications(
     auto [ready, initialized] = ruvia::make_one_shot<std::exception_ptr>(worker);
     ruvia::task_scope scope(worker);
     const auto combined = ruvia::combine_stop_tokens(stop, scope.get_stop_token());
-    scope.spawn(forwardConsumerNotifications(redis, worker, std::move(channels),
-        std::move(sender), std::move(ready), combined));
+    scope.spawn(forwardConsumerNotifications(redis, worker, std::move(channels), std::move(sender), std::move(ready), combined));
     std::exception_ptr failure;
     try {
         auto result = co_await initialized.wait(combined);
@@ -466,16 +469,22 @@ ruvia::task<void> withConsumerNotifications(
 
 template <typename Redis>
 ruvia::task<std::vector<StreamBatch>> consumeGroup(
-    const Redis& redis, std::span<const std::string> streams,
-    std::string_view group, std::string_view consumer, bool& recovering,
-    ruvia::channel_receiver<std::uint8_t>& notifications, ruvia::stop_token stop,
+    const Redis& redis,
+    std::span<const std::string> streams,
+    std::string_view group,
+    std::string_view consumer,
+    bool& recovering,
+    ruvia::channel_receiver<std::uint8_t>& notifications,
+    ruvia::stop_token stop,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt,
-    std::size_t count = 256, std::chrono::milliseconds minIdle = std::chrono::minutes(1),
+    std::size_t count = 256,
+    std::chrono::milliseconds minIdle = std::chrono::minutes(1),
     bool newOnly = false,
     std::optional<std::chrono::seconds> streamTtl = std::nullopt
 ) {
     const auto businessDeadline = timeout
-        ? std::optional(std::chrono::steady_clock::now() + *timeout) : std::nullopt;
+        ? std::optional(std::chrono::steady_clock::now() + *timeout)
+        : std::nullopt;
     std::vector<std::string> storage;
     storage.reserve(streams.size() * 2);
     for (const auto& stream : streams) {
@@ -512,8 +521,7 @@ ruvia::task<std::vector<StreamBatch>> consumeGroup(
                     reply.array()[2].kind() != ruvia::redis_value::kind_type::integer) {
                     throwValue("consumer pending deadline", reply);
                 }
-                wait = std::chrono::milliseconds(std::max<std::int64_t>(0,
-                    reply.array()[1].integer() - reply.array()[2].integer()));
+                wait = std::chrono::milliseconds(std::max<std::int64_t>(0, reply.array()[1].integer() - reply.array()[2].integer()));
             }
             if (businessDeadline) {
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*businessDeadline - std::chrono::steady_clock::now());

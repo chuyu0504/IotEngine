@@ -19,8 +19,9 @@
 namespace {
 
 void require(bool condition, std::string_view message) {
-    if (!condition)
+    if (!condition) {
         throw std::runtime_error(std::string(message));
+    }
 }
 
 bool contains(std::string_view text, std::string_view part) {
@@ -35,6 +36,7 @@ struct FakeRedis {
         std::optional<ruvia::redis_set_condition> condition;
         std::optional<std::chrono::milliseconds> expiration;
     };
+
     struct SetResult {
         [[nodiscard]] bool applied() const { return true; }
     };
@@ -74,15 +76,18 @@ struct FakeRedis {
 
 struct FakeCell {
     std::optional<std::string> text;
+
     [[nodiscard]] std::optional<std::string_view> value() const {
         return text ? std::optional<std::string_view>(*text) : std::nullopt;
     }
 };
+
 using FakeRow = std::vector<FakeCell>;
 using FakeRows = std::vector<FakeRow>;
 
 struct FakeExecution {
     std::uint64_t rows = 0;
+
     [[nodiscard]] std::uint64_t affected_rows() const { return rows; }
 };
 
@@ -110,8 +115,9 @@ struct Recorder {
 
     FakeRows nextRows(const ruvia::db_query& query) {
         queries.push_back(compile(query));
-        if (queryResults.empty())
+        if (queryResults.empty()) {
             return {};
+        }
         auto rows = std::move(queryResults.front());
         queryResults.erase(queryResults.begin());
         return rows;
@@ -120,10 +126,12 @@ struct Recorder {
 
 struct FakeLinkRepository {
     Recorder* recorder;
+
     ruvia::task<void> insert(const service::link::entities::LinkEntity& link) {
-        const auto text = [](const auto& value) { return std::string(std::string_view(value)); };
-        recorder->inserted = InsertedLink{ text(link.get<"name">()), text(link.get<"protocol">()), text(link.get<"endpoint">()),
-                                           text(link.get<"status">()), text(link.get<"created_by">()), text(link.get<"execution">()) };
+        const auto text = [](const auto& value) {
+            return std::string(std::string_view(value));
+        };
+        recorder->inserted = InsertedLink{ text(link.get<"name">()), text(link.get<"protocol">()), text(link.get<"endpoint">()), text(link.get<"status">()), text(link.get<"created_by">()), text(link.get<"execution">()) };
         co_return;
     }
 };
@@ -152,7 +160,9 @@ struct FakeTransaction {
 
 struct FakeDatabase {
     Recorder* recorder;
+
     ruvia::task<FakeRows> query(const ruvia::db_query& query) { co_return recorder->nextRows(query); }
+
     ruvia::task<FakeTransaction> begin_transaction() { co_return FakeTransaction{ recorder }; }
 };
 
@@ -163,6 +173,7 @@ struct FakeContext {
     service::common::UuidV7State uuid = service::common::UuidV7State{};
 
     std::pmr::memory_resource* pool() { return std::pmr::new_delete_resource(); }
+
     FakeDatabase& db() { return database; }
 
     template <typename State>
@@ -185,6 +196,7 @@ ruvia::task<void> capture(ruvia::task<void> operation, std::string& error) {
 class Runner {
   public:
     Runner() { pool_.start(); }
+
     ~Runner() {
         pool_.stop();
         pool_.join();
@@ -221,14 +233,10 @@ void verifyDebugIdleCommands(Runner& runner) {
     FakeRedis redis;
 
     require(runner.run(DebugIdle::touch(redis, keys)).empty(), "touch failed");
-    require(redis.sets.size() == 1 && redis.sets[0].key == "lease-key" && !redis.sets[0].condition &&
-                redis.sets[0].expiration == std::chrono::milliseconds(service::link::kDebugIdle),
-            "touch must SET the lease with the idle expiration");
+    require(redis.sets.size() == 1 && redis.sets[0].key == "lease-key" && !redis.sets[0].condition && redis.sets[0].expiration == std::chrono::milliseconds(service::link::kDebugIdle), "touch must SET the lease with the idle expiration");
 
     require(runner.run(DebugIdle::extend(redis, keys)).empty(), "extend failed");
-    require(redis.expires.size() == 1 && redis.expires[0].first == "lease-key" &&
-                redis.expires[0].second == std::chrono::duration_cast<std::chrono::seconds>(service::link::kDebugIdle),
-            "extend must only EXPIRE the existing lease");
+    require(redis.expires.size() == 1 && redis.expires[0].first == "lease-key" && redis.expires[0].second == std::chrono::duration_cast<std::chrono::seconds>(service::link::kDebugIdle), "extend must only EXPIRE the existing lease");
     require(redis.sets.size() == 1, "extend must not recreate a cleared lease");
 
     require(runner.run(DebugIdle::clear(redis, keys)).empty(), "clear failed");
@@ -237,8 +245,9 @@ void verifyDebugIdleCommands(Runner& runner) {
     bool leased = false;
     redis.present = false;
     require(runner.run([](const FakeRedis& source, const service::link::DebugIdleKeys& idle, bool& result) -> ruvia::task<void> {
-                result = co_await DebugIdle::leased(source, idle);
-            }(redis, keys, leased)).empty(),
+                      result = co_await DebugIdle::leased(source, idle);
+                  }(redis, keys, leased))
+                .empty(),
             "leased failed");
     require(!leased && redis.existsChecks == std::vector<std::string>{ "lease-key" }, "leased must check the lease key");
 }
@@ -248,6 +257,7 @@ void verifyCreateValidation(Runner& runner) {
         std::string_view json;
         std::string_view error;
     };
+
     const Case cases[] = {
         { R"({"execution":"edge","name":"n","protocol":"Modbus","endpoint":{"mode":"TCP Client","targets":[]}})", "15002:边缘连接参数请在设备表单中配置" },
         { R"({"name":"n","protocol":"Modbus","endpoint":{"targets":[]}})", "15002:链路模式不能为空" },
@@ -268,8 +278,7 @@ void verifyCreateValidation(Runner& runner) {
         const auto request = body(item.json);
         const auto error = runner.run(service.create(context, request));
         require(error == item.error, std::string("unexpected create validation result: ") + error + " for " + std::string(item.json));
-        require(context.recorder.queries.empty() && context.recorder.executions.empty() && !context.recorder.inserted,
-                "invalid link request reached the database");
+        require(context.recorder.queries.empty() && context.recorder.executions.empty() && !context.recorder.inserted, "invalid link request reached the database");
     }
 }
 
@@ -280,20 +289,14 @@ void verifyCreateSerializesEscapedEndpoint(Runner& runner) {
     require(runner.run(service.create(context, request)).empty(), "valid link create failed");
     const auto& inserted = context.recorder.inserted;
     require(inserted.has_value(), "link entity was not inserted");
-    require(inserted->endpoint ==
-                R"({"transport":"tcp","mode":"TCP Client","ip":"","port":0,"targets":[{"id":"t1","name":"A \"q\" \\ \n\u0001","ip":"192.168.1.10","port":502,"status":"enabled"}]})",
-            "stored endpoint JSON is not escaped or shaped correctly: " + inserted->endpoint);
+    require(inserted->endpoint == R"({"transport":"tcp","mode":"TCP Client","ip":"","port":0,"targets":[{"id":"t1","name":"A \"q\" \\ \n\u0001","ip":"192.168.1.10","port":502,"status":"enabled"}]})", "stored endpoint JSON is not escaped or shaped correctly: " + inserted->endpoint);
     require(ruvia::json_value::parse(inserted->endpoint).has_value(), "stored endpoint is not valid JSON");
-    require(inserted->name == "plant" && inserted->protocol == "Modbus" && inserted->status == "enabled" &&
-                inserted->execution == "collector" && inserted->createdBy == context.userId,
-            "inserted link fields changed");
+    require(inserted->name == "plant" && inserted->protocol == "Modbus" && inserted->status == "enabled" && inserted->execution == "collector" && inserted->createdBy == context.userId, "inserted link fields changed");
     require(context.recorder.queries.size() == 1, "TCP Client create must run one availability query");
     const auto& availability = context.recorder.queries.front();
     require(contains(availability, "\"link\".\"name\" = E'plant'"), "availability must check the link name");
     require(!contains(availability, "^[0-9]{1,5}$"), "TCP Client availability must not compare listen ports");
-    require(context.recorder.executions.size() == 1 && contains(context.recorder.executions.front(), "config.changed") &&
-                contains(context.recorder.executions.front(), "E'created'"),
-            "create must enqueue one link created config event");
+    require(context.recorder.executions.size() == 1 && contains(context.recorder.executions.front(), "config.changed") && contains(context.recorder.executions.front(), "E'created'"), "create must enqueue one link created config event");
     require(context.recorder.commits == 1, "create must commit once");
 }
 
@@ -305,8 +308,7 @@ void verifyServerAvailabilityGuardsPort(Runner& runner) {
     require(runner.run(service.create(context, request)) == "15005:链路名称或监听地址已存在", "taken listen address must be rejected");
     require(context.recorder.queries.size() == 1, "TCP Server create must run one availability query");
     const auto& availability = context.recorder.queries.front();
-    require(contains(availability, "^[0-9]{1,5}$") && contains(availability, "CASE WHEN"),
-            "stored endpoint port must be cast only after a numeric guard");
+    require(contains(availability, "^[0-9]{1,5}$") && contains(availability, "CASE WHEN"), "stored endpoint port must be cast only after a numeric guard");
     require(contains(availability, "\"link\".\"endpoint\" ->> "), "availability must read endpoint JSON fields");
     require(contains(availability, "\"link\".\"execution\" = E'collector'"), "availability must only compare collector listeners");
     require(!context.recorder.inserted && context.recorder.executions.empty(), "rejected create must not write");
@@ -335,10 +337,7 @@ void verifyUpdate(Runner& runner) {
         require(runner.run(service.update(context, id, request)).empty(), "valid link update failed");
         require(!context.recorder.executions.empty(), "update was not executed");
         const auto& update = context.recorder.executions.front();
-        require(contains(update, "\"link\".\"name\" IS DISTINCT FROM E'renamed'") &&
-                    contains(update, "\"link\".\"status\" IS DISTINCT FROM E'enabled'") &&
-                    contains(update, "\"link\".\"endpoint\" IS DISTINCT FROM"),
-                "update must only write changed links");
+        require(contains(update, "\"link\".\"name\" IS DISTINCT FROM E'renamed'") && contains(update, "\"link\".\"status\" IS DISTINCT FROM E'enabled'") && contains(update, "\"link\".\"endpoint\" IS DISTINCT FROM"), "update must only write changed links");
         require(context.recorder.executions.size() == (affected == 0 ? 1U : 2U), "config event must follow only an effective update");
     }
 }

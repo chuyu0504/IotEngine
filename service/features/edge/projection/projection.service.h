@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <charconv>
-#include <limits>
 #include <chrono>
 #include <cstdint>
 #include <google/protobuf/util/json_util.h>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -21,9 +21,9 @@
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/message.h"
-#include "service/common/worker.h"
 #include "service/common/uuid.h"
 #include "service/common/wireguard.h"
+#include "service/common/worker.h"
 #include "service/features/edge/acquisition/acquisition.protocol.h"
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.protocol.h"
@@ -34,14 +34,14 @@
 #include "service/features/edge/projection/projection.types.h"
 #include "service/features/observability/observability.service.h"
 #include "service/features/telemetry/derived/derived.service.h"
-#include "service/features/telemetry/telemetry.service.h"
 #include "service/features/telemetry/latest/latest.service.h"
+#include "service/features/telemetry/telemetry.service.h"
 #include "service/middleware/log.h"
-#include "service/utils/startup.h"
-#include "service/utils/uuid.h"
 #include "service/utils/json.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
+#include "service/utils/startup.h"
+#include "service/utils/uuid.h"
 
 namespace service::edge::projection {
 inline constexpr std::string_view kIngressGroup{ "iot-engine:edge-projector" };
@@ -347,13 +347,15 @@ class ProjectionService final {
     static ruvia::task<void> initialize(ruvia::web_worker_context& context, ProjectionState& state) {
         const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         co_await service::utils::initializeOnce(
-            context, service::message::edge::projector_stream::kStartupLock,
+            context,
+            service::message::edge::projector_stream::kStartupLock,
             service::message::edge::projector_stream::startupKey(identity.instanceId),
             [](ruvia::web_worker_context& owner) -> ruvia::task<void> {
                 co_await ProjectorStreams::cleanupRegistry(owner.redis());
                 co_await hydrateAuth(owner);
                 (void)co_await metadata::hydrate(owner);
-            });
+            }
+        );
         // Every Worker starts with an empty local cache and loads only the node
         // named by its first ingress/metadata entry from the completed snapshot.
         state = {};
@@ -371,8 +373,13 @@ class ProjectionService final {
                 bool published = false;
                 if (prepared) {
                     const auto result = co_await service::telemetry::derived::DerivedService::append(
-                        context.redis(), *prepared, parsed,
-                        context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, false, true);
+                        context.redis(),
+                        *prepared,
+                        parsed,
+                        context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId,
+                        false,
+                        true
+                    );
                     next = result.nextDeadline;
                     published = result.published;
                 }
@@ -390,9 +397,7 @@ class ProjectionService final {
         co_return deadlines;
     }
 
-    static ruvia::task<std::optional<std::int64_t>> expireDerived(ruvia::web_worker_context& context,
-                                                               service::message::ParsedDeviceMessage& parsed,
-                                                               std::string_view config) {
+    static ruvia::task<std::optional<std::int64_t>> expireDerived(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage& parsed, std::string_view config) {
         parsed.messageId = service::utils::nextUuid(context.worker_state<service::common::UuidV7State>());
         parsed.acquisitionId = parsed.causationId = parsed.messageId;
         parsed.source = "derived";
@@ -405,8 +410,13 @@ class ProjectionService final {
             co_return std::nullopt;
         }
         co_return (co_await service::telemetry::derived::DerivedService::append(
-            context.redis(), *prepared, parsed,
-            context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, true)).nextDeadline;
+                       context.redis(),
+                       *prepared,
+                       parsed,
+                       context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId,
+                       true
+                   ))
+            .nextDeadline;
     }
 
     static void failWorker(ruvia::web_worker_context& context, observability::RuntimeDiagnostics& diagnostics) {
@@ -1932,7 +1942,8 @@ class ProjectionService final {
             fields,
             std::nullopt,
             service::message::WorkerStreamTask::CommandResult,
-            10000
+            10000,
+            context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId
         );
     }
 

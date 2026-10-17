@@ -6,8 +6,9 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <functional>
 #include <fstream>
+#include <functional>
+#include <openssl/rand.h>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -17,8 +18,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <openssl/rand.h>
 
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
@@ -38,8 +37,8 @@
 #include "service/features/edge/serial_debug/serial_debug.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.service.h"
-#include "service/utils/redis.h"
 #include "service/utils/number.h"
+#include "service/utils/redis.h"
 #include "service/utils/uuid.h"
 
 namespace service::edge::gateway {
@@ -96,11 +95,18 @@ class GatewayService final {
     // The hello is durably handed to this Worker's projector before enrollment
     // is consulted, including for nodes that are still pending approval.
     static ruvia::task<std::optional<Enrollment>> acceptHello(
-        ruvia::context& c, std::size_t workerIndex, std::string_view wire, std::string_view imei
+        ruvia::context& c,
+        std::size_t workerIndex,
+        std::string_view wire,
+        std::string_view imei
     ) {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         if (!co_await projector_stream::publishIngress(
-                c.redis(), workerIndex, wire, service::message::utcNowMilliseconds(), worker.instanceId
+                c.redis(),
+                workerIndex,
+                wire,
+                service::message::utcNowMilliseconds(),
+                worker.instanceId
             )) {
             co_return std::nullopt;
         }
@@ -110,7 +116,12 @@ class GatewayService final {
     static ruvia::task<IngressStatus> openSession(ruvia::context& c, const ConnectionIdentity& identity) {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         if (!co_await session_state::claim(
-                c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+                c.redis(),
+                identity.nodeId,
+                identity.epoch,
+                identity.protocolVersion,
+                identity.workerIndex,
+                worker.instanceId
             )) {
             co_return IngressStatus::SessionReplaced;
         }
@@ -126,14 +137,24 @@ class GatewayService final {
     static ruvia::task<bool> renewSession(ruvia::context& c, const ConnectionIdentity& identity) {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         co_return co_await session_state::refresh(
-            c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+            c.redis(),
+            identity.nodeId,
+            identity.epoch,
+            identity.protocolVersion,
+            identity.workerIndex,
+            worker.instanceId
         );
     }
 
     static ruvia::task<void> closeSession(ruvia::context& c, const ConnectionIdentity& identity) {
         const auto& worker = c.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         (void)co_await session_state::release(
-            c.redis(), identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex, worker.instanceId
+            c.redis(),
+            identity.nodeId,
+            identity.epoch,
+            identity.protocolVersion,
+            identity.workerIndex,
+            worker.instanceId
         );
     }
 
@@ -150,7 +171,11 @@ class GatewayService final {
         }
         if (freshTelemetry && projectedPayload(envelope) &&
             !co_await projector_stream::publishIngress(
-                c.redis(), identity.workerIndex, wire, service::message::utcNowMilliseconds(), worker.instanceId
+                c.redis(),
+                identity.workerIndex,
+                wire,
+                service::message::utcNowMilliseconds(),
+                worker.instanceId
             )) {
             co_return IngressStatus::WorkerLeaseLost;
         }
@@ -167,7 +192,10 @@ class GatewayService final {
         std::uint64_t configSentAtMs
     ) {
         const terminal_state::ConnectionIdentity terminalIdentity{
-            identity.nodeId, identity.epoch, identity.protocolVersion, identity.workerIndex
+            identity.nodeId,
+            identity.epoch,
+            identity.protocolVersion,
+            identity.workerIndex
         };
         switch (input.payload_case()) {
             case pb::Envelope::kHeartbeat: {
@@ -175,7 +203,9 @@ class GatewayService final {
                 const auto now = service::message::utcNowMilliseconds();
                 if (capabilitySeen && (configSentAtMs == 0 || now - configSentAtMs >= retryIntervalMs)) {
                     (void)co_await ConfigService::requeueIfStale(
-                        c, identity.nodeId, input.heartbeat().active_config_version()
+                        c,
+                        identity.nodeId,
+                        input.heartbeat().active_config_version()
                     );
                 }
                 break;
@@ -187,7 +217,8 @@ class GatewayService final {
                 break;
             case pb::Envelope::kSerialDebugEvent:
                 co_await serial_debug::Service::saveEvent(
-                    c, identity.nodeId,
+                    c,
+                    identity.nodeId,
                     session_state::value(identity.epoch, identity.protocolVersion, identity.workerIndex, c.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId),
                     input.serial_debug_event()
                 );

@@ -1,17 +1,17 @@
 #pragma once
-#include "service/features/collector/collector.entity.h"
-#include <set>
-#include <utility>
-#include <functional>
-#include "service/common/message.h"
-
 #include <chrono>
-#include <optional>
-#include <span>
-#include <string_view>
 #include <cstdint>
+#include <functional>
+#include <optional>
+#include <set>
+#include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
+
+#include "service/common/message.h"
+#include "service/features/collector/collector.entity.h"
 
 namespace service::collector {
 
@@ -29,6 +29,7 @@ enum class ProtocolCapability : std::uint32_t {
 class ProtocolCapabilities final {
   public:
     constexpr ProtocolCapabilities() = default;
+
     constexpr explicit ProtocolCapabilities(std::uint32_t bits) : bits_(bits) {}
 
     [[nodiscard]] constexpr bool has(ProtocolCapability capability) const noexcept {
@@ -41,14 +42,11 @@ class ProtocolCapabilities final {
     std::uint32_t bits_ = 0;
 };
 
-[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapability left,
-                                                       ProtocolCapability right) noexcept {
-    return ProtocolCapabilities(static_cast<std::uint32_t>(left) |
-                                static_cast<std::uint32_t>(right));
+[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapability left, ProtocolCapability right) noexcept {
+    return ProtocolCapabilities(static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
 }
 
-[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapabilities left,
-                                                       ProtocolCapability right) noexcept {
+[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapabilities left, ProtocolCapability right) noexcept {
     return ProtocolCapabilities(left.bits() | static_cast<std::uint32_t>(right));
 }
 
@@ -67,10 +65,15 @@ enum class ProtocolActionKind {
 };
 
 // 协议能力描述不持有连接、任务或其他可变运行状态。
-enum class CommandLayout { WritableElements, CompleteFunction, WritableMessage };
-enum class CommandTransport { Raw, DeviceConfigured };
-enum class ResponseTracking { EverySend, CommandsOnly };
-enum class PacketAttribution { Connection, ParsedFrame };
+enum class CommandLayout { WritableElements,
+                           CompleteFunction,
+                           WritableMessage };
+enum class CommandTransport { Raw,
+                              DeviceConfigured };
+enum class ResponseTracking { EverySend,
+                              CommandsOnly };
+enum class PacketAttribution { Connection,
+                               ParsedFrame };
 
 struct ProtocolDefinition {
     std::string_view name;
@@ -89,7 +92,7 @@ struct ProtocolAction {
     std::string commandId;
     std::string reason;
     std::uint64_t deadlineToken = 0;
-    std::chrono::milliseconds deadlineAfter{0};
+    std::chrono::milliseconds deadlineAfter{ 0 };
     std::vector<std::uint8_t> bytes;
     std::uint64_t publicationToken = 0;
     message::ParsedDeviceMessage parsed;
@@ -128,10 +131,12 @@ struct ProtocolCommand {
     std::string mqttMessageId;
     bool highPriority = true;
     bool expectsResponse = true;
-    std::chrono::milliseconds timeout{3000};
+    std::chrono::milliseconds timeout{ 3000 };
 };
 
-enum class TransmissionReservation { Expired, Duplicate, Reserved };
+enum class TransmissionReservation { Expired,
+                                     Duplicate,
+                                     Reserved };
 
 struct EgressLogContext {
     std::string acquisitionId;

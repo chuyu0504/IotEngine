@@ -32,14 +32,14 @@
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/access/access.service.h"
 #include "service/features/access/access.transport.h"
-#include "service/common/worker.h"
-#include "service/utils/redis.h"
-#include "service/utils/worker_task.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
+#include "service/utils/redis.h"
 #include "service/utils/text.h"
+#include "service/utils/worker_task.h"
 
 namespace service::access {
 
@@ -59,10 +59,9 @@ class DeliveryRuntime final {
             throw std::runtime_error("access webhook runtime requires valid Service Workers");
         }
         stop_ = std::make_unique<ruvia::stop_source>();
-        utils::startWorkerTask(worker, stop_->token(), stopped_,
-            [this](ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
-                return run(context, ready, stop);
-            });
+        utils::startWorkerTask(worker, stop_->token(), stopped_, [this](ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
+            return run(context, ready, stop);
+        });
     }
 
     void stop() noexcept {
@@ -92,27 +91,26 @@ class DeliveryRuntime final {
     };
 
     ruvia::task<void> run(ruvia::web_worker_context& context, utils::WorkerReady& ready, ruvia::stop_token stop) {
-            const auto& identity = context.worker_state<std::optional<common::WorkerIdentity>>().value();
-            const auto index = identity.index;
-            const auto redis = context.redis().with_options({ .stop_token_ = stop });
-            std::map<std::string, StreamKind, std::less<>> streamKinds;
-            streamKinds.emplace(
-                service::message::access::stream::catalogChanges(index),
-                StreamKind::Catalog
-            );
-            streamKinds.emplace(service::message::access::stream::sessionChanges(), StreamKind::Session);
-            streamKinds.emplace(service::message::access::stream::deliveryResult(), StreamKind::DeliveryResult);
-            streamKinds.emplace(service::message::access::stream::audit(), StreamKind::Audit);
-            streamKinds.emplace(service::message::access::stream::event(), StreamKind::Event);
-            std::vector<std::string> streams;
-            streams.reserve(streamKinds.size());
-            for (const auto& [streamName, kind] : streamKinds) {
-                (void)kind;
-                co_await utils::redis::ensureGroup(redis, streamName, kGroup);
-                streams.push_back(streamName);
-            }
-            co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop,
-                [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+        const auto& identity = context.worker_state<std::optional<common::WorkerIdentity>>().value();
+        const auto index = identity.index;
+        const auto redis = context.redis().with_options({ .stop_token_ = stop });
+        std::map<std::string, StreamKind, std::less<>> streamKinds;
+        streamKinds.emplace(
+            service::message::access::stream::catalogChanges(index),
+            StreamKind::Catalog
+        );
+        streamKinds.emplace(service::message::access::stream::sessionChanges(), StreamKind::Session);
+        streamKinds.emplace(service::message::access::stream::deliveryResult(), StreamKind::DeliveryResult);
+        streamKinds.emplace(service::message::access::stream::audit(), StreamKind::Audit);
+        streamKinds.emplace(service::message::access::stream::event(), StreamKind::Event);
+        std::vector<std::string> streams;
+        streams.reserve(streamKinds.size());
+        for (const auto& [streamName, kind] : streamKinds) {
+            (void)kind;
+            co_await utils::redis::ensureGroup(redis, streamName, kGroup);
+            streams.push_back(streamName);
+        }
+        co_await utils::redis::withConsumerNotifications(redis, context.worker(), streams, kGroup, stop, [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
             DeliveryClient http;
             co_await session::ensure(context);
             auto catalog = co_await delivery::loadCatalog(context);
@@ -126,8 +124,7 @@ class DeliveryRuntime final {
                 std::vector<utils::redis::StreamBatch> batches;
                 bool readFailed = false;
                 try {
-                    batches = co_await utils::redis::consumeGroup(redis, streams, kGroup,
-                        consumer, recovering, notifications, stop, std::nullopt, kBatchSize);
+                    batches = co_await utils::redis::consumeGroup(redis, streams, kGroup, consumer, recovering, notifications, stop, std::nullopt, kBatchSize);
                 } catch (const std::exception& error) {
                     if (stop.stop_requested()) {
                         break;
@@ -219,7 +216,7 @@ class DeliveryRuntime final {
                     (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(5), stop);
                 }
             }
-                });
+        });
     }
 
     struct DeliveryAttempt final {
@@ -375,15 +372,15 @@ class DeliveryRuntime final {
             try {
                 auto [completion, receiver] = ruvia::make_one_shot<DeliveryResponse>(context.worker());
                 auto shared = std::make_shared<ruvia::one_shot_completion<DeliveryResponse>>(std::move(completion));
-                http.publishMqtt(service::utils::mqtt::parseBroker(target.url),
-                    "iot-" + service::utils::sha256(target.id + delivery.id).substr(0, 19),
-                    target.mqtt->username, target.mqtt->password,
-                    service::message::openMqttTopic(delivery.deviceId),
-                    delivery.body, std::chrono::seconds(target.timeout),
-                    [shared](DeliveryResponse result) mutable { (void)shared->complete(std::move(result)); });
+                http.publishMqtt(service::utils::mqtt::parseBroker(target.url), "iot-" + service::utils::sha256(target.id + delivery.id).substr(0, 19), target.mqtt->username, target.mqtt->password, service::message::openMqttTopic(delivery.deviceId), delivery.body, std::chrono::seconds(target.timeout), [shared](DeliveryResponse result) mutable {
+                    (void)shared->complete(std::move(result));
+                });
                 auto outcome = co_await receiver.wait(stop);
-                if (outcome.has_value()) response = std::move(outcome).take_value();
-                else response.error = "MQTT publish was cancelled";
+                if (outcome.has_value()) {
+                    response = std::move(outcome).take_value();
+                } else {
+                    response.error = "MQTT publish was cancelled";
+                }
             } catch (const std::exception& error) {
                 response.error = error.what();
             }
@@ -392,7 +389,9 @@ class DeliveryRuntime final {
             }
             const bool success = response.error.empty();
             co_await delivery::DeliveryService::enqueueResult(context, target, delivery, response, success);
-            if (!success) throw std::runtime_error(response.error);
+            if (!success) {
+                throw std::runtime_error(response.error);
+            }
             co_return;
         }
         const auto requestTimestamp = service::common::utcTimestampNow();
@@ -438,7 +437,9 @@ class DeliveryRuntime final {
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {
         std::vector<std::pair<std::string, std::string>> result;
         const auto object = ruvia::json_value::parse(json);
-        if (!object || !object->is_object()) return result;
+        if (!object || !object->is_object()) {
+            return result;
+        }
         (void)object->for_each_field(
             [&](std::string_view name, const ruvia::json_value&) {
                 const auto value = object->get<ruvia::string>(name);

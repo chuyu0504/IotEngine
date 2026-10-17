@@ -33,14 +33,12 @@ class LiveChangeRuntime final {
     void start(ruvia::web_worker_handle worker) {
         stop_ = std::make_unique<ruvia::stop_source>();
         try {
-            service::utils::startWorkerTask(worker, stop_->token(), stopped_,
-                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
-                    return run(context, ready, stop);
-                });
-            service::utils::startWorkerTask(worker, stop_->token(), leasesStopped_,
-                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
-                    return expireSessions(context, ready, stop);
-                });
+            service::utils::startWorkerTask(worker, stop_->token(), stopped_, [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                return run(context, ready, stop);
+            });
+            service::utils::startWorkerTask(worker, stop_->token(), leasesStopped_, [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                return expireSessions(context, ready, stop);
+            });
         } catch (...) {
             this->stop();
             throw;
@@ -88,7 +86,13 @@ class LiveChangeRuntime final {
             bool failed = false;
             try {
                 const auto batches = co_await service::utils::redis::readStreamsBlocking(
-                    redis, streams, cursors, stop, std::chrono::seconds(30), 256);
+                    redis,
+                    streams,
+                    cursors,
+                    stop,
+                    std::chrono::seconds(30),
+                    256
+                );
                 for (const auto& batch : batches) {
                     for (const auto& change : batch.messages) {
                         if (change.get(service::message::live::kTopicField) == service::message::live::topic::kRuntimeConfig) {

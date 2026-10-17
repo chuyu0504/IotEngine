@@ -5,9 +5,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <edge.pb.h>
 #include <exception>
 #include <limits>
-#include <edge.pb.h>
 #include <memory>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -24,14 +24,13 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
 #include <ruvia/web/db/db_transaction.h>
-#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/model_json.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/common/wireguard.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.entity.h"
@@ -46,6 +45,7 @@
 #include "service/utils/network.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
+#include "service/utils/uuid.h"
 
 namespace service::vpn {
 
@@ -981,7 +981,7 @@ class VpnHubService final {
         if (snapshot.deadlineMs == 0) {
             co_return std::nullopt;
         }
-        co_return std::chrono::milliseconds(std::max(std::int64_t{0}, snapshot.deadlineMs - snapshot.redisNowMs));
+        co_return std::chrono::milliseconds(std::max(std::int64_t{ 0 }, snapshot.deadlineMs - snapshot.redisNowMs));
     }
 
     ruvia::task<void> executeDue(ruvia::web_worker_context& context, ruvia::stop_token stop) {
@@ -991,8 +991,7 @@ class VpnHubService final {
         const auto key = service::message::vpn::hubScheduleKey(instanceId_);
         const auto channel = scheduleChannel();
         const std::string_view keys[]{ key, channel };
-        const auto reply = co_await context.redis().with_options({ .stop_token_ = stop }).eval(
-            kHubScheduleClaimScript, keys, std::span<const std::string_view>{});
+        const auto reply = co_await context.redis().with_options({ .stop_token_ = stop }).eval(kHubScheduleClaimScript, keys, std::span<const std::string_view>{});
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {
             service::utils::redis::throwValue("VPN deadline claim", reply);
         }
@@ -1079,8 +1078,7 @@ class VpnHubService final {
     }
 
   private:
-    ruvia::task<void> updateSchedule(ruvia::web_worker_context& context, std::string_view action,
-                                   std::optional<std::int64_t> desktop = std::nullopt) {
+    ruvia::task<void> updateSchedule(ruvia::web_worker_context& context, std::string_view action, std::optional<std::int64_t> desktop = std::nullopt) {
         const auto key = service::message::vpn::hubScheduleKey(instanceId_);
         const auto channel = scheduleChannel();
         const auto deadline = desktop ? std::to_string(*desktop) : std::string{};
@@ -1091,7 +1089,6 @@ class VpnHubService final {
             service::utils::redis::throwValue("VPN deadline update", reply);
         }
     }
-
 
     // Activation is committed first, so the Hub must learn the reported key even
     // when a later route synchronization fails; that failure is rethrown after.
@@ -1271,6 +1268,7 @@ class VpnHubService final {
         result.message = "WireGuard hub is configured";
         co_return result;
     }
+
     static std::string runtimeStatusJson(const wireguard::RuntimeStatus& result, std::pmr::memory_resource* resource) {
         service::message::vpn::RuntimeStatus status(ruvia::model_options{ .resource_ = resource });
         status.set<"platformSupported">(result.supported)

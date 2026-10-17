@@ -14,10 +14,10 @@
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/redis/redis_repository.h>
-#include "service/modules/system/operations/operations.entity.h"
 
 #include "service/common/message.h"
 #include "service/common/worker.h"
+#include "service/modules/system/operations/operations.entity.h"
 #include "service/modules/system/operations/operations.types.h"
 
 namespace service::system {
@@ -115,9 +115,12 @@ class OperationsService final {
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
                 .where_ = entities::WorkerSnapshotEntity::field<"id">() ==
-                    service::message::worker_metrics::snapshotId(index, identity.instanceId)};
+                    service::message::worker_metrics::snapshotId(index, identity.instanceId)
+            };
             const auto snapshot = co_await snapshots.find_one(options);
-            if (!snapshot) continue;
+            if (!snapshot) {
+                continue;
+            }
             auto& value = result[index];
             value.metrics.assign(snapshot->get<"metrics">().view());
             // Age advances at read time from the last real queue observation;

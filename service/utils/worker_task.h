@@ -17,21 +17,21 @@ namespace service::utils {
 class WorkerReady final {
   public:
     explicit WorkerReady(std::promise<void>& promise) : promise_(promise) {}
+
     void set_value() {
         promise_.set_value();
         signalled_ = true;
     }
+
     [[nodiscard]] bool signalled() const noexcept { return signalled_; }
+
   private:
     std::promise<void>& promise_;
     bool signalled_ = false;
 };
 
 template <typename Run>
-ruvia::task<void> runWorkerTask(ruvia::web_worker_context& context,
-                              std::shared_ptr<std::promise<void>> ready,
-                              std::shared_ptr<std::promise<void>> done,
-                              ruvia::stop_token stop, Run run) {
+ruvia::task<void> runWorkerTask(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done, ruvia::stop_token stop, Run run) {
     WorkerReady signal(*ready);
     const auto combined = ruvia::combine_stop_tokens(context.get_stop_token(), stop);
     try {
@@ -58,8 +58,7 @@ ruvia::task<void> runWorkerTask(ruvia::web_worker_context& context,
 // All persistent cancellation/completion state is owned explicitly by runtime.
 // Startup and shutdown are called off the target Worker's event loop.
 template <typename Run>
-void startWorkerTask(ruvia::web_worker_handle worker, ruvia::stop_token stop,
-                     std::future<void>& completion, Run run) {
+void startWorkerTask(ruvia::web_worker_handle worker, ruvia::stop_token stop, std::future<void>& completion, Run run) {
     if (completion.valid()) {
         throw std::logic_error("Worker task is already started");
     }
@@ -68,8 +67,9 @@ void startWorkerTask(ruvia::web_worker_handle worker, ruvia::stop_token stop,
     auto startup = ready->get_future();
     completion = done->get_future();
     if (!worker.post([ready, done, stop, run = std::move(run)](ruvia::web_worker_context& context) mutable {
-            return runWorkerTask(context, ready, done, stop, std::move(run));
-        }).accepted()) {
+                   return runWorkerTask(context, ready, done, stop, std::move(run));
+               })
+             .accepted()) {
         completion = {};
         throw std::runtime_error("Worker rejected task startup");
     }

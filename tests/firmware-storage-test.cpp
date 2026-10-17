@@ -19,8 +19,8 @@
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/features/edge/gateway/gateway.service.h"
+#include "service/utils/uuid.h"
 
 namespace {
 

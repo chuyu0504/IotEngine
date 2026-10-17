@@ -1,5 +1,5 @@
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <memory_resource>
 #include <optional>
@@ -54,7 +54,11 @@ int main() {
         }
         {
             auto session = service::edge::gateway::GatewayProtocol::makeSession(
-                "00000000-0000-7000-8000-000000000002", 6, std::string(16, '\x01'), 3, 42,
+                "00000000-0000-7000-8000-000000000002",
+                6,
+                std::string(16, '\x01'),
+                3,
+                42,
                 std::chrono::steady_clock::time_point{}
             );
             service::edge::pb::Envelope input;
@@ -95,7 +99,10 @@ int main() {
                 throw std::runtime_error("gateway lost the telemetry acknowledgement record identity");
             }
             service::edge::gateway::GatewayProtocol::stampEnvelope(
-                session, reply, "00000000-0000-7000-8000-000000000003", 3000
+                session,
+                reply,
+                "00000000-0000-7000-8000-000000000003",
+                3000
             );
             service::edge::gateway::GatewayProtocol::enqueue(session, reply);
             service::edge::pb::Envelope decoded;
@@ -133,7 +140,10 @@ int main() {
         capableCommand.set_timeout_ms(5000);
         constexpr std::int64_t persistedDeadlineMs = 1780000000123;
         service::edge::gateway::GatewayService::applyCommandDeadline(
-            capableCommand, true, persistedDeadlineMs);
+            capableCommand,
+            true,
+            persistedDeadlineMs
+        );
         if (!capableCommand.has_start_before_ms() ||
             capableCommand.start_before_ms() != persistedDeadlineMs ||
             capableCommand.timeout_ms() != 5000) {
@@ -142,7 +152,10 @@ int main() {
         service::edge::pb::CommandRequest legacyCommand;
         legacyCommand.set_timeout_ms(5000);
         service::edge::gateway::GatewayService::applyCommandDeadline(
-            legacyCommand, false, persistedDeadlineMs);
+            legacyCommand,
+            false,
+            persistedDeadlineMs
+        );
         if (legacyCommand.has_start_before_ms() || legacyCommand.timeout_ms() != 5000) {
             throw std::runtime_error("legacy command wire behavior changed");
         }
@@ -150,7 +163,10 @@ int main() {
         legacyCommand.set_start_before_ms(persistedDeadlineMs);
         try {
             service::edge::gateway::GatewayService::applyCommandDeadline(
-                legacyCommand, false, persistedDeadlineMs);
+                legacyCommand,
+                false,
+                persistedDeadlineMs
+            );
         } catch (const std::invalid_argument&) {
             rejectedUnnegotiatedField = true;
         }
@@ -161,7 +177,10 @@ int main() {
         try {
             service::edge::pb::CommandRequest invalidCommand;
             service::edge::gateway::GatewayService::applyCommandDeadline(
-                invalidCommand, true, std::nullopt);
+                invalidCommand,
+                true,
+                std::nullopt
+            );
         } catch (const std::invalid_argument&) {
             rejectedMissingDeadline = true;
         }

@@ -25,7 +25,6 @@
 
 namespace service::edge_node {
 
-
 class EdgeController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/edge")
@@ -63,7 +62,6 @@ class EdgeController final {
         DebugConnection session(context, registry);
         co_await session.run();
     }
-
 };
 
 class EdgeManagementController final {

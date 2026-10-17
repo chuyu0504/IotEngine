@@ -2,8 +2,8 @@
 
 #include <any>
 #include <cstdint>
-#include <map>
 #include <functional>
+#include <map>
 #include <memory_resource>
 #include <string>
 #include <string_view>
@@ -13,7 +13,6 @@
 #include <ruvia/web/db/db_handle.h>
 #include <ruvia/web/http_client_handle.h>
 #include <ruvia/web/redis/redis_handle.h>
-
 
 namespace service::middleware {
 
@@ -70,7 +69,10 @@ class RequestContext {
 
     auto get_http_client(std::string_view alias) const { return connection_.get_http_client(alias).with_options({ .stop_token_ = stop }); }
 
-    auto worker() const { return connection_.worker(); }
+    // Borrow the connection's stable capability through this operation's awaits.
+    const ruvia::worker_handle& worker() const& noexcept { return connection_.worker(); }
+
+    const ruvia::worker_handle& worker() const&& = delete;
 
     template <typename State>
     State& worker_state() const { return connection_.worker_state<State>(); }

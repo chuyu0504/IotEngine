@@ -4,8 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <exception>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -29,13 +29,10 @@
 #include <ruvia/core/event_loop_pool.h>
 #include <ruvia/web/redis/redis_client.h>
 
-#include "service/common/worker.h"
-
 #include "service/common/uuid.h"
-
+#include "service/common/worker.h"
 #include "service/features/alert/alert.service.h"
 #include "service/features/collector/collector.protocol.h"
-#include "service/features/edge/projection/projection.service.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
@@ -47,6 +44,7 @@
 #include "service/features/command/command.service.h"
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.service.h"
+#include "service/features/edge/projection/projection.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
@@ -63,7 +61,7 @@ namespace {
 
 template <typename Result>
 Result runTask(ruvia::task<Result> task) {
-    ruvia::event_loop_pool pool({.loop_count_ = 1});
+    ruvia::event_loop_pool pool({ .loop_count_ = 1 });
     pool.start();
     auto completion = pool.loop(0).start(std::move(task));
     if constexpr (std::is_void_v<Result>) {
@@ -143,6 +141,36 @@ struct FailingLatestPipeline {
     }
 };
 
+struct RecordingScriptRedis {
+    struct Pipeline {
+        const RecordingScriptRedis* owner;
+        std::vector<std::vector<std::string>> commands;
+
+        void command(std::span<const std::string_view> arguments) {
+            commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
+            owner->commands.insert(owner->commands.end(), commands.begin(), commands.end());
+            std::pmr::vector<ruvia::redis_value> replies;
+            for (std::size_t index = 0; index < commands.size(); ++index) {
+                replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
+            }
+            co_return replies;
+        }
+    };
+
+    [[nodiscard]] Pipeline pipeline() const { return Pipeline{ this }; }
+
+    ruvia::task<std::string> script_load(std::string_view script) const {
+        scripts.emplace_back(script);
+        co_return "recorded-script-sha";
+    }
+
+    mutable std::vector<std::string> scripts;
+    mutable std::vector<std::vector<std::string>> commands;
+};
+
 struct FailingConfigRedis {
     explicit FailingConfigRedis(bool failSet = true, bool activeVersion = false)
         : failActiveSet(failSet), hasActiveVersion(activeVersion) {}
@@ -153,13 +181,6 @@ struct FailingConfigRedis {
 
         void command(std::span<const std::string_view> arguments) {
             commands.emplace_back(arguments.begin(), arguments.end());
-        }
-
-        void eval(std::string_view script, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
-            std::vector<std::string> values{ "EVAL", std::string(script), std::to_string(keys.size()) };
-            values.insert(values.end(), keys.begin(), keys.end());
-            values.insert(values.end(), arguments.begin(), arguments.end());
-            commands.push_back(std::move(values));
         }
 
         ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
@@ -232,7 +253,6 @@ struct FailingConfigRedis {
     bool hasActiveVersion;
 };
 
-
 struct LatestProjectionDb {
     ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
         const auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
@@ -242,9 +262,9 @@ struct LatestProjectionDb {
             result.values.emplace_back(FakeDbRow{ "device-1", "D1", "300000" });
         } else if (text.find("WITH \"configured\"") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "D1", "Modbus", "temperature", "New Name", "℃", "-", "", "2", "1", "environment", "", "0", "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"-\",\"unit\":\"℃\","
-                                                                                                                                                                         "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
-                                                                                                                                                                         "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":null,"
-                                                                                                                                                                         "\"updatedAt\":1700000001000,\"source\":\"empty\"}" });
+                                                                                                                                                         "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
+                                                                                                                                                         "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":null,"
+                                                                                                                                                         "\"updatedAt\":1700000001000,\"source\":\"empty\"}" });
         }
         co_return result;
     }
@@ -253,7 +273,7 @@ struct LatestProjectionDb {
 struct LatestProjectionContext {
     LatestProjectionDb database;
     ruvia::redis_handle redisClient;
-    std::optional<service::common::WorkerIdentity> identity{std::in_place, "collector-test-instance", 0, 1};
+    std::optional<service::common::WorkerIdentity> identity{ std::in_place, "collector-test-instance", 0, 1 };
 
     LatestProjectionDb& db() noexcept { return database; }
 
@@ -273,7 +293,9 @@ void require(bool condition, std::string_view message) {
 }
 
 ruvia::task<ruvia::redis_value> redisCommand(
-        const ruvia::redis_handle& redis, std::initializer_list<std::string_view> arguments) {
+    const ruvia::redis_handle& redis,
+    std::initializer_list<std::string_view> arguments
+) {
     co_return co_await redis.command(std::span(arguments.begin(), arguments.size()));
 }
 
@@ -283,26 +305,28 @@ std::int64_t redisInteger(const ruvia::redis_value& reply) {
 }
 
 ruvia::task<std::string> redisField(
-        const ruvia::redis_handle& redis, std::string_view key, std::string_view field) {
+    const ruvia::redis_handle& redis,
+    std::string_view key,
+    std::string_view field
+) {
     const auto reply = co_await redis.hget(key, field);
     co_return reply ? std::string(*reply) : std::string{};
 }
 
 ruvia::task<void> subscribeConfirmed(ruvia::redis_subscription& subscription, std::string_view channel) {
-    const std::string_view channels[]{channel};
+    const std::string_view channels[]{ channel };
     co_await subscription.subscribe(channels);
     const auto event = co_await subscription.read();
-    require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed &&
-                event->channel() == channel && event->subscription_count() == 1,
-            "PubSub subscription was not confirmed before the projection");
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed && event->channel() == channel && event->subscription_count() == 1, "PubSub subscription was not confirmed before the projection");
 }
 
 ruvia::task<void> expectPubSub(
-        ruvia::redis_subscription& subscription, std::string_view channel, std::string_view payload) {
+    ruvia::redis_subscription& subscription,
+    std::string_view channel,
+    std::string_view payload
+) {
     const auto event = co_await subscription.read();
-    require(event && event->kind() == ruvia::redis_pubsub_event_kind::message &&
-                event->channel() == channel && event->payload() == payload,
-            "PubSub message channel or affected ids differ");
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::message && event->channel() == channel && event->payload() == payload, "PubSub message channel or affected ids differ");
 }
 
 template <typename Test>
@@ -322,13 +346,15 @@ ruvia::task<void> runRedisTask(ruvia::event_loop loop, std::uint16_t port, Test 
         error = std::current_exception();
     }
     co_await client.shutdown();
-    if (error) std::rethrow_exception(error);
+    if (error) {
+        std::rethrow_exception(error);
+    }
 }
 
 template <typename Test>
 void runRedisTest(Test test) {
     test::RedisServer redis(IOT_TEST_REDIS_SERVER, IOT_TEST_BUILD_DIRECTORY);
-    ruvia::event_loop_pool pool({.loop_count_ = 1});
+    ruvia::event_loop_pool pool({ .loop_count_ = 1 });
     pool.start();
     auto completion = pool.loop(0).start(runRedisTask(pool.loop(0), redis.port(), std::move(test)));
     try {
@@ -784,9 +810,9 @@ void testCommandOutcomeDomain() {
 
     require(service::message::command::collectorResultState(true, "write_ack_missing") == "UNKNOWN", "a missing write ACK was overridden by a success flag");
     constexpr ProtocolFailure failures[]{
-        {"FINS", "polling_write_result_unknown", "polling_readback_timeout"},
-        {"S7", "write_ack_missing:s7_readback_timeout", "s7_readback_timeout"},
-        {"Modbus", "write_ack_missing:modbus_readback_timeout", "modbus_readback_timeout"},
+        { "FINS", "polling_write_result_unknown", "polling_readback_timeout" },
+        { "S7", "write_ack_missing:s7_readback_timeout", "s7_readback_timeout" },
+        { "Modbus", "write_ack_missing:modbus_readback_timeout", "modbus_readback_timeout" },
     };
     for (const auto& failure : failures) {
         require(service::message::command::collectorResultState(false, failure.lostAck) == "UNKNOWN" && !service::message::command::retryableFailure(failure.lostAck), failure.protocol.data());
@@ -813,13 +839,16 @@ void testProtocolFactoryBoundary() {
     auto snapshot = std::make_shared<collector::RuntimeSnapshot>();
     snapshot->links.push_back({ .id = "link", .mode = "TCP Client", .protocol = "Modbus", .status = "enabled" });
     for (const auto& [id, link, protocol, target] : std::array{
-        std::array{"selected", "link", "Modbus", "target"},
-        std::array{"other-target", "link", "Modbus", "other"},
-        std::array{"other-link", "other", "Modbus", "target"},
-        std::array{"other-protocol", "link", "S7", "target"}}) {
+             std::array{ "selected", "link", "Modbus", "target" },
+             std::array{ "other-target", "link", "Modbus", "other" },
+             std::array{ "other-link", "other", "Modbus", "target" },
+             std::array{ "other-protocol", "link", "S7", "target" } }) {
         collector::DeviceDefinition device;
-        device.id = id; device.code = id; device.linkId = link;
-        device.protocol = protocol; device.targetId = target;
+        device.id = id;
+        device.code = id;
+        device.linkId = link;
+        device.protocol = protocol;
+        device.targetId = target;
         device.modbusMode = "TCP";
         snapshot->devices.push_back(device);
     }
@@ -828,96 +857,108 @@ void testProtocolFactoryBoundary() {
     const auto count = std::count_if(started.begin(), started.end(), [](const auto& action) {
         return action.kind == collector::ProtocolActionKind::BindDevice;
     });
-    require(count == 1 && first(started, collector::ProtocolActionKind::BindDevice).deviceId == "selected",
-        "factory bound devices from another target, link or protocol");
+    require(count == 1 && first(started, collector::ProtocolActionKind::BindDevice).deviceId == "selected", "factory bound devices from another target, link or protocol");
     const auto rejects = [](auto&& operation) {
-        try { operation(); } catch (const std::invalid_argument&) { return true; }
+        try {
+            operation();
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
         return false;
     };
-    require(rejects([&] { (void)registry.require("S7").createSession(snapshot->links.front(), "c", "target", snapshot); }),
-        "factory accepted another protocol's link");
+    require(rejects([&] {
+                (void)registry.require("S7").createSession(snapshot->links.front(), "c", "target", snapshot);
+            }),
+            "factory accepted another protocol's link");
     auto invalid = snapshot->links.front();
     invalid.protocol = "SL651";
-    require(rejects([&] { (void)registry.require("SL651").createSession(invalid, "c", "target", snapshot); }),
-        "reporting protocol accepted an unsupported client transport");
+    require(rejects([&] {
+                (void)registry.require("SL651").createSession(invalid, "c", "target", snapshot);
+            }),
+            "reporting protocol accepted an unsupported client transport");
     invalid = snapshot->links.front();
     invalid.mode = "TCP Server";
-    require(rejects([&] { (void)registry.require("Modbus").createSession(invalid, "c", "target", snapshot); }),
-        "server session accepted a client target");
-    require(rejects([&] { (void)registry.require("Modbus").createSession(snapshot->links.front(), "c", "target", {}); }),
-        "factory accepted a missing immutable snapshot");
+    require(rejects([&] {
+                (void)registry.require("Modbus").createSession(invalid, "c", "target", snapshot);
+            }),
+            "server session accepted a client target");
+    require(rejects([&] {
+                (void)registry.require("Modbus").createSession(snapshot->links.front(), "c", "target", {});
+            }),
+            "factory accepted a missing immutable snapshot");
 }
 
 void testProtocolDebugAttribution() {
     collector::ProtocolEngine engine(sessionFactories());
     collector::RuntimeSnapshot snapshot;
     snapshot.links.push_back({ .id = "link", .mode = "TCP Client", .protocol = "Modbus" });
-    for (const auto& id : {"first", "second"}) {
+    for (const auto& id : { "first", "second" }) {
         collector::DeviceDefinition device;
-        device.id = id; device.code = id; device.linkId = "link";
-        device.targetId = "target"; device.protocol = "Modbus"; device.modbusMode = "TCP";
+        device.id = id;
+        device.code = id;
+        device.linkId = "link";
+        device.targetId = "target";
+        device.protocol = "Modbus";
+        device.modbusMode = "TCP";
         device.slaveId = static_cast<std::uint8_t>(snapshot.devices.size() + 1);
         snapshot.devices.push_back(device);
     }
-    const std::array<std::uint8_t, 9> response{0, 1, 0, 0, 0, 3, 2, 3, 0};
-    collector::DebugPacketIdentity packet{.linkId = "link", .targetId = "target", .direction = "RX", .bytes = response};
-    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1],
-        "TCP debug packet was attributed to the wrong unit");
+    const std::array<std::uint8_t, 9> response{ 0, 1, 0, 0, 0, 3, 2, 3, 0 };
+    collector::DebugPacketIdentity packet{ .linkId = "link", .targetId = "target", .direction = "RX", .bytes = response };
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "TCP debug packet was attributed to the wrong unit");
     packet.bytes = std::span(response).first(3);
     require(!engine.identifyDebugDevice(snapshot, packet), "ambiguous TCP fragment was assigned a device");
-    std::set<std::string> bound{"first"};
+    std::set<std::string> bound{ "first" };
     packet.boundDevices = &bound;
-    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[0],
-        "debug fragment ignored the connection's bound device");
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[0], "debug fragment ignored the connection's bound device");
     packet.bytes = response;
     require(!engine.identifyDebugDevice(snapshot, packet), "debug packet escaped connection ownership");
     packet.knownDevice = "second";
-    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1],
-        "validated device identity was overridden by stale route hints");
-    packet.knownDevice = {}; packet.boundDevices = nullptr;
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "validated device identity was overridden by stale route hints");
+    packet.knownDevice = {};
+    packet.boundDevices = nullptr;
     packet.targetId = "another-target";
     require(!engine.identifyDebugDevice(snapshot, packet), "debug attribution escaped the client target");
     packet.targetId = "target";
-    for (auto& device : snapshot.devices) device.modbusMode = "RTU";
-    const std::array<std::uint8_t, 3> rtu{2, 3, 0};
+    for (auto& device : snapshot.devices) {
+        device.modbusMode = "RTU";
+    }
+    const std::array<std::uint8_t, 3> rtu{ 2, 3, 0 };
     packet.bytes = rtu;
     require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "RTU unit attribution changed");
 
     snapshot.links.front().protocol = "SL651";
     snapshot.links.front().mode = "TCP Server";
-    for (auto& device : snapshot.devices) { device.protocol = "SL651"; device.code = device.slaveId == 1 ? "0000000001" : "0000000002"; }
-    const std::array<std::uint8_t, 8> station{0x7e, 0x7e, 1, 0, 0, 0, 0, 2};
+    for (auto& device : snapshot.devices) {
+        device.protocol = "SL651";
+        device.code = device.slaveId == 1 ? "0000000001" : "0000000002";
+    }
+    const std::array<std::uint8_t, 8> station{ 0x7e, 0x7e, 1, 0, 0, 0, 0, 2 };
     packet.bytes = station;
     require(!engine.identifyDebugDevice(snapshot, packet), "unvalidated reporting frame was attributed to a station");
     packet.deviceOnly = true;
     require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "reporting station address did not match");
-    const std::array<std::uint8_t, 8> outbound{0x7e, 0x7e, 0, 0, 0, 0, 2, 1};
-    packet.direction = "TX"; packet.deviceOnly = false; packet.bytes = outbound;
+    const std::array<std::uint8_t, 8> outbound{ 0x7e, 0x7e, 0, 0, 0, 0, 2, 1 };
+    packet.direction = "TX";
+    packet.deviceOnly = false;
+    packet.bytes = outbound;
     require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "downlink station address offset changed");
-    require(engine.expectsResponse("Modbus", {}) && engine.expectsResponse("S7", {}),
-        "request protocols lost response tracking");
-    require(!engine.expectsResponse("SL651", {}) && engine.expectsResponse("SL651", "command"),
-        "report acknowledgements were treated as requests");
+    require(engine.expectsResponse("Modbus", {}) && engine.expectsResponse("S7", {}), "request protocols lost response tracking");
+    require(!engine.expectsResponse("SL651", {}) && engine.expectsResponse("SL651", "command"), "report acknowledgements were treated as requests");
     require(!engine.expectsResponse("unregistered", "command"), "unknown protocol exposed response tracking");
 }
 
 void testProtocolCommandGrouping() {
-    const std::vector<collector::CommandElementValue> values{{"first", "1"}, {"second", "2"}};
-    for (const auto* protocol : {"Modbus", "S7"}) {
+    const std::vector<collector::CommandElementValue> values{ { "first", "1" }, { "second", "2" } };
+    for (const auto* protocol : { "Modbus", "S7" }) {
         const auto tasks = collector::command::groupElements(collector::protocolDefinition(protocol), values);
-        require(tasks.size() == 2 && tasks[0].size() == 1 && tasks[1].size() == 1 &&
-            tasks[0][0].elementId == "first" && tasks[1][0].value == "2",
-            "independent writes no longer have separate receipts");
+        require(tasks.size() == 2 && tasks[0].size() == 1 && tasks[1].size() == 1 && tasks[0][0].elementId == "first" && tasks[1][0].value == "2", "independent writes no longer have separate receipts");
     }
     const auto tasks = collector::command::groupElements(collector::protocolDefinition("SL651"), values);
-    require(tasks.size() == 1 && tasks[0].size() == 2 && tasks[0][1].elementId == "second",
-        "complete function command was split into incomplete requests");
+    require(tasks.size() == 1 && tasks[0].size() == 2 && tasks[0][1].elementId == "second", "complete function command was split into incomplete requests");
     const auto mqttTasks = collector::command::groupElements(collector::kMqttProtocol, values);
-    require(mqttTasks.size() == 1 && mqttTasks.front().size() == 2 &&
-        mqttTasks.front()[0].elementId == "first" && mqttTasks.front()[1].value == "2",
-        "MQTT message template was split into partial payloads");
-    require(collector::command::groupElements(collector::kSl651Protocol, {}).empty(),
-        "empty command created an empty task");
+    require(mqttTasks.size() == 1 && mqttTasks.front().size() == 2 && mqttTasks.front()[0].elementId == "first" && mqttTasks.front()[1].value == "2", "MQTT message template was split into partial payloads");
+    require(collector::command::groupElements(collector::kSl651Protocol, {}).empty(), "empty command created an empty task");
 }
 
 void testStationScopeAndInstanceIdentity() {
@@ -964,42 +1005,47 @@ void testStationScopeAndInstanceIdentity() {
 
 void testSl651ObservationReplay() {
     collector::RuntimeSnapshot snapshot;
-    snapshot.links.push_back({.id = "replay-link", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+    snapshot.links.push_back({ .id = "replay-link", .mode = "TCP Server", .protocol = "SL651", .status = "enabled" });
     collector::DeviceDefinition device;
-    device.id = "replay-device"; device.code = "0001000102";
-    device.linkId = "replay-link"; device.protocol = "SL651"; device.sl651ResponseMode = "M2";
-    device.elements.push_back({.id = "water", .name = "Water", .functionCode = "32", .guideHex = "3923", .encoding = "BCD", .length = 4, .digits = 3});
+    device.id = "replay-device";
+    device.code = "0001000102";
+    device.linkId = "replay-link";
+    device.protocol = "SL651";
+    device.sl651ResponseMode = "M2";
+    device.elements.push_back({ .id = "water", .name = "Water", .functionCode = "32", .guideHex = "3923", .encoding = "BCD", .length = 4, .digits = 3 });
     snapshot.devices.push_back(device);
     const std::array<std::string_view, 3> frames{
         "7E7E010001000102FFFA320031020076260917021000F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190330CE",
         "7E7E010001000102FFFA320031020076260917021005F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB0280000000019033607",
-        "7E7E010001000102FFFA320031020076260917021501F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190327CA"};
+        "7E7E010001000102FFFA320031020076260917021501F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190327CA"
+    };
     std::string identity;
     for (std::size_t index = 0; index < frames.size(); ++index) {
         // 新建引擎模拟重连、Worker 变化和进程重启，不能依赖会话缓存去重。
         collector::ProtocolEngine engine(sessionFactories());
         engine.reload(snapshot);
         const auto connection = "replay-" + std::to_string(index);
-        (void)engine.connected({.connectionId = connection, .linkId = "replay-link", .sessionEpoch = 1});
+        (void)engine.connected({ .connectionId = connection, .linkId = "replay-link", .sessionEpoch = 1 });
         collector::IngressPacket packet{ .messageId = connection, .linkId = "replay-link", .connectionId = connection, .occurredAtMs = 1789582200000 + 19000 };
         packet.payload = collector::sl651::detail::hexBytes(frames[index]);
         const auto actions = engine.consume(packet);
         const auto& publication = first(actions, collector::ProtocolActionKind::PublishParsed);
         require(publication.parsed.observedAtMs == 1789582200000, "SL651 replay used sending time instead of observation time");
-        if (identity.empty()) identity = publication.parsed.acquisitionId;
+        if (identity.empty()) {
+            identity = publication.parsed.acquisitionId;
+        }
         require(identity == publication.parsed.acquisitionId, "SL651 replay changed acquisition across sessions");
         require(!has(actions, collector::ProtocolActionKind::Send), "SL651 replay ACK preceded durable publication");
         const auto acknowledged = engine.parsedPublished(connection, publication.publicationToken);
         const auto& ack = first(acknowledged, collector::ProtocolActionKind::Send).bytes;
-        require(ack[14] == 0 && ack[15] == 0x76 && ack[ack.size() - 3] == 0x04,
-                "SL651 replay ACK lost original serial or EOT");
+        require(ack[14] == 0 && ack[15] == 0x76 && ack[ack.size() - 3] == 0x04, "SL651 replay ACK lost original serial or EOT");
         auto next = packet.payload;
         next[14 + 22] = 0x15; // 相同数值、流水号的下一观测时刻仍是不同采样。
         const auto crc = crc16(std::span<const std::uint8_t>(next).first(next.size() - 2));
-        next[next.size() - 2] = static_cast<std::uint8_t>(crc >> 8U); next.back() = static_cast<std::uint8_t>(crc);
+        next[next.size() - 2] = static_cast<std::uint8_t>(crc >> 8U);
+        next.back() = static_cast<std::uint8_t>(crc);
         packet.payload = next;
-        require(first(engine.consume(packet), collector::ProtocolActionKind::PublishParsed).parsed.acquisitionId != identity,
-                "SL651 distinct observation was deduplicated");
+        require(first(engine.consume(packet), collector::ProtocolActionKind::PublishParsed).parsed.acquisitionId != identity, "SL651 distinct observation was deduplicated");
     }
     auto invalid = collector::sl651::detail::hexBytes(frames[0]);
     auto body = std::vector<std::uint8_t>(invalid.begin() + 14, invalid.end() - 3);
@@ -1048,7 +1094,7 @@ void testSl651() {
         first(responseActions, collector::ProtocolActionKind::PublishParsed).parsed;
     require(responseParsed.valuesJson.find("response-value") != std::string::npos && responseParsed.valuesJson.find("request-value") == std::string::npos, "SL651 upstream response did not use responseElements");
 
-    auto commandFrame = slFrame(0x4C, {0, 0, 0x24, 1, 2, 3, 4, 5});
+    auto commandFrame = slFrame(0x4C, { 0, 0, 0x24, 1, 2, 3, 4, 5 });
     // Downlink direction occupies the high nibble of the length field; refresh the CRC.
     commandFrame[2] = 0x00;
     commandFrame[6] = 0x01;
@@ -1063,7 +1109,7 @@ void testSl651() {
     packet.payload = slFrame(0x32);
     commandActions = engine.consume(packet);
     require(!has(commandActions, collector::ProtocolActionKind::CompleteCommand), "SL651 unsolicited report completed a command");
-    packet.payload = slFrame(0x4C, {0, 2, 0x24, 1, 2, 3, 4, 6});
+    packet.payload = slFrame(0x4C, { 0, 2, 0x24, 1, 2, 3, 4, 6 });
     commandActions = engine.consume(packet);
     commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
     require(has(commandActions, collector::ProtocolActionKind::CompleteCommand), "SL651 ACK did not complete command");
@@ -1080,7 +1126,7 @@ void testSl651() {
     require(generatedSl651[2] == 0x00 && generatedSl651[6] == 0x01 && generatedSl651[7] == 0x01 && generatedSl651[10] == 0x4C, "SL651 element command did not use the iot-manager default address header");
     const std::array<std::uint8_t, 4> encodedSl651Value{ 0x39, 0x12, 0x12, 0x34 };
     require(std::search(generatedSl651.begin(), generatedSl651.end(), encodedSl651Value.begin(), encodedSl651Value.end()) != generatedSl651.end(), "SL651 element command did not encode its guide and BCD value");
-    packet.payload = slFrame(0x4C, {0, 3, 0x24, 1, 2, 3, 4, 7});
+    packet.payload = slFrame(0x4C, { 0, 3, 0x24, 1, 2, 3, 4, 7 });
     commandActions = engine.consume(packet);
     commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
     require(has(commandActions, collector::ProtocolActionKind::CompleteCommand), "generated SL651 command did not complete on ACK");
@@ -1090,9 +1136,7 @@ void testSl651() {
     packet.payload = slFrame(0xE2);
     commandActions = engine.consume(packet);
     commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
-    require(!has(commandActions, collector::ProtocolActionKind::FailCommand) &&
-            !has(commandActions, collector::ProtocolActionKind::CompleteCommand),
-            "SL651 user extension E2 was treated as a universal negative acknowledgement");
+    require(!has(commandActions, collector::ProtocolActionKind::FailCommand) && !has(commandActions, collector::ProtocolActionKind::CompleteCommand), "SL651 user extension E2 was treated as a universal negative acknowledgement");
 }
 
 void testSl651ElementOrder() {
@@ -1110,9 +1154,12 @@ void testSl651ElementOrder() {
         { .id = "flow", .name = "Flow", .functionCode = "32", .guideHex = "272B", .encoding = "BCD", .length = 5, .digits = 3 }
     };
     const auto frame = service::message::fromHex(
-        "7E7E010001000102FFFA32003102001D260914134500F1F1000100010249F0F02609141345392300000587371B000125272B0000000000FFB0280000000003036A65");
+        "7E7E010001000102FFFA32003102001D260914134500F1F1000100010249F0F02609141345392300000587371B000125272B0000000000FFB0280000000003036A65"
+    );
     // 同一真实报文在所有配置顺序下都必须保留全部指标。
-    std::sort(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) { return left.id < right.id; });
+    std::sort(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) {
+        return left.id < right.id;
+    });
     do {
         snapshot.devices = { device };
         collector::ProtocolEngine engine(sessionFactories());
@@ -1124,10 +1171,13 @@ void testSl651ElementOrder() {
                  "\"total\":{\"name\":\"Total\",\"value\":\"0000000003\"",
                  "\"velocity\":{\"name\":\"Velocity\",\"value\":\"000.125\"",
                  "\"water\":{\"name\":\"Water\",\"value\":\"00000.587\"",
-                 "\"flow\":{\"name\":\"Flow\",\"value\":\"0000000.000\"" })
+                 "\"flow\":{\"name\":\"Flow\",\"value\":\"0000000.000\"" }) {
             require(parsed.valuesJson.find(expected) != std::string::npos, "SL651 real report lost an element with reordered configuration");
+        }
         require(parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ frame }, "SL651 real report raw payload changed");
-    } while (std::next_permutation(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) { return left.id < right.id; }));
+    } while (std::next_permutation(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) {
+        return left.id < right.id;
+    }));
     require(collector::sl651::detail::hexBytes("39 23").empty(), "SL651 noncanonical HEX guide was accepted");
     require(collector::sl651::detail::hexBytes("39 X3").empty(), "SL651 invalid HEX guide was accepted");
     require(collector::sl651::detail::hexBytes("39 2").empty(), "SL651 odd-length HEX guide was accepted");
@@ -1266,12 +1316,11 @@ void testSl651MultiPacketImages() {
 
 void testSl651CommunicationModes() {
     collector::RuntimeSnapshot previous;
-    previous.devices.push_back({.id = "mode-version", .protocol = "SL651"});
+    previous.devices.push_back({ .id = "mode-version", .protocol = "SL651" });
     auto next = previous;
     next.devices.front().sl651ResponseMode = "M4";
-    require(collector::config::signature(previous) != collector::config::signature(next),
-        "SL651 mode change did not invalidate runtime snapshot");
-    const auto restored = collector::config::detail::device({{"protocol", "SL651"}, {"storage_policy", "report"}, {"sl651_response_mode", "M3"}});
+    require(collector::config::signature(previous) != collector::config::signature(next), "SL651 mode change did not invalidate runtime snapshot");
+    const auto restored = collector::config::detail::device({ { "protocol", "SL651" }, { "storage_policy", "report" }, { "sl651_response_mode", "M3" } });
     require(restored.sl651ResponseMode == "M3", "SL651 mode was lost when loading Redis snapshot");
     const auto refreshCrc = [](std::vector<std::uint8_t> frame, std::uint8_t ending) {
         frame[frame.size() - 3] = ending;
@@ -1280,46 +1329,47 @@ void testSl651CommunicationModes() {
         frame.back() = static_cast<std::uint8_t>(checksum);
         return frame;
     };
-    for (const auto mode : {"M1", "M2", "M3", "M4"}) {
+    for (const auto mode : { "M1", "M2", "M3", "M4" }) {
         collector::RuntimeSnapshot snapshot;
-        snapshot.links.push_back({.id = "modes", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+        snapshot.links.push_back({ .id = "modes", .mode = "TCP Server", .protocol = "SL651", .status = "enabled" });
         collector::DeviceDefinition device;
-        device.id = "station"; device.code = "0000000001"; device.linkId = "modes";
-        device.protocol = "SL651"; device.sl651ResponseMode = mode;
-        device.elements.push_back({.id = "custom", .name = "Custom", .functionCode = "E0", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2});
+        device.id = "station";
+        device.code = "0000000001";
+        device.linkId = "modes";
+        device.protocol = "SL651";
+        device.sl651ResponseMode = mode;
+        device.elements.push_back({ .id = "custom", .name = "Custom", .functionCode = "E0", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2 });
         snapshot.devices.push_back(device);
         collector::ProtocolEngine engine(sessionFactories());
         engine.reload(snapshot);
-        (void)engine.connected({.connectionId = "modes", .linkId = "modes", .sessionEpoch = 1});
+        (void)engine.connected({ .connectionId = "modes", .linkId = "modes", .sessionEpoch = 1 });
         collector::IngressPacket packet{ .messageId = "mode-report", .linkId = "modes", .connectionId = "modes", .occurredAtMs = 1000 };
         packet.payload = slFrame(0x32);
         auto actions = engine.consume(packet);
         require(!has(actions, collector::ProtocolActionKind::Send), "SL651 acknowledged before durable publication");
         const auto publicationToken = first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken;
         require(publicationToken != 0, "SL651 report has no publication token");
-        require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.messageId.empty(),
-                "protocol parsing still allocates a runtime message UUID");
+        require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.messageId.empty(), "protocol parsing still allocates a runtime message UUID");
         require(engine.parsedPublished("modes", 0).empty(), "unknown publication token acknowledged a report");
         actions = engine.parsedPublished("modes", publicationToken);
-        require(engine.parsedPublished("modes", publicationToken).empty(),
-                "duplicate publication completion acknowledged a report twice");
+        require(engine.parsedPublished("modes", publicationToken).empty(), "duplicate publication completion acknowledged a report twice");
         require(has(actions, collector::ProtocolActionKind::Send) == (std::string_view(mode) == "M2"), "SL651 mode did not control unsolicited confirmation");
         if (!actions.empty()) {
             const auto& ack = first(actions, collector::ProtocolActionKind::Send).bytes;
-            require(ack[11] == 0x80 && ack[14] == 0 && ack[15] == 1 && ack[ack.size()-3] == 4, "M2 final confirmation header or serial is wrong");
+            require(ack[11] == 0x80 && ack[14] == 0 && ack[15] == 1 && ack[ack.size() - 3] == 4, "M2 final confirmation header or serial is wrong");
         }
-        packet.payload = slFrame(0xE0, {0, 1, 0x24, 1, 2, 3, 4, 5, 0x50, 0x18, 0xAB, 0x12, 0xFF, 0xAB, 0x12, 0x12, 0x34});
-        auto nextReport = slFrame(0xE0, {0, 2, 0x24, 1, 2, 3, 4, 5, 0xAB, 0x12, 0x56, 0x78});
+        packet.payload = slFrame(0xE0, { 0, 1, 0x24, 1, 2, 3, 4, 5, 0x50, 0x18, 0xAB, 0x12, 0xFF, 0xAB, 0x12, 0x12, 0x34 });
+        auto nextReport = slFrame(0xE0, { 0, 2, 0x24, 1, 2, 3, 4, 5, 0xAB, 0x12, 0x56, 0x78 });
         packet.payload.insert(packet.payload.end(), nextReport.begin(), nextReport.end());
         actions = engine.consume(packet);
         std::size_t published = 0;
         for (const auto& action : actions) {
-            if (action.kind != collector::ProtocolActionKind::PublishParsed) continue;
-            require(action.parsed.valuesJson.find(published == 0 ? "12.34" : "56.78") != std::string::npos,
-                "custom guide matched bytes inside another element");
+            if (action.kind != collector::ProtocolActionKind::PublishParsed) {
+                continue;
+            }
+            require(action.parsed.valuesJson.find(published == 0 ? "12.34" : "56.78") != std::string::npos, "custom guide matched bytes inside another element");
             const auto confirmations = engine.parsedPublished("modes", action.publicationToken);
-            require(has(confirmations, collector::ProtocolActionKind::Send) == (std::string_view(mode) == "M2"),
-                "concatenated reports lost an independent publication confirmation");
+            require(has(confirmations, collector::ProtocolActionKind::Send) == (std::string_view(mode) == "M2"), "concatenated reports lost an independent publication confirmation");
             ++published;
         }
         require(published == 2, "concatenated SL651 reports were lost");
@@ -1328,32 +1378,35 @@ void testSl651CommunicationModes() {
         require(engine.consume(packet).empty(), "bad SL651 CRC emitted protocol actions");
         packet.payload = refreshCrc(slFrame(0x32), 5);
         require(engine.consume(packet).empty(), "upstream ENQ was accepted");
-        auto request = slFrame(0x37, {0, 0, 0x24, 1, 2, 3, 4, 5});
-        request[2] = 0; request[6] = 1; request[11] = 0x80;
+        auto request = slFrame(0x37, { 0, 0, 0x24, 1, 2, 3, 4, 5 });
+        request[2] = 0;
+        request[6] = 1;
+        request[11] = 0x80;
         if (std::string_view(mode) == "M3") {
-            request[13] = 0x16; request[12] += 3;
-            request.insert(request.begin() + 14, {0x00, 0x10, 0x01});
+            request[13] = 0x16;
+            request[12] += 3;
+            request.insert(request.begin() + 14, { 0x00, 0x10, 0x01 });
         }
         request = refreshCrc(request, 5);
         const auto execute = [&](std::string id) {
-            return engine.execute("modes", {.id = std::move(id), .deviceId = "station", .deviceCode = "0000000001", .kind = "control", .payload = request});
+            return engine.execute("modes", { .id = std::move(id), .deviceId = "station", .deviceCode = "0000000001", .kind = "control", .payload = request });
         };
         actions = execute("query");
         if (std::string_view(mode) == "M1") {
             require(has(actions, collector::ProtocolActionKind::FailCommand) && !has(actions, collector::ProtocolActionKind::Send), "M1 sent a downlink");
-            packet.payload = slMultiFrame(0x36, 2, 1, {0, 2, 0x24, 1, 2, 3, 4, 5});
+            packet.payload = slMultiFrame(0x36, 2, 1, { 0, 2, 0x24, 1, 2, 3, 4, 5 });
             require(engine.consume(packet).empty(), "M1 accepted SYN packets");
             continue;
         }
         const auto queryToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
-        packet.payload = refreshCrc(slFrame(0x37, {0, 2, 0x24, 1, 2, 3, 4, 6}), 0x17);
+        packet.payload = refreshCrc(slFrame(0x37, { 0, 2, 0x24, 1, 2, 3, 4, 6 }), 0x17);
         actions = engine.consume(packet);
         actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
         require(!has(actions, collector::ProtocolActionKind::CompleteCommand), "intermediate ETB completed query");
         const auto& ack = first(actions, collector::ProtocolActionKind::Send).bytes;
-        require(ack[ack.size()-3] == 6 && ack[15] == 2, "intermediate query response did not receive ACK");
+        require(ack[ack.size() - 3] == 6 && ack[15] == 2, "intermediate query response did not receive ACK");
         require(engine.deadline("modes", queryToken).empty(), "stale query timer retransmitted");
-        packet.payload = slFrame(0x37, {0, 3, 0x24, 1, 2, 3, 4, 7});
+        packet.payload = slFrame(0x37, { 0, 3, 0x24, 1, 2, 3, 4, 7 });
         actions = engine.consume(packet);
         actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
         require(first(actions, collector::ProtocolActionKind::CompleteCommand).commandId == "query", "final query response did not complete original command");
@@ -1372,37 +1425,35 @@ void testSl651CommunicationModes() {
         require(first(actions, collector::ProtocolActionKind::FailCommand).commandId == "next-query", "query did not fail after two retries");
         require(has(execute("ambiguous-query"), collector::ProtocolActionKind::FailCommand), "timed-out station accepted an ambiguous query");
 
-        packet.payload = slMultiFrame(0x36, 3, 1, {0, 4, 0x24, 1, 2, 3, 4, 8, 0xF3, 0xF3, 0xFF});
+        packet.payload = slMultiFrame(0x36, 3, 1, { 0, 4, 0x24, 1, 2, 3, 4, 8, 0xF3, 0xF3, 0xFF });
         (void)engine.consume(packet);
         (void)engine.consume(packet); // 相同首包不得清除后续包。
-        packet.payload = slMultiFrame(0x36, 3, 3, {0xD9});
+        packet.payload = slMultiFrame(0x36, 3, 3, { 0xD9 });
         actions = engine.consume(packet);
         const auto& nak = first(actions, collector::ProtocolActionKind::Send).bytes;
-        require(nak[13] == 0x16 && nak[nak.size()-3] == 0x15 && nak[16] == 2, "M3 did not request the missing sequence");
+        require(nak[13] == 0x16 && nak[nak.size() - 3] == 0x15 && nak[16] == 2, "M3 did not request the missing sequence");
         require(!has(actions, collector::ProtocolActionKind::PublishParsed), "M3 published before all packets arrived");
-        packet.payload = refreshCrc(slMultiFrame(0x36, 3, 2, {0xD8, 0xFF}), 3);
+        packet.payload = refreshCrc(slMultiFrame(0x36, 3, 2, { 0xD8, 0xFF }), 3);
         actions = engine.consume(packet);
         require(!has(actions, collector::ProtocolActionKind::Send), "M3 confirmed before durable publication");
         actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
         const auto& finalAck = first(actions, collector::ProtocolActionKind::Send).bytes;
-        require(finalAck[13] == 0x16 && finalAck[16] == 3 && finalAck[finalAck.size()-3] == 4, "M3 final acknowledgement has wrong sequence or ending");
-        packet.payload = slMultiFrame(0x36, 2, 1, {0, 5, 0x24, 1, 2, 3, 4, 9});
+        require(finalAck[13] == 0x16 && finalAck[16] == 3 && finalAck[finalAck.size() - 3] == 4, "M3 final acknowledgement has wrong sequence or ending");
+        packet.payload = slMultiFrame(0x36, 2, 1, { 0, 5, 0x24, 1, 2, 3, 4, 9 });
         actions = engine.consume(packet);
         auto missingToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
         for (int retry = 0; retry < 2; ++retry) {
             actions = engine.deadline("modes", missingToken);
             const auto& missingAck = first(actions, collector::ProtocolActionKind::Send).bytes;
-            require(missingAck[16] == 2 && missingAck[missingAck.size()-3] == 0x15,
-                "M3 timeout did not request its missing packet");
+            require(missingAck[16] == 2 && missingAck[missingAck.size() - 3] == 0x15, "M3 timeout did not request its missing packet");
             missingToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
         }
         require(!has(engine.deadline("modes", missingToken), collector::ProtocolActionKind::Send), "M3 exceeded two missing-packet retries");
     }
-    collector::ElementDefinition numeric{.name = "signed", .encoding = "BCD", .length = 3, .digits = 2};
+    collector::ElementDefinition numeric{ .name = "signed", .encoding = "BCD", .length = 3, .digits = 2 };
     collector::command::validateValue(numeric, "-12.34");
-    const std::vector<std::uint8_t> signedBcd{0xFF, 0x12, 0x34};
-    require(collector::sl651::detail::encodeValue(numeric, "-12.34") == signedBcd &&
-        collector::sl651::detail::elementValue(signedBcd, numeric) == "-12.34", "SL651 signed BCD did not round trip");
+    const std::vector<std::uint8_t> signedBcd{ 0xFF, 0x12, 0x34 };
+    require(collector::sl651::detail::encodeValue(numeric, "-12.34") == signedBcd && collector::sl651::detail::elementValue(signedBcd, numeric) == "-12.34", "SL651 signed BCD did not round trip");
 }
 
 void testSl651FixedPosition() {
@@ -1413,46 +1464,53 @@ void testSl651FixedPosition() {
     binaryValue->set_element_id("image");
     binaryValue->set_encoding("JPEG");
     binaryValue->set_encoded_value(std::string("\xFF\xD8\xFF\xD9", 4));
-    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("data:image/jpeg;base64,/9j/2Q==") != std::string::npos,
-            "edge SL651 binary image was not restored");
+    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("data:image/jpeg;base64,/9j/2Q==") != std::string::npos, "edge SL651 binary image was not restored");
     binaryValue->set_encoding("HEX");
-    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("FFD8FFD9") != std::string::npos,
-            "edge SL651 binary hex was not restored");
+    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("FFD8FFD9") != std::string::npos, "edge SL651 binary hex was not restored");
     binaryValue->set_encoded_value(std::string(8193, 'x'));
     bool oversizedRejected = false;
-    try { (void)EdgeTelemetryProjection::telemetryJson(binaryRecord); }
-    catch (const std::runtime_error&) { oversizedRejected = true; }
+    try {
+        (void)EdgeTelemetryProjection::telemetryJson(binaryRecord);
+    } catch (const std::runtime_error&) {
+        oversizedRejected = true;
+    }
     require(oversizedRejected, "edge SL651 binary limit was not enforced");
     collector::RuntimeSnapshot snapshot;
-    snapshot.links.push_back({.id = "fixed", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+    snapshot.links.push_back({ .id = "fixed", .mode = "TCP Server", .protocol = "SL651", .status = "enabled" });
     collector::DeviceDefinition device;
-    device.id = "fixed"; device.code = "0000000001"; device.linkId = "fixed"; device.protocol = "SL651"; device.sl651ResponseMode = "M2";
+    device.id = "fixed";
+    device.code = "0000000001";
+    device.linkId = "fixed";
+    device.protocol = "SL651";
+    device.sl651ResponseMode = "M2";
     device.elements = {
-        {.id = "water", .name = "Fixed water", .functionCode = "32", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8},
-        {.id = "serial", .name = "Serial", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 0},
-        {.id = "outside", .name = "Outside", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 10},
-        {.id = "prefix", .name = "Prefix", .functionCode = "33", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8},
-        {.id = "guided", .name = "Guided", .functionCode = "33", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2},
-        {.id = "write", .name = "Fixed write", .functionCode = "4C", .direction = "DOWN", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 10}
+        { .id = "water", .name = "Fixed water", .functionCode = "32", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8 },
+        { .id = "serial", .name = "Serial", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 0 },
+        { .id = "outside", .name = "Outside", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 10 },
+        { .id = "prefix", .name = "Prefix", .functionCode = "33", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8 },
+        { .id = "guided", .name = "Guided", .functionCode = "33", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2 },
+        { .id = "write", .name = "Fixed write", .functionCode = "4C", .direction = "DOWN", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 10 }
     };
     snapshot.devices.push_back(device);
-    collector::ProtocolEngine engine(sessionFactories()); engine.reload(snapshot);
-    (void)engine.connected({.connectionId = "fixed", .linkId = "fixed", .sessionEpoch = 1});
+    collector::ProtocolEngine engine(sessionFactories());
+    engine.reload(snapshot);
+    (void)engine.connected({ .connectionId = "fixed", .linkId = "fixed", .sessionEpoch = 1 });
     collector::IngressPacket packet{ .messageId = "fixed-report", .linkId = "fixed", .connectionId = "fixed", .occurredAtMs = 1000 };
-    packet.payload = slFrame(0x32, {0, 1, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34});
+    packet.payload = slFrame(0x32, { 0, 1, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34 });
     auto actions = engine.consume(packet);
     auto values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
     require(values.find("12.34") != std::string::npos && values.find("0001") != std::string::npos && values.find("Outside") == std::string::npos, "SL651 fixed positions or bounds were not respected");
-    packet.payload = slMultiFrame(0x32, 2, 1, {0, 2, 0x24, 1, 2, 3, 4, 5, 0x56});
-    (void)engine.consume(packet); packet.payload = slMultiFrame(0x32, 2, 2, {0x78});
-    actions = engine.consume(packet); values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
-    require(values.find("56.78") != std::string::npos, "SL651 fixed offset was applied before reassembly");
-    packet.payload = slFrame(0x33, {0, 3, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34, 0xAB, 0x12, 0x56, 0x78});
+    packet.payload = slMultiFrame(0x32, 2, 1, { 0, 2, 0x24, 1, 2, 3, 4, 5, 0x56 });
+    (void)engine.consume(packet);
+    packet.payload = slMultiFrame(0x32, 2, 2, { 0x78 });
     actions = engine.consume(packet);
     values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
-    require(values.find("12.34") != std::string::npos && values.find("56.78") != std::string::npos,
-            "SL651 mixed fixed prefix and guided elements were not decoded");
-    actions = engine.execute("fixed", {.id = "fixed-command", .deviceId = "fixed", .deviceCode = "0000000001", .kind = "command", .elements = {{.elementId = "write", .value = "12.34"}}});
+    require(values.find("56.78") != std::string::npos, "SL651 fixed offset was applied before reassembly");
+    packet.payload = slFrame(0x33, { 0, 3, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34, 0xAB, 0x12, 0x56, 0x78 });
+    actions = engine.consume(packet);
+    values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
+    require(values.find("12.34") != std::string::npos && values.find("56.78") != std::string::npos, "SL651 mixed fixed prefix and guided elements were not decoded");
+    actions = engine.execute("fixed", { .id = "fixed-command", .deviceId = "fixed", .deviceCode = "0000000001", .kind = "command", .elements = { { .elementId = "write", .value = "12.34" } } });
     const auto& bytes = first(actions, collector::ProtocolActionKind::Send).bytes;
     require(bytes[22] == 0 && bytes[23] == 0 && bytes[24] == 0x12 && bytes[25] == 0x34, "SL651 fixed command did not use body-relative byte offsets");
 }
@@ -1497,9 +1555,7 @@ void testModbus() {
     packet.payload = modbusReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "Modbus response was not parsed");
-    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
-                std::vector<std::vector<std::uint8_t>>{packet.payload},
-            "Modbus history did not retain its exact response as an array");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ packet.payload }, "Modbus history did not retain its exact response as an array");
     require(has(actions, collector::ProtocolActionKind::CompleteCommand), "Modbus read did not complete");
 
     actions = engine.execute("modbus-connection", { .id = "invalid-write", .deviceId = "modbus-device", .deviceCode = "MODBUS-1", .kind = "write", .payload = modbusWrite(2) });
@@ -1554,50 +1610,39 @@ void testAcquisitionCycle() {
     collector::AcquisitionCycle cycle;
     std::vector<collector::ProtocolAction> actions;
     collector::ProtocolAction response;
-    response.parsed.rawPayloads = {{1, 2}};
-    response.parsed.rawPacketIds = {"ingress-1:frame:0"};
+    response.parsed.rawPayloads = { { 1, 2 } };
+    response.parsed.rawPacketIds = { "ingress-1:frame:0" };
     response.parsed.valuesJson = R"({"values":{"a":{"value":1}}})";
     (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     const auto firstId = actions.back().parsed.rawPacketIds.front();
-    require(actions.back().kind == collector::ProtocolActionKind::ObserveParsed,
-            "partial cycle published a history record");
-    response.parsed.rawPayloads = {{3, 4}};
-    response.parsed.rawPacketIds = {"ingress-2:frame:1"};
+    require(actions.back().kind == collector::ProtocolActionKind::ObserveParsed, "partial cycle published a history record");
+    response.parsed.rawPayloads = { { 3, 4 } };
+    response.parsed.rawPacketIds = { "ingress-2:frame:1" };
     response.parsed.valuesJson = R"({"values":{"b":{"value":2}}})";
     (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     const auto secondId = actions.back().parsed.rawPacketIds.front();
     cycle.finish(actions);
     const auto& record = first(actions, collector::ProtocolActionKind::PublishParsed);
-    require(record.kind == collector::ProtocolActionKind::PublishParsed &&
-            record.parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{{1, 2}, {3, 4}} &&
-            record.parsed.rawPacketIds == std::vector<std::string>{firstId, secondId} && firstId != secondId,
-            "cycle lost response ordering or physical packet identity");
-    require(record.parsed.valuesJson.find("\"a\"") != std::string::npos &&
-            record.parsed.valuesJson.find("\"b\"") != std::string::npos,
-            "cycle did not merge all parsed points");
+    require(record.kind == collector::ProtocolActionKind::PublishParsed && record.parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ { 1, 2 }, { 3, 4 } } && record.parsed.rawPacketIds == std::vector<std::string>{ firstId, secondId } && firstId != secondId, "cycle lost response ordering or physical packet identity");
+    require(record.parsed.valuesJson.find("\"a\"") != std::string::npos && record.parsed.valuesJson.find("\"b\"") != std::string::npos, "cycle did not merge all parsed points");
     actions.clear();
     (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     cycle.fail();
     cycle.finish(actions);
-    require(has(actions, collector::ProtocolActionKind::DiscardCollection),
-            "failed cycle was persisted as complete history");
+    require(has(actions, collector::ProtocolActionKind::DiscardCollection), "failed cycle was persisted as complete history");
     actions.clear();
     (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     cycle.finish(actions);
-    require(has(actions, collector::ProtocolActionKind::PublishParsed) &&
-            first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads.size() == 1,
-            "failed cycle contaminated the next collection");
+    require(has(actions, collector::ProtocolActionKind::PublishParsed) && first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads.size() == 1, "failed cycle contaminated the next collection");
     actions.clear();
     const auto failedId = cycle.id("test-connection");
     cycle.fail();
     cycle.finish(actions);
-    require(actions.size() == 1 && actions[0].kind == collector::ProtocolActionKind::FinishAcquisition &&
-            actions[0].acquisitionId == failedId && actions[0].reason == "failed",
-            "zero-response timeout disappeared instead of completing its round");
+    require(actions.size() == 1 && actions[0].kind == collector::ProtocolActionKind::FinishAcquisition && actions[0].acquisitionId == failedId && actions[0].reason == "failed", "zero-response timeout disappeared instead of completing its round");
     require(cycle.id("test-connection") != failedId, "new scan reused a completed acquisition identity");
 }
 
@@ -1969,9 +2014,7 @@ void testS7() {
     packet.payload = s7ReadResponseForRequest(immediatePoll);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "S7 immediate poll response was not parsed");
-    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
-                std::vector<std::vector<std::uint8_t>>{packet.payload},
-            "S7 multi-element history did not retain its exact response as an array");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ packet.payload }, "S7 multi-element history did not retain its exact response as an array");
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedDisconnect, "S7 did not send the iot-manager ISO-DR packet after polling");
     const auto pollToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
 
@@ -1982,9 +2025,7 @@ void testS7() {
     packet.payload = s7ReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "S7 response was not parsed");
-    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
-                std::vector<std::vector<std::uint8_t>>{packet.payload},
-            "S7 history retained a response from another acquisition");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ packet.payload }, "S7 history retained a response from another acquisition");
     require(has(actions, collector::ProtocolActionKind::CompleteCommand), "S7 read did not complete");
     require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson.find("4660") != std::string::npos, "S7 DB value was not decoded");
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedDisconnect, "S7 read did not close only the PLC session");
@@ -2298,77 +2339,63 @@ void testRuntimeWritableContract() {
 
 void testAtomicStreamFinalizationContract() {
     runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
-        const std::vector<service::message::StreamField> deadLetterFields{{"source_entry_id", "10-0"}};
-        const std::vector<service::message::StreamField> resultFields{{"command_id", "command-1"}};
+        const std::vector<service::message::StreamField> deadLetterFields{ { "source_entry_id", "10-0" } };
+        const std::vector<service::message::StreamField> resultFields{ { "command_id", "command-1" } };
         // These are durable consumer inputs, not live notification streams.
         const std::array publications{
-            service::messaging::stream::StreamPublication{"dead-letter", deadLetterFields, 100},
-            service::messaging::stream::StreamPublication{"command-result", resultFields, 200}
+            service::messaging::stream::StreamPublication{ "dead-letter", deadLetterFields, 100 },
+            service::messaging::stream::StreamPublication{ "command-result", resultFields, 200 }
         };
-        (void)co_await redisCommand(redis, {"XGROUP", "CREATE", "command-input", "collector-group", "0", "MKSTREAM"});
-        (void)co_await redisCommand(redis, {"XADD", "command-input", "10-0", "command_id", "command-1"});
-        (void)co_await redisCommand(redis, {"XREADGROUP", "GROUP", "collector-group", "collector-0",
-            "COUNT", "1", "STREAMS", "command-input", ">"});
+        (void)co_await redisCommand(redis, { "XGROUP", "CREATE", "command-input", "collector-group", "0", "MKSTREAM" });
+        (void)co_await redisCommand(redis, { "XADD", "command-input", "10-0", "command_id", "command-1" });
+        (void)co_await redisCommand(redis, { "XREADGROUP", "GROUP", "collector-group", "collector-0", "COUNT", "1", "STREAMS", "command-input", ">" });
         const auto pendingKey = service::message::consumer::deadlineKey("command-input", "collector-group");
         const auto deadlineChannel = service::message::consumer::deadlineChannel("command-input", "collector-group");
         const auto deadLetterChannel = service::message::consumer::inputChannel("dead-letter");
         const auto resultChannel = service::message::consumer::inputChannel("command-result");
-        (void)co_await redisCommand(redis, {"ZADD", pendingKey, "9999999999999", "10-0"});
+        (void)co_await redisCommand(redis, { "ZADD", pendingKey, "9999999999999", "10-0" });
         auto subscription = redis.subscription();
         const std::string_view channels[]{ deadLetterChannel, resultChannel, deadlineChannel };
         co_await subscription.subscribe(channels);
         for (std::size_t index = 0; index < std::size(channels); ++index) {
             const auto event = co_await subscription.read();
-            require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed,
-                "finalization subscription was not confirmed before mutation");
+            require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed, "finalization subscription was not confirmed before mutation");
         }
 
-        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(
-                    redis, publications, "command-input", "collector-group", "foreign-consumer", "10-0", "test-process")),
-                "foreign consumer finalized another consumer's pending entry");
-        require(!(co_await redis.exists("dead-letter")) && !(co_await redis.exists("command-result")) &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-input"})) == 1,
-                "ownership rejection wrote output or deleted the pending input");
+        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(redis, publications, "command-input", "collector-group", "foreign-consumer", "10-0", "test-process")), "foreign consumer finalized another consumer's pending entry");
+        require(!(co_await redis.exists("dead-letter")) && !(co_await redis.exists("command-result")) && redisInteger(co_await redisCommand(redis, { "XLEN", "command-input" })) == 1, "ownership rejection wrote output or deleted the pending input");
 
         // A later output with the wrong Redis type must fail before any output is written.
         (void)co_await redis.set("command-result", "wrong-type");
         bool rejected = false;
         try {
             (void)co_await service::messaging::stream::publishAllAndAcknowledge(
-                redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process");
+                redis,
+                publications,
+                "command-input",
+                "collector-group",
+                "collector-0",
+                "10-0",
+                "test-process"
+            );
         } catch (const std::exception&) {
             rejected = true;
         }
         const auto wrongType = co_await redis.get("command-result");
-        require(rejected && !(co_await redis.exists("dead-letter")) &&
-                    wrongType && *wrongType == "wrong-type" &&
-                    redisInteger((co_await redisCommand(redis, {"XPENDING", "command-input", "collector-group"})).array()[0]) == 1,
-                "type preflight partially wrote outputs or acknowledged the input");
+        const auto pendingAfterRejection = co_await redisCommand(redis, { "XPENDING", "command-input", "collector-group" });
+        require(rejected && !(co_await redis.exists("dead-letter")) && wrongType && *wrongType == "wrong-type" && redisInteger(pendingAfterRejection.array()[0]) == 1, "type preflight partially wrote outputs or acknowledged the input");
         (void)co_await redis.del("command-result");
 
-        require(co_await service::messaging::stream::publishAllAndAcknowledge(
-                    redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process"),
-                "owned pending entry was not finalized");
-        const auto deadLetters = co_await redisCommand(redis, {"XRANGE", "dead-letter", "-", "+"});
-        const auto results = co_await redisCommand(redis, {"XRANGE", "command-result", "-", "+"});
-        require(deadLetters.array().size() == 1 && results.array().size() == 1 &&
-                    deadLetters.array()[0].array()[1].array()[0].string() == "source_entry_id" &&
-                    deadLetters.array()[0].array()[1].array()[1].string() == "10-0" &&
-                    results.array()[0].array()[1].array()[0].string() == "command_id" &&
-                    results.array()[0].array()[1].array()[1].string() == "command-1" &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-input"})) == 0 &&
-                    redisInteger((co_await redisCommand(redis, {"XPENDING", "command-input", "collector-group"})).array()[0]) == 0,
-                "finalization did not persist both payloads and ACK/delete the input");
+        require(co_await service::messaging::stream::publishAllAndAcknowledge(redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process"), "owned pending entry was not finalized");
+        const auto deadLetters = co_await redisCommand(redis, { "XRANGE", "dead-letter", "-", "+" });
+        const auto results = co_await redisCommand(redis, { "XRANGE", "command-result", "-", "+" });
+        const auto pendingAfterFinalization = co_await redisCommand(redis, { "XPENDING", "command-input", "collector-group" });
+        require(deadLetters.array().size() == 1 && results.array().size() == 1 && deadLetters.array()[0].array()[1].array()[0].string() == "source_entry_id" && deadLetters.array()[0].array()[1].array()[1].string() == "10-0" && results.array()[0].array()[1].array()[0].string() == "command_id" && results.array()[0].array()[1].array()[1].string() == "command-1" && redisInteger(co_await redisCommand(redis, { "XLEN", "command-input" })) == 0 && redisInteger(pendingAfterFinalization.array()[0]) == 0, "finalization did not persist both payloads and ACK/delete the input");
         co_await expectPubSub(subscription, deadLetterChannel, deadLetters.array()[0].array()[0].string());
         co_await expectPubSub(subscription, resultChannel, results.array()[0].array()[0].string());
         co_await expectPubSub(subscription, deadlineChannel, "10-0");
-        require((co_await redisCommand(redis, {"ZSCORE", pendingKey, "10-0"})).kind() == ruvia::redis_value::kind_type::null,
-            "finalization left a pending visibility deadline after ACK");
-        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(
-                    redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process")) &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", "dead-letter"})) == 1 &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-result"})) == 1,
-                "already finalized input produced duplicate output");
+        require((co_await redisCommand(redis, { "ZSCORE", pendingKey, "10-0" })).kind() == ruvia::redis_value::kind_type::null, "finalization left a pending visibility deadline after ACK");
+        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process")) && redisInteger(co_await redisCommand(redis, { "XLEN", "dead-letter" })) == 1 && redisInteger(co_await redisCommand(redis, { "XLEN", "command-result" })) == 1, "already finalized input produced duplicate output");
         (void)co_await redis.publish(deadLetterChannel, "test:finalized");
         co_await expectPubSub(subscription, deadLetterChannel, "test:finalized");
     });
@@ -2471,14 +2498,10 @@ void testRealtimeProjectionContract() {
     require(keys == expected, "explicit process identity changed persisted message keys");
     const auto otherWorker = scopedKeys(3, "process-a");
     const auto otherProcess = scopedKeys(2, "process-b");
-    for (std::size_t index = 0; index < keys.size(); ++index)
-        require(keys[index] != otherWorker[index] && keys[index] != otherProcess[index],
-                "message key collided across Worker or process identity");
-    require(service::message::workerWakeStream(std::nullopt, "process-a") ==
-                "iot:service:process-a:work-available" &&
-                service::message::sharedWakeStream("process-b") !=
-                    service::message::sharedWakeStream("process-a"),
-            "shared wake stream lost process isolation");
+    for (std::size_t index = 0; index < keys.size(); ++index) {
+        require(keys[index] != otherWorker[index] && keys[index] != otherProcess[index], "message key collided across Worker or process identity");
+    }
+    require(service::message::workerWakeStream(std::nullopt, "process-a") == "iot:service:process-a:work-available" && service::message::sharedWakeStream("process-b") != service::message::sharedWakeStream("process-a"), "shared wake stream lost process isolation");
     collector::RuntimeSnapshot original;
     collector::RealtimeDeviceDefinition device;
     device.id = "019fd9f6-4bd5-7ec3-80ff-0ba381987024";
@@ -2520,11 +2543,8 @@ void testEdgeSessionOwnership() {
     const auto parsed = service::edge::session_state::parse(encoded);
     require(parsed && parsed->epoch == 22 && parsed->protocolVersion == 5 && parsed->workerIndex == 1, "edge routing identity did not round trip");
     require(parsed->instanceId == instance, "edge owner instance was lost");
-    require(encoded == "22|5|1|01970000-1234-7000-8000-000000000123",
-            "edge session persisted format changed");
-    require(service::edge::session_state::value(22, 5, 1,
-                "01970000-1234-7000-8000-000000000124") != encoded,
-            "edge sessions collide between process incarnations");
+    require(encoded == "22|5|1|01970000-1234-7000-8000-000000000123", "edge session persisted format changed");
+    require(service::edge::session_state::value(22, 5, 1, "01970000-1234-7000-8000-000000000124") != encoded, "edge sessions collide between process incarnations");
     require(!service::edge::session_state::parse("22|5").has_value(), "incomplete routing identity was accepted");
     require(!service::edge::session_state::parse("22|5|1|bad-instance").has_value(), "invalid owner instance was accepted");
 }
@@ -2539,19 +2559,118 @@ void testLatestProjectionRejectsRedisErrors() {
     require(rejected, "latest-value projection ignored a Redis pipeline error");
 }
 
+void testPipelineScriptCommandEncoding() {
+    RecordingScriptRedis redis;
+    auto pipeline = redis.pipeline();
+    const std::string binary("a\0b", 3);
+    service::access::event::queue(pipeline, "event-sha", "event-a", "telemetry", "device-a", "CODE", 1234, binary, "process-a");
+    const std::vector<std::string> expectedEvent{
+        "EVALSHA",
+        "event-sha",
+        "3",
+        service::message::access::stream::event(),
+        "iot:open-access:event:published:telemetry:event-a",
+        "iot:service:process-a:work-available",
+        "100000",
+        "604800",
+        "100000",
+        "webhook",
+        "event_id",
+        "event-a",
+        "event_type",
+        "telemetry",
+        "device_id",
+        "device-a",
+        "device_code",
+        "CODE",
+        "occurred_at_ms",
+        "1234",
+        "data_json",
+        binary
+    };
+    require(pipeline.commands.size() == 1 && pipeline.commands[0] == expectedEvent, "access pipeline changed EVALSHA key/argument ordering or bytes");
+
+    const service::edge::metadata::NodeSnapshot snapshot{
+        { "device-a", { "link-a", "CODE", "Modbus", "change", 45000 } }
+    };
+    service::edge::metadata::queueStoreNode(pipeline, "node-a", snapshot);
+    const std::vector<std::string> expectedMetadata{
+        "EVAL",
+        std::string(service::edge::metadata::kStoreNodeScript),
+        "1",
+        service::message::edge::metadataKey("node-a"),
+        "device-a",
+        "6:link-a4:CODE6:Modbus6:change5:45000"
+    };
+    require(pipeline.commands.size() == 2 && pipeline.commands[1] == expectedMetadata, "edge metadata pipeline changed EVAL script or encoded catalog bytes");
+
+    service::messaging::stream::queueAddAndWake(
+        pipeline,
+        "test:stream",
+        { { "payload", binary }, { "empty", "" } },
+        2,
+        service::message::WorkerStreamTask::Telemetry,
+        73,
+        "process-a"
+    );
+    const auto wakeStream = service::message::workerWakeStream(2, "process-a");
+    const std::vector<std::string> expectedStream{
+        "EVAL",
+        std::string(service::messaging::stream::kAddAndWakeScript),
+        "4",
+        "test:stream",
+        wakeStream,
+        service::message::consumer::inputChannel("test:stream"),
+        service::message::consumer::inputChannel(wakeStream),
+        "73",
+        "100000",
+        "telemetry",
+        "payload",
+        binary,
+        "empty",
+        ""
+    };
+    require(pipeline.commands.size() == 3 && pipeline.commands[2] == expectedStream, "stream pipeline changed EVAL wake keys, capacities or binary fields");
+
+    RecordingScriptRedis alertRedis;
+    service::message::ParsedDeviceMessage first;
+    first.deviceId = "device-a";
+    first.observedAtMs = 1234;
+    auto second = first;
+    second.deviceId = "device-b";
+    second.observedAtMs = 5678;
+    runTask(service::alert::metadata::schedule(alertRedis, { first, second }, "process-a"));
+    const auto sharedWakeStream = service::message::workerWakeStream(std::nullopt, "process-a");
+    const std::vector<std::vector<std::string>> expectedAlerts{
+        { "EVALSHA", "recorded-script-sha", "4", service::alert::metadata::offlineDurationKey("device-a"), service::alert::metadata::offlineDeadlinesKey(), sharedWakeStream, service::message::consumer::inputChannel(sharedWakeStream), "1234" },
+        { "EVALSHA", "recorded-script-sha", "4", service::alert::metadata::offlineDurationKey("device-b"), service::alert::metadata::offlineDeadlinesKey(), sharedWakeStream, service::message::consumer::inputChannel(sharedWakeStream), "5678" }
+    };
+    require(alertRedis.scripts == std::vector<std::string>{ std::string(service::alert::metadata::kScheduleScript) } && alertRedis.commands == expectedAlerts, "alert pipeline changed loaded script, per-device keys or observed times");
+
+    RecordingScriptRedis latestRedis;
+    std::string sha;
+    const std::vector<std::vector<std::string>> calls{
+        { "key-a", "key-b", binary, "" },
+        { "key-c", "key-d", "2" }
+    };
+    const auto results = runTask(service::telemetry::latest::evalBatch(latestRedis, "latest-script", sha, 2, calls, "test latest batch"));
+    const std::vector<std::vector<std::string>> expectedLatest{
+        { "EVALSHA", "recorded-script-sha", "2", "key-a", "key-b", binary, "" },
+        { "EVALSHA", "recorded-script-sha", "2", "key-c", "key-d", "2" }
+    };
+    require(latestRedis.scripts == std::vector<std::string>{ "latest-script" } && latestRedis.commands == expectedLatest && results == std::vector<std::int64_t>{ 1, 1 }, "latest pipeline changed EVALSHA key counts, call boundaries or argument bytes");
+}
+
 void testLatestProjectionRefreshesPreservedElementMetadata() {
     runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
         const auto latestKey = service::message::telemetry::latestKey("device-1");
         const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
-        (void)co_await redisCommand(redis, {"HSET", latestKey, "_device_id", "device-1",
-            "_element_ids", "{\"temperature\":true}", "temperature",
-            R"({"id":"temperature","name":"Old Name","value":"27.5","observedAt":1800000000000,"source":"collector"})"});
-        (void)co_await redisCommand(redis, {"HSET", runtimeKey, "device_id", "device-1",
-            "online_until_ms", "2000000000000", "state", "online"});
+        (void)co_await redisCommand(redis, { "HSET", latestKey, "_device_id", "device-1", "_element_ids", "{\"temperature\":true}", "temperature", R"({"id":"temperature","name":"Old Name","value":"27.5","observedAt":1800000000000,"source":"collector"})" });
+        (void)co_await redisCommand(redis, { "HSET", runtimeKey, "device_id", "device-1", "online_until_ms", "2000000000000", "state", "online" });
         const auto channel = service::message::live::channel(service::message::live::topic::kDeviceRealtime);
         auto subscription = redis.subscription();
         co_await subscribeConfirmed(subscription, channel);
-        LatestProjectionContext context{{}, redis};
+        LatestProjectionContext context{ {}, redis };
         co_await service::telemetry::latest::projectDevice(context, "device-1");
         co_await expectPubSub(subscription, channel, "device-1");
         const auto stored = co_await redisField(redis, latestKey, "temperature");
@@ -2562,15 +2681,9 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
         const auto value = point->get<ruvia::string>("value");
         const auto observedAt = point->get<ruvia::int64>("observedAt");
         const auto source = point->get<ruvia::string>("source");
-        require(name && name->view() == "New Name" && unit && unit->view() == "℃" &&
-                    value && value->view() == "27.5" && observedAt &&
-                    static_cast<std::int64_t>(*observedAt) == 1800000000000 &&
-                    source && source->view() == "collector",
-                "projection notification did not expose refreshed metadata with preserved live value");
-        require((co_await redisField(redis, runtimeKey, "state")) == "online" &&
-                    (co_await redisField(redis, runtimeKey, "online_until_ms")) == "2000000000000" &&
-                    (co_await redisCommand(redis, {"ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1"})).string() == "2000000000000",
-                "metadata refresh lost the preserved runtime state or deadline");
+        require(name && name->view() == "New Name" && unit && unit->view() == "℃" && value && value->view() == "27.5" && observedAt && static_cast<std::int64_t>(*observedAt) == 1800000000000 && source && source->view() == "collector", "projection notification did not expose refreshed metadata with preserved live value");
+        const auto preservedOnlineDeadline = co_await redisCommand(redis, { "ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1" });
+        require((co_await redisField(redis, runtimeKey, "state")) == "online" && (co_await redisField(redis, runtimeKey, "online_until_ms")) == "2000000000000" && preservedOnlineDeadline.string() == "2000000000000", "metadata refresh lost the preserved runtime state or deadline");
         (void)co_await redis.publish(channel, "test:projection-complete");
         co_await expectPubSub(subscription, channel, "test:projection-complete");
     });
@@ -2580,40 +2693,30 @@ void testLatestProjectionRejectsInvalidPreservedDeadline() {
     runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
         const auto latestKey = service::message::telemetry::latestKey("device-1");
         const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
-        (void)co_await redisCommand(redis, {"HSET", latestKey, "_device_id", "device-1",
-            "_element_ids", "{\"temperature\":true}"});
-        (void)co_await redisCommand(redis, {"HSET", runtimeKey, "device_id", "device-1",
-            "online_until_ms", "not-a-number"});
-        (void)co_await redisCommand(redis, {"ZADD", service::telemetry::latest::onlineDeadlinesKey(), "123", "device-1"});
+        (void)co_await redisCommand(redis, { "HSET", latestKey, "_device_id", "device-1", "_element_ids", "{\"temperature\":true}" });
+        (void)co_await redisCommand(redis, { "HSET", runtimeKey, "device_id", "device-1", "online_until_ms", "not-a-number" });
+        (void)co_await redisCommand(redis, { "ZADD", service::telemetry::latest::onlineDeadlinesKey(), "123", "device-1" });
         const auto channel = service::message::live::channel(service::message::live::topic::kDeviceRealtime);
         auto subscription = redis.subscription();
         co_await subscribeConfirmed(subscription, channel);
-        LatestProjectionContext context{{}, redis};
+        LatestProjectionContext context{ {}, redis };
         co_await service::telemetry::latest::projectDevice(context, "device-1");
         co_await expectPubSub(subscription, channel, "device-1");
-        require((co_await redisCommand(redis, {"ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1"})).kind() ==
-                    ruvia::redis_value::kind_type::null &&
-                    (co_await redisField(redis, runtimeKey, "online_until_ms")).empty() &&
-                    (co_await redisField(redis, runtimeKey, "state")) == "offline",
-                "invalid preserved deadline survived projection recovery");
+        require((co_await redisCommand(redis, { "ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1" })).kind() == ruvia::redis_value::kind_type::null && (co_await redisField(redis, runtimeKey, "online_until_ms")).empty() && (co_await redisField(redis, runtimeKey, "state")) == "offline", "invalid preserved deadline survived projection recovery");
     });
 }
 
 void testAlertScheduleSkipsInvalidStoredDuration() {
     runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
-        (void)co_await redisCommand(redis, {"HSET", service::alert::metadata::offlineDurationKey("device-1"),
-            "invalid-rule", "not-a-duration", "valid-rule", "1000"});
+        (void)co_await redisCommand(redis, { "HSET", service::alert::metadata::offlineDurationKey("device-1"), "invalid-rule", "not-a-duration", "valid-rule", "1000" });
         service::message::ParsedDeviceMessage message;
         message.deviceId = "device-1";
         message.deviceCode = "D1";
         message.observedAtMs = 1700000000000;
-        co_await service::alert::metadata::schedule(redis, std::vector{message}, "collector-test-instance");
+        co_await service::alert::metadata::schedule(redis, std::vector{ message }, "collector-test-instance");
         const auto deadlines = service::alert::metadata::offlineDeadlinesKey();
-        require((co_await redisCommand(redis, {"ZSCORE", deadlines, "invalid-rule"})).kind() ==
-                    ruvia::redis_value::kind_type::null &&
-                    (co_await redisCommand(redis, {"ZSCORE", deadlines, "valid-rule"})).string() == "1700000001000" &&
-                    redisInteger(co_await redisCommand(redis, {"ZCARD", deadlines})) == 1,
-                "alert scheduling did not skip invalid duration while retaining the valid rule");
+        const auto validRuleDeadline = co_await redisCommand(redis, { "ZSCORE", deadlines, "valid-rule" });
+        require((co_await redisCommand(redis, { "ZSCORE", deadlines, "invalid-rule" })).kind() == ruvia::redis_value::kind_type::null && validRuleDeadline.string() == "1700000001000" && redisInteger(co_await redisCommand(redis, { "ZCARD", deadlines })) == 1, "alert scheduling did not skip invalid duration while retaining the valid rule");
     });
 }
 
@@ -2669,14 +2772,14 @@ void testPacketLog() {
     std::filesystem::last_write_time(
         staleWorkerLog,
         std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 15),
-        ignored);
+        ignored
+    );
 
     packetLog::Config config;
     config.directory = directory;
     config.level = packetLog::Level::Debug;
     packetLog::initialize(std::move(config));
-    require(!std::filesystem::exists(staleWorkerLog),
-            "packet log retention did not remove an old worker basename");
+    require(!std::filesystem::exists(staleWorkerLog), "packet log retention did not remove an old worker basename");
     require(packetLog::enabled(packetLog::Level::Debug) && packetLog::enabled(packetLog::Level::Error) && !packetLog::enabled(packetLog::Level::Trace) && !packetLog::enabled(packetLog::Level::Off), "packet log level filter does not follow the configured level");
 
     packetLog::Context context;
@@ -2694,12 +2797,16 @@ void testPacketLog() {
     const auto flushDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!flushed && std::chrono::steady_clock::now() < flushDeadline) {
         for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-            if (!entry.is_regular_file()) continue;
+            if (!entry.is_regular_file()) {
+                continue;
+            }
             std::ifstream input(entry.path());
-            const std::string current{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+            const std::string current{ std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
             flushed = flushed || current.find("event=\"RX_BYTES\"") != std::string::npos;
         }
-        if (!flushed) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!flushed) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
     require(flushed, "low-volume debug log was not flushed before shutdown");
     packetLog::write(packetLog::Level::Warn, "TIMEOUT", context, {}, "modbus_response_timeout");
@@ -2709,18 +2816,17 @@ void testPacketLog() {
     }).join();
 
     collector::RuntimeSnapshot snapshot;
-    snapshot.links.push_back({.id = "diagnostic-link", .protocol = "Modbus"});
-    const std::map<std::string, std::size_t, std::less<>> linkIndexes{{"diagnostic-link", 0}};
+    snapshot.links.push_back({ .id = "diagnostic-link", .protocol = "Modbus" });
+    const std::map<std::string, std::size_t, std::less<>> linkIndexes{ { "diagnostic-link", 0 } };
     std::map<std::string, collector::ProtocolConnectionInfo, std::less<>> connections{
-        {"diagnostic-connection", {.connectionId = "diagnostic-connection", .linkId = "diagnostic-link",
-            .remoteAddress = "127.0.0.1:1502", .sessionEpoch = 19}}};
+        { "diagnostic-connection", { .connectionId = "diagnostic-connection", .linkId = "diagnostic-link", .remoteAddress = "127.0.0.1:1502", .sessionEpoch = 19 } }
+    };
     std::map<std::string, std::set<std::string>, std::less<>> routes{
-        {"diagnostic-connection", {"device-a", "device-b"}}};
+        { "diagnostic-connection", { "device-a", "device-b" } }
+    };
     collector::CollectorPacketService packets(5, snapshot, linkIndexes, connections, routes);
     require(packets.captureBytes(), "collector packet service did not honor the active debug level");
-    collector::IngressPacket ingress{.messageId = "diagnostic-packet", .linkId = "diagnostic-link",
-        .connectionId = "diagnostic-connection", .remoteAddress = "127.0.0.1:1502",
-        .sessionEpoch = 19, .payload = {0xAB, 0xCD}};
+    collector::IngressPacket ingress{ .messageId = "diagnostic-packet", .linkId = "diagnostic-link", .connectionId = "diagnostic-connection", .remoteAddress = "127.0.0.1:1502", .sessionEpoch = 19, .payload = { 0xAB, 0xCD } };
     packets.ingressReceived(ingress);
     packets.ingressDropped(ingress);
     service::message::ProtocolTask discovery;
@@ -2729,8 +2835,9 @@ void testPacketLog() {
     discovery.linkId = "diagnostic-link";
     discovery.messageId = "diagnostic-discovery";
     packets.broadcastTarget(discovery, "diagnostic-connection", "diagnostic-child");
-    collector::ProtocolAction completion{.connectionId = "diagnostic-connection",
-        .commandId = "diagnostic-child", .reason = "response_timeout"};
+    collector::ProtocolAction completion{ .connectionId = "diagnostic-connection",
+                                          .commandId = "diagnostic-child",
+                                          .reason = "response_timeout" };
     packets.commandCompleted(completion, &discovery, false);
     // Context attribution observes this Worker's current state, not a stale copy.
     connections.at("diagnostic-connection").remoteAddress = "127.0.0.1:2502";
@@ -2758,28 +2865,15 @@ void testPacketLog() {
         const auto eventAt = content.find("event=\"" + std::string(event) + "\"");
         require(eventAt != std::string::npos, "collector diagnostic event was not persisted");
         const auto start = content.rfind('\n', eventAt);
-        return content.substr(start == std::string::npos ? 0 : start + 1,
-            content.find('\n', eventAt) - (start == std::string::npos ? 0 : start + 1));
+        return content.substr(start == std::string::npos ? 0 : start + 1, content.find('\n', eventAt) - (start == std::string::npos ? 0 : start + 1));
     };
     const auto dropped = diagnosticLine("RX_DROPPED");
-    require(dropped.find("worker_id=5") != std::string::npos &&
-        dropped.find("device_code=\"device-a,device-b\"") != std::string::npos &&
-        dropped.find("protocol=\"Modbus\"") != std::string::npos &&
-        dropped.find("session_epoch=19") != std::string::npos &&
-        dropped.find("hex=\"AB CD\"") != std::string::npos &&
-        dropped.find("reason=\"raw_ingress_backpressure\"") != std::string::npos,
-        "collector ingress diagnostics lost packet ownership, attribution, bytes, or rejection reason");
+    require(dropped.find("worker_id=5") != std::string::npos && dropped.find("device_code=\"device-a,device-b\"") != std::string::npos && dropped.find("protocol=\"Modbus\"") != std::string::npos && dropped.find("session_epoch=19") != std::string::npos && dropped.find("hex=\"AB CD\"") != std::string::npos && dropped.find("reason=\"raw_ingress_backpressure\"") != std::string::npos, "collector ingress diagnostics lost packet ownership, attribution, bytes, or rejection reason");
     const auto target = diagnosticLine("BROADCAST_TARGET");
-    require(target.find("message_id=\"diagnostic-child\"") != std::string::npos &&
-        target.find("causation_id=\"diagnostic-discovery\"") != std::string::npos,
-        "collector broadcast diagnostics did not distinguish child and parent identities");
+    require(target.find("message_id=\"diagnostic-child\"") != std::string::npos && target.find("causation_id=\"diagnostic-discovery\"") != std::string::npos, "collector broadcast diagnostics did not distinguish child and parent identities");
     const auto bound = diagnosticLine("DEVICE_BOUND");
-    require(bound.find("remote=\"127.0.0.1:2502\"") != std::string::npos &&
-        bound.find("session_epoch=20") != std::string::npos,
-        "collector action diagnostics retained a stale connection snapshot");
-    require(content.find("reason=\"deadline_expired_without_protocol_action\"") != std::string::npos &&
-        content.find("reason=\"response_timeout\"") != std::string::npos,
-        "collector diagnostic service lost deadline or command failure events");
+    require(bound.find("remote=\"127.0.0.1:2502\"") != std::string::npos && bound.find("session_epoch=20") != std::string::npos, "collector action diagnostics retained a stale connection snapshot");
+    require(content.find("reason=\"deadline_expired_without_protocol_action\"") != std::string::npos && content.find("reason=\"response_timeout\"") != std::string::npos, "collector diagnostic service lost deadline or command failure events");
     std::filesystem::remove_all(directory, ignored);
 }
 
@@ -2823,10 +2917,8 @@ void testRuntimeReconcile() {
     debugUpdate.links.front().debugEnabled = true;
     debugUpdate.devices.front().debugEnabled = true;
     const auto debugPlan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, debugUpdate);
-    require(debugPlan.affectedLinks.empty() && debugPlan.refreshClientSessions.empty() &&
-        debugPlan.restartLinks.empty() && debugPlan.restartClientTargets.empty(), "debug switches restarted live protocol sessions");
-    require(collector::config::signature(previous) != collector::config::signature(debugUpdate),
-        "debug switches were omitted from configuration publication");
+    require(debugPlan.affectedLinks.empty() && debugPlan.refreshClientSessions.empty() && debugPlan.restartLinks.empty() && debugPlan.restartClientTargets.empty(), "debug switches restarted live protocol sessions");
+    require(collector::config::signature(previous) != collector::config::signature(debugUpdate), "debug switches were omitted from configuration publication");
 
     auto deviceUpdate = previous;
     deviceUpdate.devices.front().readInterval = 10;
@@ -2969,8 +3061,7 @@ void testTcpServerListenersAreWorkerLocal() {
                    return state.state == "listening";
                });
     };
-    require(hasListening(0) && hasListening(1),
-            "both Collector Workers must establish local TCP listeners");
+    require(hasListening(0) && hasListening(1), "both Collector Workers must establish local TCP listeners");
     require(!std::ranges::any_of(states[0], [](const auto& state) {
         return state.state == "idle";
     }) && !std::ranges::any_of(states[1], [](const auto& state) {
@@ -2988,11 +3079,10 @@ void testTcpServerListenersAreWorkerLocal() {
     }
     io.restart();
     io.run_for(std::chrono::milliseconds(250));
-    require(!acceptedWorkers.empty(),
-            "no Collector Worker accepted a connection on its local listener");
+    require(!acceptedWorkers.empty(), "no Collector Worker accepted a connection on its local listener");
     require(std::ranges::all_of(acceptedWorkers, [](std::size_t worker) {
-        return worker == 0 || worker == 1;
-    }),
+                return worker == 0 || worker == 1;
+            }),
             "a TCP connection was handled by a foreign Collector Worker");
     for (const auto& client : clients) {
         std::error_code error;
@@ -3134,39 +3224,27 @@ void testTcpClientTargetsUseConnectionClaim() {
     const auto noState = [](collector::LinkState) {
     };
     service::common::UuidV7State firstWorkerUuids;
-    collector::TcpTransport firstWorker(firstWorkerUuids,
-        io,
-        scheduler0,
-        0,
-        2,
-        [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
-            require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
-            connectedWorkers.push_back(0);
-            (void)info;
-        },
-        noPacket,
-        noDisconnect,
-        noState,
-        claim,
-        release
-    );
+    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0, 0, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
+        require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
+        connectedWorkers.push_back(0);
+        (void)info;
+    },
+                                        noPacket,
+                                        noDisconnect,
+                                        noState,
+                                        claim,
+                                        release);
     service::common::UuidV7State secondWorkerUuids;
-    collector::TcpTransport secondWorker(secondWorkerUuids,
-        io,
-        scheduler1,
-        1,
-        2,
-        [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
-            require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
-            connectedWorkers.push_back(1);
-            (void)info;
-        },
-        noPacket,
-        noDisconnect,
-        noState,
-        claim,
-        release
-    );
+    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1, 1, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
+        require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
+        connectedWorkers.push_back(1);
+        (void)info;
+    },
+                                         noPacket,
+                                         noDisconnect,
+                                         noState,
+                                         claim,
+                                         release);
 
     firstWorker.reload(snapshot);
     secondWorker.reload(snapshot);
@@ -3372,109 +3450,186 @@ void testEdgeRawAcquisitionContract() {
     using Raw = service::edge::acquisition::RawAcquisition;
     namespace pb = service::edge::pb;
     collector::DeviceDefinition device;
-    device.id = "device"; device.code = "000000000001"; device.linkId = "link";
-    device.protocol = "Modbus"; device.modbusMode = "TCP"; device.slaveId = 1;
-    device.elements.push_back({.id="point", .name="Value", .dataType="UINT16",
-        .byteOrder="BIG_ENDIAN", .registerType="HOLDING_REGISTER", .address=100, .quantity=1,
-        .decimals=-1, .area="D", .size=2});
+    device.id = "device";
+    device.code = "000000000001";
+    device.linkId = "link";
+    device.protocol = "Modbus";
+    device.modbusMode = "TCP";
+    device.slaveId = 1;
+    device.elements.push_back({ .id = "point", .name = "Value", .dataType = "UINT16", .byteOrder = "BIG_ENDIAN", .registerType = "HOLDING_REGISTER", .address = 100, .quantity = 1, .decimals = -1, .area = "D", .size = 2 });
     pb::TelemetryRecord record;
-    record.set_record_id(std::string(16, 1)); record.set_device_id(std::string(16, 2));
-    record.set_observed_at_ms(1789582200000); record.set_protocol(pb::PROTOCOL_MODBUS);
+    record.set_record_id(std::string(16, 1));
+    record.set_device_id(std::string(16, 2));
+    record.set_observed_at_ms(1789582200000);
+    record.set_protocol(pb::PROTOCOL_MODBUS);
     const auto append = [&](std::span<const std::uint8_t> request, std::span<const std::uint8_t> response) {
         record.add_raw_requests(request.data(), request.size());
         record.add_raw_payloads(response.data(), response.size());
     };
     const auto check = [&](std::string_view value) {
         const auto decoded = Raw::decode(record, device);
-        require(decoded.valuesJson.find("\"value\":" + std::string(value)) != std::string::npos,
-                "edge request address/config did not decode the business response");
+        require(decoded.valuesJson.find("\"value\":" + std::string(value)) != std::string::npos, "edge request address/config did not decode the business response");
     };
     const auto reject = [&] {
         bool rejected = false;
-        try { (void)Raw::decode(record, device); } catch (const std::exception&) { rejected = true; }
+        try {
+            (void)Raw::decode(record, device);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
         require(rejected, "edge accepted an abnormal or mismatched business exchange");
     };
-    append(std::array<std::uint8_t,12>{0,7,0,0,0,6,1,3,0,100,0,1},
-           std::array<std::uint8_t,11>{0,7,0,0,0,5,1,3,2,0x12,0x34});
-    check("4660"); (*record.mutable_raw_payloads(0))[1] = 8; reject();
-    record.clear_raw_requests(); record.clear_raw_payloads(); device.modbusMode = "RTU";
-    auto request = withModbusCrc({1,3,0,100,0,1}); auto response = withModbusCrc({1,3,2,0x12,0x34});
-    append(request, response); check("4660"); response.back() ^= 1;
-    record.set_raw_payloads(0, response.data(), response.size()); reject();
-    record.clear_raw_requests(); record.clear_raw_payloads();
-    device.protocol = "S7"; record.set_protocol(pb::PROTOCOL_S7);
-    device.elements[0].area="DB"; device.elements[0].dbNumber=1; device.elements[0].start=0;
-    request=s7ReadRequest(12); request[24]=2; response=s7ReadResponse(12);
-    append(request,response); check("4660");
-    device.elements[0].decimals=1; check("4660");
-    device.elements[0].decimals=-1;
-    (*record.mutable_raw_payloads(0))[12]=13; reject();
-    const auto checkS7Number = [&](std::string_view type, std::vector<std::uint8_t> bytes,
-                                   std::int64_t decimals, std::string_view expected) {
-        record.clear_raw_requests(); record.clear_raw_payloads();
-        device.elements[0].dataType=type; device.elements[0].size=bytes.size();
-        device.elements[0].decimals=decimals;
-        request=s7ReadRequest(12); request[24]=static_cast<std::uint8_t>(bytes.size());
-        response=s7ReadResponse(12); response.resize(25); response.insert(response.end(),bytes.begin(),bytes.end());
-        response[3]=static_cast<std::uint8_t>(response.size());
-        response[16]=static_cast<std::uint8_t>(4+bytes.size()); response[24]=static_cast<std::uint8_t>(bytes.size()*8);
-        append(request,response); check(expected);
+    append(std::array<std::uint8_t, 12>{ 0, 7, 0, 0, 0, 6, 1, 3, 0, 100, 0, 1 }, std::array<std::uint8_t, 11>{ 0, 7, 0, 0, 0, 5, 1, 3, 2, 0x12, 0x34 });
+    check("4660");
+    (*record.mutable_raw_payloads(0))[1] = 8;
+    reject();
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    device.modbusMode = "RTU";
+    auto request = withModbusCrc({ 1, 3, 0, 100, 0, 1 });
+    auto response = withModbusCrc({ 1, 3, 2, 0x12, 0x34 });
+    append(request, response);
+    check("4660");
+    response.back() ^= 1;
+    record.set_raw_payloads(0, response.data(), response.size());
+    reject();
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    device.protocol = "S7";
+    record.set_protocol(pb::PROTOCOL_S7);
+    device.elements[0].area = "DB";
+    device.elements[0].dbNumber = 1;
+    device.elements[0].start = 0;
+    request = s7ReadRequest(12);
+    request[24] = 2;
+    response = s7ReadResponse(12);
+    append(request, response);
+    check("4660");
+    device.elements[0].decimals = 1;
+    check("4660");
+    device.elements[0].decimals = -1;
+    (*record.mutable_raw_payloads(0))[12] = 13;
+    reject();
+    const auto checkS7Number = [&](std::string_view type, std::vector<std::uint8_t> bytes, std::int64_t decimals, std::string_view expected) {
+        record.clear_raw_requests();
+        record.clear_raw_payloads();
+        device.elements[0].dataType = type;
+        device.elements[0].size = bytes.size();
+        device.elements[0].decimals = decimals;
+        request = s7ReadRequest(12);
+        request[24] = static_cast<std::uint8_t>(bytes.size());
+        response = s7ReadResponse(12);
+        response.resize(25);
+        response.insert(response.end(), bytes.begin(), bytes.end());
+        response[3] = static_cast<std::uint8_t>(response.size());
+        response[16] = static_cast<std::uint8_t>(4 + bytes.size());
+        response[24] = static_cast<std::uint8_t>(bytes.size() * 8);
+        append(request, response);
+        check(expected);
     };
-    checkS7Number("REAL",{0x40,0x20,0,0},1,"2.5");
-    checkS7Number("LREAL",{0x40,4,0,0,0,0,0,0},1,"2.5");
-    checkS7Number("UINT64",{0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff},1,"18446744073709551615");
-    device.elements[0].decimals=-1;
-    record.clear_raw_requests(); record.clear_raw_payloads();
-    device.elements[0].dataType="BOOL"; device.elements[0].startBit=5; device.elements[0].size=1;
-    request=s7ReadRequest(14); request[22]=1; request[30]=5;
-    response=s7ReadResponse(14); response.pop_back(); response[3]=26; response[16]=5;
-    response[22]=3; response[24]=1; response[25]=1;
-    append(request,response); check("1");
-    record.clear_raw_requests(); record.clear_raw_payloads();
-    device.elements[0].dataType="UINT16"; device.elements[0].size=2; device.elements[0].startBit=0;
-    device.protocol="MC"; device.elements[0].area="D"; device.elements[0].byteOrder="LITTLE_ENDIAN";
+    checkS7Number("REAL", { 0x40, 0x20, 0, 0 }, 1, "2.5");
+    checkS7Number("LREAL", { 0x40, 4, 0, 0, 0, 0, 0, 0 }, 1, "2.5");
+    checkS7Number("UINT64", { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, 1, "18446744073709551615");
+    device.elements[0].decimals = -1;
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    device.elements[0].dataType = "BOOL";
+    device.elements[0].startBit = 5;
+    device.elements[0].size = 1;
+    request = s7ReadRequest(14);
+    request[22] = 1;
+    request[30] = 5;
+    response = s7ReadResponse(14);
+    response.pop_back();
+    response[3] = 26;
+    response[16] = 5;
+    response[22] = 3;
+    response[24] = 1;
+    response[25] = 1;
+    append(request, response);
+    check("1");
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    device.elements[0].dataType = "UINT16";
+    device.elements[0].size = 2;
+    device.elements[0].startBit = 0;
+    device.protocol = "MC";
+    device.elements[0].area = "D";
+    device.elements[0].byteOrder = "LITTLE_ENDIAN";
     record.set_protocol(pb::PROTOCOL_MC);
-    for (bool four : {false, true}) {
+    for (bool four : { false, true }) {
         collector::mc::Connection connection;
         connection.frame = four ? collector::mc::FrameFormat::Binary4E : collector::mc::FrameFormat::Binary3E;
-        request=collector::mc::FrameCodec::read(connection, {.deviceCode=0xa8,.number=100,.count=1}, 7);
-        response={0xd0,0,0,0xff,0xff,3,0,4,0,0,0,0x34,0x12};
-        if (four) { response[0]=0xd4; response.insert(response.begin()+2,{7,0,0,0}); }
-        append(request,response); check("4660"); (*record.mutable_raw_payloads(0))[four ? 13 : 9]=1; reject();
-        record.clear_raw_requests(); record.clear_raw_payloads();
+        request = collector::mc::FrameCodec::read(connection, { .deviceCode = 0xa8, .number = 100, .count = 1 }, 7);
+        response = { 0xd0, 0, 0, 0xff, 0xff, 3, 0, 4, 0, 0, 0, 0x34, 0x12 };
+        if (four) {
+            response[0] = 0xd4;
+            response.insert(response.begin() + 2, { 7, 0, 0, 0 });
+        }
+        append(request, response);
+        check("4660");
+        (*record.mutable_raw_payloads(0))[four ? 13 : 9] = 1;
+        reject();
+        record.clear_raw_requests();
+        record.clear_raw_payloads();
     }
-    device.protocol="FINS"; device.elements[0].byteOrder="BIG_ENDIAN"; record.set_protocol(pb::PROTOCOL_FINS);
-    collector::fins::Connection fins{.destinationNode=20,.sourceNode=10};
-    request=collector::fins::FrameCodec::read(fins,{.memoryArea=0x82,.word=100,.count=1},7);
-    response={'F','I','N','S',0,0,0,24,0,0,0,2,0,0,0,0,0xc0,0,2,0,10,0,0,20,0,7,1,1,0,0,0x12,0x34};
-    append(request,response); check("4660"); (*record.mutable_raw_payloads(0))[25]=8; reject();
-    record.clear_raw_requests(); record.clear_raw_payloads();
-    device.protocol="DLT645"; record.set_protocol(pb::PROTOCOL_DLT645);
-    device.elements[0].dataType="BCD"; device.elements[0].length=4; device.elements[0].digits=2;
-    for (bool legacy : {false,true}) {
+    device.protocol = "FINS";
+    device.elements[0].byteOrder = "BIG_ENDIAN";
+    record.set_protocol(pb::PROTOCOL_FINS);
+    collector::fins::Connection fins{ .destinationNode = 20, .sourceNode = 10 };
+    request = collector::fins::FrameCodec::read(fins, { .memoryArea = 0x82, .word = 100, .count = 1 }, 7);
+    response = { 'F', 'I', 'N', 'S', 0, 0, 0, 24, 0, 0, 0, 2, 0, 0, 0, 0, 0xc0, 0, 2, 0, 10, 0, 0, 20, 0, 7, 1, 1, 0, 0, 0x12, 0x34 };
+    append(request, response);
+    check("4660");
+    (*record.mutable_raw_payloads(0))[25] = 8;
+    reject();
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    device.protocol = "DLT645";
+    record.set_protocol(pb::PROTOCOL_DLT645);
+    device.elements[0].dataType = "BCD";
+    device.elements[0].length = 4;
+    device.elements[0].digits = 2;
+    for (bool legacy : { false, true }) {
         device.dlt645Connection.version = legacy ? collector::dlt645::Version::V1997 : collector::dlt645::Version::V2007;
-        device.elements[0].guideHex=legacy?"9010":"00000000";
-        const auto di=collector::dlt645::FrameCodec::identifier(device.elements[0].guideHex,device.dlt645Connection.version);
-        auto data=di; data.insert(data.end(),{0x78,0x56});
-        request=collector::dlt645::FrameCodec::read(device.dlt645Connection,device.code,device.elements[0].guideHex);
-        response=collector::dlt645::FrameCodec::frame(device.code,legacy?0xa1:0xb1,data); append(request,response);
-        data=di; data.insert(data.end(),{0x34,0x12,1});
-        request=collector::dlt645::FrameCodec::read(device.dlt645Connection,device.code,device.elements[0].guideHex,1);
-        response=collector::dlt645::FrameCodec::frame(device.code,legacy?0x82:0x92,data); append(request,response);
-        check("123456.78"); record.mutable_raw_requests()->RemoveLast(); reject();
-        record.clear_raw_requests(); record.clear_raw_payloads();
+        device.elements[0].guideHex = legacy ? "9010" : "00000000";
+        const auto di = collector::dlt645::FrameCodec::identifier(device.elements[0].guideHex, device.dlt645Connection.version);
+        auto data = di;
+        data.insert(data.end(), { 0x78, 0x56 });
+        request = collector::dlt645::FrameCodec::read(device.dlt645Connection, device.code, device.elements[0].guideHex);
+        response = collector::dlt645::FrameCodec::frame(device.code, legacy ? 0xa1 : 0xb1, data);
+        append(request, response);
+        data = di;
+        data.insert(data.end(), { 0x34, 0x12, 1 });
+        request = collector::dlt645::FrameCodec::read(device.dlt645Connection, device.code, device.elements[0].guideHex, 1);
+        response = collector::dlt645::FrameCodec::frame(device.code, legacy ? 0x82 : 0x92, data);
+        append(request, response);
+        check("123456.78");
+        record.mutable_raw_requests()->RemoveLast();
+        reject();
+        record.clear_raw_requests();
+        record.clear_raw_payloads();
     }
-    device.protocol="SL651"; device.code="0001000102"; device.sl651ResponseMode="M2";
+    device.protocol = "SL651";
+    device.code = "0001000102";
+    device.sl651ResponseMode = "M2";
     device.elements.clear();
-    device.elements.push_back({.id="point",.name="Water",.functionCode="32",.guideHex="3923",.encoding="BCD",.length=4,.digits=3});
-    record.set_protocol(pb::PROTOCOL_SL651); record.set_function_code("32");
-    response=collector::sl651::detail::hexBytes("7E7E010001000102FFFA320031020076260917021000F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190330CE");
-    append({},response); check("\"00001.521\""); (*record.mutable_raw_payloads(0)).back() ^= 1; reject();
-    record.clear_raw_requests(); record.clear_raw_payloads();
-    request={0x7e,0x7e,0,1,0,1,2,1,0xff,0xfa,0x32,0x80,8,2,0,0,0x26,9,0x17,2,0x10,0,5};
-    const auto queryCrc=crc16(request);
-    request.push_back(static_cast<std::uint8_t>(queryCrc>>8)); request.push_back(static_cast<std::uint8_t>(queryCrc));
-    append(request,response); check("\"00001.521\"");
+    device.elements.push_back({ .id = "point", .name = "Water", .functionCode = "32", .guideHex = "3923", .encoding = "BCD", .length = 4, .digits = 3 });
+    record.set_protocol(pb::PROTOCOL_SL651);
+    record.set_function_code("32");
+    response = collector::sl651::detail::hexBytes("7E7E010001000102FFFA320031020076260917021000F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190330CE");
+    append({}, response);
+    check("\"00001.521\"");
+    (*record.mutable_raw_payloads(0)).back() ^= 1;
+    reject();
+    record.clear_raw_requests();
+    record.clear_raw_payloads();
+    request = { 0x7e, 0x7e, 0, 1, 0, 1, 2, 1, 0xff, 0xfa, 0x32, 0x80, 8, 2, 0, 0, 0x26, 9, 0x17, 2, 0x10, 0, 5 };
+    const auto queryCrc = crc16(request);
+    request.push_back(static_cast<std::uint8_t>(queryCrc >> 8));
+    request.push_back(static_cast<std::uint8_t>(queryCrc));
+    append(request, response);
+    check("\"00001.521\"");
 }
 
 void testEdgeParsedMessageContract() {
@@ -3499,16 +3654,21 @@ void testEdgeParsedMessageContract() {
     const auto roundTrip = service::message::parsedFrom(streamMessage);
     require(roundTrip.linkId == parsed.linkId, "edge parsed message lost its link identity");
     require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
-    parsed.rawPayloads = {{0x00, 0x01, 0xFF}, {0x03, 0x00, 0x04, 0x00}};
+    parsed.rawPayloads = { { 0x00, 0x01, 0xFF }, { 0x03, 0x00, 0x04, 0x00 } };
     service::message::StreamMessage rawStream{
-        .id = "2-0", .fields = service::message::parsedFields(parsed)};
-    require(service::message::parsedFrom(rawStream).rawPayloads == parsed.rawPayloads,
-            "edge history raw response array lost bytes or ordering in Redis serialization");
+        .id = "2-0",
+        .fields = service::message::parsedFields(parsed)
+    };
+    require(service::message::parsedFrom(rawStream).rawPayloads == parsed.rawPayloads, "edge history raw response array lost bytes or ordering in Redis serialization");
     using EdgeResponseProjection = service::edge::projection::ProjectionService;
     service::edge::metadata::Catalog catalog;
     catalog[parsed.connectionId][parsed.deviceId] = {
-        .linkId = parsed.linkId, .deviceCode = parsed.deviceCode,
-        .protocol = "S7", .storagePolicy = "report", .onlineWindowMs = 60000};
+        .linkId = parsed.linkId,
+        .deviceCode = parsed.deviceCode,
+        .protocol = "S7",
+        .storagePolicy = "report",
+        .onlineWindowMs = 60000
+    };
     service::edge::pb::TelemetryBatch batch;
     auto* record = batch.add_records();
     record->set_record_id(std::string(16, '\x01'));
@@ -3520,58 +3680,52 @@ void testEdgeParsedMessageContract() {
     record->add_raw_payloads(std::string("\x03\x00\x00\x04", 4));
     record->add_raw_packet_ids(std::string(16, '\x05'));
     std::vector<service::message::ParsedDeviceMessage> projected;
-    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
-                                            parsed.occurredAtMs, batch, projected);
-    require(projected.size() == 1 && projected.front().rawPayloads ==
-                std::vector<std::vector<std::uint8_t>>{{0x03, 0x00, 0x00, 0x04}},
-            "edge wire response did not become a single-item history raw payload array");
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, batch, projected);
+    require(projected.size() == 1 && projected.front().rawPayloads == std::vector<std::vector<std::uint8_t>>{ { 0x03, 0x00, 0x00, 0x04 } }, "edge wire response did not become a single-item history raw payload array");
     record->set_raw_payloads(0, std::string("\x7e\x7e\x00\xff", 4));
     projected.clear();
-    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
-                                            parsed.occurredAtMs, batch, projected);
-    require(projected.front().rawPayloads ==
-                std::vector<std::vector<std::uint8_t>>{{0x7e, 0x7e, 0x00, 0xff}},
-            "edge raw array did not preserve the exact response");
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, batch, projected);
+    require(projected.front().rawPayloads == std::vector<std::vector<std::uint8_t>>{ { 0x7e, 0x7e, 0x00, 0xff } }, "edge raw array did not preserve the exact response");
     record->clear_raw_packet_ids();
     record->add_raw_payloads(std::string("\x01\x02", 2));
     projected.clear();
-    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
-                                            parsed.occurredAtMs, batch, projected);
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, batch, projected);
     const auto legacyRecord = projected.front();
-    require(legacyRecord.rawPacketIds.size() == 2 &&
-                legacyRecord.rawPacketIds[0] != legacyRecord.rawPacketIds[1],
-            "legacy telemetry did not retain distinct original frame identities");
+    require(legacyRecord.rawPacketIds.size() == 2 && legacyRecord.rawPacketIds[0] != legacyRecord.rawPacketIds[1], "legacy telemetry did not retain distinct original frame identities");
     projected.clear();
-    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
-                                            parsed.occurredAtMs, batch, projected);
-    require(projected.front().rawPacketIds == legacyRecord.rawPacketIds,
-            "legacy telemetry replay changed original frame identities");
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, batch, projected);
+    require(projected.front().rawPacketIds == legacyRecord.rawPacketIds, "legacy telemetry replay changed original frame identities");
     pb::TelemetryBatch rawBatch;
     auto& rawRecord = *rawBatch.add_records();
     rawRecord = *record;
-    rawRecord.clear_raw_payloads(); rawRecord.clear_raw_packet_ids();
-    auto read = s7ReadRequest(22); read[24] = 2;
+    rawRecord.clear_raw_payloads();
+    rawRecord.clear_raw_packet_ids();
+    auto read = s7ReadRequest(22);
+    read[24] = 2;
     const auto reply = s7ReadResponse(22);
     rawRecord.add_raw_requests(read.data(), read.size());
     rawRecord.add_raw_payloads(reply.data(), reply.size());
     rawRecord.add_raw_packet_ids(std::string(16, 9));
     std::vector<pb::ConfigItem> configuration(2);
     auto* configured = configuration[0].mutable_device();
-    configured->set_device_id(record->device_id()); configured->set_protocol(pb::PROTOCOL_S7);
+    configured->set_device_id(record->device_id());
+    configured->set_protocol(pb::PROTOCOL_S7);
     std::uint8_t linkBytes[16]{};
     require(service::common::uuidBytes(parsed.linkId, linkBytes), "invalid raw link fixture");
     configured->set_endpoint_id(linkBytes, 16);
     auto* area = configuration[1].mutable_s7_area();
-    area->set_device_id(record->device_id()); area->set_element_id("word");
-    area->set_area("DB"); area->set_db_number(1); area->set_size(2); area->set_data_type("UINT16");
-    area->set_scale(1.0); area->set_decimals(-1);
+    area->set_device_id(record->device_id());
+    area->set_element_id("word");
+    area->set_area("DB");
+    area->set_db_number(1);
+    area->set_size(2);
+    area->set_data_type("UINT16");
+    area->set_scale(1.0);
+    area->set_decimals(-1);
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, rawBatch, projected, configuration);
     const auto rawProjected = projected.front();
-    require(rawProjected.rawPayloads == std::vector<std::vector<std::uint8_t>>{read, reply} &&
-        rawProjected.rawPacketIds.size() == 2 && rawProjected.rawPacketIds[0] == rawProjected.rawPacketIds[1] + ":request" &&
-        rawProjected.valuesJson.find("4660") != std::string::npos,
-        "platform projection did not retain paired original requests and responses");
+    require(rawProjected.rawPayloads == std::vector<std::vector<std::uint8_t>>{ read, reply } && rawProjected.rawPacketIds.size() == 2 && rawProjected.rawPacketIds[0] == rawProjected.rawPacketIds[1] + ":request" && rawProjected.valuesJson.find("4660") != std::string::npos, "platform projection did not retain paired original requests and responses");
     record->mutable_raw_payloads()->RemoveLast();
     record->add_raw_packet_ids(std::string(16, '\x05'));
     std::vector<service::edge::pb::TelemetryRecord> parts(3, *record);
@@ -3592,30 +3746,28 @@ void testEdgeParsedMessageContract() {
     parts[1].add_raw_packet_ids(std::string(16, '\x06'));
     parts[2].add_raw_packet_ids(std::string(16, '\x07'));
     const auto assembled = EdgeResponseProjection::assembleTelemetryParts(parts);
-    require(assembled.values_size() == 1 && assembled.values(0).element_id() == "temperature" &&
-                assembled.raw_payloads_size() == 2 && assembled.raw_payloads(0) == parts[1].raw_payloads(0) &&
-                assembled.raw_payloads(1) == parts[2].raw_payloads(0) &&
-                assembled.record_id() == parts[0].report_id() && assembled.report_id().empty() &&
-                assembled.part_count() == 0,
-            "SL651 upload did not reconstruct one complete history record with ordered raw frames");
+    require(assembled.values_size() == 1 && assembled.values(0).element_id() == "temperature" && assembled.raw_payloads_size() == 2 && assembled.raw_payloads(0) == parts[1].raw_payloads(0) && assembled.raw_payloads(1) == parts[2].raw_payloads(0) && assembled.record_id() == parts[0].report_id() && assembled.report_id().empty() && assembled.part_count() == 0, "SL651 upload did not reconstruct one complete history record with ordered raw frames");
     auto incomplete = parts;
     incomplete.pop_back();
     bool rejectedIncomplete = false;
-    try { (void)EdgeResponseProjection::assembleTelemetryParts(incomplete); }
-    catch (const std::runtime_error&) { rejectedIncomplete = true; }
+    try {
+        (void)EdgeResponseProjection::assembleTelemetryParts(incomplete);
+    } catch (const std::runtime_error&) {
+        rejectedIncomplete = true;
+    }
     require(rejectedIncomplete, "SL651 incomplete upload was published as a historical record");
     auto mixed = parts;
     mixed[2].set_device_id(std::string(16, '\x09'));
     bool rejectedMixed = false;
-    try { (void)EdgeResponseProjection::assembleTelemetryParts(mixed); }
-    catch (const std::runtime_error&) { rejectedMixed = true; }
+    try {
+        (void)EdgeResponseProjection::assembleTelemetryParts(mixed);
+    } catch (const std::runtime_error&) {
+        rejectedMixed = true;
+    }
     require(rejectedMixed, "SL651 upload mixed raw frames from different devices");
     RecordingRedis uploadRedis(0);
-    require(!runTask(EdgeResponseProjection::storeTelemetryPart(uploadRedis, parsed.connectionId, parts[0])),
-            "SL651 incomplete stored upload emitted telemetry");
-    require(uploadRedis.keys.size() == 1 && uploadRedis.keys[0].find(parsed.deviceId) != std::string::npos &&
-                uploadRedis.arguments.size() == 4 && uploadRedis.arguments[1] == "0" && uploadRedis.arguments[2] == "3",
-            "SL651 stored upload lost device isolation or part addressing");
+    require(!runTask(EdgeResponseProjection::storeTelemetryPart(uploadRedis, parsed.connectionId, parts[0])), "SL651 incomplete stored upload emitted telemetry");
+    require(uploadRedis.keys.size() == 1 && uploadRedis.keys[0].find(parsed.deviceId) != std::string::npos && uploadRedis.arguments.size() == 4 && uploadRedis.arguments[1] == "0" && uploadRedis.arguments[2] == "3", "SL651 stored upload lost device isolation or part addressing");
     require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge" && roundTrip.storagePolicy == "change", "edge parsed message did not round-trip required fields");
 
     auto invalidPolicy = streamMessage;
@@ -3660,25 +3812,12 @@ void testAtomicPendingCommandDispatch() {
 
     runRedisTest([&dispatches](const ruvia::redis_handle& redis) -> ruvia::task<void> {
         constexpr std::string_view queue = "test:pending-command-queue";
-        (void)co_await redisCommand(redis, {"XADD", queue, "1-0", "message_id", "previously-accepted"});
-        require(!(co_await service::command::dispatchPendingBatch(
-                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 2)) &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", queue})) == 1,
-                "capacity rejection partially enqueued a command batch");
-        require(co_await service::command::dispatchPendingBatch(
-                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3),
-                "batch within capacity was rejected");
-        const auto accepted = co_await redisCommand(redis, {"XRANGE", queue, "-", "+"});
-        require(accepted.array().size() == 3 &&
-                    accepted.array()[0].array()[0].string() == "1-0" &&
-                    accepted.array()[0].array()[1].array()[1].string() == "previously-accepted" &&
-                    accepted.array()[1].array()[1].array()[1].string() == dispatches[0].task.messageId &&
-                    accepted.array()[2].array()[1].array()[1].string() == dispatches[1].task.messageId,
-                "enqueue trimmed accepted commands or changed batch ordering");
-        require(!(co_await service::command::dispatchPendingBatch(
-                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3)) &&
-                    redisInteger(co_await redisCommand(redis, {"XLEN", queue})) == 3,
-                "full queue accepted or trimmed another command batch");
+        (void)co_await redisCommand(redis, { "XADD", queue, "1-0", "message_id", "previously-accepted" });
+        require(!(co_await service::command::dispatchPendingBatch(redis, queue, service::command::PendingQueueKind::Stream, dispatches, 2)) && redisInteger(co_await redisCommand(redis, { "XLEN", queue })) == 1, "capacity rejection partially enqueued a command batch");
+        require(co_await service::command::dispatchPendingBatch(redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3), "batch within capacity was rejected");
+        const auto accepted = co_await redisCommand(redis, { "XRANGE", queue, "-", "+" });
+        require(accepted.array().size() == 3 && accepted.array()[0].array()[0].string() == "1-0" && accepted.array()[0].array()[1].array()[1].string() == "previously-accepted" && accepted.array()[1].array()[1].array()[1].string() == dispatches[0].task.messageId && accepted.array()[2].array()[1].array()[1].string() == dispatches[1].task.messageId, "enqueue trimmed accepted commands or changed batch ordering");
+        require(!(co_await service::command::dispatchPendingBatch(redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3)) && redisInteger(co_await redisCommand(redis, { "XLEN", queue })) == 3, "full queue accepted or trimmed another command batch");
     });
 }
 
@@ -3705,14 +3844,13 @@ void testCollectorUuidOwnership() {
     // carry without relying on the speed of this test or a clock override.
     service::common::UuidV7State rollbackWorker{ .timestamp = firstWorker.timestamp + 60'000 };
     rollbackWorker.sequence[2] = 0x3F;
-    for (std::size_t index = 3; index < rollbackWorker.sequence.size(); ++index)
+    for (std::size_t index = 3; index < rollbackWorker.sequence.size(); ++index) {
         rollbackWorker.sequence[index] = 0xFF;
+    }
     const auto logicalTimestamp = rollbackWorker.timestamp;
     const auto carried = service::utils::nextUuid(rollbackWorker);
     require(rollbackWorker.timestamp == logicalTimestamp, "clock rollback must retain the logical timestamp");
-    require(rollbackWorker.sequence[1] == 1 && rollbackWorker.sequence[2] == 0 &&
-                rollbackWorker.sequence.back() == 0,
-            "UUID sequence carry must skip the variant bits");
+    require(rollbackWorker.sequence[1] == 1 && rollbackWorker.sequence[2] == 0 && rollbackWorker.sequence.back() == 0, "UUID sequence carry must skip the variant bits");
     require(carried[14] == '7' && carried[19] == '8', "sequence carry corrupted the UUID version or variant");
     const auto afterCarry = service::utils::nextUuid(rollbackWorker);
     require(carried < afterCarry, "UUID generation must remain monotonic while the clock is behind");
@@ -3721,12 +3859,8 @@ void testCollectorUuidOwnership() {
     rollbackWorker.sequence[0] = 0x0F;
     rollbackWorker.sequence[2] = 0x3F;
     const auto overflowed = service::utils::nextUuid(rollbackWorker);
-    require(rollbackWorker.timestamp == logicalTimestamp + 1,
-            "exhausting the 74-bit sequence must advance the logical timestamp");
-    require(afterCarry < overflowed && overflowed[14] == '7' &&
-                (overflowed[19] == '8' || overflowed[19] == '9' ||
-                 overflowed[19] == 'a' || overflowed[19] == 'b'),
-            "sequence overflow corrupted UUID ordering or layout");
+    require(rollbackWorker.timestamp == logicalTimestamp + 1, "exhausting the 74-bit sequence must advance the logical timestamp");
+    require(afterCarry < overflowed && overflowed[14] == '7' && (overflowed[19] == '8' || overflowed[19] == '9' || overflowed[19] == 'a' || overflowed[19] == 'b'), "sequence overflow corrupted UUID ordering or layout");
 }
 
 } // namespace
@@ -3788,6 +3922,7 @@ int main() {
         run("BOOL point value contract", testBooleanPointValueContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);
         run("edge session ownership", testEdgeSessionOwnership);
+        run("pipeline script command encoding", testPipelineScriptCommandEncoding);
         run("latest projection Redis errors", testLatestProjectionRejectsRedisErrors);
         run("latest projection metadata refresh",
             testLatestProjectionRefreshesPreservedElementMetadata);

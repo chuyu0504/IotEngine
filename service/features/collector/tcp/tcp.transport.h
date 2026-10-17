@@ -1,8 +1,5 @@
 #pragma once
 
-#include "service/common/uuid.h"
-#include "service/utils/uuid.h"
-
 #include <array>
 #include <asio.hpp>
 #include <cerrno>
@@ -21,14 +18,17 @@
 #include <utility>
 #include <vector>
 
+#include "service/common/uuid.h"
+#include "service/utils/uuid.h"
+
 #if defined(SO_REUSEPORT) && !defined(_WIN32)
 #include <sys/socket.h>
 #endif
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
-#include "service/features/collector/tcp/tcp.types.h"
 #include "service/features/collector/engine/engine.types.h"
 #include "service/features/collector/scheduling/scheduling.runtime.h"
+#include "service/features/collector/tcp/tcp.types.h"
 
 namespace service::collector {
 
@@ -561,13 +561,20 @@ class TcpTransport final {
                 self->owner.publish(self->link.id, "connected");
             };
             if (!addressError) {
-                currentAttempt->socket->async_connect({address, target.port}, connected);
+                currentAttempt->socket->async_connect({ address, target.port }, connected);
             } else {
                 currentAttempt->resolver = std::make_shared<asio::ip::tcp::resolver>(owner.ioContext_);
                 currentAttempt->resolver->async_resolve(target.ip, std::to_string(target.port), [self = shared_from_this(), currentAttempt, connected](const std::error_code& error, asio::ip::tcp::resolver::results_type endpoints) {
-                    if (self->attempt != currentAttempt || self->stopped || currentAttempt->cancelled) return;
-                    if (error) { self->fail(currentAttempt, error); return; }
-                    asio::async_connect(*currentAttempt->socket, endpoints, [connected](const std::error_code& error, const auto&) { connected(error); });
+                    if (self->attempt != currentAttempt || self->stopped || currentAttempt->cancelled) {
+                        return;
+                    }
+                    if (error) {
+                        self->fail(currentAttempt, error);
+                        return;
+                    }
+                    asio::async_connect(*currentAttempt->socket, endpoints, [connected](const std::error_code& error, const auto&) {
+                        connected(error);
+                    });
                 });
             }
         }
@@ -621,7 +628,9 @@ class TcpTransport final {
 
       private:
         static void closeSocket(const std::shared_ptr<Attempt>& currentAttempt) noexcept {
-            if (currentAttempt && currentAttempt->resolver) currentAttempt->resolver->cancel();
+            if (currentAttempt && currentAttempt->resolver) {
+                currentAttempt->resolver->cancel();
+            }
             if (!currentAttempt || !currentAttempt->socket) {
                 return;
             }

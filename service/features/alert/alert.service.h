@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,7 +25,6 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/common/worker.h"
 #include "service/features/access/access.service.h"
 #include "service/features/alert/alert.entity.h"
@@ -32,6 +32,7 @@
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/telemetry.protocol.h"
 #include "service/utils/number.h"
+#include "service/utils/uuid.h"
 
 namespace service::alert::metadata {
 
@@ -151,9 +152,17 @@ ruvia::task<void> schedule(
     for (const auto& message : messages) {
         const auto durationKey = offlineDurationKey(message.deviceId);
         const auto observedAt = std::to_string(message.observedAtMs);
-        const std::array<std::string_view, 4> keys{ durationKey, deadlinesKey, wakeStream, wakeChannel };
-        const std::array<std::string_view, 1> arguments{ observedAt };
-        pipeline.eval_sha(scriptSha, keys, arguments);
+        const std::array<std::string_view, 8> command{
+            "EVALSHA",
+            scriptSha,
+            "4",
+            durationKey,
+            deadlinesKey,
+            wakeStream,
+            wakeChannel,
+            observedAt
+        };
+        pipeline.command(std::span<const std::string_view>(command));
     }
     const auto replies = co_await std::move(pipeline).exec();
     service::utils::redis::requirePipelineSuccess("schedule offline alerts", replies);
@@ -290,8 +299,7 @@ inline ruvia::db_query refreshQuery() {
     ruvia::db_query query;
     const auto deviceId = query.cast(query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"device_id">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule"), Type::text);
     const auto ruleId = query.cast(query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"id">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule"), Type::text);
-    const auto durationText = query.case_when({ { query.unary(ruvia::db_unary_operator::is_null, query.column("value", "condition")), query.null_value() } },
-        query.cast(query.coalesce({ query.column("duration_seconds", "offline_duration"), query.value(300) }), Type::text));
+    const auto durationText = query.case_when({ { query.unary(ruvia::db_unary_operator::is_null, query.column("value", "condition")), query.null_value() } }, query.cast(query.coalesce({ query.column("duration_seconds", "offline_duration"), query.value(300) }), Type::text));
     query.select({ deviceId, ruleId, durationText, query.cast(query.coalesce({ query.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), query.value(0) }), Type::text), query.cast(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Type::text) }).distinct().from(service::alert::persistence::AlertRuleEntity::table_name(), "rule").join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"device_id">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule"))).join(ruvia::db_join_type::left, service::alert::persistence::AlertInputStateEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"device_id">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), Op::equal, query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"device_id">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule")), "state").join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements", { query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"conditions">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule") }), query.binary(query.binary(query.column("value", "condition"), Op::json_get_text, query.value("type")), Op::equal, query.value("offline")), "condition", { .lateral_ = true, .columns_ = { { .name_ = "value" } } }).join(ruvia::db_join_type::left, duration, query.value(true), "offline_duration", { .lateral_ = true }).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"deleted_at">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule"))).and_where(query.binary(query.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"status">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule"), Op::equal, query.value("enabled"))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"))).and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"status">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, query.value("enabled"))).add_order_by(deviceId).add_order_by(ruleId).add_order_by(durationText);
     return query;
 }
@@ -398,6 +406,7 @@ class AlertEvaluationService final {
     using Query = ruvia::db_query;
     using Op = ruvia::db_binary_operator;
     using Type = ruvia::db_data_type;
+
   public:
     // 消费 telemetry 告警复制流的一批条目（Dispatch 已规范化并修复 UTF-8，升级前的副本按需修复）：整批一次元数据读取与规则评估。
     // 失败时整批不确认；重放由 alert_input_state.message_id 与 alert_evaluation_receipt 保证幂等。
@@ -589,40 +598,24 @@ class AlertEvaluationService final {
         Query incoming(context.pool());
         for (auto index = begin; index < end; ++index) {
             const auto& evaluation = evaluations[index];
-            incoming.values({
-                incoming.cast(incoming.value(std::string_view(evaluation.ruleId)), Type::uuid),
-                incoming.cast(incoming.value(evaluation.matched), Type::boolean),
-                incoming.cast(incoming.value(std::string_view(evaluation.recordId)), Type::uuid),
-                incoming.cast(incoming.value(std::string_view(evaluation.deviceId)), Type::uuid),
-                incoming.cast(incoming.value(std::string_view(evaluation.severity)), Type::text),
-                incoming.cast(incoming.value(std::string_view(evaluation.message)), Type::text),
-                incoming.cast(incoming.value(std::string_view(evaluation.data)), Type::jsonb),
-                incoming.cast(incoming.value(std::string_view(evaluation.silence)), Type::integer),
-                incoming.cast(incoming.value(std::string_view(evaluation.recovery)), Type::text),
-                incoming.cast(incoming.value(std::string_view(evaluation.recoveryWait)), Type::integer),
-                incoming.cast(incoming.value(std::string_view(evaluation.ruleName)), Type::text),
-                incoming.cast(incoming.value(std::string_view(evaluation.deviceCode)), Type::text),
-                incoming.cast(incoming.value(occurredAtMs), Type::big_int),
-                incoming.cast(incoming.value(receiptId), Type::text)
-            });
+            incoming.values({ incoming.cast(incoming.value(std::string_view(evaluation.ruleId)), Type::uuid), incoming.cast(incoming.value(evaluation.matched), Type::boolean), incoming.cast(incoming.value(std::string_view(evaluation.recordId)), Type::uuid), incoming.cast(incoming.value(std::string_view(evaluation.deviceId)), Type::uuid), incoming.cast(incoming.value(std::string_view(evaluation.severity)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.message)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.data)), Type::jsonb), incoming.cast(incoming.value(std::string_view(evaluation.silence)), Type::integer), incoming.cast(incoming.value(std::string_view(evaluation.recovery)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.recoveryWait)), Type::integer), incoming.cast(incoming.value(std::string_view(evaluation.ruleName)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.deviceCode)), Type::text), incoming.cast(incoming.value(occurredAtMs), Type::big_int), incoming.cast(incoming.value(receiptId), Type::text) });
         }
 
         Query stateRows(context.pool());
         const auto initialRecovery = stateRows.case_when(
-            {{stateRows.column("matched", "incoming"), stateRows.null_value()}},
-            stateRows.call("now"));
+            { { stateRows.column("matched", "incoming"), stateRows.null_value() } },
+            stateRows.call("now")
+        );
         stateRows
-            .select({stateRows.column("rule_id", "incoming"),
-                     stateRows.column("matched", "incoming"), initialRecovery,
-                     stateRows.call("now"), stateRows.call("now")})
+            .select({ stateRows.column("rule_id", "incoming"), stateRows.column("matched", "incoming"), initialRecovery, stateRows.call("now"), stateRows.call("now") })
             .from("incoming", "incoming");
 
         Query states(context.pool());
         const auto recoveryStarted = states.case_when(
-            {{states.excluded(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"matched">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view()), states.null_value()},
-             {states.column(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"matched">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view(), "alert_rule_state"), states.call("now")}},
-            states.coalesce({states.column(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"recovery_started_at">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view(), "alert_rule_state"),
-                             states.call("now")}));
+            { { states.excluded(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"matched">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view()), states.null_value() },
+              { states.column(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"matched">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view(), "alert_rule_state"), states.call("now") } },
+            states.coalesce({ states.column(std::tuple_element_t<service::alert::persistence::AlertRuleStateEntity::column_index<"recovery_started_at">(), service::alert::persistence::AlertRuleStateEntity::columns_type>::name.view(), "alert_rule_state"), states.call("now") })
+        );
         using RuleState = persistence::AlertRuleStateEntity;
         states
             .insert_into(RuleState::table_name(), { RuleState::column<"rule_id">().name(), RuleState::column<"matched">().name(), RuleState::column<"recovery_started_at">().name(), RuleState::column<"last_evaluated_at">().name(), RuleState::column<"updated_at">().name() })
@@ -632,42 +625,37 @@ class AlertEvaluationService final {
 
         Query activeRecord(context.pool());
         activeRecord
-            .select(activeRecord.cast(activeRecord.value(std::int64_t{1}), Type::integer))
+            .select(activeRecord.cast(activeRecord.value(std::int64_t{ 1 }), Type::integer))
             .from(service::alert::persistence::OpenAlertRecordEntity::table_name(), "record")
-            .and_where(activeRecord.binary(activeRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal,
-                                          activeRecord.column("rule_id", "incoming")))
+            .and_where(activeRecord.binary(activeRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal, activeRecord.column("rule_id", "incoming")))
             .and_where(activeRecord.binary(
-                activeRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"status">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::in,
-                activeRecord.list({activeRecord.value("active"),
-                                   activeRecord.value("acknowledged")})));
+                activeRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"status">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"),
+                Op::in,
+                activeRecord.list({ activeRecord.value("active"), activeRecord.value("acknowledged") })
+            ));
         Query recentRecord(context.pool());
         const auto silenceWindow = recentRecord.binary(
-            recentRecord.column("silence_duration", "incoming"), Op::multiply,
-            recentRecord.cast(recentRecord.value("1 second"), Type::interval));
+            recentRecord.column("silence_duration", "incoming"),
+            Op::multiply,
+            recentRecord.cast(recentRecord.value("1 second"), Type::interval)
+        );
         recentRecord
-            .select(recentRecord.cast(recentRecord.value(std::int64_t{1}), Type::integer))
+            .select(recentRecord.cast(recentRecord.value(std::int64_t{ 1 }), Type::integer))
             .from(service::alert::persistence::OpenAlertRecordEntity::table_name(), "record")
-            .and_where(recentRecord.binary(recentRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal,
-                                          recentRecord.column("rule_id", "incoming")))
+            .and_where(recentRecord.binary(recentRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal, recentRecord.column("rule_id", "incoming")))
             .and_where(recentRecord.binary(
-                recentRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"triggered_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::greater,
-                recentRecord.binary(recentRecord.call("now"), Op::subtract, silenceWindow)));
+                recentRecord.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"triggered_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"),
+                Op::greater,
+                recentRecord.binary(recentRecord.call("now"), Op::subtract, silenceWindow)
+            ));
 
         Query createdRows(context.pool());
         createdRows
-            .select({createdRows.column("record_id", "incoming"),
-                     createdRows.column("rule_id", "incoming"),
-                     createdRows.column("device_id", "incoming"),
-                     createdRows.column("severity", "incoming"),
-                     createdRows.cast(createdRows.value("active"), Type::text),
-                     createdRows.column("message", "incoming"),
-                     createdRows.column("detail", "incoming"), createdRows.call("now")})
+            .select({ createdRows.column("record_id", "incoming"), createdRows.column("rule_id", "incoming"), createdRows.column("device_id", "incoming"), createdRows.column("severity", "incoming"), createdRows.cast(createdRows.value("active"), Type::text), createdRows.column("message", "incoming"), createdRows.column("detail", "incoming"), createdRows.call("now") })
             .from("incoming", "incoming")
             .and_where(createdRows.column("matched", "incoming"))
-            .and_where(createdRows.unary(ruvia::db_unary_operator::not_value,
-                                        createdRows.exists(activeRecord)))
-            .and_where(createdRows.unary(ruvia::db_unary_operator::not_value,
-                                        createdRows.exists(recentRecord)));
+            .and_where(createdRows.unary(ruvia::db_unary_operator::not_value, createdRows.exists(activeRecord)))
+            .and_where(createdRows.unary(ruvia::db_unary_operator::not_value, createdRows.exists(recentRecord)));
         Query created(context.pool());
         using Record = persistence::OpenAlertRecordEntity;
         created
@@ -678,75 +666,74 @@ class AlertEvaluationService final {
 
         Query resolved(context.pool());
         const auto reverseReady = resolved.binary(
-            resolved.binary(resolved.column("recovery_condition", "incoming"), Op::equal,
-                            resolved.value("reverse")),
+            resolved.binary(resolved.column("recovery_condition", "incoming"), Op::equal, resolved.value("reverse")),
             Op::and_value,
             resolved.binary(
-                resolved.unary(ruvia::db_unary_operator::is_not_null,
-                               resolved.column("recovery_started_at", "states")),
+                resolved.unary(ruvia::db_unary_operator::is_not_null, resolved.column("recovery_started_at", "states")),
                 Op::and_value,
                 resolved.binary(
-                    resolved.column("recovery_started_at", "states"), Op::less_equal,
+                    resolved.column("recovery_started_at", "states"),
+                    Op::less_equal,
                     resolved.binary(
-                        resolved.call("now"), Op::subtract,
+                        resolved.call("now"),
+                        Op::subtract,
                         resolved.binary(
-                            resolved.column("recovery_wait_seconds", "incoming"), Op::multiply,
-                            resolved.cast(resolved.value("1 second"), Type::interval))))));
+                            resolved.column("recovery_wait_seconds", "incoming"),
+                            Op::multiply,
+                            resolved.cast(resolved.value("1 second"), Type::interval)
+                        )
+                    )
+                )
+            )
+        );
         const auto autoSuffix = resolved.call(
-            "substring", {resolved.column("recovery_condition", "incoming"),
-                          resolved.cast(resolved.value(6), Type::integer)});
+            "substring",
+            { resolved.column("recovery_condition", "incoming"),
+              resolved.cast(resolved.value(6), Type::integer) }
+        );
         const auto autoSeconds = resolved.cast(
             resolved.null_if(autoSuffix, resolved.cast(resolved.value(""), Type::text)),
-            Type::integer);
-        const auto autoWait = resolved.coalesce({
-            autoSeconds, resolved.cast(resolved.value(0), Type::integer)});
+            Type::integer
+        );
+        const auto autoWait = resolved.coalesce({ autoSeconds, resolved.cast(resolved.value(0), Type::integer) });
         const auto autoWindow = resolved.binary(
-            resolved.greatest({resolved.cast(resolved.value(0), Type::integer), autoWait}),
-            Op::multiply, resolved.cast(resolved.value("1 second"), Type::interval));
+            resolved.greatest({ resolved.cast(resolved.value(0), Type::integer), autoWait }),
+            Op::multiply,
+            resolved.cast(resolved.value("1 second"), Type::interval)
+        );
         const auto autoReady = resolved.binary(
-            resolved.binary(resolved.column("recovery_condition", "incoming"), Op::like,
-                            resolved.value("auto_%")),
+            resolved.binary(resolved.column("recovery_condition", "incoming"), Op::like, resolved.value("auto_%")),
             Op::and_value,
             resolved.binary(
-                resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"triggered_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::less_equal,
-                resolved.binary(resolved.call("now"), Op::subtract, autoWindow)));
+                resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"triggered_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"),
+                Op::less_equal,
+                resolved.binary(resolved.call("now"), Op::subtract, autoWindow)
+            )
+        );
         resolved
             .update(service::alert::persistence::OpenAlertRecordEntity::table_name(), "record")
             .set(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"status">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), resolved.cast(resolved.value("resolved"), Type::text))
             .set(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"resolved_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), resolved.call("now"))
             .set(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"updated_at">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), resolved.call("now"))
             .update_from("incoming", "incoming")
-            .join(ruvia::db_join_type::inner, "states",
-                  resolved.binary(resolved.column("rule_id", "states"), Op::equal,
-                                  resolved.column("rule_id", "incoming")),
-                  "states")
-            .and_where(resolved.unary(ruvia::db_unary_operator::not_value,
-                                     resolved.column("matched", "incoming")))
-            .and_where(resolved.binary(resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal,
-                                      resolved.column("rule_id", "incoming")))
+            .join(ruvia::db_join_type::inner, "states", resolved.binary(resolved.column("rule_id", "states"), Op::equal, resolved.column("rule_id", "incoming")), "states")
+            .and_where(resolved.unary(ruvia::db_unary_operator::not_value, resolved.column("matched", "incoming")))
+            .and_where(resolved.binary(resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"rule_id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::equal, resolved.column("rule_id", "incoming")))
             .and_where(resolved.binary(
-                resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"status">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), Op::in,
-                resolved.list({resolved.value("active"), resolved.value("acknowledged")})))
+                resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"status">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"),
+                Op::in,
+                resolved.list({ resolved.value("active"), resolved.value("acknowledged") })
+            ))
             .and_where(resolved.binary(reverseReady, Op::or_value, autoReady))
-            .returning({resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"),
-                        resolved.column("rule_id", "incoming")});
+            .returning({ resolved.column(std::tuple_element_t<service::alert::persistence::OpenAlertRecordEntity::column_index<"id">(), service::alert::persistence::OpenAlertRecordEntity::columns_type>::name.view(), "record"), resolved.column("rule_id", "incoming") });
 
         Query changes(context.pool());
         changes
-            .select({changes.alias(
-                         changes.cast(changes.value("device.alert.triggered"), Type::text),
-                         "event_type"),
-                     changes.alias(changes.cast(changes.value("active"), Type::text), "status"),
-                     changes.alias(changes.column("id", "created"), "id"),
-                     changes.alias(changes.column("rule_id", "created"), "rule_id")})
+            .select({ changes.alias(changes.cast(changes.value("device.alert.triggered"), Type::text), "event_type"), changes.alias(changes.cast(changes.value("active"), Type::text), "status"), changes.alias(changes.column("id", "created"), "id"), changes.alias(changes.column("rule_id", "created"), "rule_id") })
             .from("created", "created");
         Query resolvedChanges(context.pool());
         resolvedChanges
-            .select({resolvedChanges.cast(resolvedChanges.value("device.alert.resolved"),
-                                          Type::text),
-                     resolvedChanges.cast(resolvedChanges.value("resolved"), Type::text),
-                     resolvedChanges.column("id", "resolved"),
-                     resolvedChanges.column("rule_id", "resolved")})
+            .select({ resolvedChanges.cast(resolvedChanges.value("device.alert.resolved"), Type::text), resolvedChanges.cast(resolvedChanges.value("resolved"), Type::text), resolvedChanges.column("id", "resolved"), resolvedChanges.column("rule_id", "resolved") })
             .from("resolved", "resolved");
         changes.combine(ruvia::db_set_operation::union_all, resolvedChanges);
 
@@ -756,26 +743,16 @@ class AlertEvaluationService final {
         };
         const auto alertObject = queuedRows.call(
             "jsonb_build_object",
-            {jsonKey("id"), queuedRows.column("id", "changes"),
-             jsonKey("ruleId"), queuedRows.column("rule_id", "incoming"),
-             jsonKey("ruleName"), queuedRows.column("rule_name", "incoming"),
-             jsonKey("severity"), queuedRows.column("severity", "incoming"),
-             jsonKey("status"), queuedRows.column("status", "changes")});
+            { jsonKey("id"), queuedRows.column("id", "changes"), jsonKey("ruleId"), queuedRows.column("rule_id", "incoming"), jsonKey("ruleName"), queuedRows.column("rule_name", "incoming"), jsonKey("severity"), queuedRows.column("severity", "incoming"), jsonKey("status"), queuedRows.column("status", "changes") }
+        );
         const auto eventData = queuedRows.call(
-            "jsonb_build_object", {jsonKey("alert"), alertObject,
-                                   jsonKey("values"), queuedRows.column("detail", "incoming")});
+            "jsonb_build_object",
+            { jsonKey("alert"), alertObject, jsonKey("values"), queuedRows.column("detail", "incoming") }
+        );
         queuedRows
-            .select({queuedRows.column("id", "changes"),
-                     queuedRows.column("event_type", "changes"),
-                     queuedRows.column("rule_id", "changes"),
-                     queuedRows.column("device_id", "incoming"),
-                     queuedRows.column("device_code", "incoming"),
-                     queuedRows.column("occurred_at_ms", "incoming"), eventData})
+            .select({ queuedRows.column("id", "changes"), queuedRows.column("event_type", "changes"), queuedRows.column("rule_id", "changes"), queuedRows.column("device_id", "incoming"), queuedRows.column("device_code", "incoming"), queuedRows.column("occurred_at_ms", "incoming"), eventData })
             .from("changes", "changes")
-            .join(ruvia::db_join_type::inner, "incoming",
-                  queuedRows.binary(queuedRows.column("rule_id", "incoming"), Op::equal,
-                                   queuedRows.column("rule_id", "changes")),
-                  "incoming");
+            .join(ruvia::db_join_type::inner, "incoming", queuedRows.binary(queuedRows.column("rule_id", "incoming"), Op::equal, queuedRows.column("rule_id", "changes")), "incoming");
         Query queued(context.pool());
         using Outbox = persistence::AlertEventOutboxEntity;
         queued
@@ -786,27 +763,24 @@ class AlertEvaluationService final {
 
         Query queuedBarrier(context.pool());
         queuedBarrier
-            .select(queuedBarrier.alias(queuedBarrier.aggregate("count", {queuedBarrier.star()}),
-                                        "queued_count"))
+            .select(queuedBarrier.alias(queuedBarrier.aggregate("count", { queuedBarrier.star() }), "queued_count"))
             .from("queued");
         Query receiptedRows(context.pool());
         receiptedRows
-            .select({receiptedRows.cast(
-                         receiptedRows.null_if(
-                             receiptedRows.cast(receiptedRows.column("receipt_id", "incoming"),
-                                                Type::text),
-                             receiptedRows.cast(receiptedRows.value(""), Type::text)),
-                         Type::uuid),
-                     receiptedRows.column("device_id", "incoming")})
+            .select({ receiptedRows.cast(receiptedRows.null_if(receiptedRows.cast(receiptedRows.column("receipt_id", "incoming"), Type::text), receiptedRows.cast(receiptedRows.value(""), Type::text)), Type::uuid), receiptedRows.column("device_id", "incoming") })
             .distinct()
             .from("incoming", "incoming")
             .join(ruvia::db_join_type::cross, queuedBarrier, {}, "queued_barrier")
             .and_where(receiptedRows.binary(
-                receiptedRows.column("receipt_id", "incoming"), Op::not_equal,
-                receiptedRows.cast(receiptedRows.value(""), Type::text)))
+                receiptedRows.column("receipt_id", "incoming"),
+                Op::not_equal,
+                receiptedRows.cast(receiptedRows.value(""), Type::text)
+            ))
             .and_where(receiptedRows.binary(
-                receiptedRows.column("queued_count", "queued_barrier"), Op::greater_equal,
-                receiptedRows.cast(receiptedRows.value(std::int64_t{0}), Type::big_int)));
+                receiptedRows.column("queued_count", "queued_barrier"),
+                Op::greater_equal,
+                receiptedRows.cast(receiptedRows.value(std::int64_t{ 0 }), Type::big_int)
+            ));
         Query receipted(context.pool());
         using Receipt = persistence::AlertEvaluationReceiptEntity;
         receipted
@@ -817,18 +791,18 @@ class AlertEvaluationService final {
 
         Query receiptedCount(context.pool());
         receiptedCount
-            .select(receiptedCount.aggregate("count", {receiptedCount.star()}))
+            .select(receiptedCount.aggregate("count", { receiptedCount.star() }))
             .from("receipted");
         Query pruned(context.pool());
         pruned
             .delete_from(service::alert::persistence::AlertEvaluationReceiptEntity::table_name())
             .and_where(pruned.binary(
-                pruned.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"created_at">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view()), Op::less,
-                pruned.binary(pruned.call("now"), Op::subtract,
-                              pruned.cast(pruned.value("7 days"), Type::interval))))
-            .and_where(pruned.binary(pruned.subquery(receiptedCount), Op::greater_equal,
-                                    pruned.cast(pruned.value(std::int64_t{0}), Type::big_int)))
-            .returning({pruned.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"message_id">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view())});
+                pruned.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"created_at">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view()),
+                Op::less,
+                pruned.binary(pruned.call("now"), Op::subtract, pruned.cast(pruned.value("7 days"), Type::interval))
+            ))
+            .and_where(pruned.binary(pruned.subquery(receiptedCount), Op::greater_equal, pruned.cast(pruned.value(std::int64_t{ 0 }), Type::big_int)))
+            .returning({ pruned.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"message_id">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view()) });
 
         Query relevant(context.pool());
         relevant
@@ -837,68 +811,37 @@ class AlertEvaluationService final {
             .from("incoming", "incoming");
         Query deliverable(context.pool());
         deliverable
-            .select({deliverable.column("event_id", "queued"),
-                     deliverable.column("event_type", "queued"),
-                     deliverable.column("rule_id", "queued"),
-                     deliverable.column("device_id", "queued"),
-                     deliverable.column("device_code", "queued"),
-                     deliverable.column("occurred_at_ms", "queued"),
-                     deliverable.column("data", "queued"),
-                     deliverable.column("created_at", "queued")})
+            .select({ deliverable.column("event_id", "queued"), deliverable.column("event_type", "queued"), deliverable.column("rule_id", "queued"), deliverable.column("device_id", "queued"), deliverable.column("device_code", "queued"), deliverable.column("occurred_at_ms", "queued"), deliverable.column("data", "queued"), deliverable.column("created_at", "queued") })
             .from("queued", "queued");
         Query existingDeliverable(context.pool());
         existingDeliverable
-            .select({existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"rule_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_code">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"occurred_at_ms">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"data">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                     existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"created_at">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox")})
+            .select({ existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"rule_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_code">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"occurred_at_ms">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"data">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"created_at">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox") })
             .from(service::alert::persistence::AlertEventOutboxEntity::table_name(), "outbox")
-            .join(ruvia::db_join_type::inner, "relevant",
-                  existingDeliverable.binary(existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"rule_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"),
-                                             Op::equal,
-                                             existingDeliverable.column("rule_id", "relevant")),
-                  "relevant");
+            .join(ruvia::db_join_type::inner, "relevant", existingDeliverable.binary(existingDeliverable.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"rule_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view(), "outbox"), Op::equal, existingDeliverable.column("rule_id", "relevant")), "relevant");
         deliverable.combine(ruvia::db_set_operation::union_all, existingDeliverable);
 
         Query pruneBarrier(context.pool());
         pruneBarrier
-            .select(pruneBarrier.alias(pruneBarrier.aggregate("count", {pruneBarrier.star()}),
-                                       "pruned_count"))
+            .select(pruneBarrier.alias(pruneBarrier.aggregate("count", { pruneBarrier.star() }), "pruned_count"))
             .from("pruned");
 
         Query result(context.pool());
         result
-            .with("incoming", incoming,
-                  {.columns_ = {"rule_id", "matched", "record_id", "device_id", "severity",
-                               "message", "detail", "silence_duration", "recovery_condition",
-                               "recovery_wait_seconds", "rule_name", "device_code",
-                               "occurred_at_ms", "receipt_id"}})
+            .with("incoming", incoming, { .columns_ = { "rule_id", "matched", "record_id", "device_id", "severity", "message", "detail", "silence_duration", "recovery_condition", "recovery_wait_seconds", "rule_name", "device_code", "occurred_at_ms", "receipt_id" } })
             .with("states", states)
             .with("created", created)
             .with("resolved", resolved)
-            .with("changes", changes,
-                  {.materialization_ = ruvia::db_materialization::materialized})
+            .with("changes", changes, { .materialization_ = ruvia::db_materialization::materialized })
             .with("queued", queued)
             .with("receipted", receipted)
             .with("pruned", pruned)
             .with("relevant", relevant)
             .with("deliverable", deliverable)
             .with("prune_barrier", pruneBarrier)
-            .select({result.cast(result.column("event_id", "deliverable"), Type::text),
-                     result.column("event_type", "deliverable"),
-                     result.cast(result.column("device_id", "deliverable"), Type::text),
-                     result.column("device_code", "deliverable"),
-                     result.cast(result.column("occurred_at_ms", "deliverable"), Type::text),
-                     result.cast(result.column("data", "deliverable"), Type::text)})
+            .select({ result.cast(result.column("event_id", "deliverable"), Type::text), result.column("event_type", "deliverable"), result.cast(result.column("device_id", "deliverable"), Type::text), result.column("device_code", "deliverable"), result.cast(result.column("occurred_at_ms", "deliverable"), Type::text), result.cast(result.column("data", "deliverable"), Type::text) })
             .from("deliverable", "deliverable")
             .join(ruvia::db_join_type::cross, "prune_barrier", {}, "prune_barrier")
-            .and_where(result.binary(result.column("pruned_count", "prune_barrier"),
-                                    Op::greater_equal,
-                                    result.cast(result.value(std::int64_t{0}), Type::big_int)))
+            .and_where(result.binary(result.column("pruned_count", "prune_barrier"), Op::greater_equal, result.cast(result.value(std::int64_t{ 0 }), Type::big_int)))
             .order_by(result.column("created_at", "deliverable"))
             .add_order_by(result.column("event_id", "deliverable"));
         const auto events = co_await context.db().query(result);
@@ -941,17 +884,14 @@ class AlertEvaluationService final {
         std::vector<Query::expr_type> keys;
         keys.reserve(events.size());
         for (const auto& event : events) {
-            keys.push_back(remove.tuple({
-                remove.cast(remove.value(event[0].value().value_or(std::string_view{})),
-                            Type::uuid),
-                remove.cast(remove.value(event[1].value().value_or(std::string_view{})),
-                            Type::text)
-            }));
+            keys.push_back(remove.tuple({ remove.cast(remove.value(event[0].value().value_or(std::string_view{})), Type::uuid), remove.cast(remove.value(event[1].value().value_or(std::string_view{})), Type::text) }));
         }
         remove.delete_from(service::alert::persistence::AlertEventOutboxEntity::table_name())
             .and_where(remove.binary(
-                remove.tuple({remove.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), remove.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view())}),
-                Op::in, remove.list(keys)));
+                remove.tuple({ remove.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), remove.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()) }),
+                Op::in,
+                remove.list(keys)
+            ));
         (void)co_await context.db().execute(remove);
     }
 
@@ -959,19 +899,15 @@ class AlertEvaluationService final {
         Query prune(context.pool());
         prune.delete_from(service::alert::persistence::AlertEvaluationReceiptEntity::table_name())
             .and_where(prune.binary(
-                prune.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"created_at">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view()), Op::less,
-                prune.binary(prune.call("now"), Op::subtract,
-                             prune.cast(prune.value("7 days"), Type::interval))));
+                prune.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"created_at">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view()),
+                Op::less,
+                prune.binary(prune.call("now"), Op::subtract, prune.cast(prune.value("7 days"), Type::interval))
+            ));
         (void)co_await context.db().execute(prune);
         while (true) {
             Query eventsQuery(context.pool());
             eventsQuery
-                .select({eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text),
-                         eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()),
-                         eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text),
-                         eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_code">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()),
-                         eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"occurred_at_ms">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text),
-                         eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"data">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text)})
+                .select({ eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text), eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_type">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text), eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"device_code">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"occurred_at_ms">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text), eventsQuery.cast(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"data">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()), Type::text) })
                 .from(service::alert::persistence::AlertEventOutboxEntity::table_name())
                 .order_by(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"created_at">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()))
                 .add_order_by(eventsQuery.column(std::tuple_element_t<service::alert::persistence::AlertEventOutboxEntity::column_index<"event_id">(), service::alert::persistence::AlertEventOutboxEntity::columns_type>::name.view()))
@@ -993,7 +929,9 @@ class AlertEvaluationService final {
 
     static Query offlineEvaluationQuery(const std::set<std::string, std::less<>>& ruleIds) {
         Query requested;
-        for (const auto& id : ruleIds) requested.values({ requested.cast(requested.value(id), Type::uuid) });
+        for (const auto& id : ruleIds) {
+            requested.values({ requested.cast(requested.value(id), Type::uuid) });
+        }
         Query rules;
         rules.select({ rules.alias(rules.cast(rules.value(0), Type::big_int), "input_sequence"), rules.star("rule"), rules.alias(rules.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), "device_name"), rules.alias(rules.binary(rules.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Op::json_get_text, rules.value("device_code")), "device_code") })
             .from("requested")
@@ -1001,9 +939,9 @@ class AlertEvaluationService final {
             .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), rules.binary(rules.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Op::equal, rules.column(std::tuple_element_t<service::alert::persistence::AlertRuleEntity::column_index<"device_id">(), service::alert::persistence::AlertRuleEntity::columns_type>::name.view(), "rule")));
         activeRules(rules);
         Query samples;
-        samples.select({ samples.star("rules"), samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"data">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"),
-                samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at"), samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"previous_data">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state") })
-            .from("rules").join(ruvia::db_join_type::left, service::alert::persistence::AlertInputStateEntity::table_name(), samples.binary(samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"device_id">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), Op::equal, samples.column("device_id", "rules")), "state");
+        samples.select({ samples.star("rules"), samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"data">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"observed_at_ms">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at"), samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"previous_data">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state") })
+            .from("rules")
+            .join(ruvia::db_join_type::left, service::alert::persistence::AlertInputStateEntity::table_name(), samples.binary(samples.column(std::tuple_element_t<service::alert::persistence::AlertInputStateEntity::column_index<"device_id">(), service::alert::persistence::AlertInputStateEntity::columns_type>::name.view(), "state"), Op::equal, samples.column("device_id", "rules")), "state");
         Query query;
         query.with("requested", requested, { .columns_ = { "rule_id" } }).with("rules", rules).with("samples", samples);
         appendEvaluation(query);
@@ -1016,10 +954,7 @@ class AlertEvaluationService final {
     ) {
         Query input;
         for (std::size_t i = 0; i < messages.size(); ++i) {
-            input.values({ input.cast(input.value(static_cast<std::int64_t>(i)), Type::big_int),
-                input.cast(input.value(messages[i]->messageId), Type::uuid), input.cast(input.value(messages[i]->deviceId), Type::uuid),
-                input.cast(input.value(messages[i]->valuesJson), Type::jsonb), input.cast(input.value(previousData[i]), Type::jsonb),
-                input.cast(input.value(messages[i]->observedAtMs), Type::big_int) });
+            input.values({ input.cast(input.value(static_cast<std::int64_t>(i)), Type::big_int), input.cast(input.value(messages[i]->messageId), Type::uuid), input.cast(input.value(messages[i]->deviceId), Type::uuid), input.cast(input.value(messages[i]->valuesJson), Type::jsonb), input.cast(input.value(previousData[i]), Type::jsonb), input.cast(input.value(messages[i]->observedAtMs), Type::big_int) });
         }
         Query rules;
         rules.select({ rules.column("input_sequence", "input"), rules.star("rule"), rules.alias(rules.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), "device_name"), rules.alias(rules.binary(rules.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "device"), Op::json_get_text, rules.value("device_code")), "device_code"), rules.alias(rules.column("data", "input"), "input_data"), rules.column("observed_at_ms", "input"), rules.column("previous_data", "input") })
@@ -1030,8 +965,7 @@ class AlertEvaluationService final {
             .and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(std::tuple_element_t<service::alert::persistence::AlertEvaluationReceiptEntity::column_index<"message_id">(), service::alert::persistence::AlertEvaluationReceiptEntity::columns_type>::name.view(), "receipt")));
         activeRules(rules);
         Query samples;
-        samples.select({ samples.star("rules"), samples.alias(samples.column("input_data", "rules"), "data"),
-                samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column("observed_at_ms", "rules"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at") }).from("rules");
+        samples.select({ samples.star("rules"), samples.alias(samples.column("input_data", "rules"), "data"), samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column("observed_at_ms", "rules"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at") }).from("rules");
         Query query;
         query.with("input", input, { .columns_ = { "input_sequence", "message_id", "device_id", "data", "previous_data", "observed_at_ms" } }).with("rules", rules).with("samples", samples);
         appendEvaluation(query);
@@ -1050,8 +984,7 @@ class AlertEvaluationService final {
     }
 
     static Query::expr_type sampleValue(Query& query, std::string_view column) {
-        return query.binary(query.binary(query.binary(query.column(column, "samples"), Op::json_get, query.value("values")),
-            Op::json_get, conditionText(query, "elementKey")), Op::json_get_text, query.value("value"));
+        return query.binary(query.binary(query.binary(query.column(column, "samples"), Op::json_get, query.value("values")), Op::json_get, conditionText(query, "elementKey")), Op::json_get_text, query.value("value"));
     }
 
     static void appendEvaluation(Query& query) {
@@ -1060,25 +993,12 @@ class AlertEvaluationService final {
         const auto threshold = conditionText(numbers, "value");
         const auto rate = conditionText(numbers, "changeRate");
         const auto bit = conditionText(numbers, "bitIndex");
-        numbers.select({
-            numbers.alias(numbers.case_when({ { numbers.binary(duration, Op::regex, numbers.value("^[0-9]{1,10}$")),
-                numbers.cast(numbers.least({ numbers.greatest({ numbers.cast(duration, Type::big_int), numbers.value(1) }), numbers.value(86400) }), Type::integer) } }), "duration_seconds"),
-            numbers.alias(numbers.case_when({ { numbers.binary(numbers.binary(numbers.call("length", { numbers.coalesce({ threshold, numbers.value("") }) }), Op::less_equal, numbers.value(64)), Op::and_value,
-                numbers.binary(threshold, Op::regex, numbers.value("^-?[0-9]+([.][0-9]+)?$"))), numbers.cast(threshold, Type::numeric) } }), "threshold_value"),
-            numbers.alias(numbers.case_when({
-                { numbers.binary(numbers.unary(ruvia::db_unary_operator::is_null, rate), Op::or_value, numbers.binary(rate, Op::equal, numbers.value(""))), numbers.cast(numbers.value(0), Type::numeric) },
-                { numbers.binary(numbers.binary(numbers.call("length", { rate }), Op::less_equal, numbers.value(64)), Op::and_value,
-                    numbers.binary(rate, Op::regex, numbers.value("^[0-9]+([.][0-9]+)?$"))), numbers.cast(rate, Type::numeric) } }), "change_rate"),
-            numbers.alias(numbers.case_when({ { numbers.binary(bit, Op::regex, numbers.value("^([0-9]|[1-5][0-9]|6[0-2])$")), numbers.cast(bit, Type::integer) } }), "bit_index") });
+        numbers.select({ numbers.alias(numbers.case_when({ { numbers.binary(duration, Op::regex, numbers.value("^[0-9]{1,10}$")), numbers.cast(numbers.least({ numbers.greatest({ numbers.cast(duration, Type::big_int), numbers.value(1) }), numbers.value(86400) }), Type::integer) } }), "duration_seconds"), numbers.alias(numbers.case_when({ { numbers.binary(numbers.binary(numbers.call("length", { numbers.coalesce({ threshold, numbers.value("") }) }), Op::less_equal, numbers.value(64)), Op::and_value, numbers.binary(threshold, Op::regex, numbers.value("^-?[0-9]+([.][0-9]+)?$"))), numbers.cast(threshold, Type::numeric) } }), "threshold_value"), numbers.alias(numbers.case_when({ { numbers.binary(numbers.unary(ruvia::db_unary_operator::is_null, rate), Op::or_value, numbers.binary(rate, Op::equal, numbers.value(""))), numbers.cast(numbers.value(0), Type::numeric) }, { numbers.binary(numbers.binary(numbers.call("length", { rate }), Op::less_equal, numbers.value(64)), Op::and_value, numbers.binary(rate, Op::regex, numbers.value("^[0-9]+([.][0-9]+)?$"))), numbers.cast(rate, Type::numeric) } }), "change_rate"), numbers.alias(numbers.case_when({ { numbers.binary(bit, Op::regex, numbers.value("^([0-9]|[1-5][0-9]|6[0-2])$")), numbers.cast(bit, Type::integer) } }), "bit_index") });
         Query current;
         const auto raw = sampleValue(current, "data");
         const auto hasBit = current.binary(current.column("value", "condition"), Op::json_has_key, current.value("bitIndex"));
-        const auto validBit = current.binary(current.binary(hasBit, Op::and_value, current.unary(ruvia::db_unary_operator::is_not_null, current.column("bit_index", "condition_number"))),
-            Op::and_value, current.binary(raw, Op::regex, current.value("^-?[0-9]+$")));
-        current.select({ current.alias(current.case_when({
-                { validBit, current.cast(current.binary(current.call("int8shr", { current.cast(raw, Type::big_int), current.column("bit_index", "condition_number") }), Op::bit_and, current.cast(current.value(1), Type::big_int)), Type::text) },
-                { hasBit, current.null_value() } }, raw), "text_value"),
-            current.alias(current.case_when({ { current.binary(raw, Op::regex, current.value("^-?[0-9]+([.][0-9]+)?$")), current.cast(raw, Type::numeric) } }), "numeric_value") });
+        const auto validBit = current.binary(current.binary(hasBit, Op::and_value, current.unary(ruvia::db_unary_operator::is_not_null, current.column("bit_index", "condition_number"))), Op::and_value, current.binary(raw, Op::regex, current.value("^-?[0-9]+$")));
+        current.select({ current.alias(current.case_when({ { validBit, current.cast(current.binary(current.call("int8shr", { current.cast(raw, Type::big_int), current.column("bit_index", "condition_number") }), Op::bit_and, current.cast(current.value(1), Type::big_int)), Type::text) }, { hasBit, current.null_value() } }, raw), "text_value"), current.alias(current.case_when({ { current.binary(raw, Op::regex, current.value("^-?[0-9]+([.][0-9]+)?$")), current.cast(raw, Type::numeric) } }), "numeric_value") });
         Query previous;
         const auto priorRaw = sampleValue(previous, "previous_data");
         previous.select(previous.alias(previous.case_when({ { previous.binary(priorRaw, Op::regex, previous.value("^-?[0-9]+([.][0-9]+)?$")), previous.cast(priorRaw, Type::numeric) } }), "numeric_value"));
@@ -1095,22 +1015,14 @@ class AlertEvaluationService final {
             thresholdCases.push_back({ conditions.binary(conditionText(conditions, "operator"), Op::equal, conditions.value(name)), conditions.binary(conditions.column("text_value", "current_value"), op, conditionText(conditions, "value")) });
         }
         const auto delta = conditions.binary(conditions.call("abs", { conditions.binary(conditions.binary(conditions.binary(numeric, Op::subtract, priorNumeric), Op::divide, priorNumeric), Op::multiply, conditions.value(100)) }), Op::greater_equal, changeRate);
-        const auto missingRate = conditions.binary(conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, priorNumeric), Op::or_value, conditions.binary(priorNumeric, Op::equal, conditions.value(0))), Op::or_value,
-            conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, numeric), Op::or_value, conditions.unary(ruvia::db_unary_operator::is_null, changeRate)));
+        const auto missingRate = conditions.binary(conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, priorNumeric), Op::or_value, conditions.binary(priorNumeric, Op::equal, conditions.value(0))), Op::or_value, conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, numeric), Op::or_value, conditions.unary(ruvia::db_unary_operator::is_null, changeRate)));
         const auto direction = conditions.coalesce({ conditionText(conditions, "changeDirection"), conditions.value("any") });
-        const auto rateMatched = conditions.case_when({
-            { missingRate, conditions.value(false) },
-            { conditions.binary(direction, Op::equal, conditions.value("rise")), conditions.binary(conditions.binary(numeric, Op::greater, priorNumeric), Op::and_value, delta) },
-            { conditions.binary(direction, Op::equal, conditions.value("fall")), conditions.binary(conditions.binary(numeric, Op::less, priorNumeric), Op::and_value, delta) } }, delta);
-        const auto offline = conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, conditions.column("observed_at", "samples")), Op::or_value,
-            conditions.binary(conditions.column("observed_at", "samples"), Op::less, conditions.binary(conditions.call("now"), Op::subtract,
-                conditions.binary(conditions.coalesce({ conditions.column("duration_seconds", "condition_number"), conditions.value(300) }), Op::multiply, conditions.cast(conditions.value("1 second"), Type::interval)))));
+        const auto rateMatched = conditions.case_when({ { missingRate, conditions.value(false) }, { conditions.binary(direction, Op::equal, conditions.value("rise")), conditions.binary(conditions.binary(numeric, Op::greater, priorNumeric), Op::and_value, delta) }, { conditions.binary(direction, Op::equal, conditions.value("fall")), conditions.binary(conditions.binary(numeric, Op::less, priorNumeric), Op::and_value, delta) } }, delta);
+        const auto offline = conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, conditions.column("observed_at", "samples")), Op::or_value, conditions.binary(conditions.column("observed_at", "samples"), Op::less, conditions.binary(conditions.call("now"), Op::subtract, conditions.binary(conditions.coalesce({ conditions.column("duration_seconds", "condition_number"), conditions.value(300) }), Op::multiply, conditions.cast(conditions.value("1 second"), Type::interval)))));
         const auto kind = conditionText(conditions, "type");
-        conditions.select({ conditions.star("samples"), conditions.alias(conditions.column("value", "condition"), "condition"),
-                conditions.alias(conditions.case_when({ { conditions.binary(kind, Op::equal, conditions.value("offline")), offline },
-                    { conditions.binary(kind, Op::equal, conditions.value("threshold")), conditions.case_when(thresholdCases, conditions.value(false)) },
-                    { conditions.binary(kind, Op::equal, conditions.value("rate_of_change")), rateMatched } }, conditions.value(false)), "condition_matched") })
-            .from("samples").join_function(ruvia::db_join_type::cross, conditions.call("jsonb_array_elements", { conditions.column("conditions", "samples") }), {}, "condition", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
+        conditions.select({ conditions.star("samples"), conditions.alias(conditions.column("value", "condition"), "condition"), conditions.alias(conditions.case_when({ { conditions.binary(kind, Op::equal, conditions.value("offline")), offline }, { conditions.binary(kind, Op::equal, conditions.value("threshold")), conditions.case_when(thresholdCases, conditions.value(false)) }, { conditions.binary(kind, Op::equal, conditions.value("rate_of_change")), rateMatched } }, conditions.value(false)), "condition_matched") })
+            .from("samples")
+            .join_function(ruvia::db_join_type::cross, conditions.call("jsonb_array_elements", { conditions.column("conditions", "samples") }), {}, "condition", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
             .join(ruvia::db_join_type::left, numbers, conditions.value(true), "condition_number", { .lateral_ = true })
             .join(ruvia::db_join_type::left, current, conditions.value(true), "current_value", { .lateral_ = true })
             .join(ruvia::db_join_type::left, previous, conditions.value(true), "previous_value", { .lateral_ = true });
@@ -1119,10 +1031,9 @@ class AlertEvaluationService final {
             evaluated.add_select(evaluated.column(name)).add_group_by(evaluated.column(name));
         }
         evaluated.add_select(evaluated.alias(evaluated.case_when({ { evaluated.binary(evaluated.column("logic"), Op::equal, evaluated.value("and")), evaluated.aggregate("bool_and", { evaluated.column("condition_matched") }) } }, evaluated.aggregate("bool_or", { evaluated.column("condition_matched") })), "matched"))
-            .from("conditions").add_group_by(evaluated.column("logic"));
-        query.with("conditions", conditions).with("evaluated", evaluated).select({ query.column("input_sequence"), query.cast(query.column("id"), Type::text), query.column("name"), query.column("severity"),
-            query.cast(query.column("device_id"), Type::text), query.coalesce({ query.column("device_code"), query.value("") }), query.column("matched"), query.column("silence_duration"), query.column("recovery_condition"), query.column("recovery_wait_seconds"),
-            query.cast(query.coalesce({ query.column("data"), query.cast(query.value("{}"), Type::jsonb) }), Type::text) }).from("evaluated").add_order_by(query.column("input_sequence")).add_order_by(query.column("id"));
+            .from("conditions")
+            .add_group_by(evaluated.column("logic"));
+        query.with("conditions", conditions).with("evaluated", evaluated).select({ query.column("input_sequence"), query.cast(query.column("id"), Type::text), query.column("name"), query.column("severity"), query.cast(query.column("device_id"), Type::text), query.coalesce({ query.column("device_code"), query.value("") }), query.column("matched"), query.column("silence_duration"), query.column("recovery_condition"), query.column("recovery_wait_seconds"), query.cast(query.coalesce({ query.column("data"), query.cast(query.value("{}"), Type::jsonb) }), Type::text) }).from("evaluated").add_order_by(query.column("input_sequence")).add_order_by(query.column("id"));
     }
 };
 

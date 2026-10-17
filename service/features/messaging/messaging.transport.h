@@ -63,30 +63,23 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
         throw std::invalid_argument("Redis Stream message must contain fields");
     }
     const auto wakeStream = service::message::workerWakeStream(workerIndex, instance);
-    const std::vector<std::string> keyStore{
-        std::string(stream),
-        wakeStream,
-        service::message::consumer::inputChannel(stream),
-        service::message::consumer::inputChannel(wakeStream)
-    };
-    std::vector<std::string> argumentStore{
-        std::to_string(maxLength),
-        std::to_string(service::message::kWorkerWakeCapacity),
-        std::string(service::message::workerStreamTaskName(task))
-    };
-    argumentStore.reserve(argumentStore.size() + fields.size() * 2);
+    const auto streamChannel = service::message::consumer::inputChannel(stream);
+    const auto wakeChannel = service::message::consumer::inputChannel(wakeStream);
+    const auto maxLengthText = std::to_string(maxLength);
+    const auto wakeCapacityText = std::to_string(service::message::kWorkerWakeCapacity);
+    std::vector<std::string_view> command;
+    command.reserve(10 + fields.size() * 2);
+    command.insert(command.end(), { "EVAL", kAddAndWakeScript, "4", stream, wakeStream, streamChannel, wakeChannel, maxLengthText, wakeCapacityText, service::message::workerStreamTaskName(task) });
     for (const auto& field : fields) {
-        argumentStore.push_back(field.name);
-        argumentStore.push_back(field.value);
+        command.push_back(field.name);
+        command.push_back(field.value);
     }
-    const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
-    const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
-    pipeline.eval(kAddAndWakeScript, keys, arguments);
+    pipeline.command(std::span<const std::string_view>(command));
 }
 
 template <typename Redis>
 ruvia::task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, service::message::WorkerStreamTask task, std::string_view instance) {
-    const std::vector<service::message::StreamField> fields{{ "task", std::string(service::message::workerStreamTaskName(task)) }};
+    const std::vector<service::message::StreamField> fields{ { "task", std::string(service::message::workerStreamTaskName(task)) } };
     (void)co_await service::utils::redis::add(redis, service::message::workerWakeStream(workerIndex, instance), fields, service::message::kWorkerWakeCapacity);
 }
 

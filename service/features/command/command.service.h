@@ -23,7 +23,6 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/features/collector/collector.config.h"
 #include "service/features/collector/collector.protocol.h"
 #include "service/features/collector/collector.types.h"
@@ -39,44 +38,54 @@
 #include "service/utils/json.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
+#include "service/utils/uuid.h"
 
 namespace service::command {
 
 template <typename Redis>
-ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queueKey,
-                                       PendingQueueKind kind,
-                                       const std::vector<PendingDispatch>& dispatches,
-                                       std::size_t maxLength) {
-    if (queueKey.empty() || dispatches.empty() || maxLength == 0)
+ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queueKey, PendingQueueKind kind, const std::vector<PendingDispatch>& dispatches, std::size_t maxLength) {
+    if (queueKey.empty() || dispatches.empty() || maxLength == 0) {
         throw std::invalid_argument("pending command batch is incomplete");
+    }
     std::set<std::string, std::less<>> commandIds;
     std::vector<std::string> arguments{
         kind == PendingQueueKind::Stream ? "stream" : "list",
-        std::to_string(maxLength), std::to_string(dispatches.size())};
+        std::to_string(maxLength),
+        std::to_string(dispatches.size())
+    };
     for (const auto& dispatch : dispatches) {
         if (dispatch.task.messageId.empty() ||
-            !commandIds.emplace(dispatch.task.messageId).second)
+            !commandIds.emplace(dispatch.task.messageId).second) {
             throw std::invalid_argument("pending command identity is invalid");
+        }
         if (kind == PendingQueueKind::Stream) {
-            if (dispatch.streamFields.empty()) throw std::invalid_argument("empty command payload");
-            arguments.push_back(std::to_string(dispatch.streamFields.size()*2));
+            if (dispatch.streamFields.empty()) {
+                throw std::invalid_argument("empty command payload");
+            }
+            arguments.push_back(std::to_string(dispatch.streamFields.size() * 2));
             for (const auto& field : dispatch.streamFields) {
-                arguments.push_back(field.name); arguments.push_back(field.value);
+                arguments.push_back(field.name);
+                arguments.push_back(field.value);
             }
         } else {
-            if (dispatch.listPayload.empty()) throw std::invalid_argument("empty command payload");
-            arguments.emplace_back("1"); arguments.push_back(dispatch.listPayload);
+            if (dispatch.listPayload.empty()) {
+                throw std::invalid_argument("empty command payload");
+            }
+            arguments.emplace_back("1");
+            arguments.push_back(dispatch.listPayload);
         }
     }
     const auto inputChannel = kind == PendingQueueKind::Stream ? message::consumer::inputChannel(queueKey) : std::string{};
-    const std::string_view keyViews[]{queueKey, inputChannel};
-    std::vector<std::string_view> argumentViews(arguments.begin(),arguments.end());
+    const std::string_view keyViews[]{ queueKey, inputChannel };
+    std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
     const auto reply = co_await redis.eval(persistence::kPendingBatchDispatchScript, keyViews, argumentViews);
-    if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0)
+    if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0) {
         co_return false;
+    }
     if (reply.kind() != ruvia::redis_value::kind_type::integer ||
-        reply.integer() != static_cast<std::int64_t>(dispatches.size()))
+        reply.integer() != static_cast<std::int64_t>(dispatches.size())) {
         utils::redis::throwValue("dispatch pending command batch", reply);
+    }
     co_return true;
 }
 
@@ -84,16 +93,20 @@ ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queu
 template <typename Redis>
 ruvia::task<std::optional<DeviceRoute>> deviceRoute(const Redis& redis, std::string_view deviceId) {
     const auto key = message::collector::connectionKey(deviceId);
-    const std::string_view keys[]{key};
-    const std::string_view args[]{message::collector::kLinkOwnerPrefix};
+    const std::string_view keys[]{ key };
+    const std::string_view args[]{ message::collector::kLinkOwnerPrefix };
     const auto reply = co_await redis.eval(persistence::kDeviceRouteReadScript, keys, args);
-    if (reply.kind() != ruvia::redis_value::kind_type::array)
+    if (reply.kind() != ruvia::redis_value::kind_type::array) {
         utils::redis::throwValue("read device collector route", reply);
-    if (reply.array().size() != 6)
+    }
+    if (reply.array().size() != 6) {
         co_return std::nullopt;
-    for (const auto& value : reply.array())
-        if (value.kind() != ruvia::redis_value::kind_type::string || value.string().empty())
+    }
+    for (const auto& value : reply.array()) {
+        if (value.kind() != ruvia::redis_value::kind_type::string || value.string().empty()) {
             co_return std::nullopt;
+        }
+    }
     const auto worker = reply.array()[0].string();
     const auto instance = reply.array()[1].string();
     const auto connection = reply.array()[2].string();
@@ -106,8 +119,9 @@ ruvia::task<std::optional<DeviceRoute>> deviceRoute(const Redis& redis, std::str
         std::from_chars(epoch.data(), epoch.data() + epoch.size(), route.sessionEpoch);
     if (workerError != std::errc{} || workerEnd != worker.data() + worker.size() ||
         epochError != std::errc{} || epochEnd != epoch.data() + epoch.size() ||
-        route.sessionEpoch == 0)
+        route.sessionEpoch == 0) {
         co_return std::nullopt;
+    }
     route.connectionId = connection;
     route.instanceId = instance;
     co_return route;
@@ -180,13 +194,15 @@ class CommandDispatchService final {
                     const auto bytes = message::fromHex(values.front()[0].value().value_or(std::string_view{}));
                     item.listPayload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
                 } else {
-                    for (std::size_t index = 0; index + 1 < values.size(); index += 2)
+                    for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
                         item.streamFields.push_back({ std::string(values[index][0].value().value_or(std::string_view{})), std::string(values[index + 1][0].value().value_or(std::string_view{})) });
+                    }
                 }
                 const std::vector<PendingDispatch> pending{ std::move(item) };
                 published = co_await dispatchPendingBatch(context.redis(), cell(1), list ? PendingQueueKind::List : PendingQueueKind::Stream, pending, static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
-                if (!published)
+                if (!published) {
                     failure = "queue_capacity_exceeded";
+                }
             } catch (const std::exception& error) {
                 failure = error.what();
             }
@@ -206,8 +222,9 @@ class CommandDispatchService final {
                 co_await appendUpdatedEvent(update, cell(0), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
             }
             co_await update.commit();
-            if (published && !cell(3).empty())
+            if (published && !cell(3).empty()) {
                 co_await edge::dispatch::notifyNode(context.redis(), cell(3));
+            }
         }
         auto expiry = co_await context.db().begin_transaction();
         ruvia::db_query overdue;
@@ -222,8 +239,9 @@ class CommandDispatchService final {
             .and_where(overdue.binary(service::command::persistence::CommandOperationEntity::column<"status">().expression(overdue, "o"), Op::in, overdue.list({ overdue.value("ACCEPTED"), overdue.value("DISPATCHING"), overdue.value("AWAITING_RESULT") })))
             .returning({ overdue.cast(service::command::persistence::CommandOperationEntity::column<"id">().expression(overdue, "o"), Type::text) });
         const auto expired = co_await expiry.query(overdue);
-        for (const auto& row : expired)
+        for (const auto& row : expired) {
             co_await appendUpdatedEvent(expiry, row[0].value().value_or(std::string_view{}), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
+        }
         co_await expiry.commit();
     }
 
@@ -241,14 +259,17 @@ class CommandDispatchService final {
             .and_where(delayQuery.binary(service::command::persistence::CommandOperationEntity::column<"status">().expression(delayQuery, "o"), Op::in, delayQuery.list({ delayQuery.value("ACCEPTED"), delayQuery.value("DISPATCHING"), delayQuery.value("AWAITING_RESULT") })))
             .and_where(delayQuery.unary(ruvia::db_unary_operator::is_not_null, service::command::persistence::CommandAttemptEntity::column<"deadline">().expression(delayQuery, "a")));
         const auto rows = co_await context.db().query(delayQuery);
-        if (rows.empty())
+        if (rows.empty()) {
             co_return std::nullopt;
+        }
         const auto value = rows.front()[0].value();
-        if (!value)
+        if (!value) {
             co_return std::nullopt;
+        }
         const auto delay = utils::parseInt64(std::optional<std::string_view>{ *value });
-        if (!delay)
+        if (!delay) {
             throw std::runtime_error("invalid command dispatch deadline delay");
+        }
         co_return std::chrono::milliseconds(*delay);
     }
 };
@@ -257,15 +278,19 @@ class CommandResultService final {
   public:
     template <typename Context>
     static ruvia::task<void> project(
-        Context& context, const std::vector<message::StreamMessage>& messages) {
-        if (messages.empty())
+        Context& context,
+        const std::vector<message::StreamMessage>& messages
+    ) {
+        if (messages.empty()) {
             co_return;
+        }
         auto transaction = co_await context.db().begin_transaction();
         for (const auto& message : messages) {
             const auto id = message.get("command_id");
             const auto deviceId = message.get("device_id");
-            if (!common::isUuid(id) || !common::isUuid(deviceId))
+            if (!common::isUuid(id) || !common::isUuid(deviceId)) {
                 continue;
+            }
             const auto explicitState = message.get("result_state");
             const auto state = service::message::command::terminalState(explicitState)
                 ? explicitState
@@ -278,8 +303,9 @@ class CommandResultService final {
             ruvia::db_query outcome;
             outcome.update(service::command::persistence::CommandOperationEntity::table_name()).set(service::command::persistence::CommandOperationEntity::column<"status">().name(), outcome.value(state)).set(service::command::persistence::CommandOperationEntity::column<"reason">().name(), outcome.value(message.get("reason"))).set(service::command::persistence::CommandOperationEntity::column<"actual_values">().name(), outcome.cast(outcome.value(actual), ruvia::db_data_type::jsonb)).set(service::command::persistence::CommandOperationEntity::column<"completed_at">().name(), outcome.call("now")).and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"id">().name()), Op::equal, outcome.cast(outcome.value(id), ruvia::db_data_type::uuid))).and_where(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"device_id">().name()), Op::equal, outcome.cast(outcome.value(deviceId), ruvia::db_data_type::uuid))).and_where(outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"status">().name()), Op::in, outcome.list({ outcome.value(service::message::command::kResultAcceptingStatuses[0]), outcome.value(service::message::command::kResultAcceptingStatuses[1]) })), Op::or_value, outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::column<"status">().name()), Op::equal, outcome.value("UNKNOWN")), Op::and_value, outcome.value(mayResolveUnknown)))).returning({ outcome.cast(outcome.column(service::command::persistence::CommandOperationEntity::column<"id">().name()), ruvia::db_data_type::text) });
             const auto updated = co_await transaction.query(outcome);
-            if (!updated.empty())
+            if (!updated.empty()) {
                 co_await appendUpdatedEvent(transaction, id, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()));
+            }
         }
         co_await transaction.commit();
     }
@@ -290,8 +316,9 @@ class CommandResultService final {
         std::size_t count{};
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), count);
-        if (error != std::errc{} || end != value.data() + value.size())
+        if (error != std::errc{} || end != value.data() + value.size()) {
             return 0;
+        }
         return std::min<std::size_t>(count, 8);
     }
 
@@ -300,20 +327,16 @@ class CommandResultService final {
     }
 
     static std::string actualValuesJson(const message::StreamMessage& message) {
-        std::string output{"["};
+        std::string output{ "[" };
         for (std::size_t index = 0; index < actualValueCount(message); ++index) {
-            if (index != 0)
+            if (index != 0) {
                 output.push_back(',');
-            output += "{\"elementId\":" + service::utils::jsonQuoted(
-                          message.get(actualValueField(index, "element_id"))) +
-                      ",\"name\":" + service::utils::jsonQuoted(
-                          message.get(actualValueField(index, "name"))) +
-                      ",\"kind\":" + service::utils::jsonQuoted(
-                          message.get(actualValueField(index, "kind"))) +
-                      ",\"value\":" + service::utils::jsonQuoted(
-                          message.get(actualValueField(index, "value"))) +
-                      ",\"unit\":" + service::utils::jsonQuoted(
-                          message.get(actualValueField(index, "unit"))) + "}";
+            }
+            output += "{\"elementId\":" + service::utils::jsonQuoted(message.get(actualValueField(index, "element_id"))) +
+                ",\"name\":" + service::utils::jsonQuoted(message.get(actualValueField(index, "name"))) +
+                ",\"kind\":" + service::utils::jsonQuoted(message.get(actualValueField(index, "kind"))) +
+                ",\"value\":" + service::utils::jsonQuoted(message.get(actualValueField(index, "value"))) +
+                ",\"unit\":" + service::utils::jsonQuoted(message.get(actualValueField(index, "unit"))) + "}";
         }
         output.push_back(']');
         return output;
@@ -329,7 +352,7 @@ class PreparationService final {
         std::string nodeId;
     };
 
-public:
+  public:
     static ruvia::task<std::string> executeOperation(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
         if (stop.stop_requested()) {
             common::fail(10004, "Command preparation cancelled", 503);
@@ -340,20 +363,25 @@ public:
         co_return co_await PreparationService::prepare(context, payload);
     }
 
-    static ruvia::task<std::string> prepare(ruvia::web_worker_context& context,
-                                           std::string_view payload) {
-        const auto request = ruvia::from_json<service::message::command::PrepareRequest>(payload, {.resource_ = context.pool()});
-        if (!request) common::fail(18010, "Invalid command preparation request", 400);
+    static ruvia::task<std::string> prepare(ruvia::web_worker_context& context, std::string_view payload) {
+        const auto request = ruvia::from_json<service::message::command::PrepareRequest>(payload, { .resource_ = context.pool() });
+        if (!request) {
+            common::fail(18010, "Invalid command preparation request", 400);
+        }
         const auto id = request->get<"deviceId">().view();
-        if (!common::isUuid(id)) common::fail(18010, "Invalid command preparation parameters", 400);
+        if (!common::isUuid(id)) {
+            common::fail(18010, "Invalid command preparation parameters", 400);
+        }
         const auto& values = request->get<"elements">();
-        if (values.empty() || values.size() > 256)
+        if (values.empty() || values.size() > 256) {
             common::fail(18010, "Invalid command preparation elements", 400);
+        }
         std::vector<service::collector::CommandElementValue> requested;
         for (const auto& pair : values) {
-            if (pair.size() != 2)
+            if (pair.size() != 2) {
                 common::fail(18010, "Invalid command preparation element", 400);
-            requested.push_back({std::string(pair[0].view()), std::string(pair[1].view())});
+            }
+            requested.push_back({ std::string(pair[0].view()), std::string(pair[1].view()) });
         }
         auto transaction = co_await context.db("control").begin_transaction();
         const std::string mqttMessageId = request->get<"mqttMessageId">() ? std::string(request->get<"mqttMessageId">()->view()) : "";
@@ -362,7 +390,7 @@ public:
         co_return encode(prepared, context.pool());
     }
 
-private:
+  private:
     static std::string encode(const Prepared& prepared, std::pmr::memory_resource* resource) {
         const ruvia::model_options options{ .resource_ = resource };
         ruvia::boxed_array<service::message::command::PreparedCommand> commands(options);
@@ -375,8 +403,7 @@ private:
             ruvia::array<ruvia::string> payload(options);
             if (prepared.kind == PendingQueueKind::List) {
                 const auto* begin = reinterpret_cast<const std::uint8_t*>(dispatch.listPayload.data());
-                payload.emplace_back(message::toHex(
-                    std::vector<std::uint8_t>(begin, begin + dispatch.listPayload.size())));
+                payload.emplace_back(message::toHex(std::vector<std::uint8_t>(begin, begin + dispatch.listPayload.size())));
             } else {
                 for (const auto& field : dispatch.streamFields) {
                     payload.emplace_back(field.name);
@@ -399,9 +426,8 @@ private:
             .set<"commands">(std::move(commands));
         return service::message::rpc::encode(batch, resource);
     }
-    static ruvia::task<Prepared> compileDevice(ruvia::web_worker_context& context,
-                  std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested,
-                  ruvia::db_transaction& transaction, std::string_view mqttMessageId) {
+
+    static ruvia::task<Prepared> compileDevice(ruvia::web_worker_context& context, std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested, ruvia::db_transaction& transaction, std::string_view mqttMessageId) {
 
         // 调用方在命令事务中持有设备共享锁，准备事务只读取，避免跨连接重复加锁。
 
@@ -413,14 +439,12 @@ private:
             return routeQuery.binary(object, Op::json_get_text, routeQuery.value(key));
         };
         const auto boolean = [&](ruvia::db_expression value) {
-            return routeQuery.binary(routeQuery.call("lower", { routeQuery.coalesce({ value, routeQuery.value("") }) }), Op::in,
-                routeQuery.list({ routeQuery.value("true"), routeQuery.value("t"), routeQuery.value("1"), routeQuery.value("yes"), routeQuery.value("y"), routeQuery.value("on") }));
+            return routeQuery.binary(routeQuery.call("lower", { routeQuery.coalesce({ value, routeQuery.value("") }) }), Op::in, routeQuery.list({ routeQuery.value("true"), routeQuery.value("t"), routeQuery.value("1"), routeQuery.value("yes"), routeQuery.value("y"), routeQuery.value("on") }));
         };
         const auto nodeConfig = routeQuery.binary(service::edge::persistence::EdgeNodeEntity::column<"status">().expression(routeQuery, "n"), Op::json_get, routeQuery.value("config"));
         const auto version = [&](std::string_view key) {
             const auto value = text(nodeConfig, key);
-            return routeQuery.coalesce({ routeQuery.case_when({ { routeQuery.binary(routeQuery.coalesce({ value, routeQuery.value("") }), Op::regex,
-                routeQuery.value("^-?[0-9]{1,18}$")), routeQuery.cast(value, Type::big_int) } }), routeQuery.value(0) });
+            return routeQuery.coalesce({ routeQuery.case_when({ { routeQuery.binary(routeQuery.coalesce({ value, routeQuery.value("") }), Op::regex, routeQuery.value("^-?[0-9]{1,18}$")), routeQuery.cast(value, Type::big_int) } }), routeQuery.value(0) });
         };
         auto applied = routeQuery.binary(service::configuration::persistence::LinkEntity::column<"status">().expression(routeQuery, "l"), Op::equal, routeQuery.value("enabled"));
         applied = routeQuery.binary(applied, Op::and_value, routeQuery.binary(service::edge::persistence::EdgeNodeEntity::column<"enrollment_status">().expression(routeQuery, "n"), Op::equal, routeQuery.value("approved")));
@@ -441,20 +465,13 @@ private:
             .limit(1);
         const auto edge = co_await transaction.query(routeQuery);
         if (!edge.empty() && !edge.front()[0].value().value_or(std::string_view{}).empty()) {
-            if (!mqttMessageId.empty()) service::common::fail(18010, "MQTT 消息选择不适用于边缘协议", 400);
-            if (edge.front()[4].value().value_or(std::string_view{}) != "t")
+            if (!mqttMessageId.empty()) {
+                service::common::fail(18010, "MQTT 消息选择不适用于边缘协议", 400);
+            }
+            if (edge.front()[4].value().value_or(std::string_view{}) != "t") {
                 service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
-            co_return co_await enqueueEdgeDevice(context, deviceId, std::move(requested),
-                                                 edge.front()[0].value().value_or(std::string_view{}),
-                                                 edge.front()[1].value().value_or(std::string_view{}),
-                                                 edge.front()[2].value().value_or(std::string_view{}),
-                                                 edge.front()[3].value().value_or(std::string_view{}) == "t",
-                                                 boundedUnsigned(
-                                                     edge.front()[5].value().value_or(std::string_view{}),
-                                                     60, 0),
-                                                 boundedUnsigned(
-                                                     edge.front()[6].value().value_or(std::string_view{}),
-                                                     1, 1), transaction);
+            }
+            co_return co_await enqueueEdgeDevice(context, deviceId, std::move(requested), edge.front()[0].value().value_or(std::string_view{}), edge.front()[1].value().value_or(std::string_view{}), edge.front()[2].value().value_or(std::string_view{}), edge.front()[3].value().value_or(std::string_view{}) == "t", boundedUnsigned(edge.front()[5].value().value_or(std::string_view{}), 60, 0), boundedUnsigned(edge.front()[6].value().value_or(std::string_view{}), 1, 1), transaction);
         }
 
         auto devices = co_await service::configuration::loadDeviceDefinitions(transaction, deviceId);
@@ -484,7 +501,8 @@ private:
             task.groupKey = "device:" + device->id;
             task.protocol = device->protocol;
             task.transport = definition.commandTransport == service::collector::CommandTransport::DeviceConfigured
-                ? device->modbusMode : "RAW";
+                ? device->modbusMode
+                : "RAW";
             task.kind = "command";
             task.mqttMessageId = mqttMessageId;
             task.linkId = device->linkId;
@@ -495,8 +513,9 @@ private:
             task.connectionId = route->connectionId;
             task.sessionEpoch = route->sessionEpoch;
             task.createdAtMs = message::utcNowMilliseconds();
-            for (const auto& element : elements)
+            for (const auto& element : elements) {
                 task.elements.emplace_back(element.elementId, element.value);
+            }
             dispatch.streamFields = message::protocolTaskFields(task);
             dispatches.push_back(std::move(dispatch));
         }
@@ -509,17 +528,13 @@ private:
     }
 
     static ruvia::task<Prepared>
-    enqueueEdgeDevice(ruvia::web_worker_context& context, std::string_view deviceId,
-                      std::vector<service::collector::CommandElementValue> requested,
-                      std::string_view nodeId, std::string_view deviceCode,
-                      std::string_view protocol, bool remoteControl,
-                      std::uint32_t fastReadDurationSec,
-                      std::uint32_t fastReadIntervalSec,
-                      ruvia::db_transaction& transaction) {
-        if (!remoteControl)
+    enqueueEdgeDevice(ruvia::web_worker_context& context, std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested, std::string_view nodeId, std::string_view deviceCode, std::string_view protocol, bool remoteControl, std::uint32_t fastReadDurationSec, std::uint32_t fastReadIntervalSec, ruvia::db_transaction& transaction) {
+        if (!remoteControl) {
             service::common::fail(18005, "设备未开启远程控制", 403);
-        if (!co_await context.redis().get(service::message::edge::sessionKey(nodeId)))
+        }
+        if (!co_await context.redis().get(service::message::edge::sessionKey(nodeId))) {
             service::common::fail(18013, "边缘节点离线，无法下发设备命令", 409);
+        }
 
         service::collector::DeviceDefinition device;
         device.id = std::string(deviceId);
@@ -532,11 +547,14 @@ private:
         } catch (const std::invalid_argument& error) {
             service::common::fail(18010, error.what(), 400);
         }
-        if (device.protocol == "SL651" && resolved.elements.size() > 8)
+        if (device.protocol == "SL651" && resolved.elements.size() > 8) {
             service::common::fail(18010, "SL651 边缘命令最多包含 8 个要素", 400);
+        }
 
         auto tasks = service::collector::command::groupElements(
-            service::collector::protocolDefinition(device.protocol), std::move(requested));
+            service::collector::protocolDefinition(device.protocol),
+            std::move(requested)
+        );
 
         std::vector<PendingDispatch> dispatches;
         dispatches.reserve(tasks.size());
@@ -553,22 +571,28 @@ private:
             task.responseTimeoutMs = 5000;
             task.maxAttempts = 1;
             task.createdAtMs = message::utcNowMilliseconds();
-            for (const auto& element : elements)
+            for (const auto& element : elements) {
                 task.elements.emplace_back(element.elementId, element.value);
+            }
 
             auto envelope = service::edge::protocol::outbound(service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), service::message::utcNowMilliseconds(), context.template worker_state<service::edge::config::PlatformIdentity>().id, nodeId);
             auto* command = envelope.mutable_command_request();
             if (!setUuid(command->mutable_command_id(), task.messageId) ||
-                !setUuid(command->mutable_device_id(), task.deviceId))
+                !setUuid(command->mutable_device_id(), task.deviceId)) {
                 service::common::fail(18010, "边缘命令标识无效", 500);
+            }
             command->set_timeout_ms(5000);
             command->set_readback_count(1);
             command->set_fast_read_duration_sec(fastReadDurationSec);
             command->set_fast_read_interval_sec(fastReadIntervalSec);
             for (const auto& element : elements) {
-                if (element.elementId.size() > 64 || element.value.size() > 128)
+                if (element.elementId.size() > 64 || element.value.size() > 128) {
                     service::common::fail(
-                        18010, "边缘命令要素 ID 最长 64 字符、值最长 128 字符", 400);
+                        18010,
+                        "边缘命令要素 ID 最长 64 字符、值最长 128 字符",
+                        400
+                    );
+                }
                 auto* value = command->add_values();
                 value->set_element_id(element.elementId);
                 auto* expected = value->mutable_expected();
@@ -576,32 +600,34 @@ private:
                 expected->set_string_value(element.value);
             }
             dispatch.listPayload = service::edge::protocol::encode(envelope);
-            if (dispatch.listPayload.empty())
+            if (dispatch.listPayload.empty()) {
                 service::common::fail(18010, "边缘命令编码失败", 500);
+            }
             dispatches.push_back(std::move(dispatch));
         }
         co_return Prepared{
             .queue = service::message::edge::commandQueueKey(nodeId),
-            .kind = PendingQueueKind::List, .dispatches = std::move(dispatches),
-            .maximum = 1024, .nodeId = std::string(nodeId)};
-
+            .kind = PendingQueueKind::List,
+            .dispatches = std::move(dispatches),
+            .maximum = 1024,
+            .nodeId = std::string(nodeId)
+        };
     }
 
-    static ruvia::task<void> loadEdgeElements(ruvia::db_transaction& transaction,
-                                               service::collector::DeviceDefinition& device) {
+    static ruvia::task<void> loadEdgeElements(ruvia::db_transaction& transaction, service::collector::DeviceDefinition& device) {
         using Op = ruvia::db_binary_operator;
         using Type = ruvia::db_data_type;
         if (device.protocol != "Modbus" && device.protocol != "S7" && device.protocol != "SL651" &&
-            device.protocol != "MC" && device.protocol != "FINS" && device.protocol != "DLT645")
+            device.protocol != "MC" && device.protocol != "FINS" && device.protocol != "DLT645") {
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
+        }
         ruvia::db_query elements;
         const auto field = [&](std::string_view key) {
             return elements.binary(elements.column("item"), Op::json_get_text, elements.value(key));
         };
         const auto integer = [&](std::string_view key, int fallback) {
             const auto value = field(key);
-            return elements.coalesce({ elements.case_when({ { elements.binary(elements.coalesce({ value, elements.value("") }),
-                Op::regex, elements.value("^-?[0-9]{1,18}$")), elements.cast(value, Type::integer) } }), elements.value(fallback) });
+            return elements.coalesce({ elements.case_when({ { elements.binary(elements.coalesce({ value, elements.value("") }), Op::regex, elements.value("^-?[0-9]{1,18}$")), elements.cast(value, Type::integer) } }), elements.value(fallback) });
         };
         const auto functionText = [&](std::string_view key) {
             return elements.binary(elements.column("func"), Op::json_get_text, elements.value(key));
@@ -610,8 +636,7 @@ private:
         const auto isDlt645 = device.protocol == "DLT645";
         const auto isSl651 = device.protocol == "SL651";
         const auto isS7 = device.protocol == "S7";
-        const auto writable = elements.binary(elements.call("lower", { elements.coalesce({ field("writable"), elements.value("") }) }), Op::in,
-            elements.list({ elements.value("true"), elements.value("t"), elements.value("1"), elements.value("yes"), elements.value("y"), elements.value("on") }));
+        const auto writable = elements.binary(elements.call("lower", { elements.coalesce({ field("writable"), elements.value("") }) }), Op::in, elements.list({ elements.value("true"), elements.value("t"), elements.value("1"), elements.value("yes"), elements.value("y"), elements.value("on") }));
         elements.select({ field("id"), field("name"), elements.coalesce({ field("unit"), elements.value("") }), isSl651 ? elements.value("") : isS7 ? elements.coalesce({ field("dataType"), elements.value("BOOL") })
                                                                                                                                                     : field("dataType"),
                           isSl651 ? functionText("dir") : elements.value(""),
@@ -641,8 +666,7 @@ private:
             const auto functionFields = [](std::string_view key, bool response) {
                 ruvia::db_query query;
                 query.select({ query.alias(query.column("value"), "item"), query.alias(query.cast(query.value(response), Type::boolean), "response_element") })
-                    .from_function(query.call("jsonb_array_elements", { query.coalesce({
-                        query.binary(query.column("func"), Op::json_get, query.value(key)), query.cast(query.value("[]"), Type::jsonb) }) }), "field");
+                    .from_function(query.call("jsonb_array_elements", { query.coalesce({ query.binary(query.column("func"), Op::json_get, query.value(key)), query.cast(query.value("[]"), Type::jsonb) }) }), "field");
                 return query;
             };
             auto fields = functionFields("elements", false);
@@ -678,26 +702,23 @@ private:
 
     static bool setUuid(std::string* output, std::string_view text) {
         std::uint8_t value[16]{};
-        if (!service::common::uuidBytes(text, value))
+        if (!service::common::uuidBytes(text, value)) {
             return false;
+        }
         output->assign(service::edge::protocol::bytes(value, sizeof(value)));
         return true;
     }
 
-
-
-    static std::uint32_t boundedUnsigned(std::string_view value, std::uint32_t fallback,
-                                         std::uint32_t minimum) {
+    static std::uint32_t boundedUnsigned(std::string_view value, std::uint32_t fallback, std::uint32_t minimum) {
         std::uint32_t result{};
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), result);
         if (error != std::errc{} || end != value.data() + value.size() ||
-            result < minimum || result > 3600U)
+            result < minimum || result > 3600U) {
             return fallback;
+        }
         return result;
     }
-
-
 };
 
 } // namespace service::command

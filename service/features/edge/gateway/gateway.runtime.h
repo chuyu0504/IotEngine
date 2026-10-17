@@ -6,11 +6,11 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <optional>
 
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task_scope.h>
@@ -25,14 +25,13 @@
 #include "service/features/edge/gateway/gateway.transport.h"
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/middleware/log.h"
-#include "service/utils/worker_task.h"
 #include "service/utils/uuid.h"
+#include "service/utils/worker_task.h"
 
 namespace service::edge::gateway {
 
 class GatewayRuntime final {
   private:
-
     struct LiveSession {
         ruvia::context* context{};
         transport::Connection* socket{};
@@ -57,7 +56,10 @@ class GatewayRuntime final {
             co_return;
         }
         const auto enrollment = co_await gateway::GatewayService::acceptHello(
-            c, workerIndex, first->payload(), input.hello().imei()
+            c,
+            workerIndex,
+            first->payload(),
+            input.hello().imei()
         );
         if (!enrollment) {
             co_await socket.close(1008, "worker lease unavailable");
@@ -73,7 +75,9 @@ class GatewayRuntime final {
             nodeId,
             input.protocol_version(),
             input.platform_id(),
-            workerIndex, GatewayService::newSessionEpoch(), std::chrono::steady_clock::now()
+            workerIndex,
+            GatewayService::newSessionEpoch(),
+            std::chrono::steady_clock::now()
         );
         if (!approved) {
             co_await sendEnrollment(c, socket, session);
@@ -122,7 +126,10 @@ class GatewayRuntime final {
                 co_return;
             }
             session = GatewayProtocol::approveSession(
-                session, nodeId, GatewayService::newSessionEpoch(), std::chrono::steady_clock::now()
+                session,
+                nodeId,
+                GatewayService::newSessionEpoch(),
+                std::chrono::steady_clock::now()
             );
         }
 
@@ -132,8 +139,10 @@ class GatewayRuntime final {
         const auto opened = co_await gateway::GatewayService::openSession(c, connectionIdentity(session));
         if (opened != gateway::IngressStatus::Accepted) {
             co_await socket.close(
-                1008, opened == gateway::IngressStatus::SessionReplaced
-                    ? "session replaced" : "worker lease lost"
+                1008,
+                opened == gateway::IngressStatus::SessionReplaced
+                    ? "session replaced"
+                    : "worker lease lost"
             );
             co_return;
         }
@@ -173,7 +182,8 @@ class GatewayRuntime final {
         try {
             std::weak_ptr<LiveSession> weak = live;
             gateway::GatewayService::ConnectionRegistration registration(
-                c, connectionIdentity(session),
+                c,
+                connectionIdentity(session),
                 [weak] {
                     if (const auto current = weak.lock()) {
                         requestFlush(current);
@@ -203,12 +213,18 @@ class GatewayRuntime final {
                 }
                 const auto telemetry = GatewayProtocol::telemetryDecision(session, input, service::message::utcNowMilliseconds());
                 const auto accepted = co_await gateway::GatewayService::acceptIngress(
-                    c, connectionIdentity(session), input, message->payload(), telemetry.publish
+                    c,
+                    connectionIdentity(session),
+                    input,
+                    message->payload(),
+                    telemetry.publish
                 );
                 if (accepted != gateway::IngressStatus::Accepted) {
                     co_await socket.close(
-                        1008, accepted == gateway::IngressStatus::SessionReplaced
-                            ? "session replaced" : "worker lease lost"
+                        1008,
+                        accepted == gateway::IngressStatus::SessionReplaced
+                            ? "session replaced"
+                            : "worker lease lost"
                     );
                     break;
                 }
@@ -253,7 +269,9 @@ class GatewayRuntime final {
     static pb::Envelope makeEnvelope(ruvia::context& c, GatewayProtocol::Session& session) {
         pb::Envelope result;
         GatewayProtocol::stampEnvelope(
-            session, result, service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()),
+            session,
+            result,
+            service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()),
             service::message::utcNowMilliseconds()
         );
         return result;
@@ -281,7 +299,6 @@ class GatewayRuntime final {
         }
         co_await send(socket, envelope);
     }
-
 
     // This worker's SessionDispatcher wakes the worker-local session when one of its
     // reliable queues changes. Redis reads are non-blocking and reuse this
@@ -322,7 +339,8 @@ class GatewayRuntime final {
                     // Native WebSocket Ping/Pong owns transport liveness. Refresh
                     // this Worker's routing lease without sending application traffic.
                     if (!co_await gateway::GatewayService::renewSession(
-                            *live->context, connectionIdentity(*live->session)
+                            *live->context,
+                            connectionIdentity(*live->session)
                         )) {
                         live->socket->abort();
                         break;
@@ -430,7 +448,10 @@ class GatewayRuntime final {
         int sent = 0;
         for (int count = 0; count < limit; ++count) {
             auto item = co_await gateway::GatewayService::takeQueuedEnvelope(
-                c, connectionIdentity(session), key, session.supportsCommandStartBefore
+                c,
+                connectionIdentity(session),
+                key,
+                session.supportsCommandStartBefore
             );
             if (!item) {
                 break;
@@ -450,7 +471,11 @@ class GatewayRuntime final {
 
     static ruvia::task<void> handle(ruvia::context& c, GatewayProtocol::Session& session, const pb::Envelope& input, bool freshTelemetry) {
         co_await gateway::GatewayService::acceptPayload(
-            c, connectionIdentity(session), input, session.capabilitySeen, session.configSentAtMs
+            c,
+            connectionIdentity(session),
+            input,
+            session.capabilitySeen,
+            session.configSentAtMs
         );
         if (input.has_firmware_chunk_request()) {
             co_await sendFirmwareChunk(c, session, input.firmware_chunk_request());
@@ -465,7 +490,9 @@ class GatewayRuntime final {
         pb::Envelope reply;
         if (GatewayProtocol::acknowledgePayload(session, input, reply, service::message::utcNowMilliseconds())) {
             GatewayProtocol::stampEnvelope(
-                session, reply, service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()),
+                session,
+                reply,
+                service::utils::nextUuid(c.worker_state<service::common::UuidV7State>()),
                 service::message::utcNowMilliseconds()
             );
             GatewayProtocol::enqueue(session, reply);
@@ -481,13 +508,17 @@ class GatewayRuntime final {
             co_return;
         }
         auto chunk = co_await gateway::GatewayService::firmwareChunk(
-            c, session.nodeId, session.firmwareTransfer, request
+            c,
+            session.nodeId,
+            session.firmwareTransfer,
+            request
         );
         auto reply = makeEnvelope(c, session);
         *reply.mutable_firmware_chunk() = std::move(chunk);
         GatewayProtocol::enqueue(session, reply);
     }
 };
+
 // Firmware storage cleanup driver, one instance per Service Worker. It sleeps
 // until the earliest deadline computed by GatewayService (no deadline: until an
 // event), then performs the cleanup only if it wins the storage claim. The
@@ -509,7 +540,9 @@ class FirmwareCleanupRuntime final {
         stop_ = std::make_unique<ruvia::stop_source>();
         try {
             service::utils::startWorkerTask(
-                worker, stop_->token(), stopped_,
+                worker,
+                stop_->token(),
+                stopped_,
                 [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
                     return run(context, ready, stop);
                 }

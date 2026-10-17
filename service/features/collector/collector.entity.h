@@ -1,15 +1,15 @@
 #pragma once
 
 #include <cstddef>
-#include <string_view>
-#include "service/common/message.h"
-#include "service/features/collector/mc/mc.types.h"
-#include "service/features/collector/fins/fins.types.h"
-#include "service/features/collector/dlt645/dlt645.types.h"
-
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include "service/common/message.h"
+#include "service/features/collector/dlt645/dlt645.types.h"
+#include "service/features/collector/fins/fins.types.h"
+#include "service/features/collector/mc/mc.types.h"
 
 namespace service::collector {
 
@@ -142,9 +142,7 @@ return redis.call('DEL', KEYS[1])
     std::string workerInstanceId;
 
     [[nodiscard]] std::vector<message::StreamField> fields() const {
-        return {{"worker_id", std::to_string(workerIndex)}, {"version", version},
-                {"state", state}, {"applied_at_ms", std::to_string(appliedAtMs)},
-                {"worker_instance_id", workerInstanceId}};
+        return { { "worker_id", std::to_string(workerIndex) }, { "version", version }, { "state", state }, { "applied_at_ms", std::to_string(appliedAtMs) }, { "worker_instance_id", workerInstanceId } };
     }
 
     static std::string key(std::size_t index, std::string_view instance) {
@@ -162,15 +160,15 @@ return redis.call('DEL', KEYS[1])
 )lua";
     std::vector<message::StreamField> fields;
 
-    static CollectorLinkRecord fromEvent(const message::StreamMessage& event,
-                                        std::int64_t updatedAtMs) {
+    static CollectorLinkRecord fromEvent(const message::StreamMessage& event, std::int64_t updatedAtMs) {
         CollectorLinkRecord record;
         record.fields.reserve(event.fields.size() + 1);
         for (const auto& field : event.fields) {
-            if (field.name != "message_id" && field.name != "created_at_ms")
+            if (field.name != "message_id" && field.name != "created_at_ms") {
                 record.fields.push_back(field);
+            }
         }
-        record.fields.push_back({"updated_at_ms", std::to_string(updatedAtMs)});
+        record.fields.push_back({ "updated_at_ms", std::to_string(updatedAtMs) });
         return record;
     }
 

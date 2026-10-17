@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,7 +24,6 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
-#include "service/utils/uuid.h"
 #include "service/features/access/access.entity.h"
 #include "service/features/access/access.types.h"
 #include "service/features/configuration/configuration.entity.h"
@@ -34,6 +34,7 @@
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 #include "service/utils/text.h"
+#include "service/utils/uuid.h"
 
 namespace service::access::session {
 
@@ -45,16 +46,19 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
     ruvia::db_query advisoryLock(context.pool());
     advisoryLock.select(advisoryLock.call(
         "pg_advisory_xact_lock",
-        {advisoryLock.cast(advisoryLock.value(service::message::lock::kAccessSessionProjection),
-                           ruvia::db_data_type::big_int)}));
+        { advisoryLock.cast(advisoryLock.value(service::message::lock::kAccessSessionProjection), ruvia::db_data_type::big_int) }
+    ));
     (void)co_await transaction.query(advisoryLock);
     if (onlyIfMissing) {
-        const std::vector<std::string> activeArguments{"GET", std::string(service::message::access::session::kActiveVersionKey)};
+        const std::vector<std::string> activeArguments{ "GET", std::string(service::message::access::session::kActiveVersionKey) };
         const auto active = co_await context.redis().command(std::vector<std::string_view>(activeArguments.begin(), activeArguments.end()));
         if (!active.null()) {
-            if (active.kind() != ruvia::redis_value::kind_type::string)
+            if (active.kind() != ruvia::redis_value::kind_type::string) {
                 service::utils::redis::throwValue(
-                    "read active access-session projection", active);
+                    "read active access-session projection",
+                    active
+                );
+            }
             co_await transaction.commit();
             co_return;
         }
@@ -88,41 +92,45 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
     constexpr std::size_t chunkSize = 128;
     for (std::size_t offset = 0; offset < rows.size(); offset += chunkSize) {
         const auto end = std::min(rows.size(), offset + chunkSize);
-        std::vector<std::string> command{"HSET", versionKey};
+        std::vector<std::string> command{ "HSET", versionKey };
         command.reserve(2 + (end - offset) * 2);
         for (std::size_t index = offset; index < end; ++index) {
             const auto& row = rows[index];
             command.emplace_back(row[0].value().value_or(std::string_view{}));
-            command.push_back(service::message::access::session::encode(row[1].value().value_or(std::string_view{}), row[2].value().value_or(std::string_view{}), row[3].value().value_or(std::string_view{}),
-                                     row[4].value().value_or(std::string_view{}), row[5].value().value_or(std::string_view{}), row[6].value().value_or(std::string_view{})));
+            command.push_back(service::message::access::session::encode(row[1].value().value_or(std::string_view{}), row[2].value().value_or(std::string_view{}), row[3].value().value_or(std::string_view{}), row[4].value().value_or(std::string_view{}), row[5].value().value_or(std::string_view{}), row[6].value().value_or(std::string_view{})));
         }
         (void)co_await context.redis().command(std::vector<std::string_view>(command.begin(), command.end()));
     }
     if (rows.empty()) {
-        const std::vector<std::string> readyArguments{"HSET", versionKey, "__ready", "1"};
+        const std::vector<std::string> readyArguments{ "HSET", versionKey, "__ready", "1" };
         (void)co_await context.redis().command(std::vector<std::string_view>(readyArguments.begin(), readyArguments.end()));
     }
-    const std::vector<std::string> expireArguments{"EXPIRE", versionKey, "600"};
+    const std::vector<std::string> expireArguments{ "EXPIRE", versionKey, "600" };
     (void)co_await context.redis().command(std::vector<std::string_view>(expireArguments.begin(), expireArguments.end()));
 
     const std::string activeKey(service::message::access::session::kActiveVersionKey);
-    const std::string_view keys[]{activeKey, versionKey};
+    const std::string_view keys[]{ activeKey, versionKey };
     const std::string prefix(service::message::access::session::kVersionPrefix);
     const std::string grace = "120";
-    const std::string_view args[]{version, prefix, grace};
+    const std::string_view args[]{ version, prefix, grace };
     const auto reply = co_await context.redis().eval(persistence::kSessionActivateScript, keys, args);
-    if (reply.kind() != ruvia::redis_value::kind_type::string)
+    if (reply.kind() != ruvia::redis_value::kind_type::string) {
         service::utils::redis::throwValue("activate access-session projection", reply);
+    }
     co_await transaction.commit();
 }
 
-template <typename Context> ruvia::task<void> ensure(Context& context) {
-    const std::vector<std::string> activeArguments{"GET", std::string(service::message::access::session::kActiveVersionKey)};
+template <typename Context>
+ruvia::task<void> ensure(Context& context) {
+    const std::vector<std::string> activeArguments{ "GET", std::string(service::message::access::session::kActiveVersionKey) };
     const auto active = co_await context.redis().command(std::vector<std::string_view>(activeArguments.begin(), activeArguments.end()));
     if (!active.null()) {
-        if (active.kind() != ruvia::redis_value::kind_type::string)
+        if (active.kind() != ruvia::redis_value::kind_type::string) {
             service::utils::redis::throwValue(
-                "read active access-session projection", active);
+                "read active access-session projection",
+                active
+            );
+        }
         co_return;
     }
     co_await refresh(context, true);
@@ -149,99 +157,99 @@ namespace service::access::delivery {
 
 template <typename Entity>
 ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& result) {
-        constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
-        ruvia::db_query catalog(context.pool());
-        const auto option = [&]<bool enabled>(std::string_view column) {
-            if constexpr (enabled) return catalog.coalesce({catalog.column(column, "webhook"), catalog.value("")});
-            else return catalog.value("");
-        };
-        const auto url = [&] {
-            if constexpr (mqtt) {
-                return Entity::template column<"broker_url">().expression(catalog, "webhook");
-            } else {
-                return Entity::template column<"url">().expression(catalog, "webhook");
-            }
-        }();
-        const auto skipTls = [&] {
-            if constexpr (mqtt) return catalog.value("0");
-            else {
-                return catalog.case_when({ { Entity::template column<"skip_tls_verify">().expression(catalog, "webhook"), catalog.value("1") } }, catalog.value("0"));
-            }
-        }();
-        const auto headers = [&] {
-            if constexpr (mqtt) return catalog.value("{}");
-            else {
-                return catalog.cast(Entity::template column<"headers">().expression(catalog, "webhook"), ruvia::db_data_type::text);
-            }
-        }();
-        const auto expiresAtMs = catalog.cast(
-            catalog.coalesce({ catalog.cast(catalog.binary(catalog.extract(ruvia::db_date_part::epoch, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")), ruvia::db_binary_operator::multiply, catalog.value(std::int64_t{ 1000 })), ruvia::db_data_type::big_int), catalog.value(std::int64_t{ 0 }) }),
-            ruvia::db_data_type::text
-        );
-        const auto eventTypes = catalog.call(
-            "jsonb_array_elements_text",
-            { catalog.case_when(
-                { { catalog.binary(
-                        catalog.call("jsonb_typeof", { Entity::template column<"event_types">().expression(catalog, "webhook") }),
-                        ruvia::db_binary_operator::equal,
-                        catalog.value("array")
-                    ),
-                    Entity::template column<"event_types">().expression(catalog, "webhook") } },
-                catalog.cast(catalog.value("[]"), ruvia::db_data_type::jsonb)
-            ) }
-        );
-        catalog
-            .select({ catalog.cast(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"), ruvia::db_data_type::text), service::configuration::persistence::DeviceEntity::column<"name">().expression(catalog, "device"), catalog.coalesce({ catalog.binary(service::configuration::persistence::DeviceEntity::column<"protocol_params">().expression(catalog, "device"), ruvia::db_binary_operator::json_get_text, catalog.value("device_code")), catalog.value("") }), catalog.cast(Entity::template column<"id">().expression(catalog, "webhook"), ruvia::db_data_type::text), catalog.cast(Entity::template column<"access_key_id">().expression(catalog, "webhook"), ruvia::db_data_type::text), url, option.template operator()<!mqtt>("secret"), headers, catalog.cast(Entity::template column<"timeout_seconds">().expression(catalog, "webhook"), ruvia::db_data_type::text), skipTls, expiresAtMs, catalog.column("value", "event_type"), option.template operator()<mqtt>("username"), option.template operator()<mqtt>("password") })
-            .from(Entity::table_name(), "webhook")
-            .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key"), ruvia::db_binary_operator::equal, Entity::template column<"access_key_id">().expression(catalog, "webhook")), "key")
-            .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(catalog, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key")), "binding")
-            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), catalog.binary(service::configuration::persistence::DeviceEntity::column<"id">().expression(catalog, "device"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding")), "device")
-            .join_function(ruvia::db_join_type::cross, eventTypes, {}, "event_type", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
-            .where(catalog.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(catalog, "webhook")))
-            .and_where(catalog.binary(Entity::template column<"status">().expression(catalog, "webhook"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
-            .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(catalog, "key")))
-            .and_where(catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(catalog, "key"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
-            .and_where(catalog.binary(
-                catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")),
-                ruvia::db_binary_operator::or_value,
-                catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key"), ruvia::db_binary_operator::greater, catalog.call("now"))
-            ))
-            .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::configuration::persistence::DeviceEntity::column<"deleted_at">().expression(catalog, "device")))
-            .order_by(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"))
-            .add_order_by(catalog.column("value", "event_type"))
-            .add_order_by(Entity::template column<"id">().expression(catalog, "webhook"));
+    constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
+    ruvia::db_query catalog(context.pool());
+    const auto option = [&]<bool enabled>(std::string_view column) {
+        if constexpr (enabled) {
+            return catalog.coalesce({ catalog.column(column, "webhook"), catalog.value("") });
+        } else {
+            return catalog.value("");
+        }
+    };
+    const auto url = [&] {
         if constexpr (mqtt) {
-            const auto scope = catalog.case_when({
-                {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.alert.triggered"), catalog.value("device.alert.resolved")})), catalog.value("alert:read")},
-                {catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({catalog.value("device.command.accepted"), catalog.value("device.command.updated")})), catalog.value("device:command")}
-            }, catalog.value("device:realtime"));
-            catalog.and_where(catalog.call("jsonb_exists", { service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(catalog, "key"), scope }));
+            return Entity::template column<"broker_url">().expression(catalog, "webhook");
+        } else {
+            return Entity::template column<"url">().expression(catalog, "webhook");
         }
-        const auto rows = co_await context.db().query(catalog);
-        for (const auto& row : rows) {
-            const std::string deviceId(row[0].value().value_or(std::string_view{}));
-            auto& device = result[deviceId];
-            device.name.assign(row[1].value().value_or(std::string_view{}));
-            device.code.assign(row[2].value().value_or(std::string_view{}));
-            const auto timeout =
-                service::utils::parseInt64(std::optional<std::string_view>{row[8].value().value_or(std::string_view{})})
-                    .value_or(5);
-            const auto expiresAtMs =
-                service::utils::parseInt64(std::optional<std::string_view>{row[10].value().value_or(std::string_view{})})
-                    .value_or(0);
-            device.targets[std::string(row[11].value().value_or(std::string_view{}))].push_back(
-                {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
-                 std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})),
-                 std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{5},
-                 row[9].value().value_or(std::string_view{}) == "1", expiresAtMs, std::nullopt});
-            if constexpr (mqtt) {
-                auto& target = device.targets[std::string(row[11].value().value_or(std::string_view{}))].back();
-                target.mqtt = MqttDestination{std::string(row[12].value().value_or(std::string_view{})),
-                    std::string(row[13].value().value_or(std::string_view{}))};
-            }
+    }();
+    const auto skipTls = [&] {
+        if constexpr (mqtt) {
+            return catalog.value("0");
+        } else {
+            return catalog.case_when({ { Entity::template column<"skip_tls_verify">().expression(catalog, "webhook"), catalog.value("1") } }, catalog.value("0"));
         }
-        co_return;
+    }();
+    const auto headers = [&] {
+        if constexpr (mqtt) {
+            return catalog.value("{}");
+        } else {
+            return catalog.cast(Entity::template column<"headers">().expression(catalog, "webhook"), ruvia::db_data_type::text);
+        }
+    }();
+    const auto expiresAtMs = catalog.cast(
+        catalog.coalesce({ catalog.cast(catalog.binary(catalog.extract(ruvia::db_date_part::epoch, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")), ruvia::db_binary_operator::multiply, catalog.value(std::int64_t{ 1000 })), ruvia::db_data_type::big_int), catalog.value(std::int64_t{ 0 }) }),
+        ruvia::db_data_type::text
+    );
+    const auto eventTypes = catalog.call(
+        "jsonb_array_elements_text",
+        { catalog.case_when(
+            { { catalog.binary(
+                    catalog.call("jsonb_typeof", { Entity::template column<"event_types">().expression(catalog, "webhook") }),
+                    ruvia::db_binary_operator::equal,
+                    catalog.value("array")
+                ),
+                Entity::template column<"event_types">().expression(catalog, "webhook") } },
+            catalog.cast(catalog.value("[]"), ruvia::db_data_type::jsonb)
+        ) }
+    );
+    catalog
+        .select({ catalog.cast(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"), ruvia::db_data_type::text), service::configuration::persistence::DeviceEntity::column<"name">().expression(catalog, "device"), catalog.coalesce({ catalog.binary(service::configuration::persistence::DeviceEntity::column<"protocol_params">().expression(catalog, "device"), ruvia::db_binary_operator::json_get_text, catalog.value("device_code")), catalog.value("") }), catalog.cast(Entity::template column<"id">().expression(catalog, "webhook"), ruvia::db_data_type::text), catalog.cast(Entity::template column<"access_key_id">().expression(catalog, "webhook"), ruvia::db_data_type::text), url, option.template operator()<!mqtt>("secret"), headers, catalog.cast(Entity::template column<"timeout_seconds">().expression(catalog, "webhook"), ruvia::db_data_type::text), skipTls, expiresAtMs, catalog.column("value", "event_type"), option.template operator()<mqtt>("username"), option.template operator()<mqtt>("password") })
+        .from(Entity::table_name(), "webhook")
+        .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key"), ruvia::db_binary_operator::equal, Entity::template column<"access_key_id">().expression(catalog, "webhook")), "key")
+        .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(catalog, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key")), "binding")
+        .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), catalog.binary(service::configuration::persistence::DeviceEntity::column<"id">().expression(catalog, "device"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding")), "device")
+        .join_function(ruvia::db_join_type::cross, eventTypes, {}, "event_type", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
+        .where(catalog.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(catalog, "webhook")))
+        .and_where(catalog.binary(Entity::template column<"status">().expression(catalog, "webhook"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
+        .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(catalog, "key")))
+        .and_where(catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(catalog, "key"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
+        .and_where(catalog.binary(
+            catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")),
+            ruvia::db_binary_operator::or_value,
+            catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key"), ruvia::db_binary_operator::greater, catalog.call("now"))
+        ))
+        .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::configuration::persistence::DeviceEntity::column<"deleted_at">().expression(catalog, "device")))
+        .order_by(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"))
+        .add_order_by(catalog.column("value", "event_type"))
+        .add_order_by(Entity::template column<"id">().expression(catalog, "webhook"));
+    if constexpr (mqtt) {
+        const auto scope = catalog.case_when({ { catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({ catalog.value("device.alert.triggered"), catalog.value("device.alert.resolved") })), catalog.value("alert:read") }, { catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({ catalog.value("device.command.accepted"), catalog.value("device.command.updated") })), catalog.value("device:command") } }, catalog.value("device:realtime"));
+        catalog.and_where(catalog.call("jsonb_exists", { service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(catalog, "key"), scope }));
     }
+    const auto rows = co_await context.db().query(catalog);
+    for (const auto& row : rows) {
+        const std::string deviceId(row[0].value().value_or(std::string_view{}));
+        auto& device = result[deviceId];
+        device.name.assign(row[1].value().value_or(std::string_view{}));
+        device.code.assign(row[2].value().value_or(std::string_view{}));
+        const auto timeout =
+            service::utils::parseInt64(std::optional<std::string_view>{ row[8].value().value_or(std::string_view{}) })
+                .value_or(5);
+        const auto expiresAtMs =
+            service::utils::parseInt64(std::optional<std::string_view>{ row[10].value().value_or(std::string_view{}) })
+                .value_or(0);
+        device.targets[std::string(row[11].value().value_or(std::string_view{}))].push_back(
+            { std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})), std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})), std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{ 5 }, row[9].value().value_or(std::string_view{}) == "1", expiresAtMs, std::nullopt }
+        );
+        if constexpr (mqtt) {
+            auto& target = device.targets[std::string(row[11].value().value_or(std::string_view{}))].back();
+            target.mqtt = MqttDestination{ std::string(row[12].value().value_or(std::string_view{})),
+                                           std::string(row[13].value().value_or(std::string_view{})) };
+        }
+    }
+    co_return;
+}
 
 inline ruvia::task<Catalog> loadCatalog(ruvia::web_worker_context& context) {
     Catalog result;
@@ -261,166 +269,126 @@ inline ruvia::task<Catalog> reloadCatalog(ruvia::web_worker_context& context, st
 template <typename Entity>
 ruvia::task<void> persistTargetResults(
     ruvia::web_worker_context& context,
-    const std::vector<message::StreamMessage>& messages) {
-        constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
-        using Log = service::access::persistence::OpenAccessLogEntity;
-        if (messages.empty())
-            co_return;
-        ruvia::db_query incoming(context.pool());
-        for (std::size_t index = 0; index < messages.size(); ++index) {
-            const auto httpStatus = service::utils::parseInt64(
-                std::optional<std::string_view>(messages[index].get("http_status")));
-            const auto completedAt = service::utils::parseInt64(
-                std::optional<std::string_view>(messages[index].get("completed_at_ms")));
-            incoming.values({
-                incoming.cast(incoming.value(static_cast<std::int64_t>(index)),
-                              ruvia::db_data_type::big_int),
-                incoming.cast(incoming.value(messages[index].get("log_id")),
-                              ruvia::db_data_type::uuid),
-                incoming.cast(incoming.value(messages[index].get("access_key_id")),
-                              ruvia::db_data_type::uuid),
-                incoming.cast(incoming.value(messages[index].get(mqtt ? "mqtt_id" : "webhook_id")),
-                              ruvia::db_data_type::uuid),
-                incoming.cast(incoming.value(messages[index].get("event_type")),
-                              ruvia::db_data_type::text),
-                incoming.cast(incoming.value(messages[index].get("status")),
-                              ruvia::db_data_type::text),
-                incoming.cast(incoming.value(messages[index].get("target")),
-                              ruvia::db_data_type::text),
-                incoming.cast(incoming.value(httpStatus.value_or(0)),
-                              ruvia::db_data_type::big_int),
-                incoming.cast(incoming.value(messages[index].get("device_id")),
-                              ruvia::db_data_type::uuid),
-                incoming.cast(incoming.value(messages[index].get("device_code")),
-                              ruvia::db_data_type::text),
-                incoming.cast(incoming.value(messages[index].get("message")),
-                              ruvia::db_data_type::text),
-                incoming.cast(incoming.value(messages[index].get("request_payload")),
-                              ruvia::db_data_type::jsonb),
-                incoming.cast(incoming.value(messages[index].get("response_payload")),
-                              ruvia::db_data_type::jsonb),
-                incoming.cast(
-                    incoming.value(completedAt.value_or(
-                        service::message::utcNowMilliseconds())),
-                    ruvia::db_data_type::big_int)
-            });
-        }
-        ruvia::db_query latest(context.pool());
-        latest
-            .select(latest.star())
-            .distinct_on({latest.column("target_id", "incoming")})
-            .from("incoming", "incoming")
-            .order_by(latest.column("target_id", "incoming"))
-            .add_order_by(latest.column("completed_at_ms", "incoming"),
-                        ruvia::db_order_direction::desc)
-            .add_order_by(latest.column("sequence", "incoming"),
-                        ruvia::db_order_direction::desc);
-
-        ruvia::db_query summary(context.pool());
-        const auto successfulAt = summary.filter(
-            summary.aggregate("max", {summary.column("completed_at_ms", "incoming")}),
-            summary.binary(summary.column("status", "incoming"),
-                           ruvia::db_binary_operator::equal,
-                           summary.value("success")));
-        const auto failedAt = summary.filter(
-            summary.aggregate("max", {summary.column("completed_at_ms", "incoming")}),
-            summary.binary(summary.column("status", "incoming"),
-                           ruvia::db_binary_operator::equal,
-                           summary.value("failed")));
-        summary
-            .select({summary.column("target_id", "incoming"),
-                     summary.alias(successfulAt, "last_success_ms"),
-                     summary.alias(failedAt, "last_failure_ms")})
-            .from("incoming", "incoming")
-            .group_by({summary.column("target_id", "incoming")});
-
-        ruvia::db_query updated(context.pool());
-        const auto asTimestamp = [&updated](ruvia::db_expression milliseconds) {
-            return updated.call(
-                "to_timestamp",
-                {updated.binary(
-                    updated.cast(milliseconds, ruvia::db_data_type::double_value),
-                    ruvia::db_binary_operator::divide,
-                    updated.value(1000.0))});
-        };
-        const auto epoch = updated.call("to_timestamp", {updated.value(0.0)});
-        const auto latestTimestamp = asTimestamp(
-            updated.column("completed_at_ms", "latest"));
-        const auto successTimestamp = asTimestamp(
-            updated.column("last_success_ms", "summary"));
-        const auto failureTimestamp = asTimestamp(
-            updated.column("last_failure_ms", "summary"));
-        const auto latestIsNewer = updated.binary(
-            updated.unary(ruvia::db_unary_operator::is_null, Entity::template column<"last_triggered_at">().expression(updated, "webhook")),
-            ruvia::db_binary_operator::or_value,
-            updated.binary(Entity::template column<"last_triggered_at">().expression(updated, "webhook"), ruvia::db_binary_operator::less_equal, latestTimestamp)
+    const std::vector<message::StreamMessage>& messages
+) {
+    constexpr bool mqtt = std::is_same_v<Entity, service::access::persistence::OpenMqttEntity>;
+    using Log = service::access::persistence::OpenAccessLogEntity;
+    if (messages.empty()) {
+        co_return;
+    }
+    ruvia::db_query incoming(context.pool());
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        const auto httpStatus = service::utils::parseInt64(
+            std::optional<std::string_view>(messages[index].get("http_status"))
         );
-        updated
-            .update(Entity::table_name(), "webhook")
-            .set(Entity::template column<"last_triggered_at">().name(), updated.greatest({ updated.coalesce({ Entity::template column<"last_triggered_at">().expression(updated, "webhook"), epoch }), latestTimestamp }))
-            .set(Entity::template column<"last_success_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_success_ms", "summary")), Entity::template column<"last_success_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_success_at">().expression(updated, "webhook"), epoch }), successTimestamp })))
-            .set(Entity::template column<"last_failure_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_failure_ms", "summary")), Entity::template column<"last_failure_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_failure_at">().expression(updated, "webhook"), epoch }), failureTimestamp })))
-            .set(Entity::template column<"last_error">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("message", "latest"), updated.value("")) } }, Entity::template column<"last_error">().expression(updated, "webhook")))
-            .set(Entity::template column<"updated_at">().name(), updated.call("now"))
-            .update_from("summary", "summary")
-            .join(ruvia::db_join_type::inner, "latest", updated.binary(updated.column("target_id", "latest"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")), "latest")
-            .where(updated.binary(Entity::template column<"id">().expression(updated, "webhook"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")))
-            .and_where(updated.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(updated, "webhook")))
-            .returning({ Entity::template column<"id">().expression(updated, "webhook") });
-        if constexpr (!mqtt) {
-            updated.set(Entity::template column<"last_http_status">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("http_status", "latest"), updated.value(std::int64_t{ 0 })) } }, Entity::template column<"last_http_status">().expression(updated, "webhook")));
-        }
+        const auto completedAt = service::utils::parseInt64(
+            std::optional<std::string_view>(messages[index].get("completed_at_ms"))
+        );
+        incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), ruvia::db_data_type::big_int), incoming.cast(incoming.value(messages[index].get("log_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("access_key_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get(mqtt ? "mqtt_id" : "webhook_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("event_type")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("status")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("target")), ruvia::db_data_type::text), incoming.cast(incoming.value(httpStatus.value_or(0)), ruvia::db_data_type::big_int), incoming.cast(incoming.value(messages[index].get("device_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("device_code")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("message")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("request_payload")), ruvia::db_data_type::jsonb), incoming.cast(incoming.value(messages[index].get("response_payload")), ruvia::db_data_type::jsonb), incoming.cast(incoming.value(completedAt.value_or(service::message::utcNowMilliseconds())), ruvia::db_data_type::big_int) });
+    }
+    ruvia::db_query latest(context.pool());
+    latest
+        .select(latest.star())
+        .distinct_on({ latest.column("target_id", "incoming") })
+        .from("incoming", "incoming")
+        .order_by(latest.column("target_id", "incoming"))
+        .add_order_by(latest.column("completed_at_ms", "incoming"), ruvia::db_order_direction::desc)
+        .add_order_by(latest.column("sequence", "incoming"), ruvia::db_order_direction::desc);
 
-        ruvia::db_query logRows(context.pool());
-        logRows
-            .select({logRows.column("log_id", "incoming"),
-                     logRows.column("access_key_id", "incoming"),
-                     mqtt ? logRows.null_value() : logRows.column("target_id", "incoming"),
-                     mqtt ? logRows.column("target_id", "incoming") : logRows.null_value(),
-                     logRows.value("push"), logRows.value(mqtt ? "mqtt" : "webhook"),
-                     logRows.column("event_type", "incoming"),
-                     logRows.column("status", "incoming"), logRows.value(mqtt ? "PUBLISH" : "POST"),
-                     logRows.column("target", "incoming"),
-                     logRows.null_if(logRows.column("http_status", "incoming"),
-                                    logRows.value(std::int64_t{0})),
-                     logRows.column("device_id", "incoming"),
-                     logRows.null_if(logRows.column("device_code", "incoming"),
-                                    logRows.value("")),
-                     logRows.null_if(logRows.column("message", "incoming"),
-                                    logRows.value("")),
-                     logRows.column("request_payload", "incoming"),
-                     logRows.column("response_payload", "incoming")})
-            .from("incoming", "incoming");
+    ruvia::db_query summary(context.pool());
+    const auto successfulAt = summary.filter(
+        summary.aggregate("max", { summary.column("completed_at_ms", "incoming") }),
+        summary.binary(summary.column("status", "incoming"), ruvia::db_binary_operator::equal, summary.value("success"))
+    );
+    const auto failedAt = summary.filter(
+        summary.aggregate("max", { summary.column("completed_at_ms", "incoming") }),
+        summary.binary(summary.column("status", "incoming"), ruvia::db_binary_operator::equal, summary.value("failed"))
+    );
+    summary
+        .select({ summary.column("target_id", "incoming"), summary.alias(successfulAt, "last_success_ms"), summary.alias(failedAt, "last_failure_ms") })
+        .from("incoming", "incoming")
+        .group_by({ summary.column("target_id", "incoming") });
 
-        ruvia::db_query write(context.pool());
-        write
-            .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "target_id", "event_type", "status", "target", "http_status", "device_id", "device_code", "message", "request_payload", "response_payload", "completed_at_ms" } })
-            .with("latest", latest)
-            .with("summary", summary)
-            .with("updated", updated)
-            .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"webhook_id">().name(), Log::column<"mqtt_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"event_type">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"device_code">().name(), Log::column<"message">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
-            .insert_from(logRows)
-            .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
-        (void)co_await context.db().execute(write);
+    ruvia::db_query updated(context.pool());
+    const auto asTimestamp = [&updated](ruvia::db_expression milliseconds) {
+        return updated.call(
+            "to_timestamp",
+            { updated.binary(
+                updated.cast(milliseconds, ruvia::db_data_type::double_value),
+                ruvia::db_binary_operator::divide,
+                updated.value(1000.0)
+            ) }
+        );
+    };
+    const auto epoch = updated.call("to_timestamp", { updated.value(0.0) });
+    const auto latestTimestamp = asTimestamp(
+        updated.column("completed_at_ms", "latest")
+    );
+    const auto successTimestamp = asTimestamp(
+        updated.column("last_success_ms", "summary")
+    );
+    const auto failureTimestamp = asTimestamp(
+        updated.column("last_failure_ms", "summary")
+    );
+    const auto latestIsNewer = updated.binary(
+        updated.unary(ruvia::db_unary_operator::is_null, Entity::template column<"last_triggered_at">().expression(updated, "webhook")),
+        ruvia::db_binary_operator::or_value,
+        updated.binary(Entity::template column<"last_triggered_at">().expression(updated, "webhook"), ruvia::db_binary_operator::less_equal, latestTimestamp)
+    );
+    updated
+        .update(Entity::table_name(), "webhook")
+        .set(Entity::template column<"last_triggered_at">().name(), updated.greatest({ updated.coalesce({ Entity::template column<"last_triggered_at">().expression(updated, "webhook"), epoch }), latestTimestamp }))
+        .set(Entity::template column<"last_success_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_success_ms", "summary")), Entity::template column<"last_success_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_success_at">().expression(updated, "webhook"), epoch }), successTimestamp })))
+        .set(Entity::template column<"last_failure_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_failure_ms", "summary")), Entity::template column<"last_failure_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_failure_at">().expression(updated, "webhook"), epoch }), failureTimestamp })))
+        .set(Entity::template column<"last_error">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("message", "latest"), updated.value("")) } }, Entity::template column<"last_error">().expression(updated, "webhook")))
+        .set(Entity::template column<"updated_at">().name(), updated.call("now"))
+        .update_from("summary", "summary")
+        .join(ruvia::db_join_type::inner, "latest", updated.binary(updated.column("target_id", "latest"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")), "latest")
+        .where(updated.binary(Entity::template column<"id">().expression(updated, "webhook"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")))
+        .and_where(updated.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(updated, "webhook")))
+        .returning({ Entity::template column<"id">().expression(updated, "webhook") });
+    if constexpr (!mqtt) {
+        updated.set(Entity::template column<"last_http_status">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("http_status", "latest"), updated.value(std::int64_t{ 0 })) } }, Entity::template column<"last_http_status">().expression(updated, "webhook")));
     }
 
-inline ruvia::task<void> persistResults(ruvia::web_worker_context& context,
-    const std::vector<message::StreamMessage>& messages) {
+    ruvia::db_query logRows(context.pool());
+    logRows
+        .select({ logRows.column("log_id", "incoming"), logRows.column("access_key_id", "incoming"), mqtt ? logRows.null_value() : logRows.column("target_id", "incoming"), mqtt ? logRows.column("target_id", "incoming") : logRows.null_value(), logRows.value("push"), logRows.value(mqtt ? "mqtt" : "webhook"), logRows.column("event_type", "incoming"), logRows.column("status", "incoming"), logRows.value(mqtt ? "PUBLISH" : "POST"), logRows.column("target", "incoming"), logRows.null_if(logRows.column("http_status", "incoming"), logRows.value(std::int64_t{ 0 })), logRows.column("device_id", "incoming"), logRows.null_if(logRows.column("device_code", "incoming"), logRows.value("")), logRows.null_if(logRows.column("message", "incoming"), logRows.value("")), logRows.column("request_payload", "incoming"), logRows.column("response_payload", "incoming") })
+        .from("incoming", "incoming");
+
+    ruvia::db_query write(context.pool());
+    write
+        .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "target_id", "event_type", "status", "target", "http_status", "device_id", "device_code", "message", "request_payload", "response_payload", "completed_at_ms" } })
+        .with("latest", latest)
+        .with("summary", summary)
+        .with("updated", updated)
+        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"webhook_id">().name(), Log::column<"mqtt_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"event_type">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"device_code">().name(), Log::column<"message">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
+        .insert_from(logRows)
+        .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
+    (void)co_await context.db().execute(write);
+}
+
+inline ruvia::task<void> persistResults(ruvia::web_worker_context& context, const std::vector<message::StreamMessage>& messages) {
     std::vector<message::StreamMessage> webhooks, mqtt;
     for (const auto& message : messages) {
-        if (message.get("mqtt_id").empty()) webhooks.push_back(message);
-        else mqtt.push_back(message);
+        if (message.get("mqtt_id").empty()) {
+            webhooks.push_back(message);
+        } else {
+            mqtt.push_back(message);
+        }
     }
     co_await persistTargetResults<service::access::persistence::OpenWebhookEntity>(context, webhooks);
     co_await persistTargetResults<service::access::persistence::OpenMqttEntity>(context, mqtt);
 }
 
 inline ruvia::task<void> persistAudits(
-        ruvia::web_worker_context& context,
-        const std::vector<message::StreamMessage>& messages) {
+    ruvia::web_worker_context& context,
+    const std::vector<message::StreamMessage>& messages
+) {
     using Log = service::access::persistence::OpenAccessLogEntity;
-    if (messages.empty())
+    if (messages.empty()) {
         co_return;
+    }
     ruvia::db_query incoming(context.pool());
     for (std::size_t index = 0; index < messages.size(); ++index) {
         const auto httpStatus = service::utils::parseInt64(
@@ -431,80 +399,62 @@ inline ruvia::task<void> persistAudits(
         );
         incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), ruvia::db_data_type::big_int), incoming.cast(incoming.value(messages[index].get("log_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("access_key_id")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("action")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("http_method")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("target")), ruvia::db_data_type::text), incoming.cast(incoming.value(messages[index].get("request_ip")), ruvia::db_data_type::text), incoming.cast(incoming.value(httpStatus.value_or(0)), ruvia::db_data_type::integer), incoming.cast(incoming.null_if(incoming.value(messages[index].get("device_id")), incoming.value("")), ruvia::db_data_type::uuid), incoming.cast(incoming.value(messages[index].get("request_payload")), ruvia::db_data_type::jsonb), incoming.cast(incoming.value(messages[index].get("response_payload")), ruvia::db_data_type::jsonb), incoming.cast(incoming.value(usedAt.value_or(service::message::utcNowMilliseconds())), ruvia::db_data_type::big_int) });
     }
-        ruvia::db_query latestUsage(context.pool());
-        latestUsage
-            .select({latestUsage.column("access_key_id", "incoming"),
-                     latestUsage.column("request_ip", "incoming"),
-                     latestUsage.column("used_at_ms", "incoming")})
-            .distinct_on({latestUsage.column("access_key_id", "incoming")})
-            .from("incoming", "incoming")
-            .order_by(latestUsage.column("access_key_id", "incoming"))
-            .add_order_by(latestUsage.column("used_at_ms", "incoming"),
-                        ruvia::db_order_direction::desc)
-            .add_order_by(latestUsage.column("sequence", "incoming"),
-                        ruvia::db_order_direction::desc);
+    ruvia::db_query latestUsage(context.pool());
+    latestUsage
+        .select({ latestUsage.column("access_key_id", "incoming"), latestUsage.column("request_ip", "incoming"), latestUsage.column("used_at_ms", "incoming") })
+        .distinct_on({ latestUsage.column("access_key_id", "incoming") })
+        .from("incoming", "incoming")
+        .order_by(latestUsage.column("access_key_id", "incoming"))
+        .add_order_by(latestUsage.column("used_at_ms", "incoming"), ruvia::db_order_direction::desc)
+        .add_order_by(latestUsage.column("sequence", "incoming"), ruvia::db_order_direction::desc);
 
-        ruvia::db_query usageUpdated(context.pool());
-        const auto latestTimestamp = usageUpdated.call(
-            "to_timestamp",
-            {usageUpdated.binary(
-                usageUpdated.cast(usageUpdated.column("used_at_ms", "latest"),
-                                 ruvia::db_data_type::double_value),
-                ruvia::db_binary_operator::divide,
-                usageUpdated.value(1000.0))});
-        usageUpdated
-            .update(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
-            .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().name(), latestTimestamp)
-            .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_ip">().name(), usageUpdated.null_if(usageUpdated.column("request_ip", "latest"), usageUpdated.value("")))
-            .update_from("latest_usage", "latest")
-            .where(usageUpdated.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(usageUpdated, "key"), ruvia::db_binary_operator::equal, usageUpdated.column("access_key_id", "latest")))
-            .and_where(usageUpdated.binary(
-                usageUpdated.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().expression(usageUpdated, "key")),
-                ruvia::db_binary_operator::or_value,
-                usageUpdated.binary(service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().expression(usageUpdated, "key"), ruvia::db_binary_operator::less_equal, latestTimestamp)
-            ))
-            .returning({ service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(usageUpdated, "key") });
+    ruvia::db_query usageUpdated(context.pool());
+    const auto latestTimestamp = usageUpdated.call(
+        "to_timestamp",
+        { usageUpdated.binary(
+            usageUpdated.cast(usageUpdated.column("used_at_ms", "latest"), ruvia::db_data_type::double_value),
+            ruvia::db_binary_operator::divide,
+            usageUpdated.value(1000.0)
+        ) }
+    );
+    usageUpdated
+        .update(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
+        .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().name(), latestTimestamp)
+        .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_ip">().name(), usageUpdated.null_if(usageUpdated.column("request_ip", "latest"), usageUpdated.value("")))
+        .update_from("latest_usage", "latest")
+        .where(usageUpdated.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(usageUpdated, "key"), ruvia::db_binary_operator::equal, usageUpdated.column("access_key_id", "latest")))
+        .and_where(usageUpdated.binary(
+            usageUpdated.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().expression(usageUpdated, "key")),
+            ruvia::db_binary_operator::or_value,
+            usageUpdated.binary(service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().expression(usageUpdated, "key"), ruvia::db_binary_operator::less_equal, latestTimestamp)
+        ))
+        .returning({ service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(usageUpdated, "key") });
 
-        ruvia::db_query updateBarrier(context.pool());
-        updateBarrier
-            .select(updateBarrier.alias(
-                updateBarrier.aggregate("count", {updateBarrier.star()}),
-                "updated_count"))
-            .from("usage_updated");
+    ruvia::db_query updateBarrier(context.pool());
+    updateBarrier
+        .select(updateBarrier.alias(
+            updateBarrier.aggregate("count", { updateBarrier.star() }),
+            "updated_count"
+        ))
+        .from("usage_updated");
 
-        ruvia::db_query logRows(context.pool());
-        logRows
-            .select({logRows.column("log_id", "incoming"),
-                     logRows.column("access_key_id", "incoming"),
-                     logRows.value("pull"), logRows.column("action", "incoming"),
-                     logRows.value("success"),
-                     logRows.null_if(logRows.column("http_method", "incoming"),
-                                    logRows.value("")),
-                     logRows.null_if(logRows.column("target", "incoming"),
-                                    logRows.value("")),
-                     logRows.null_if(logRows.column("request_ip", "incoming"),
-                                    logRows.value("")),
-                     logRows.null_if(logRows.column("http_status", "incoming"),
-                                    logRows.value(std::int64_t{0})),
-                     logRows.column("device_id", "incoming"),
-                     logRows.column("request_payload", "incoming"),
-                     logRows.column("response_payload", "incoming")})
-            .from("incoming", "incoming")
-            .join(ruvia::db_join_type::cross, updateBarrier, {}, "update_barrier")
-            .where(logRows.binary(logRows.column("updated_count", "update_barrier"),
-                                 ruvia::db_binary_operator::greater_equal,
-                                 logRows.value(std::int64_t{0})));
+    ruvia::db_query logRows(context.pool());
+    logRows
+        .select({ logRows.column("log_id", "incoming"), logRows.column("access_key_id", "incoming"), logRows.value("pull"), logRows.column("action", "incoming"), logRows.value("success"), logRows.null_if(logRows.column("http_method", "incoming"), logRows.value("")), logRows.null_if(logRows.column("target", "incoming"), logRows.value("")), logRows.null_if(logRows.column("request_ip", "incoming"), logRows.value("")), logRows.null_if(logRows.column("http_status", "incoming"), logRows.value(std::int64_t{ 0 })), logRows.column("device_id", "incoming"), logRows.column("request_payload", "incoming"), logRows.column("response_payload", "incoming") })
+        .from("incoming", "incoming")
+        .join(ruvia::db_join_type::cross, updateBarrier, {}, "update_barrier")
+        .where(logRows.binary(logRows.column("updated_count", "update_barrier"), ruvia::db_binary_operator::greater_equal, logRows.value(std::int64_t{ 0 })));
 
-        ruvia::db_query write(context.pool());
-        write
-            .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "action", "http_method", "target", "request_ip", "http_status", "device_id", "request_payload", "response_payload", "used_at_ms" } })
-            .with("latest_usage", latestUsage, { .materialization_ = ruvia::db_materialization::materialized })
-            .with("usage_updated", usageUpdated)
-            .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"request_ip">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
-            .insert_from(logRows)
-            .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
-        (void)co_await context.db().execute(write);
-    }
+    ruvia::db_query write(context.pool());
+    write
+        .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "action", "http_method", "target", "request_ip", "http_status", "device_id", "request_payload", "response_payload", "used_at_ms" } })
+        .with("latest_usage", latestUsage, { .materialization_ = ruvia::db_materialization::materialized })
+        .with("usage_updated", usageUpdated)
+        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"request_ip">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
+        .insert_from(logRows)
+        .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
+    (void)co_await context.db().execute(write);
+}
 
 class DeliveryService final {
   public:
@@ -722,7 +672,6 @@ class DeliveryService final {
             utils::redis::throwValue("enqueue webhook result", reply);
         }
     }
-
 };
 
 } // namespace service::access::delivery
@@ -741,10 +690,10 @@ void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view even
         dataJson,
         instanceId
     );
-    const std::array<std::string_view, 3> keys{ publication.keys[0], publication.keys[1], publication.keys[2] };
-    std::array<std::string_view, 16> arguments;
-    std::ranges::copy(publication.arguments, arguments.begin());
-    pipeline.eval_sha(scriptSha, keys, arguments);
+    std::array<std::string_view, 22> command{ "EVALSHA", scriptSha, "3" };
+    std::ranges::copy(publication.keys, command.begin() + 3);
+    std::ranges::copy(publication.arguments, command.begin() + 6);
+    pipeline.command(std::span<const std::string_view>(command));
 }
 
 template <typename Redis>
@@ -776,7 +725,7 @@ namespace service::access::audit {
 inline constexpr std::size_t kCapacity = 100000;
 
 template <typename Redis>
-ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
+ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view instanceId, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
     const std::vector<service::message::StreamField> fields{
         { "log_id", std::string(logId) },
         { "access_key_id", std::string(accessKeyId) },
@@ -796,12 +745,12 @@ ruvia::task<void> publish(const Redis& redis, std::string_view logId, std::strin
         fields,
         std::nullopt,
         service::message::WorkerStreamTask::Webhook,
-        kCapacity
+        kCapacity,
+        instanceId
     );
 }
 
 } // namespace service::access::audit
-
 
 namespace service::access {
 
@@ -836,7 +785,7 @@ class AccessOperationService final {
             const auto deviceId = text(request->get<"deviceId">());
             const auto requestPayload = json(request->get<"requestPayload">());
             const auto responsePayload = json(request->get<"responsePayload">());
-            co_await audit::publish(context.redis(), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
+            co_await audit::publish(context.redis(), service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, deviceId, requestPayload, responsePayload);
             co_return "{}";
         }
         service::common::fail(10002, "Unknown access operation", 400);

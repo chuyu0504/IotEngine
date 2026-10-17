@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,10 +13,10 @@
 #include "service/common/database.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/modules/system/dept/dept.entity.h"
 #include "service/modules/system/dept/dept.types.h"
 #include "service/modules/system/user/user.entity.h"
+#include "service/utils/uuid.h"
 
 namespace service::dept {
 
@@ -192,10 +192,12 @@ class DeptService {
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+            { "deleted_at", expressions.call("now") },
+            { "updated_at", expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(
-            entities::DeptEntity::column<"id">() == id, deletionChanges
+            entities::DeptEntity::column<"id">() == id,
+            deletionChanges
         );
     }
 

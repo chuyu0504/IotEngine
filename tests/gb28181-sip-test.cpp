@@ -27,9 +27,9 @@
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
 #include "service/features/gb28181/sip/sip.transport.h"
+#include "service/utils/uuid.h"
 
 #include "tests/port_reservation.fixture.h"
-#include "service/utils/uuid.h"
 
 namespace {
 

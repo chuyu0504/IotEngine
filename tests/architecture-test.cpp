@@ -1,12 +1,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cstdlib>
 #include <chrono>
-#include <future>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <optional>
@@ -19,15 +19,16 @@
 #include <utility>
 #include <vector>
 
+#include "service/common/message.h"
 #include "service/features/observability/observability.runtime.h"
 #include "service/utils/worker_task.h"
-#include "service/common/message.h"
 
 namespace {
 
 void require(bool condition, std::string_view message) {
-    if (!condition)
+    if (!condition) {
         throw std::runtime_error(std::string(message));
+    }
 }
 
 std::filesystem::path repositoryRoot() {
@@ -36,33 +37,36 @@ std::filesystem::path repositoryRoot() {
 
 std::string source(std::string_view relative) {
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                      std::filesystem::path(relative);
+        std::filesystem::path(relative);
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot read architecture source");
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
 
-void requireFeatureRule(bool condition, const std::filesystem::path& path,
-                        std::string_view message) {
-    if (!condition)
+void requireFeatureRule(bool condition, const std::filesystem::path& path, std::string_view message) {
+    if (!condition) {
         throw std::runtime_error(std::string(message) + ": " + path.generic_string());
+    }
 }
 
 bool isSnakeCase(std::string_view value) {
     if (value.empty() || value.front() < 'a' || value.front() > 'z' ||
-        value.back() == '_')
+        value.back() == '_') {
         return false;
+    }
     bool previousUnderscore = false;
     for (const auto character : value) {
         if (character == '_') {
-            if (previousUnderscore)
+            if (previousUnderscore) {
                 return false;
+            }
             previousUnderscore = true;
             continue;
         }
         if ((character < 'a' || character > 'z') &&
-            (character < '0' || character > '9'))
+            (character < '0' || character > '9')) {
             return false;
+        }
         previousUnderscore = false;
     }
     return true;
@@ -70,15 +74,23 @@ bool isSnakeCase(std::string_view value) {
 
 template <std::size_t Size>
 bool contains(const std::array<std::string_view, Size>& values, std::string_view value) {
-    for (const auto candidate : values)
-        if (candidate == value)
+    for (const auto candidate : values) {
+        if (candidate == value) {
             return true;
+        }
+    }
     return false;
 }
 
 bool isArchitectureSource(const std::filesystem::path& path) {
     static constexpr std::array<std::string_view, 7> extensions{
-        ".h", ".hpp", ".hh", ".hxx", ".cpp", ".cc", ".cxx",
+        ".h",
+        ".hpp",
+        ".hh",
+        ".hxx",
+        ".cpp",
+        ".cc",
+        ".cxx",
     };
     return contains(extensions, path.extension().string());
 }
@@ -87,21 +99,23 @@ std::string pathKey(const std::filesystem::path& path) {
     return path.lexically_relative(repositoryRoot()).generic_string();
 }
 
-void requireExpectedModule(std::string_view domain, std::string_view module,
-                           const std::filesystem::path& path) {
+void requireExpectedModule(std::string_view domain, std::string_view module, const std::filesystem::path& path) {
     requireFeatureRule(isSnakeCase(domain), path, "invalid module directory name");
-    requireFeatureRule(domain == "system" ? isSnakeCase(module) : module.empty(),
-                       path, "only system modules may have a grouping directory");
+    requireFeatureRule(domain == "system" ? isSnakeCase(module) : module.empty(), path, "only system modules may have a grouping directory");
 }
 
 bool whitelistedModuleFile(std::string_view file, std::string_view owner) {
     static constexpr std::array<std::string_view, 5> suffixes{
-        ".types.h", ".service.h", ".entity.h", ".error.h",
+        ".types.h",
+        ".service.h",
+        ".entity.h",
+        ".error.h",
         ".controller.h",
     };
     for (const auto suffix : suffixes) {
-        if (file == std::string(owner) + std::string(suffix))
+        if (file == std::string(owner) + std::string(suffix)) {
             return true;
+        }
     }
     return false;
 }
@@ -109,30 +123,43 @@ bool whitelistedModuleFile(std::string_view file, std::string_view owner) {
 void testServiceTopLevelLayout() {
     const auto root = repositoryRoot() / "service";
     static constexpr std::array<std::string_view, 7> allowed{
-        "common", "config", "features", "middleware", "modules", "utils", "server.cpp",
+        "common",
+        "config",
+        "features",
+        "middleware",
+        "modules",
+        "utils",
+        "server.cpp",
     };
     require(std::filesystem::is_directory(root), "service directory is missing");
-    for (const auto& entry : std::filesystem::directory_iterator(root))
-        requireFeatureRule(contains(allowed, entry.path().filename().string()), entry.path(),
-                           "service top-level entry is not whitelisted");
-    for (const auto requiredDirectory : {"common", "config", "features", "middleware",
-                                         "modules", "utils"})
-        requireFeatureRule(std::filesystem::is_directory(root / requiredDirectory),
-                           root / requiredDirectory,
-                           "required service top-level directory is missing");
-    requireFeatureRule(std::filesystem::is_regular_file(root / "server.cpp"),
-                       root / "server.cpp", "service/server.cpp is missing");
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        requireFeatureRule(contains(allowed, entry.path().filename().string()), entry.path(), "service top-level entry is not whitelisted");
+    }
+    for (const auto requiredDirectory : { "common", "config", "features", "middleware", "modules", "utils" }) {
+        requireFeatureRule(std::filesystem::is_directory(root / requiredDirectory), root / requiredDirectory, "required service top-level directory is missing");
+    }
+    requireFeatureRule(std::filesystem::is_regular_file(root / "server.cpp"), root / "server.cpp", "service/server.cpp is missing");
 }
 
 bool whitelistedFeatureFile(std::string_view file, std::string_view owner) {
     static constexpr std::array<std::string_view, 12> suffixes{
-        ".runtime.h",   ".runtime.cpp",  ".service.h",   ".types.h",
-        ".entity.h",    ".config.h",     ".protocol.h",  ".protocol.cpp",
-        ".transport.h", ".transport.cpp", ".error.h",     ".proto",
+        ".runtime.h",
+        ".runtime.cpp",
+        ".service.h",
+        ".types.h",
+        ".entity.h",
+        ".config.h",
+        ".protocol.h",
+        ".protocol.cpp",
+        ".transport.h",
+        ".transport.cpp",
+        ".error.h",
+        ".proto",
     };
     for (const auto suffix : suffixes) {
-        if (file == std::string(owner) + std::string(suffix))
+        if (file == std::string(owner) + std::string(suffix)) {
             return true;
+        }
     }
     return false;
 }
@@ -142,8 +169,9 @@ std::vector<std::filesystem::path> featureFiles() {
     require(std::filesystem::is_directory(root), "service/features directory is missing");
     std::vector<std::filesystem::path> result;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-        if (entry.is_regular_file())
+        if (entry.is_regular_file()) {
             result.push_back(entry.path());
+        }
     }
     return result;
 }
@@ -151,11 +179,16 @@ std::vector<std::filesystem::path> featureFiles() {
 bool declaresPrivateExecutor(const std::string& code) {
     static const std::regex declaration(
         R"(^\s*(?:(?:static|inline)\s+)*(?:std::(?:jthread|thread)|asio::io_context|ruvia::event_loop_pool)\s+[A-Za-z_]\w*\s*[;{(=])",
-        std::regex_constants::ECMAScript);
+        std::regex_constants::ECMAScript
+    );
     for (std::size_t start = 0; start < code.size();) {
         const auto end = code.find('\n', start);
-        if (std::regex_search(code.substr(start, end - start), declaration)) return true;
-        if (end == std::string::npos) break;
+        if (std::regex_search(code.substr(start, end - start), declaration)) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
         start = end + 1;
     }
     return false;
@@ -163,13 +196,18 @@ bool declaresPrivateExecutor(const std::string& code) {
 
 void testModuleExecutorDetection() {
     for (const auto* declaration : {
-            "    std::thread outbound_;", "std::jthread worker([] {});",
-            "asio::io_context io;", "ruvia::event_loop_pool pool({.loop_count_ = 1});"})
+             "    std::thread outbound_;",
+             "std::jthread worker([] {});",
+             "asio::io_context io;",
+             "ruvia::event_loop_pool pool({.loop_count_ = 1});" }) {
         require(declaresPrivateExecutor(declaration), "module executor declaration was missed");
+    }
     for (const auto* allowed : {
-            "// std::thread example;", "std::thread::id owner;",
-            "auto client = context.get_http_client();"})
+             "// std::thread example;",
+             "std::thread::id owner;",
+             "auto client = context.get_http_client();" }) {
         require(!declaresPrivateExecutor(allowed), "non-owning worker usage was rejected");
+    }
 }
 
 void testModuleFileLayout() {
@@ -178,32 +216,24 @@ void testModuleFileLayout() {
     const auto validateModuleFiles = [](const std::filesystem::path& modulePath,
                                         std::string_view moduleName) {
         for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
-            requireFeatureRule(entry.is_regular_file(), entry.path(),
-                               "module files may not contain nested directories");
+            requireFeatureRule(entry.is_regular_file(), entry.path(), "module files may not contain nested directories");
             const auto file = entry.path().filename().string();
-            requireFeatureRule(file.starts_with(std::string(moduleName) + "."), entry.path(),
-                               "module file name must use its module prefix");
-            requireFeatureRule(whitelistedModuleFile(file, moduleName), entry.path(),
-                               "module file name or extension is not whitelisted");
+            requireFeatureRule(file.starts_with(std::string(moduleName) + "."), entry.path(), "module file name must use its module prefix");
+            requireFeatureRule(whitelistedModuleFile(file, moduleName), entry.path(), "module file name or extension is not whitelisted");
             const auto code = source(entry.path().generic_string());
-            requireFeatureRule(!declaresPrivateExecutor(code), entry.path(),
-                               "module must use its accepting Worker instead of owning a thread or event loop");
+            requireFeatureRule(!declaresPrivateExecutor(code), entry.path(), "module must use its accepting Worker instead of owning a thread or event loop");
         }
     };
 
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
-        requireFeatureRule(entry.is_directory(), entry.path(),
-                           "module entries must be directories");
+        requireFeatureRule(entry.is_directory(), entry.path(), "module entries must be directories");
         const auto entryName = entry.path().filename().string();
-        requireFeatureRule(isSnakeCase(entryName), entry.path(),
-                           "module directory must use snake_case");
+        requireFeatureRule(isSnakeCase(entryName), entry.path(), "module directory must use snake_case");
         if (entryName == "system") {
             for (const auto& module : std::filesystem::directory_iterator(entry.path())) {
-                requireFeatureRule(module.is_directory(), module.path(),
-                                   "modules must be directories under system");
+                requireFeatureRule(module.is_directory(), module.path(), "modules must be directories under system");
                 const auto moduleName = module.path().filename().string();
-                requireFeatureRule(isSnakeCase(moduleName), module.path(),
-                                   "module directory must use snake_case");
+                requireFeatureRule(isSnakeCase(moduleName), module.path(), "module directory must use snake_case");
                 requireExpectedModule(entryName, moduleName, module.path());
                 validateModuleFiles(module.path(), moduleName);
             }
@@ -218,37 +248,35 @@ void testFeatureFileLayout() {
     const auto root = repositoryRoot() / "service" / "features";
     const auto files = featureFiles();
     require(!files.empty(), "service/features contains no source files");
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
-        if (entry.is_directory())
-            requireFeatureRule(isSnakeCase(entry.path().filename().string()), entry.path(),
-                               "feature directory must use snake_case");
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+        if (entry.is_directory()) {
+            requireFeatureRule(isSnakeCase(entry.path().filename().string()), entry.path(), "feature directory must use snake_case");
+        }
+    }
     for (const auto& path : files) {
         const auto relative = path.lexically_relative(root);
         std::vector<std::string> parts;
-        for (const auto& part : relative)
+        for (const auto& part : relative) {
             parts.emplace_back(part.string());
-        requireFeatureRule(parts.size() <= 3, path,
-                           "feature components may not be nested beyond one directory");
-        requireFeatureRule(parts.size() == 2 || parts.size() == 3, path,
-                           "feature files must be directly under a feature or component");
+        }
+        requireFeatureRule(parts.size() <= 3, path, "feature components may not be nested beyond one directory");
+        requireFeatureRule(parts.size() == 2 || parts.size() == 3, path, "feature files must be directly under a feature or component");
 
         const auto& feature = parts.front();
         const auto& owner = parts.size() == 2 ? feature : parts[1];
         const auto& file = parts.back();
         const auto prefix = owner + ".";
-        requireFeatureRule(file.starts_with(prefix), path,
-                           "feature file name must use its feature/component prefix");
-        requireFeatureRule(whitelistedFeatureFile(file, owner), path,
-                           "feature file name or extension is not whitelisted");
+        requireFeatureRule(file.starts_with(prefix), path, "feature file name must use its feature/component prefix");
+        requireFeatureRule(whitelistedFeatureFile(file, owner), path, "feature file name or extension is not whitelisted");
     }
 }
 
 void testCommonFileLayout() {
     const auto root = repositoryRoot() / "service" / "common";
     require(std::filesystem::is_directory(root), "service/common directory is missing");
-    for (const auto& entry : std::filesystem::directory_iterator(root))
-        requireFeatureRule(entry.is_regular_file(), entry.path(),
-                           "service/common may contain foundation files only, no directories");
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        requireFeatureRule(entry.is_regular_file(), entry.path(), "service/common may contain foundation files only, no directories");
+    }
 }
 
 struct IncludeGraph {
@@ -261,54 +289,66 @@ std::vector<std::filesystem::path> serviceSourceFiles() {
     const auto root = repositoryRoot() / "service";
     require(std::filesystem::is_directory(root), "service directory is missing");
     std::vector<std::filesystem::path> result;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
-        if (entry.is_regular_file() && isArchitectureSource(entry.path()))
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+        if (entry.is_regular_file() && isArchitectureSource(entry.path())) {
             result.push_back(entry.path());
+        }
+    }
     return result;
 }
 
 std::optional<std::string> includeTarget(std::string_view line) {
     auto cursor = line.find_first_not_of(" \t\r");
-    if (cursor == std::string_view::npos || line[cursor] != '#')
+    if (cursor == std::string_view::npos || line[cursor] != '#') {
         return std::nullopt;
+    }
     ++cursor;
     while (cursor < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[cursor])))
+           std::isspace(static_cast<unsigned char>(line[cursor]))) {
         ++cursor;
+    }
     constexpr std::string_view directive = "include";
-    if (line.substr(cursor, directive.size()) != directive)
+    if (line.substr(cursor, directive.size()) != directive) {
         return std::nullopt;
+    }
     cursor += directive.size();
     if (cursor < line.size() && !std::isspace(static_cast<unsigned char>(line[cursor])) &&
-        line[cursor] != '"' && line[cursor] != '<')
+        line[cursor] != '"' && line[cursor] != '<') {
         return std::nullopt;
+    }
     while (cursor < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[cursor])))
+           std::isspace(static_cast<unsigned char>(line[cursor]))) {
         ++cursor;
-    if (cursor == line.size() || (line[cursor] != '"' && line[cursor] != '<'))
+    }
+    if (cursor == line.size() || (line[cursor] != '"' && line[cursor] != '<')) {
         return std::nullopt;
+    }
     const auto closing = line[cursor] == '"' ? '"' : '>';
     ++cursor;
     const auto end = line.find(closing, cursor);
-    if (end == std::string_view::npos)
+    if (end == std::string_view::npos) {
         return std::nullopt;
+    }
     return std::string(line.substr(cursor, end - cursor));
 }
 
 std::optional<std::string> resolveInclude(
     const std::filesystem::path& including,
     std::string_view spelling,
-    const std::unordered_map<std::string, std::filesystem::path>& known) {
+    const std::unordered_map<std::string, std::filesystem::path>& known
+) {
     std::string normalized(spelling);
-    for (auto& character : normalized)
-        if (character == '\\')
+    for (auto& character : normalized) {
+        if (character == '\\') {
             character = '/';
+        }
+    }
 
     std::vector<std::filesystem::path> candidates;
     const auto target = std::filesystem::path(normalized);
-    if (normalized.starts_with("service/"))
+    if (normalized.starts_with("service/")) {
         candidates.push_back(repositoryRoot() / target);
-    else {
+    } else {
         candidates.push_back(including.parent_path() / target);
         candidates.push_back(repositoryRoot() / "service" / target);
         candidates.push_back(repositoryRoot() / target);
@@ -318,19 +358,21 @@ std::optional<std::string> resolveInclude(
         const auto lookup = [&](const std::filesystem::path& path)
             -> std::optional<std::string> {
             const auto key = pathKey(path.lexically_normal());
-            if (known.contains(key))
+            if (known.contains(key)) {
                 return key;
+            }
             return std::nullopt;
         };
-        if (const auto result = lookup(candidate))
+        if (const auto result = lookup(candidate)) {
             return result;
+        }
         if (!candidate.has_extension()) {
-            for (const auto suffix : {".h", ".hpp", ".hh", ".hxx", ".cpp", ".cc",
-                                      ".cxx"}) {
+            for (const auto suffix : { ".h", ".hpp", ".hh", ".hxx", ".cpp", ".cc", ".cxx" }) {
                 auto withSuffix = candidate;
                 withSuffix += suffix;
-                if (const auto result = lookup(withSuffix))
+                if (const auto result = lookup(withSuffix)) {
                     return result;
+                }
             }
         }
     }
@@ -339,11 +381,13 @@ std::optional<std::string> resolveInclude(
 
 bool isLayerReference(std::string_view spelling) {
     std::string normalized(spelling);
-    for (auto& character : normalized)
-        if (character == '\\')
+    for (auto& character : normalized) {
+        if (character == '\\') {
             character = '/';
+        }
+    }
     return normalized.starts_with("service/modules/") ||
-           normalized.starts_with("service/features/");
+        normalized.starts_with("service/features/");
 }
 
 IncludeGraph buildIncludeGraph() {
@@ -363,17 +407,18 @@ IncludeGraph buildIncludeGraph() {
         std::string line;
         while (std::getline(input, line)) {
             const auto target = includeTarget(line);
-            if (!target)
+            if (!target) {
                 continue;
+            }
             const auto resolved = resolveInclude(path, *target, graph.paths);
             if (!resolved) {
-                requireFeatureRule(!isLayerReference(*target), path,
-                                   "service layer include target does not exist");
+                requireFeatureRule(!isLayerReference(*target), path, "service layer include target does not exist");
                 continue;
             }
             auto& edges = graph.includes.at(from);
-            if (std::find(edges.begin(), edges.end(), *resolved) == edges.end())
+            if (std::find(edges.begin(), edges.end(), *resolved) == edges.end()) {
                 edges.push_back(*resolved);
+            }
         }
     }
     return graph;
@@ -396,25 +441,28 @@ bool isRuntimePath(std::string_view key) {
 void requireNoLayerReachability(const IncludeGraph& graph, bool fromModules) {
     for (const auto& path : graph.files) {
         const auto start = pathKey(path);
-        if (fromModules ? !isModulePath(start) : !isFeaturePath(start))
+        if (fromModules ? !isModulePath(start) : !isFeaturePath(start)) {
             continue;
-        std::unordered_set<std::string> visited{start};
-        std::vector<std::string> pending{start};
+        }
+        std::unordered_set<std::string> visited{ start };
+        std::vector<std::string> pending{ start };
         while (!pending.empty()) {
             const auto current = std::move(pending.back());
             pending.pop_back();
             const auto edge = graph.includes.find(current);
-            if (edge == graph.includes.end())
+            if (edge == graph.includes.end()) {
                 continue;
+            }
             for (const auto& target : edge->second) {
                 if (fromModules ? isFeaturePath(target) : isModulePath(target)) {
                     throw std::runtime_error(
-                        std::string(fromModules ? "modules include graph reaches features: "
-                                                : "features include graph reaches modules: ") +
-                        start + " -> " + target);
+                        std::string(fromModules ? "modules include graph reaches features: " : "features include graph reaches modules: ") +
+                        start + " -> " + target
+                    );
                 }
-                if (visited.insert(target).second)
+                if (visited.insert(target).second) {
                     pending.push_back(target);
+                }
             }
         }
     }
@@ -425,11 +473,12 @@ void testIncludeGraphBoundaries() {
     requireNoLayerReachability(graph, true);
     requireNoLayerReachability(graph, false);
     for (const auto& [owner, imports] : graph.includes) {
-        if (!owner.starts_with("service/common/") && !owner.starts_with("service/utils/"))
+        if (!owner.starts_with("service/common/") && !owner.starts_with("service/utils/")) {
             continue;
-        for (const auto& target : imports)
-            requireFeatureRule(!isModulePath(target) && !isFeaturePath(target), graph.paths.at(owner),
-                               "shared infrastructure depends on business implementation");
+        }
+        for (const auto& target : imports) {
+            requireFeatureRule(!isModulePath(target) && !isFeaturePath(target), graph.paths.at(owner), "shared infrastructure depends on business implementation");
+        }
     }
 
     for (const auto& path : graph.files) {
@@ -438,27 +487,28 @@ void testIncludeGraphBoundaries() {
             start.ends_with(".types.h") ||
             start.ends_with(".config.h") || start.ends_with(".protocol.h");
         if ((!isFeaturePath(start) && !isModulePath(start)) ||
-            (!start.ends_with(".service.h") && !pureDefinition))
+            (!start.ends_with(".service.h") && !pureDefinition)) {
             continue;
-        std::unordered_set<std::string> visited{start};
-        std::vector<std::string> pending{start};
+        }
+        std::unordered_set<std::string> visited{ start };
+        std::vector<std::string> pending{ start };
         while (!pending.empty()) {
             const auto current = std::move(pending.back());
             pending.pop_back();
             const auto edge = graph.includes.find(current);
-            if (edge == graph.includes.end())
+            if (edge == graph.includes.end()) {
                 continue;
+            }
             for (const auto& target : edge->second) {
-                if (pureDefinition && (target.ends_with(".service.h") ||
-                    target.ends_with(".runtime.h") || target.ends_with(".controller.h") ||
-                    target.ends_with(".transport.h")))
-                    throw std::runtime_error("pure definition transitively includes I/O implementation: " +
-                                             start + " -> " + target);
-                if (target != start && isRuntimePath(target))
-                    throw std::runtime_error("feature service transitively includes runtime: " +
-                                             start + " -> " + target);
-                if (visited.insert(target).second)
+                if (pureDefinition && (target.ends_with(".service.h") || target.ends_with(".runtime.h") || target.ends_with(".controller.h") || target.ends_with(".transport.h"))) {
+                    throw std::runtime_error("pure definition transitively includes I/O implementation: " + start + " -> " + target);
+                }
+                if (target != start && isRuntimePath(target)) {
+                    throw std::runtime_error("feature service transitively includes runtime: " + start + " -> " + target);
+                }
+                if (visited.insert(target).second) {
                     pending.push_back(target);
+                }
             }
         }
     }
@@ -472,11 +522,12 @@ void testIncludeGraphBoundaries() {
             if (edge != graph.includes.end()) {
                 for (const auto& target : edge->second) {
                     const auto targetState = state.contains(target) ? state.at(target) : 0;
-                    if (targetState == 1)
-                        throw std::runtime_error("service include cycle: " + current +
-                                                 " -> " + target);
-                    if (targetState == 0)
+                    if (targetState == 1) {
+                        throw std::runtime_error("service include cycle: " + current + " -> " + target);
+                    }
+                    if (targetState == 0) {
                         visit(target);
+                    }
                 }
             }
             state[current] = 2;
@@ -499,87 +550,74 @@ void testStorageOwnership() {
     const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hget_all|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
     const std::regex rawHashAccess(
         R"re(["'](?:HGET|HGETALL|HMGET|HSET|HSETNX|HMSET|HDEL|HKEYS|HVALS|HEXISTS|HLEN|HSCAN|HINCRBY|HINCRBYFLOAT)["'])re",
-        std::regex::icase);
-    require(std::regex_search(std::string{"redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])"}, rawHashAccess),
-            "storage ownership check misses Lua Hash writes");
-    require(std::regex_search(std::string{"command(redis, {\"hgetall\", key})"}, rawHashAccess),
-            "storage ownership check misses raw Hash reads");
-    require(!std::regex_search(std::string{"redis.call('GET', KEYS[1]); redis.call('XACK', KEYS[2], ARGV[1])"}, rawHashAccess),
-            "storage ownership check mistakes lock and queue commands for Hash records");
+        std::regex::icase
+    );
+    require(std::regex_search(std::string{ "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])" }, rawHashAccess), "storage ownership check misses Lua Hash writes");
+    require(std::regex_search(std::string{ "command(redis, {\"hgetall\", key})" }, rawHashAccess), "storage ownership check misses raw Hash reads");
+    require(!std::regex_search(std::string{ "redis.call('GET', KEYS[1]); redis.call('XACK', KEYS[2], ARGV[1])" }, rawHashAccess), "storage ownership check mistakes lock and queue commands for Hash records");
     const std::regex redisExecution(R"((?:\.|->)\s*(?:command|eval|pipeline)\s*\()");
     const std::string scriptDefinition =
         "static constexpr std::string_view bindScript = R\"lua(\n"
         "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])\n)lua\";";
-    require(!std::regex_search(withoutEntityScriptDefinitions(scriptDefinition), rawHashAccess),
-            "pure constexpr entity mapping was mistaken for Redis I/O");
-    for (const auto* execution : {"redis.command({\"HSET\", key, field, value});",
-                                  "return redis . eval(bindScript, keys, args);",
-                                  "auto request = redis->pipeline();"}) {
-        require(std::regex_search(withoutEntityScriptDefinitions(scriptDefinition + execution), redisExecution),
-                "entity mapping allowance hides a Redis client execution");
+    require(!std::regex_search(withoutEntityScriptDefinitions(scriptDefinition), rawHashAccess), "pure constexpr entity mapping was mistaken for Redis I/O");
+    for (const auto* execution : { "redis.command({\"HSET\", key, field, value});",
+                                   "return redis . eval(bindScript, keys, args);",
+                                   "auto request = redis->pipeline();" }) {
+        require(std::regex_search(withoutEntityScriptDefinitions(scriptDefinition + execution), redisExecution), "entity mapping allowance hides a Redis client execution");
     }
-    for (const auto* expression : {"const auto script = R\"lua(redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]))lua\";",
-                                   "return R\"lua(redis.call('HGET', KEYS[1], ARGV[1]))lua\";",
-                                   "command(redis, {\"HSET\", key, field, value});"}) {
-        require(std::regex_search(withoutEntityScriptDefinitions(expression), rawHashAccess),
-                "entity mapping allowance hides a non-declarative Hash operation");
+    for (const auto* expression : { "const auto script = R\"lua(redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]))lua\";",
+                                    "return R\"lua(redis.call('HGET', KEYS[1], ARGV[1]))lua\";",
+                                    "command(redis, {\"HSET\", key, field, value});" }) {
+        require(std::regex_search(withoutEntityScriptDefinitions(expression), rawHashAccess), "entity mapping allowance hides a non-declarative Hash operation");
     }
     const std::regex implicitIdentityGeneration(R"(\b(?:nextUuid|nextUuidV7|nextMessageId)\s*\(|\bruntime\s*::\s*instanceId\s*\()");
-    require(std::regex_search(std::string{"message::nextMessageId ()"}, implicitIdentityGeneration),
-            "identity boundary check misses a message UUID call");
-    require(std::regex_search(std::string{"service::common::nextUuidV7()"}, implicitIdentityGeneration),
-            "identity boundary check misses a direct UUID call");
-    require(!std::regex_search(std::string{"uuidBytes(messageId, bytes)"}, implicitIdentityGeneration),
-            "identity boundary check rejects pure UUID conversion");
-    require(std::regex_search(std::string{"service::runtime::instanceId()"}, implicitIdentityGeneration),
-            "identity boundary check misses implicit process state");
-    require(!std::regex_search(source("service/common/message.h"), implicitIdentityGeneration),
-            "message contract implicitly reads or generates a runtime identity");
+    require(std::regex_search(std::string{ "message::nextMessageId ()" }, implicitIdentityGeneration), "identity boundary check misses a message UUID call");
+    require(std::regex_search(std::string{ "service::common::nextUuidV7()" }, implicitIdentityGeneration), "identity boundary check misses a direct UUID call");
+    require(!std::regex_search(std::string{ "uuidBytes(messageId, bytes)" }, implicitIdentityGeneration), "identity boundary check rejects pure UUID conversion");
+    require(std::regex_search(std::string{ "service::runtime::instanceId()" }, implicitIdentityGeneration), "identity boundary check misses implicit process state");
+    require(!std::regex_search(source("service/common/message.h"), implicitIdentityGeneration), "message contract implicitly reads or generates a runtime identity");
     const std::regex entityDeclaration(R"(\bRUVIA_(?:DB|REDIS)_ENTITY\s*\(\s*([A-Za-z_][A-Za-z_0-9]*))");
     for (const auto& path : serviceSourceFiles()) {
         const auto key = pathKey(path);
-        if (!isModulePath(key) && !isFeaturePath(key))
+        if (!isModulePath(key) && !isFeaturePath(key)) {
             continue;
+        }
         const auto content = source(key);
         const bool isEntity = key.ends_with(".entity.h");
         const bool isPureDefinition = isEntity || key.ends_with(".types.h") ||
             key.ends_with(".config.h") ||
             key.ends_with(".protocol.h") || key.ends_with(".protocol.cpp");
         if (isPureDefinition) {
-            requireFeatureRule(!std::regex_search(content, implicitIdentityGeneration), path,
-                               "pure definition implicitly generates a runtime identity");
-            requireFeatureRule(content.find("co_await") == std::string::npos, path,
-                               "pure definition or protocol performs asynchronous I/O");
+            requireFeatureRule(!std::regex_search(content, implicitIdentityGeneration), path, "pure definition implicitly generates a runtime identity");
+            requireFeatureRule(content.find("co_await") == std::string::npos, path, "pure definition or protocol performs asynchronous I/O");
         }
-        if (isEntity)
-            requireFeatureRule(!std::regex_search(content, redisExecution), path,
-                               "storage entity executes Redis I/O instead of declaring its mapping");
-        requireFeatureRule(isEntity || !std::regex_search(content, entityDeclaration), path,
-                           "storage entity declared outside its entity file");
+        if (isEntity) {
+            requireFeatureRule(!std::regex_search(content, redisExecution), path, "storage entity executes Redis I/O instead of declaring its mapping");
+        }
+        requireFeatureRule(isEntity || !std::regex_search(content, entityDeclaration), path, "storage entity declared outside its entity file");
         const auto hashOperationContent = isEntity ? withoutEntityScriptDefinitions(content) : content;
         if (std::regex_search(content, databaseAccess) || std::regex_search(content, hashAccess) ||
             std::regex_search(hashOperationContent, rawHashAccess)) {
-            requireFeatureRule(key.ends_with(".service.h"), path,
-                               "database or persistent Redis Hash operation outside business service");
+            requireFeatureRule(key.ends_with(".service.h"), path, "database or persistent Redis Hash operation outside business service");
             const auto entityPath = path.parent_path() /
                 (path.parent_path().filename().string() + ".entity.h");
-            requireFeatureRule(std::filesystem::is_regular_file(entityPath), path,
-                               "database service has no owning entity file");
+            requireFeatureRule(std::filesystem::is_regular_file(entityPath), path, "database service has no owning entity file");
         }
-        if (!isEntity)
+        if (!isEntity) {
             continue;
+        }
         std::string consumers;
-        for (const auto& sibling : std::filesystem::directory_iterator(path.parent_path()))
+        for (const auto& sibling : std::filesystem::directory_iterator(path.parent_path())) {
             if (sibling.is_regular_file() && sibling.path() != path &&
-                isArchitectureSource(sibling.path()))
+                isArchitectureSource(sibling.path())) {
                 consumers += source(pathKey(sibling.path()));
+            }
+        }
         for (auto match = std::sregex_iterator(content.begin(), content.end(), entityDeclaration);
-             match != std::sregex_iterator(); ++match) {
+             match != std::sregex_iterator();
+             ++match) {
             const auto name = (*match)[1].str();
-            requireFeatureRule(consumers.find(name + "::") != std::string::npos ||
-                                   consumers.find("<" + name + ">") != std::string::npos ||
-                                   consumers.find("::" + name + ">") != std::string::npos,
-                               path, "entity is not used by its owning component: " + name);
+            requireFeatureRule(consumers.find(name + "::") != std::string::npos || consumers.find("<" + name + ">") != std::string::npos || consumers.find("::" + name + ">") != std::string::npos, path, "entity is not used by its owning component: " + name);
         }
     }
 }
@@ -587,20 +625,24 @@ void testStorageOwnership() {
 void testFeatureDomainBoundaries() {
     const auto files = featureFiles();
     static constexpr std::array<std::string_view, 6> forbiddenReferences{
-        "service/domains/", "service/modules/", "../domains/",
-        "../modules/",      "../../domains/",  "../../modules/",
+        "service/domains/",
+        "service/modules/",
+        "../domains/",
+        "../modules/",
+        "../../domains/",
+        "../../modules/",
     };
     for (const auto& path : files) {
         std::ifstream input(path, std::ios::binary);
         requireFeatureRule(input.good(), path, "cannot read feature source");
-        const std::string content{std::istreambuf_iterator<char>(input),
-                                  std::istreambuf_iterator<char>()};
-        for (const auto reference : forbiddenReferences)
-            requireFeatureRule(content.find(reference) == std::string::npos, path,
-                               "feature directly references a domain/module path");
-        if (path.filename().string().ends_with(".service.h"))
-            requireFeatureRule(content.find(".runtime.h") == std::string::npos, path,
-                               "feature service directly includes a runtime header");
+        const std::string content{ std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>() };
+        for (const auto reference : forbiddenReferences) {
+            requireFeatureRule(content.find(reference) == std::string::npos, path, "feature directly references a domain/module path");
+        }
+        if (path.filename().string().ends_with(".service.h")) {
+            requireFeatureRule(content.find(".runtime.h") == std::string::npos, path, "feature service directly includes a runtime header");
+        }
     }
 }
 
@@ -608,18 +650,22 @@ void testLifecycleOrder() {
     service::observability::RuntimeDiagnostics metrics;
     service::observability::ComponentLifecycle runtime(metrics);
     std::vector<std::string> calls;
-    runtime.add({.name = "database",
-                 .start = [&] { calls.emplace_back("start-database"); },
-                 .stop = [&] { calls.emplace_back("stop-database"); }});
-    runtime.add({.name = "consumer",
-                 .dependencies = {"database"},
-                 .start = [&] { calls.emplace_back("start-consumer"); },
-                 .stop = [&] { calls.emplace_back("stop-consumer"); }});
+    runtime.add({ .name = "database", .start = [&] {
+                     calls.emplace_back("start-database");
+                 },
+                  .stop = [&] {
+                      calls.emplace_back("stop-database");
+                  } });
+    runtime.add({ .name = "consumer", .dependencies = { "database" }, .start = [&] {
+                     calls.emplace_back("start-consumer");
+                 },
+                  .stop = [&] {
+                      calls.emplace_back("stop-consumer");
+                  } });
     runtime.start();
     require(metrics.areComponentsReady(), "runtime did not become ready");
     runtime.stop();
-    const std::vector<std::string> expected{"start-database", "start-consumer",
-                                             "stop-consumer", "stop-database"};
+    const std::vector<std::string> expected{ "start-database", "start-consumer", "stop-consumer", "stop-database" };
     require(calls == expected, "runtime lifecycle order is incorrect");
 }
 
@@ -627,11 +673,16 @@ void testLifecycleRollback() {
     service::observability::RuntimeDiagnostics metrics;
     service::observability::ComponentLifecycle runtime(metrics);
     bool stopped = false;
-    runtime.add({.name = "first", .start = [] {}, .stop = [&] { stopped = true; }});
-    runtime.add({.name = "broken",
-                 .dependencies = {"first"},
-                 .start = [] { throw std::runtime_error("expected"); },
-                 .stop = [] {}});
+    runtime.add({ .name = "first", .start = [] {
+                 },
+                  .stop = [&] {
+                      stopped = true;
+                  } });
+    runtime.add({ .name = "broken", .dependencies = { "first" }, .start = [] {
+                     throw std::runtime_error("expected");
+                 },
+                  .stop = [] {
+                  } });
     try {
         runtime.start();
         require(false, "runtime accepted a failed component");
@@ -648,9 +699,11 @@ void testMessageEnvelope() {
     packet.payload = { 0x01 };
     const auto fields = service::message::egressFields(packet);
     const auto field = [&](std::string_view name) {
-        for (const auto& item : fields)
-            if (item.name == name)
+        for (const auto& item : fields) {
+            if (item.name == name) {
                 return item.value;
+            }
+        }
         return std::string{};
     };
     require(field("event_id") == packet.messageId, "message envelope has no event id");
@@ -658,32 +711,22 @@ void testMessageEnvelope() {
     require(field("event_type") == "packet.egress", "message envelope has no event type");
 }
 
-
 void testOperationalAlerts() {
     service::observability::RuntimeDiagnostics metrics;
     metrics.setComponentStatus("outbox", service::observability::ComponentState::Ready);
-    require(metrics.setAlertState("outbox_dead_lettered", true, "value=1, threshold=1"),
-            "activating an alert did not report a transition");
-    require(metrics.healthJson().find("\"status\":\"degraded\"") != std::string::npos,
-            "active operational alert does not degrade health status");
-    require(metrics.prometheus().find(
-                "iot_engine_alert_active{alert=\"outbox_dead_lettered\"} 1") !=
-                std::string::npos,
-            "active operational alert is missing from metrics");
-    require(metrics.setAlertState("outbox_dead_lettered", false, "value=0, threshold=1"),
-            "clearing an alert did not report a transition");
-    require(metrics.healthJson().find("\"status\":\"ready\"") != std::string::npos,
-            "cleared operational alert did not restore health status");
+    require(metrics.setAlertState("outbox_dead_lettered", true, "value=1, threshold=1"), "activating an alert did not report a transition");
+    require(metrics.healthJson().find("\"status\":\"degraded\"") != std::string::npos, "active operational alert does not degrade health status");
+    require(metrics.prometheus().find("iot_engine_alert_active{alert=\"outbox_dead_lettered\"} 1") != std::string::npos, "active operational alert is missing from metrics");
+    require(metrics.setAlertState("outbox_dead_lettered", false, "value=0, threshold=1"), "clearing an alert did not report a transition");
+    require(metrics.healthJson().find("\"status\":\"ready\"") != std::string::npos, "cleared operational alert did not restore health status");
 }
-
 
 void testWorkerTaskSignals() {
     std::promise<void> promise;
     auto ready = promise.get_future();
     service::utils::WorkerReady signal(promise);
     require(!signal.signalled(), "worker task starts ready before initialization");
-    require(ready.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout,
-            "worker readiness completed before initialization");
+    require(ready.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout, "worker readiness completed before initialization");
     signal.set_value();
     ready.get();
     require(signal.signalled(), "worker readiness signal was not recorded");

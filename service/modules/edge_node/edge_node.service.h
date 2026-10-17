@@ -46,8 +46,8 @@
 #include <ruvia/core/timer.h>
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_query.h>
-#include <ruvia/web/redis/redis_types.h>
 #include <ruvia/web/redis/redis_handle.h>
+#include <ruvia/web/redis/redis_types.h>
 #include <ruvia/web/request_validation.h>
 #include <ruvia/web/websocket.h>
 
@@ -167,9 +167,7 @@ class FirmwareUpload final {
       public:
         StagedFileLock(const std::filesystem::path& path, bool create) : path_(path), created_(create) {
 #ifdef _WIN32
-            handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, create ? CREATE_NEW : OPEN_EXISTING,
-                                  FILE_FLAG_OPEN_REPARSE_POINT,
-                                  nullptr);
+            handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, create ? CREATE_NEW : OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
             if (handle_ == INVALID_HANDLE_VALUE) {
                 const auto error = GetLastError();
                 if (!create && (error == ERROR_FILE_NOT_FOUND || error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED)) {
@@ -253,7 +251,8 @@ class FirmwareUpload final {
     // 恢复扫描持排他锁（不等待，取不到即本轮未执行），避免扫描删除尚未加锁的新暂存文件。
     class DirectoryLock final {
       public:
-        enum class Mode { SharedWait, ExclusiveTry };
+        enum class Mode { SharedWait,
+                          ExclusiveTry };
 
         DirectoryLock(const std::filesystem::path& directory, Mode mode) {
             const auto path = directory / ".upload-recovery.lock";
@@ -466,18 +465,24 @@ class EdgeService {
     ruvia::task<std::string> dtuChannels(Context& c, std::string_view nodeId) {
         ruvia::db_query node(c.pool());
         node.select(booleanText(node, db::jsonText(node, node.column(entities::EdgeNodeEntity::column<"capability">().name()), "dtu")))
-            .from(entities::EdgeNodeEntity::table_name()).where(node.binary(node.column(entities::EdgeNodeEntity::column<"id">().name()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
+            .from(entities::EdgeNodeEntity::table_name())
+            .where(node.binary(node.column(entities::EdgeNodeEntity::column<"id">().name()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
         const auto nodes = co_await c.db().query(node);
-        if (nodes.empty()) service::common::fail(17001, "边缘节点不存在", 404);
+        if (nodes.empty()) {
+            service::common::fail(17001, "边缘节点不存在", 404);
+        }
         std::string result = nodes.front()[0].template as<bool>().value_or(false) ? "{\"supported\":true,\"channels\":[" : "{\"supported\":false,\"channels\":[";
         ruvia::db_query query(c.pool());
-        query.select({query.column(entities::EdgeDtuEntity::column<"config">().name()), query.column(entities::EdgeDtuEntity::column<"status">().name())})
-            .from(entities::EdgeDtuEntity::table_name()).where(query.binary(query.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
+        query.select({ query.column(entities::EdgeDtuEntity::column<"config">().name()), query.column(entities::EdgeDtuEntity::column<"status">().name()) })
+            .from(entities::EdgeDtuEntity::table_name())
+            .where(query.binary(query.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
             .order_by(query.column(entities::EdgeDtuEntity::column<"channel_id">().name()));
         const auto rows = co_await c.db().query(query);
         bool first = true;
         for (const auto& row : rows) {
-            if (!first) result += ',';
+            if (!first) {
+                result += ',';
+            }
             first = false;
             std::string config(row[0].value().value_or("{}"));
             config.pop_back();
@@ -493,9 +498,11 @@ class EdgeService {
             return value ? std::string(value->view()) : std::string(fallback);
         };
         module_pb::DtuConfig config;
-        std::array<std::uint8_t,16> id{};
+        std::array<std::uint8_t, 16> id{};
         const auto channelId = body.get<"channelId">().view();
-        if (!service::common::uuidBytes(channelId, id.data())) service::common::fail(17003, "通道 ID 无效", 400);
+        if (!service::common::uuidBytes(channelId, id.data())) {
+            service::common::fail(17003, "通道 ID 无效", 400);
+        }
         config.set_channel_id(binary(id.data(), id.size()));
         config.set_name(body.get<"name">().view());
         config.set_enabled(body.get<"enabled">().value_);
@@ -513,26 +520,38 @@ class EdgeService {
             const auto bits = body.get<"dataBits">() ? body.get<"dataBits">()->value_ : 8;
             const auto stops = body.get<"stopBits">() ? body.get<"stopBits">()->value_ : 1;
             const auto parity = stringValue(body.get<"parity">(), "none");
-            constexpr std::array<std::int64_t,11> rates{300,600,1200,2400,4800,9600,19200,38400,57600,115200,230400};
+            constexpr std::array<std::int64_t, 11> rates{ 300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400 };
             if (!path.starts_with("/dev/") || std::ranges::find(rates, baud) == rates.end() || bits < 5 || bits > 8 || stops < 1 || stops > 2 ||
-                (parity != "none" && parity != "even" && parity != "odd")) service::common::fail(17003, "串口参数无效", 400);
+                (parity != "none" && parity != "even" && parity != "odd")) {
+                service::common::fail(17003, "串口参数无效", 400);
+            }
             config.set_south_mode(module_pb::LINK_MODE_SERIAL);
             auto* serial = config.mutable_serial();
-            serial->set_channel(path); serial->set_baud_rate(static_cast<std::uint32_t>(baud));
-            serial->set_data_bits(static_cast<std::uint32_t>(bits)); serial->set_stop_bits(static_cast<std::uint32_t>(stops));
-            serial->set_parity(parity); serial->set_rs485(body.get<"rs485">() && body.get<"rs485">()->value_);
+            serial->set_channel(path);
+            serial->set_baud_rate(static_cast<std::uint32_t>(baud));
+            serial->set_data_bits(static_cast<std::uint32_t>(bits));
+            serial->set_stop_bits(static_cast<std::uint32_t>(stops));
+            serial->set_parity(parity);
+            serial->set_rs485(body.get<"rs485">() && body.get<"rs485">()->value_);
         } else {
             const auto host = stringValue(body.get<"southHost">(), "");
-            if (host.empty() || !body.get<"southPort">()) service::common::fail(17003, "请输入南向地址和端口", 400);
+            if (host.empty() || !body.get<"southPort">()) {
+                service::common::fail(17003, "请输入南向地址和端口", 400);
+            }
             config.set_south_mode(mode == "tcp_server" ? module_pb::LINK_MODE_TCP_SERVER : module_pb::LINK_MODE_TCP_CLIENT);
-            config.set_south_host(host); config.set_south_port(static_cast<std::uint32_t>(body.get<"southPort">()->value_));
+            config.set_south_host(host);
+            config.set_south_port(static_cast<std::uint32_t>(body.get<"southPort">()->value_));
         }
         const auto decodePacket = [](std::string_view hex) {
             std::string packet;
-            if (hex.size() > 512 || hex.size() % 2) service::common::fail(17003, "报文 HEX 必须为完整字节且不超过 256 字节", 400);
+            if (hex.size() > 512 || hex.size() % 2) {
+                service::common::fail(17003, "报文 HEX 必须为完整字节且不超过 256 字节", 400);
+            }
             for (std::size_t i = 0; i < hex.size(); i += 2) {
-                const int high = service::common::hexDigit(hex[i]), low = service::common::hexDigit(hex[i+1]);
-                if (high < 0 || low < 0) service::common::fail(17003, "报文 HEX 无效", 400);
+                const int high = service::common::hexDigit(hex[i]), low = service::common::hexDigit(hex[i + 1]);
+                if (high < 0 || low < 0) {
+                    service::common::fail(17003, "报文 HEX 无效", 400);
+                }
                 packet.push_back(static_cast<char>((high << 4) | low));
             }
             return packet;
@@ -540,68 +559,90 @@ class EdgeService {
         config.set_registration(decodePacket(stringValue(body.get<"registrationHex">(), "")));
         config.set_heartbeat(decodePacket(stringValue(body.get<"heartbeatHex">(), "")));
         const auto heartbeatInterval = body.get<"heartbeatIntervalSec">() ? body.get<"heartbeatIntervalSec">()->value_ : 0;
-        if (heartbeatInterval < 0 || heartbeatInterval > 86400 || (heartbeatInterval && config.heartbeat().empty()))
+        if (heartbeatInterval < 0 || heartbeatInterval > 86400 || (heartbeatInterval && config.heartbeat().empty())) {
             service::common::fail(17003, "心跳间隔应为 0～86400 秒，启用时须填写心跳包", 400);
+        }
         config.set_heartbeat_interval_sec(static_cast<std::uint32_t>(heartbeatInterval));
         const auto validHost = [](std::string_view host) {
             return !host.empty() && std::ranges::all_of(host, [](unsigned char value) {
                 return std::isalnum(value) || value == '.' || value == '-' || value == '_' || value == ':' || value == '%';
             });
         };
-        if (!validHost(config.north_host()) || (mode != "serial" && !validHost(config.south_host())))
+        if (!validHost(config.north_host()) || (mode != "serial" && !validHost(config.south_host()))) {
             service::common::fail(17003, "地址只能填写域名或 IP，不能包含空白、URL 或控制字符", 400);
-        std::string wire; config.SerializeToString(&wire);
+        }
+        std::string wire;
+        config.SerializeToString(&wire);
         std::string encoded;
         constexpr char digits[] = "0123456789abcdef";
-        for (unsigned char byte : wire) { encoded += digits[byte >> 4]; encoded += digits[byte & 15]; }
+        for (unsigned char byte : wire) {
+            encoded += digits[byte >> 4];
+            encoded += digits[byte & 15];
+        }
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query lock(c.pool());
-        lock.select(lock.column(entities::EdgeNodeEntity::column<"id">().name())).from(entities::EdgeNodeEntity::table_name())
-            .where(lock.binary(lock.column(entities::EdgeNodeEntity::column<"id">().name()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).lock({.mode_=ruvia::db_row_lock::update});
+        lock.select(lock.column(entities::EdgeNodeEntity::column<"id">().name())).from(entities::EdgeNodeEntity::table_name()).where(lock.binary(lock.column(entities::EdgeNodeEntity::column<"id">().name()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).lock({ .mode_ = ruvia::db_row_lock::update });
         (void)co_await transaction.query(lock);
         ruvia::db_query existing(c.pool());
-        existing.select({existing.column(entities::EdgeDtuEntity::column<"channel_id">().name()), existing.column(entities::EdgeDtuEntity::column<"wire_hex">().name())}).from(entities::EdgeDtuEntity::table_name())
-            .where(existing.binary(existing.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
+        existing.select({ existing.column(entities::EdgeDtuEntity::column<"channel_id">().name()), existing.column(entities::EdgeDtuEntity::column<"wire_hex">().name()) }).from(entities::EdgeDtuEntity::table_name()).where(existing.binary(existing.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
         const auto rows = co_await transaction.query(existing);
         bool found = false;
         for (const auto& row : rows) {
-            if (row[0].value().value_or("") == channelId) { found = true; continue; }
-            if (!config.enabled()) continue;
+            if (row[0].value().value_or("") == channelId) {
+                found = true;
+                continue;
+            }
+            if (!config.enabled()) {
+                continue;
+            }
             const auto encodedOther = row[1].value().value_or("");
             std::string wireOther;
-            for (std::size_t i = 0; i + 1 < encodedOther.size(); i += 2)
-                wireOther.push_back(static_cast<char>((service::common::hexDigit(encodedOther[i]) << 4) | service::common::hexDigit(encodedOther[i+1])));
+            for (std::size_t i = 0; i + 1 < encodedOther.size(); i += 2) {
+                wireOther.push_back(static_cast<char>((service::common::hexDigit(encodedOther[i]) << 4) | service::common::hexDigit(encodedOther[i + 1])));
+            }
             module_pb::DtuConfig other;
-            if (!other.ParseFromString(wireOther)) service::common::fail(17005, "已存透传配置无法解析", 500);
-            if (!other.enabled() || other.south_mode() != config.south_mode()) continue;
+            if (!other.ParseFromString(wireOther)) {
+                service::common::fail(17005, "已存透传配置无法解析", 500);
+            }
+            if (!other.enabled() || other.south_mode() != config.south_mode()) {
+                continue;
+            }
             if ((mode == "serial" && other.serial().channel() == config.serial().channel()) ||
-                (mode == "tcp_server" && other.south_port() == config.south_port()))
+                (mode == "tcp_server" && other.south_port() == config.south_port())) {
                 service::common::fail(17003, "该南向串口或监听端口已被另一个透传通道占用", 409);
+            }
         }
-        if (!found && rows.size() >= 8) service::common::fail(17003, "每个节点最多 8 个透传通道", 409);
+        if (!found && rows.size() >= 8) {
+            service::common::fail(17003, "每个节点最多 8 个透传通道", 409);
+        }
         ruvia::db_query save(c.pool());
-        save.insert_into(entities::EdgeDtuEntity::table_name(), {entities::EdgeDtuEntity::column<"node_id">().name(), entities::EdgeDtuEntity::column<"channel_id">().name(), entities::EdgeDtuEntity::column<"config">().name(), entities::EdgeDtuEntity::column<"wire_hex">().name()})
-            .values({save.cast(save.value(nodeId), Type::uuid), save.cast(save.value(channelId), Type::uuid), save.cast(save.value(json), Type::jsonb), save.value(encoded)});
+        save.insert_into(entities::EdgeDtuEntity::table_name(), { entities::EdgeDtuEntity::column<"node_id">().name(), entities::EdgeDtuEntity::column<"channel_id">().name(), entities::EdgeDtuEntity::column<"config">().name(), entities::EdgeDtuEntity::column<"wire_hex">().name() })
+            .values({ save.cast(save.value(nodeId), Type::uuid), save.cast(save.value(channelId), Type::uuid), save.cast(save.value(json), Type::jsonb), save.value(encoded) });
         ruvia::db_conflict_options conflict;
-        conflict.columns_ = {std::string(entities::EdgeDtuEntity::column<"node_id">().name()), std::string(entities::EdgeDtuEntity::column<"channel_id">().name())};
-        conflict.update_ = {{std::string(entities::EdgeDtuEntity::column<"config">().name()), save.excluded(entities::EdgeDtuEntity::column<"config">().name())},
-                           {std::string(entities::EdgeDtuEntity::column<"wire_hex">().name()), save.excluded(entities::EdgeDtuEntity::column<"wire_hex">().name())},
-                           {std::string(entities::EdgeDtuEntity::column<"status">().name()), save.cast(save.value("{}"), Type::jsonb)}};
+        conflict.columns_ = { std::string(entities::EdgeDtuEntity::column<"node_id">().name()), std::string(entities::EdgeDtuEntity::column<"channel_id">().name()) };
+        conflict.update_ = { { std::string(entities::EdgeDtuEntity::column<"config">().name()), save.excluded(entities::EdgeDtuEntity::column<"config">().name()) },
+                             { std::string(entities::EdgeDtuEntity::column<"wire_hex">().name()), save.excluded(entities::EdgeDtuEntity::column<"wire_hex">().name()) },
+                             { std::string(entities::EdgeDtuEntity::column<"status">().name()), save.cast(save.value("{}"), Type::jsonb) } };
         save.on_conflict(conflict);
         (void)co_await transaction.execute(save);
         co_await transaction.commit();
-        try { (void)co_await queueSnapshot(c, nodeId, c.userId); }
-        catch (...) { service::common::fail(17005, "配置已保存，下发未成功，请点击同步配置重试", 502); }
+        try {
+            (void)co_await queueSnapshot(c, nodeId, c.userId);
+        } catch (...) {
+            service::common::fail(17005, "配置已保存，下发未成功，请点击同步配置重试", 502);
+        }
     }
 
     template <typename Context>
     ruvia::task<void> deleteDtuChannel(Context& c, std::string_view nodeId, std::string_view channelId) {
         ruvia::db_query query(c.pool());
-        query.delete_from(entities::EdgeDtuEntity::table_name()).where(query.binary(query.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .and_where(query.binary(query.column(entities::EdgeDtuEntity::column<"channel_id">().name()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
+        query.delete_from(entities::EdgeDtuEntity::table_name()).where(query.binary(query.column(entities::EdgeDtuEntity::column<"node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).and_where(query.binary(query.column(entities::EdgeDtuEntity::column<"channel_id">().name()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
         (void)co_await c.db().execute(query);
-        try { (void)co_await queueSnapshot(c, nodeId, c.userId); }
-        catch (...) { service::common::fail(17005, "配置已删除，下发未成功，请点击同步配置重试", 502); }
+        try {
+            (void)co_await queueSnapshot(c, nodeId, c.userId);
+        } catch (...) {
+            service::common::fail(17005, "配置已删除，下发未成功，请点击同步配置重试", 502);
+        }
     }
 
     template <typename Context>
@@ -1082,8 +1123,9 @@ class EdgeService {
             .where((entities::EdgeNodeEntity::column<"id">() == id).expression(current))
             .lock(ruvia::db_lock_options{});
         const auto nodes = co_await transaction.query(current);
-        if (nodes.empty())
+        if (nodes.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
+        }
         if (nodes.front()[0].value().value_or("") == name) {
             co_await transaction.commit();
             co_return;
@@ -1099,8 +1141,7 @@ class EdgeService {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
         // 链路列表展示边缘连接所属节点名称；节点模块不读取链路表，名称实际变化时通知链路查询。
-        co_await service::system::OutboxService::enqueueQueryChange(transaction, "link", "link",
-            service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
+        co_await service::system::OutboxService::enqueueQueryChange(transaction, "link", "link", service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
         co_await transaction.commit();
     }
 
@@ -1301,15 +1342,14 @@ class EdgeService {
     static ruvia::task<void> lockFirmwareStorage(Transaction& transaction) {
         // 与后台回收使用同一事务锁；同一 Worker 只使用此事务的连接。
         ruvia::db_query lock;
-        lock.select(lock.call("pg_advisory_xact_lock", {
-            lock.cast(lock.value(service::message::lock::kFirmwareStorageClass), Type::integer), lock.cast(lock.value(service::message::lock::kFirmwareStorageObject), Type::integer)}));
+        lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kFirmwareStorageClass), Type::integer), lock.cast(lock.value(service::message::lock::kFirmwareStorageObject), Type::integer) }));
         (void)co_await transaction.query(lock);
     }
 
     template <typename Transaction>
     static ruvia::task<std::string> findReusableFirmware(Transaction& transaction, std::string_view hash, std::int64_t bytes) {
         ruvia::db_query query;
-        query.select({query.cast(query.column(entities::EdgeFirmwareEntity::column<"id">().name()), Type::text), query.column(entities::EdgeFirmwareEntity::column<"storage_path">().name())})
+        query.select({ query.cast(query.column(entities::EdgeFirmwareEntity::column<"id">().name()), Type::text), query.column(entities::EdgeFirmwareEntity::column<"storage_path">().name()) })
             .from(entities::EdgeFirmwareEntity::table_name())
             .where(query.binary(query.column(entities::EdgeFirmwareEntity::column<"sha256">().name()), Op::equal, query.value(hash)))
             .and_where(query.binary(query.column(entities::EdgeFirmwareEntity::column<"size_bytes">().name()), Op::equal, query.value(bytes)))
@@ -1319,8 +1359,9 @@ class EdgeService {
             const std::filesystem::path path(std::string(row[1].value().value_or(std::string_view{})));
             std::error_code error;
             if (std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) && !error &&
-                std::filesystem::file_size(path, error) == static_cast<std::uint64_t>(bytes) && !error)
+                std::filesystem::file_size(path, error) == static_cast<std::uint64_t>(bytes) && !error) {
                 co_return std::string(row[0].value().value_or(std::string_view{}));
+            }
         }
         co_return std::string{};
     }
@@ -1331,13 +1372,15 @@ class EdgeService {
         const auto hash = body.get<"sha256">().view();
         std::uint8_t digest[32]{};
         if (hash.size() != 64 || !hex(hash, digest, 32) ||
-            hash.find_first_not_of("0123456789abcdef") != std::string_view::npos)
+            hash.find_first_not_of("0123456789abcdef") != std::string_view::npos) {
             service::common::fail(17017, "固件摘要无效", 400);
+        }
         auto transaction = co_await c.db().begin_transaction();
         co_await lockFirmwareStorage(transaction);
         const auto id = co_await findReusableFirmware(transaction, hash, body.get<"sizeBytes">().value_);
-        if (id.empty())
+        if (id.empty()) {
             co_return false;
+        }
         auto request = co_await createFirmwareTask(c, transaction, nodeId, id, body.get<"keepSettings">()->value_);
         co_await transaction.commit();
         co_await queueControl(c, nodeId, "queue-firmware", request);
@@ -1413,8 +1456,9 @@ class EdgeService {
                 storageId = source.stem().string();
                 const auto destination = directory / (storageId + ".bin");
                 std::filesystem::rename(source, destination, error);
-                if (error)
+                if (error) {
                     service::common::fail(17014, "无法保存固件文件", 500);
+                }
                 stored = true;
                 // 提交结果不确定时保留文件，由后台在确认无引用且超过保留期后回收。
                 const auto fileName = std::filesystem::path(std::string(body.get<"fileName">().view())).filename().string();
@@ -1632,9 +1676,13 @@ class EdgeService {
         }
         for (const auto& event : parsed->get<"events">()) {
             const auto kind = event.get<"kind">().view();
-            if (kind == "ready") cursor.ready = true;
-            else if (kind == "close") cursor.closed = true;
-            else if (kind == "data" && event.get<"sequence">()) cursor.sequence = std::max(cursor.sequence, event.get<"sequence">()->value_);
+            if (kind == "ready") {
+                cursor.ready = true;
+            } else if (kind == "close") {
+                cursor.closed = true;
+            } else if (kind == "data" && event.get<"sequence">()) {
+                cursor.sequence = std::max(cursor.sequence, event.get<"sequence">()->value_);
+            }
         }
         co_return debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed->get<"more">().value_, true };
     }
@@ -1701,7 +1749,8 @@ class EdgeService {
     }
 
     template <typename Context, typename Fill = void (*)(service::message::serial_debug::Request&)>
-    ruvia::task<std::string> serialOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::serial_debug::Request&) {}) {
+    ruvia::task<std::string> serialOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::serial_debug::Request&) {
+    }) {
         if (!service::common::isUuid(connectionId) ||
             (!sessionId.empty() && !service::common::isUuid(sessionId))) {
             service::common::fail(17021, "串口会话身份无效", 400);
@@ -1713,7 +1762,8 @@ class EdgeService {
     }
 
     template <typename Context, typename Fill = void (*)(service::message::terminal::Request&)>
-    ruvia::task<std::string> terminalOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::terminal::Request&) {}) {
+    ruvia::task<std::string> terminalOperation(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, std::string_view operation, Fill fill = [](service::message::terminal::Request&) {
+    }) {
         service::message::terminal::Request request(ruvia::model_options{ .resource_ = c.arena() });
         request.template set<"nodeId">(nodeId).template set<"sessionId">(sessionId).template set<"connectionId">(connectionId).template set<"userId">(c.userId);
         fill(request);
@@ -1885,7 +1935,9 @@ class EdgeService {
         std::optional<std::string> result;
         while (!c.get_stop_token().stop_requested()) {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            if (remaining.count() <= 0) break;
+            if (remaining.count() <= 0) {
+                break;
+            }
             auto subscription = c.redis().with_options({ .timeout_ = remaining }).subscription();
             co_await debug::confirmSubscription(subscription, key);
             if (!requested) {
@@ -1900,20 +1952,28 @@ class EdgeService {
                 }
                 try {
                     const auto event = co_await subscription.read();
-                    if (!event) break;
+                    if (!event) {
+                        break;
+                    }
                 } catch (const ruvia::redis_error& error) {
                     if (error.code() != ruvia::redis_error::code_type::io_error &&
-                        error.code() != ruvia::redis_error::code_type::timeout) throw;
+                        error.code() != ruvia::redis_error::code_type::timeout) {
+                        throw;
+                    }
                     LOG_DEBUG << "edge node result subscription interrupted: " << error.what();
                     disconnected = true;
                     break;
                 }
             }
-            if (result || !disconnected) break;
+            if (result || !disconnected) {
+                break;
+            }
         }
         if (!c.get_stop_token().stop_requested()) {
             if (!result) {
-                if (const auto payload = co_await c.redis().get(key)) result.emplace(payload->data(), payload->size());
+                if (const auto payload = co_await c.redis().get(key)) {
+                    result.emplace(payload->data(), payload->size());
+                }
             }
             (void)co_await c.redis().del(key);
         }
@@ -1954,10 +2014,14 @@ class EdgeService {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
         bool sent = false;
         for (;;) {
-            if (c.get_stop_token().stop_requested()) service::common::fail(17018, "终端输入已取消", 409);
+            if (c.get_stop_token().stop_requested()) {
+                service::common::fail(17018, "终端输入已取消", 409);
+            }
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
             if (remaining.count() <= 0) {
-                if (sent && co_await terminalInputAcknowledged(c, session, next)) co_return;
+                if (sent && co_await terminalInputAcknowledged(c, session, next)) {
+                    co_return;
+                }
                 service::common::fail(17018, "终端输入确认超时", 504);
             }
             auto acknowledged = c.redis().with_options({ .timeout_ = remaining }).subscription();
@@ -1969,12 +2033,18 @@ class EdgeService {
                 sent = true;
             }
             for (;;) {
-                if (co_await terminalInputAcknowledged(c, session, next)) co_return;
+                if (co_await terminalInputAcknowledged(c, session, next)) {
+                    co_return;
+                }
                 try {
-                    if (!co_await acknowledged.read()) service::common::fail(17018, "终端输入已取消", 409);
+                    if (!co_await acknowledged.read()) {
+                        service::common::fail(17018, "终端输入已取消", 409);
+                    }
                 } catch (const ruvia::redis_error& error) {
                     if (error.code() != ruvia::redis_error::code_type::io_error &&
-                        error.code() != ruvia::redis_error::code_type::timeout) throw;
+                        error.code() != ruvia::redis_error::code_type::timeout) {
+                        throw;
+                    }
                     LOG_DEBUG << "edge terminal input subscription interrupted: " << error.what();
                     break;
                 }
@@ -1987,7 +2057,9 @@ class EdgeService {
             request.set<"sequence">(static_cast<std::int64_t>(sequence));
         });
         const auto status = ruvia::from_json<service::message::terminal::InputStatusReply>(reply, { .resource_ = c.arena() });
-        if (!status) service::common::fail(17018, "终端确认格式无效", 502);
+        if (!status) {
+            service::common::fail(17018, "终端确认格式无效", 502);
+        }
         co_return status->get<"acknowledged">().value_;
     }
 
@@ -2056,8 +2128,7 @@ class EdgeService {
     template <typename Context>
     static ruvia::task<void> scheduleFirmwareCleanup(Context& c, std::string_view stage) {
         try {
-            (void)co_await service::utils::callRpc(c, service::message::edge::firmware::kRpcComponent,
-                service::message::edge::firmware::kScheduleCleanupOperation, std::string{});
+            (void)co_await service::utils::callRpc(c, service::message::edge::firmware::kRpcComponent, service::message::edge::firmware::kScheduleCleanupOperation, std::string{});
         } catch (const std::exception& error) {
             // 回收由下一次固件事件或进程重启时重算；调度失败不改变已完成的业务结果。
             LOG_WARN << "edge firmware cleanup schedule failed: stage=" << stage << " error=" << error.what();
@@ -2270,17 +2341,13 @@ class EdgeService {
             .and_where(vpn.unary(Unary::is_true, vpn.column(Route::column<"enabled">().name(), "route")))
             .and_where(vpn.binary(vpn.column(Route::column<"status">().name(), "route"), Op::equal, vpn.value("active")));
 
-        const auto nodeColumn = [&query](std::string_view name) { return query.column(name, "node"); };
-        const auto firmwareColumn = [&query](std::string_view name) { return query.column(name, "firmware"); };
-        query.select({ query.cast(nodeId, Type::text), nodeColumn(entities::EdgeNodeEntity::column<"imei">().name()), textDefault(query, nodeColumn(entities::EdgeNodeEntity::column<"name">().name())), nodeColumn(entities::EdgeNodeEntity::column<"model">().name()), nodeColumn(entities::EdgeNodeEntity::column<"software_version">().name()), nodeColumn(entities::EdgeNodeEntity::column<"hostname">().name()), nodeColumn(entities::EdgeNodeEntity::column<"architecture">().name()), nodeColumn(entities::EdgeNodeEntity::column<"openwrt_release">().name()), nodeColumn(entities::EdgeNodeEntity::column<"enrollment_status">().name()), query.cast(query.value(false), Type::boolean), textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column<"last_seen_at">().name()) })), query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column<"created_at">().name()) }),
-                       safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0), safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0), textDefault(query, db::jsonText(query, config, "state"), "idle"), textDefault(query, db::jsonText(query, config, "message")), safeBigInt(query, db::jsonText(query, outbox, "records"), 0), safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0), textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info"),
-                       booleanText(query, db::jsonText(query, capability, "networkConfig")), safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0), booleanText(query, db::jsonText(query, capability, "firmwareUpdate")), booleanText(query, db::jsonText(query, capability, "deviceConfig")), booleanText(query, db::jsonText(query, capability, "modemControl")), booleanText(query, db::jsonText(query, capability, "terminal")), booleanText(query, db::jsonText(query, capability, "logs")),
-                       booleanText(query, db::jsonText(query, mobile, "available")), textDefault(query, db::jsonText(query, mobile, "simState"), "unknown"), textDefault(query, db::jsonText(query, mobile, "iccid")), safeBigInt(query, db::jsonText(query, signal, "csq"), 99), safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1), safeBigInt(query, db::jsonText(query, signal, "percent"), 0), booleanText(query, db::jsonText(query, mobile, "registered")), safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1), textDefault(query, db::jsonText(query, mobile, "apn")), textDefault(query, db::jsonText(query, mobile, "operator")), booleanText(query, db::jsonText(query, mobile, "connected")), textDefault(query, db::jsonText(query, mobile, "ipv4")),
-                       textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column<"status">().name())), safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0), safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0), safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0), textDefault(query, firmwareColumn(kMessageColumn)),
-                       booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")), textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")), textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")), textDefault(query, db::jsonText(query, vpnCapability, "publicKey")),
-                       textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column<"group_id">().name()), Type::text)), textDefault(query, query.column(entities::EdgeNodeGroupEntity::column<"name">().name(), "group_item")), textDefault(query, query.subquery(vpn)), booleanText(query, db::jsonText(query, capability, "serialDebug")),
-                       db::jsonText(query, tcpTraffic, "uploadBytes"), db::jsonText(query, tcpTraffic, "downloadBytes"), db::jsonText(query, tcpTraffic, "intervalMs"), db::jsonText(query, tcpTraffic, "sampleId"), db::jsonText(query, tcpTraffic, "month"), db::jsonText(query, tcpTraffic, "monthlyUploadBytes"), db::jsonText(query, tcpTraffic, "monthlyDownloadBytes"), db::jsonText(query, tcpTraffic, "day"), db::jsonText(query, tcpTraffic, "dailyUploadBytes"), db::jsonText(query, tcpTraffic, "dailyDownloadBytes"),
-                       db::jsonText(query, vpnTraffic, "uploadBytes"), db::jsonText(query, vpnTraffic, "downloadBytes"), db::jsonText(query, vpnTraffic, "intervalMs"), db::jsonText(query, vpnTraffic, "sampleId"), db::jsonText(query, vpnTraffic, "month"), db::jsonText(query, vpnTraffic, "monthlyUploadBytes"), db::jsonText(query, vpnTraffic, "monthlyDownloadBytes"), db::jsonText(query, vpnTraffic, "day"), db::jsonText(query, vpnTraffic, "dailyUploadBytes"), db::jsonText(query, vpnTraffic, "dailyDownloadBytes") })
+        const auto nodeColumn = [&query](std::string_view name) {
+            return query.column(name, "node");
+        };
+        const auto firmwareColumn = [&query](std::string_view name) {
+            return query.column(name, "firmware");
+        };
+        query.select({ query.cast(nodeId, Type::text), nodeColumn(entities::EdgeNodeEntity::column<"imei">().name()), textDefault(query, nodeColumn(entities::EdgeNodeEntity::column<"name">().name())), nodeColumn(entities::EdgeNodeEntity::column<"model">().name()), nodeColumn(entities::EdgeNodeEntity::column<"software_version">().name()), nodeColumn(entities::EdgeNodeEntity::column<"hostname">().name()), nodeColumn(entities::EdgeNodeEntity::column<"architecture">().name()), nodeColumn(entities::EdgeNodeEntity::column<"openwrt_release">().name()), nodeColumn(entities::EdgeNodeEntity::column<"enrollment_status">().name()), query.cast(query.value(false), Type::boolean), textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column<"last_seen_at">().name()) })), query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column<"created_at">().name()) }), safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0), safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0), textDefault(query, db::jsonText(query, config, "state"), "idle"), textDefault(query, db::jsonText(query, config, "message")), safeBigInt(query, db::jsonText(query, outbox, "records"), 0), safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0), textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info"), booleanText(query, db::jsonText(query, capability, "networkConfig")), safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0), booleanText(query, db::jsonText(query, capability, "firmwareUpdate")), booleanText(query, db::jsonText(query, capability, "deviceConfig")), booleanText(query, db::jsonText(query, capability, "modemControl")), booleanText(query, db::jsonText(query, capability, "terminal")), booleanText(query, db::jsonText(query, capability, "logs")), booleanText(query, db::jsonText(query, mobile, "available")), textDefault(query, db::jsonText(query, mobile, "simState"), "unknown"), textDefault(query, db::jsonText(query, mobile, "iccid")), safeBigInt(query, db::jsonText(query, signal, "csq"), 99), safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1), safeBigInt(query, db::jsonText(query, signal, "percent"), 0), booleanText(query, db::jsonText(query, mobile, "registered")), safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1), textDefault(query, db::jsonText(query, mobile, "apn")), textDefault(query, db::jsonText(query, mobile, "operator")), booleanText(query, db::jsonText(query, mobile, "connected")), textDefault(query, db::jsonText(query, mobile, "ipv4")), textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column<"status">().name())), safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0), safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0), safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0), textDefault(query, firmwareColumn(kMessageColumn)), booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")), textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")), textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")), textDefault(query, db::jsonText(query, vpnCapability, "publicKey")), textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column<"group_id">().name()), Type::text)), textDefault(query, query.column(entities::EdgeNodeGroupEntity::column<"name">().name(), "group_item")), textDefault(query, query.subquery(vpn)), booleanText(query, db::jsonText(query, capability, "serialDebug")), db::jsonText(query, tcpTraffic, "uploadBytes"), db::jsonText(query, tcpTraffic, "downloadBytes"), db::jsonText(query, tcpTraffic, "intervalMs"), db::jsonText(query, tcpTraffic, "sampleId"), db::jsonText(query, tcpTraffic, "month"), db::jsonText(query, tcpTraffic, "monthlyUploadBytes"), db::jsonText(query, tcpTraffic, "monthlyDownloadBytes"), db::jsonText(query, tcpTraffic, "day"), db::jsonText(query, tcpTraffic, "dailyUploadBytes"), db::jsonText(query, tcpTraffic, "dailyDownloadBytes"), db::jsonText(query, vpnTraffic, "uploadBytes"), db::jsonText(query, vpnTraffic, "downloadBytes"), db::jsonText(query, vpnTraffic, "intervalMs"), db::jsonText(query, vpnTraffic, "sampleId"), db::jsonText(query, vpnTraffic, "month"), db::jsonText(query, vpnTraffic, "monthlyUploadBytes"), db::jsonText(query, vpnTraffic, "monthlyDownloadBytes"), db::jsonText(query, vpnTraffic, "day"), db::jsonText(query, vpnTraffic, "dailyUploadBytes"), db::jsonText(query, vpnTraffic, "dailyDownloadBytes") })
             .from(entities::EdgeNodeEntity::table_name(), "node")
             .join(ruvia::db_join_type::left, entities::EdgeNodeGroupEntity::table_name(), query.binary(nodeColumn(entities::EdgeNodeEntity::column<"group_id">().name()), Op::equal, query.column(entities::EdgeNodeGroupEntity::column<"id">().name(), "group_item")), "group_item")
             .join(ruvia::db_join_type::left, latest, query.cast(query.value(true), Type::boolean), "firmware", { .lateral_ = true });
@@ -2316,30 +2383,70 @@ class EdgeService {
         status.template set<"log">(std::move(log));
         if (row[51].value() || row[56].value() || row[57].value() || row[59].value() || row[60].value()) {
             TcpTrafficDto traffic(ruvia::model_options{ .resource_ = c.arena() });
-            if (row[51].value()) traffic.template set<"uploadBytes">(*row[51].value());
-            if (row[52].value()) traffic.template set<"downloadBytes">(*row[52].value());
-            if (row[53].value()) traffic.template set<"intervalMs">(*row[53].value());
-            if (row[54].value()) traffic.template set<"sampleId">(*row[54].value());
-            if (row[55].value()) traffic.template set<"month">(*row[55].value());
-            if (row[56].value()) traffic.template set<"monthlyUploadBytes">(*row[56].value());
-            if (row[57].value()) traffic.template set<"monthlyDownloadBytes">(*row[57].value());
-            if (row[58].value()) traffic.template set<"day">(*row[58].value());
-            if (row[59].value()) traffic.template set<"dailyUploadBytes">(*row[59].value());
-            if (row[60].value()) traffic.template set<"dailyDownloadBytes">(*row[60].value());
+            if (row[51].value()) {
+                traffic.template set<"uploadBytes">(*row[51].value());
+            }
+            if (row[52].value()) {
+                traffic.template set<"downloadBytes">(*row[52].value());
+            }
+            if (row[53].value()) {
+                traffic.template set<"intervalMs">(*row[53].value());
+            }
+            if (row[54].value()) {
+                traffic.template set<"sampleId">(*row[54].value());
+            }
+            if (row[55].value()) {
+                traffic.template set<"month">(*row[55].value());
+            }
+            if (row[56].value()) {
+                traffic.template set<"monthlyUploadBytes">(*row[56].value());
+            }
+            if (row[57].value()) {
+                traffic.template set<"monthlyDownloadBytes">(*row[57].value());
+            }
+            if (row[58].value()) {
+                traffic.template set<"day">(*row[58].value());
+            }
+            if (row[59].value()) {
+                traffic.template set<"dailyUploadBytes">(*row[59].value());
+            }
+            if (row[60].value()) {
+                traffic.template set<"dailyDownloadBytes">(*row[60].value());
+            }
             status.template set<"tcpTraffic">(std::move(traffic));
         }
         if (row[61].value() || row[66].value() || row[67].value() || row[69].value() || row[70].value()) {
             TcpTrafficDto vpn(ruvia::model_options{ .resource_ = c.arena() });
-            if (row[61].value()) vpn.template set<"uploadBytes">(*row[61].value());
-            if (row[62].value()) vpn.template set<"downloadBytes">(*row[62].value());
-            if (row[63].value()) vpn.template set<"intervalMs">(*row[63].value());
-            if (row[64].value()) vpn.template set<"sampleId">(*row[64].value());
-            if (row[65].value()) vpn.template set<"month">(*row[65].value());
-            if (row[66].value()) vpn.template set<"monthlyUploadBytes">(*row[66].value());
-            if (row[67].value()) vpn.template set<"monthlyDownloadBytes">(*row[67].value());
-            if (row[68].value()) vpn.template set<"day">(*row[68].value());
-            if (row[69].value()) vpn.template set<"dailyUploadBytes">(*row[69].value());
-            if (row[70].value()) vpn.template set<"dailyDownloadBytes">(*row[70].value());
+            if (row[61].value()) {
+                vpn.template set<"uploadBytes">(*row[61].value());
+            }
+            if (row[62].value()) {
+                vpn.template set<"downloadBytes">(*row[62].value());
+            }
+            if (row[63].value()) {
+                vpn.template set<"intervalMs">(*row[63].value());
+            }
+            if (row[64].value()) {
+                vpn.template set<"sampleId">(*row[64].value());
+            }
+            if (row[65].value()) {
+                vpn.template set<"month">(*row[65].value());
+            }
+            if (row[66].value()) {
+                vpn.template set<"monthlyUploadBytes">(*row[66].value());
+            }
+            if (row[67].value()) {
+                vpn.template set<"monthlyDownloadBytes">(*row[67].value());
+            }
+            if (row[68].value()) {
+                vpn.template set<"day">(*row[68].value());
+            }
+            if (row[69].value()) {
+                vpn.template set<"dailyUploadBytes">(*row[69].value());
+            }
+            if (row[70].value()) {
+                vpn.template set<"dailyDownloadBytes">(*row[70].value());
+            }
             status.template set<"vpnTraffic">(std::move(vpn));
         }
 
@@ -2932,12 +3039,16 @@ class DebugConnection final {
         try {
             if (subscription) {
                 (void)registry_.policy(request.event);
-                if (identity_.accessToken.empty()) throw debug::EventError(11004, "未登录");
+                if (identity_.accessToken.empty()) {
+                    throw debug::EventError(11004, "未登录");
+                }
                 const auto body = ruvia::from_json<TerminalSessionInput>(request.data);
                 if (body) {
                     const auto prefix = request.event == "edge.terminal.events.subscribe" ? "terminal:" : "serial:";
                     const auto found = resources_.find(prefix + std::string(body->get<"sessionId">().view()));
-                    if (found != resources_.end()) stop = ruvia::combine_stop_tokens(stop, found->second->lifetime.token());
+                    if (found != resources_.end()) {
+                        stop = ruvia::combine_stop_tokens(stop, found->second->lifetime.token());
+                    }
                 }
             }
             bool reconnect = false;
@@ -2945,63 +3056,69 @@ class DebugConnection final {
                 reconnect = false;
                 auto notification = context_.redis().with_options({ .stop_token_ = stop }).subscription();
                 const auto topic = subscription ? subscriptionTopic(request) : std::string{};
-                if (subscription) co_await debug::confirmSubscription(notification, topic);
-            do {
-                const auto revision = identity_.revision;
-                debug::EventContext event(context_, identity_, request, stop, resources_, operation->state);
-                const auto policy = registry_.policy(request.event);
-                if (policy.authenticated) {
-                    if (identity_.accessToken.empty()) {
-                        throw debug::EventError(11004, "未登录");
-                    }
-                    const auto principal = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
-                    event.userId = principal.userId;
-                    if (!policy.permission.empty()) {
-                        co_await service::auth::AuthService::requirePermission(event, event.userId, policy.permission);
-                    }
-                    if (stop.stop_requested() || identity_.revision != revision) {
-                        break;
-                    }
+                if (subscription) {
+                    co_await debug::confirmSubscription(notification, topic);
                 }
-                const auto result = co_await registry_.invoke(event);
-                stop = ruvia::combine_stop_tokens(operationStop, result.lifetime);
-                if (stop.stop_requested()) {
-                    break;
-                }
-                if (identity_.revision != revision) {
-                    if (!result.identityChanged) {
-                        break;
-                    }
-                    // A successful identity change invalidates all earlier work.
-                    for (auto& [id, pending] : operations_) {
-                        if (id != request.id) {
-                            pending->stop.request_stop();
+                do {
+                    const auto revision = identity_.revision;
+                    debug::EventContext event(context_, identity_, request, stop, resources_, operation->state);
+                    const auto policy = registry_.policy(request.event);
+                    if (policy.authenticated) {
+                        if (identity_.accessToken.empty()) {
+                            throw debug::EventError(11004, "未登录");
+                        }
+                        const auto principal = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
+                        event.userId = principal.userId;
+                        if (!policy.permission.empty()) {
+                            co_await service::auth::AuthService::requirePermission(event, event.userId, policy.permission);
+                        }
+                        if (stop.stop_requested() || identity_.revision != revision) {
+                            break;
                         }
                     }
-                    const auto owner = identity_.accessToken.empty() ? std::string{} : service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
-                    co_await closeResources(owner);
-                }
-                if (first || result.incremental || previous != result.data) {
-                    co_await reply(request.id, result.data);
-                }
-                first = false;
-                previous = result.data;
-                if (!subscription || result.topic.empty()) {
-                    break;
-                }
-                if (result.topic != topic) throw std::logic_error("edge debug subscription topic changed");
-                if (result.more) {
-                    continue;
-                }
-                try {
-                    co_await awaitTopic(notification, result.topic, stop);
-                } catch (const ruvia::redis_error& error) {
-                    if (error.code() != ruvia::redis_error::code_type::io_error) throw;
-                    LOG_DEBUG << "edge debug subscription reconnecting: " << error.what();
-                    reconnect = true;
-                    break;
-                }
-            } while (!stop.stop_requested());
+                    const auto result = co_await registry_.invoke(event);
+                    stop = ruvia::combine_stop_tokens(operationStop, result.lifetime);
+                    if (stop.stop_requested()) {
+                        break;
+                    }
+                    if (identity_.revision != revision) {
+                        if (!result.identityChanged) {
+                            break;
+                        }
+                        // A successful identity change invalidates all earlier work.
+                        for (auto& [id, pending] : operations_) {
+                            if (id != request.id) {
+                                pending->stop.request_stop();
+                            }
+                        }
+                        const auto owner = identity_.accessToken.empty() ? std::string{} : service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
+                        co_await closeResources(owner);
+                    }
+                    if (first || result.incremental || previous != result.data) {
+                        co_await reply(request.id, result.data);
+                    }
+                    first = false;
+                    previous = result.data;
+                    if (!subscription || result.topic.empty()) {
+                        break;
+                    }
+                    if (result.topic != topic) {
+                        throw std::logic_error("edge debug subscription topic changed");
+                    }
+                    if (result.more) {
+                        continue;
+                    }
+                    try {
+                        co_await awaitTopic(notification, result.topic, stop);
+                    } catch (const ruvia::redis_error& error) {
+                        if (error.code() != ruvia::redis_error::code_type::io_error) {
+                            throw;
+                        }
+                        LOG_DEBUG << "edge debug subscription reconnecting: " << error.what();
+                        reconnect = true;
+                        break;
+                    }
+                } while (!stop.stop_requested());
             } while (reconnect && !stop.stop_requested());
         } catch (const debug::EventError& error) {
             code = error.code;
@@ -3044,8 +3161,12 @@ class DebugConnection final {
             throw debug::EventError(10001, "调试订阅参数无效");
         }
         const auto node = body->get<"id">().view(), id = body->get<"sessionId">().view();
-        if (request.event == "edge.terminal.events.subscribe") return service::message::terminal::terminalEventTopic(node, id);
-        if (request.event == "edge.serial.events.subscribe") return service::message::serial_debug::eventTopic(node, id);
+        if (request.event == "edge.terminal.events.subscribe") {
+            return service::message::terminal::terminalEventTopic(node, id);
+        }
+        if (request.event == "edge.serial.events.subscribe") {
+            return service::message::serial_debug::eventTopic(node, id);
+        }
         throw debug::EventError(10003, "未知调试订阅");
     }
 
@@ -3053,10 +3174,14 @@ class DebugConnection final {
         while (!stop.stop_requested()) {
             const auto event = co_await notification.read();
             if (!event) {
-                if (stop.stop_requested()) co_return;
+                if (stop.stop_requested()) {
+                    co_return;
+                }
                 throw ruvia::redis_error(ruvia::redis_error::code_type::io_error, "edge debug subscription ended");
             }
-            if (event->kind() == ruvia::redis_pubsub_event_kind::message && event->channel() == topic) co_return;
+            if (event->kind() == ruvia::redis_pubsub_event_kind::message && event->channel() == topic) {
+                co_return;
+            }
         }
     }
 
@@ -3087,42 +3212,46 @@ class DebugConnection final {
     ruvia::task<void> watchResourceAuthorization(ruvia::redis_subscription& notification) {
         const auto stop = tasks_.get_stop_token();
         try {
-        while (!stop.stop_requested()) {
-            const auto wake = co_await notification.read();
-            if (!wake || stop.stop_requested()) break;
-            if (wake->kind() != ruvia::redis_pubsub_event_kind::message) continue;
-            if (resources_.empty()) {
-                continue;
-            }
-            const auto revision = identity_.revision;
-            const debug::Request request;
-            std::any state;
-            debug::EventContext event(context_, identity_, request, stop, resources_, state);
-            bool denied = false;
-            try {
-                event.userId = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
-                std::unordered_set<std::string> permissions;
-                for (const auto& [id, resource] : resources_) {
-                    permissions.insert(resource->permission);
+            while (!stop.stop_requested()) {
+                const auto wake = co_await notification.read();
+                if (!wake || stop.stop_requested()) {
+                    break;
                 }
-                for (const auto& permission : permissions) {
-                    co_await service::auth::AuthService::requirePermission(event, event.userId, permission);
-                    if (identity_.revision != revision || stop.stop_requested()) {
-                        break;
+                if (wake->kind() != ruvia::redis_pubsub_event_kind::message) {
+                    continue;
+                }
+                if (resources_.empty()) {
+                    continue;
+                }
+                const auto revision = identity_.revision;
+                const debug::Request request;
+                std::any state;
+                debug::EventContext event(context_, identity_, request, stop, resources_, state);
+                bool denied = false;
+                try {
+                    event.userId = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
+                    std::unordered_set<std::string> permissions;
+                    for (const auto& [id, resource] : resources_) {
+                        permissions.insert(resource->permission);
                     }
+                    for (const auto& permission : permissions) {
+                        co_await service::auth::AuthService::requirePermission(event, event.userId, permission);
+                        if (identity_.revision != revision || stop.stop_requested()) {
+                            break;
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    LOG_DEBUG << "edge debug authorization rejected: " << error.what();
+                    // Fail closed: an expired token, revoked permission or failed
+                    // check releases every resource of the connection.
+                    denied = true;
                 }
-            } catch (const std::exception& error) {
-                LOG_DEBUG << "edge debug authorization rejected: " << error.what();
-                // Fail closed: an expired token, revoked permission or failed
-                // check releases every resource of the connection.
-                denied = true;
+                if (denied && identity_.revision == revision) {
+                    co_await closeResources({});
+                } else if (identity_.revision == revision) {
+                    co_await closeResources(event.userId);
+                }
             }
-            if (denied && identity_.revision == revision) {
-                co_await closeResources({});
-            } else if (identity_.revision == revision) {
-                co_await closeResources(event.userId);
-            }
-        }
         } catch (const std::exception& error) {
             LOG_WARN << "edge debug authorization subscription failed: " << error.what();
         }
@@ -3135,7 +3264,9 @@ class DebugConnection final {
     ruvia::task<void> watchTokenExpiry() {
         const auto stop = tasks_.get_stop_token();
         while (co_await ruvia::sleep_for(context_.worker(), std::chrono::seconds(15), stop) == ruvia::timer_sleep_result::elapsed) {
-            if (identity_.accessToken.empty()) continue;
+            if (identity_.accessToken.empty()) {
+                continue;
+            }
             const debug::Request request;
             std::any state;
             debug::EventContext event(context_, identity_, request, stop, resources_, state);
@@ -3146,7 +3277,9 @@ class DebugConnection final {
                 LOG_DEBUG << "edge debug authorization expired: " << error.what();
                 expired = true;
             }
-            if (expired) co_await closeResources({});
+            if (expired) {
+                co_await closeResources({});
+            }
         }
     }
 

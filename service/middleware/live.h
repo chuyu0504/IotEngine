@@ -8,12 +8,11 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <stdexcept>
 
 #include <ruvia/core/channel.h>
 #include <ruvia/core/task_scope.h>
@@ -24,8 +23,8 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/middleware/request_context.h"
 #include "service/middleware/log.h"
+#include "service/middleware/request_context.h"
 #include "service/utils/json.h"
 
 namespace service::middleware {
@@ -179,6 +178,7 @@ class LiveSubscription final {
     }
 
     [[nodiscard]] bool ready() const { return ready_; }
+
     [[nodiscard]] auto generation() const { return authorization.generation(); }
 
     ruvia::task<LiveWait> wait(std::chrono::milliseconds timeout) {

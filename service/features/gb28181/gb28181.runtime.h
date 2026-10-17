@@ -27,8 +27,6 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
-#include "service/utils/worker_task.h"
-#include "service/utils/uuid.h"
 #include "service/features/gb28181/device/device.runtime.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/gb28181.service.h"
@@ -36,6 +34,8 @@
 #include "service/features/gb28181/media/media.runtime.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/gb28181/sip/sip.transport.h"
+#include "service/utils/uuid.h"
+#include "service/utils/worker_task.h"
 
 namespace service::gb28181 {
 
@@ -148,6 +148,7 @@ class GbProjectionRuntime final : public GbProjectionService {
     using OwnerIndex = std::size_t;
 
     explicit GbProjectionRuntime(common::WorkerIdentity identity) : identity_(std::move(identity)) {}
+
     GbProjectionRuntime(const GbProjectionRuntime&) = delete;
     GbProjectionRuntime& operator=(const GbProjectionRuntime&) = delete;
 
@@ -163,7 +164,7 @@ class GbProjectionRuntime final : public GbProjectionService {
     [[nodiscard]] ruvia::task<void> project(ruvia::web_worker_context& context, const ruvia::redis_handle& redis, std::string_view stream, const service::message::StreamMessage& message);
 
     const common::WorkerIdentity identity_;
-    ruvia::stop_source stop_;
+    std::optional<ruvia::stop_source> stop_;
     std::future<void> stopped_;
 };
 

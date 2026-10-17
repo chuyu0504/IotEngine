@@ -32,7 +32,6 @@
 
 namespace service::edge::projection {
 
-
 // Consumes this Worker's projector Stream (and recovers Streams of expired
 // owners) under a fenced lease. One instance per Service Worker; its state is
 // Worker-local and never shared.
@@ -54,14 +53,13 @@ class ProjectionRuntime final {
             running_.store(false);
             throw std::runtime_error("edge projector requires Service Workers");
         }
-        stopSource_ = ruvia::stop_source{};
+        stopSource_.emplace();
         try {
-            service::utils::startWorkerTask(std::move(worker), stopSource_.token(), stopped_,
-                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
-                    stop_ = stop;
-                    leaseScope_ = std::make_unique<ruvia::task_scope>(context.worker());
-                    return run(context, ready);
-                });
+            service::utils::startWorkerTask(std::move(worker), stopSource_->token(), stopped_, [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                stop_ = stop;
+                leaseScope_ = std::make_unique<ruvia::task_scope>(context.worker());
+                return run(context, ready);
+            });
         } catch (...) {
             stop();
             throw;
@@ -70,8 +68,11 @@ class ProjectionRuntime final {
 
     void stop() noexcept {
         running_.store(false);
-        service::utils::stopWorkerTask(stopSource_, stopped_);
-        leaseScope_.reset();
+        if (stopSource_) {
+            service::utils::stopWorkerTask(*stopSource_, stopped_);
+            leaseScope_.reset();
+            stopSource_.reset();
+        }
     }
 
     [[nodiscard]] bool failed() const noexcept { return failed_.load(); }
@@ -129,11 +130,16 @@ class ProjectionRuntime final {
                 const auto revision = reads.revision;
                 const auto notificationStreams = reads.streams;
                 co_await service::utils::redis::withConsumerNotifications(
-                    context.redis(), context.worker(), notificationStreams, kIngressGroup, stop_,
+                    context.redis(),
+                    context.worker(),
+                    notificationStreams,
+                    kIngressGroup,
+                    stop_,
                     [this, &context, &reads, &ready, revision](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
                         ready.set_value();
                         co_await consume(context, reads, notifications, revision);
-                    });
+                    }
+                );
             }
         } catch (...) {
             failed_.store(true);
@@ -201,8 +207,7 @@ class ProjectionRuntime final {
         }
     }
 
-    ruvia::task<void> consume(ruvia::web_worker_context& context, ReadSet& reads,
-                              ruvia::channel_receiver<std::uint8_t>& notifications, std::size_t revision) {
+    ruvia::task<void> consume(ruvia::web_worker_context& context, ReadSet& reads, ruvia::channel_receiver<std::uint8_t>& notifications, std::size_t revision) {
         const auto redis = context.redis();
         const auto consumer = instance_ + ":service-" + std::to_string(workerIndex_);
         while (active(context)) {
@@ -263,15 +268,22 @@ class ProjectionRuntime final {
 
     // Reads the next batches; std::nullopt means the read failed and was retried later.
     ruvia::task<std::optional<std::vector<service::utils::redis::StreamBatch>>>
-    read(ruvia::web_worker_context& context, ReadSet& reads, const std::string& consumer,
-         ruvia::channel_receiver<std::uint8_t>& notifications) {
+    read(ruvia::web_worker_context& context, ReadSet& reads, const std::string& consumer, ruvia::channel_receiver<std::uint8_t>& notifications) {
         std::optional<std::vector<service::utils::redis::StreamBatch>> batches;
         try {
-            const auto delay = std::max(std::chrono::milliseconds(1),
-                std::chrono::duration_cast<std::chrono::milliseconds>(reads.nextDiscovery - std::chrono::steady_clock::now()));
+            const auto delay = std::max(std::chrono::milliseconds(1), std::chrono::duration_cast<std::chrono::milliseconds>(reads.nextDiscovery - std::chrono::steady_clock::now()));
             batches = co_await service::utils::redis::consumeGroup(
-                context.redis(), reads.streams, kIngressGroup, consumer, reads.recovering,
-                notifications, stop_, delay, kBatchSize, std::chrono::milliseconds(0));
+                context.redis(),
+                reads.streams,
+                kIngressGroup,
+                consumer,
+                reads.recovering,
+                notifications,
+                stop_,
+                delay,
+                kBatchSize,
+                std::chrono::milliseconds(0)
+            );
         } catch (const std::exception& error) {
             if (active(context)) {
                 std::cerr << "edge stream read failed: " << error.what() << '\n';
@@ -283,7 +295,6 @@ class ProjectionRuntime final {
         }
         co_return batches;
     }
-
 
     // Releases recovered Streams that are fully drained. Returns false after a failure.
     ruvia::task<bool> eraseDrainedStreams(ruvia::web_worker_context& context, ReadSet& reads) {
@@ -378,7 +389,6 @@ class ProjectionRuntime final {
         co_return true;
     }
 
-
     void lostLease(ruvia::web_worker_context& context, ReadSet& reads, const ProjectorStreamOwner& owner) {
         if (owner.stream == reads.current.stream) {
             markLeaseLost(context);
@@ -434,7 +444,7 @@ class ProjectionRuntime final {
         } catch (...) {
             std::cerr << "edge projector worker failure update failed: unknown error\n";
         }
-        stopSource_.request_stop();
+        stopSource_->request_stop();
     }
 
     std::vector<std::pair<std::string, std::string>> recoveryLeaseSnapshot() const {
@@ -524,7 +534,7 @@ class ProjectionRuntime final {
     ProjectionState state_;
     std::map<std::string, DerivedExpiry> derivedExpiry_;
     std::string instance_;
-    ruvia::stop_source stopSource_;
+    std::optional<ruvia::stop_source> stopSource_;
     ruvia::stop_token stop_;
     std::future<void> stopped_;
     std::unique_ptr<ruvia::task_scope> leaseScope_;

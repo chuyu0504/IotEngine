@@ -6,8 +6,8 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
-#include <stdexcept>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,6 +47,7 @@ class GatewayProtocol final {
         bool supportsCommandStartBefore{};
         std::chrono::steady_clock::time_point lastInbound{};
     };
+
     static Session makeSession(std::string nodeId, std::uint32_t protocolVersion, std::string_view platformId, std::size_t workerIndex, std::uint64_t epoch, std::chrono::steady_clock::time_point now) {
         Session result;
         result.nodeId = std::move(nodeId);
@@ -58,6 +59,7 @@ class GatewayProtocol final {
         result.lastInbound = now;
         return result;
     }
+
     static bool validInbound(const pb::Envelope& input, const Session& session) {
         if (input.protocol_version() != session.protocolVersion ||
             input.node_id().size() != 16 || input.platform_id().size() != 16 ||
@@ -104,6 +106,7 @@ class GatewayProtocol final {
             (session.nextTelemetryReceipt + 1) % session.telemetryReceipts.size();
         return {};
     }
+
     static std::string serialize(const pb::Envelope& envelope) {
         auto wire = protocol::encode(envelope);
         if (wire.empty()) {
@@ -131,9 +134,12 @@ class GatewayProtocol final {
 
     static Session approveSession(const Session& pending, std::string nodeId, std::uint64_t epoch, std::chrono::steady_clock::time_point now) {
         return makeSession(
-            std::move(nodeId), pending.protocolVersion,
+            std::move(nodeId),
+            pending.protocolVersion,
             std::string_view(reinterpret_cast<const char*>(pending.platformBytes.data()), pending.platformBytes.size()),
-            pending.workerIndex, epoch, now
+            pending.workerIndex,
+            epoch,
+            now
         );
     }
 
@@ -142,7 +148,9 @@ class GatewayProtocol final {
             envelope,
             protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()),
-            session.epoch, ++session.outboundSequence, session.protocolVersion
+            session.epoch,
+            ++session.outboundSequence,
+            session.protocolVersion
         );
     }
 
@@ -210,8 +218,8 @@ class GatewayProtocol final {
     static bool needsLegacyStatus(const Session& session, const pb::Envelope& input, bool freshTelemetry) {
         return input.has_telemetry_batch() && !session.sparseHeartbeat && freshTelemetry &&
             std::any_of(input.telemetry_batch().records().begin(), input.telemetry_batch().records().end(), [](const auto& record) {
-                return !record.has_device_status() && !record.derived_update();
-            });
+                   return !record.has_device_status() && !record.derived_update();
+               });
     }
 
     // Builds only the protocol payload. The driver stamps headers after this

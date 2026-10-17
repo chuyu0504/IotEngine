@@ -5,7 +5,6 @@
 
 #include <ruvia/web/db/db_entity.h>
 
-
 namespace service::vpn::persistence {
 
 // Redis sorted-set mappings used by VPN business operations:

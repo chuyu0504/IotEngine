@@ -1,6 +1,6 @@
 #include <atomic>
-#include <cstdio>
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <latch>
@@ -71,6 +71,7 @@ struct ClaimState {
 
 struct ClaimResult {
     bool applied_{};
+
     bool applied() const { return applied_; }
 };
 
@@ -97,14 +98,21 @@ struct ClaimContext {
     explicit ClaimContext(const Loop& loop) : loop_(loop) {}
 
     ClaimRedis redis() { return ClaimRedis{ &state }; }
+
     const ruvia::worker_handle& worker() const { return loop_.worker(); }
+
     ruvia::stop_token get_stop_token() const { return {}; }
+
     template <typename State>
     State& worker_state() { return identity; }
 
     ClaimState state;
     std::optional<service::common::WorkerIdentity> identity{
-        std::in_place, "upload-test-instance", 0, 1 };
+        std::in_place,
+        "upload-test-instance",
+        0,
+        1
+    };
 
   private:
     const Loop& loop_;

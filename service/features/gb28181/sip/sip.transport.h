@@ -19,12 +19,12 @@
 #include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/features/gb28181/device/device.runtime.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
 #include "service/features/gb28181/sip/sip.types.h"
+#include "service/utils/uuid.h"
 
 #ifdef GetMessage
 #undef GetMessage

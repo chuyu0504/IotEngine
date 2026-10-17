@@ -161,8 +161,9 @@ class DerivedService final {
             if (reply.integer() == 0) {
                 continue;
             }
-            if (reply.integer() == 2)
-                co_return Result{calculation.nextDeadline(StateRecord::decode(before), message.occurredAtMs), false, true};
+            if (reply.integer() == 2) {
+                co_return Result{ calculation.nextDeadline(StateRecord::decode(before), message.occurredAtMs), false, true };
+            }
             message.valuesJson = std::move(valuesJson);
             co_return Result{ calculation.nextDeadline(state, message.occurredAtMs), !outputs.empty(), true };
         }

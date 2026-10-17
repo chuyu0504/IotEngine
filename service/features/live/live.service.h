@@ -43,7 +43,6 @@ ruvia::task<void> publish(const Redis& redis, std::string_view topic, std::span<
     }
 }
 
-
 // Claim and fanout are one transaction: losing the command reply cannot leave
 // only some Collector Workers notified, and every append wakes its consumer.
 inline constexpr std::string_view kRelayConfigurationScript = R"lua(

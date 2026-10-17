@@ -13,7 +13,6 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/serial_debug/serial_debug.entity.h"

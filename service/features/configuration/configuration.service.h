@@ -24,9 +24,7 @@
 
 #include "service/common/message.h"
 #include "service/common/uuid.h"
-#include "service/utils/uuid.h"
 #include "service/common/worker.h"
-#include "service/utils/startup.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/collector.types.h"
 #include "service/features/collector/mqtt/mqtt.types.h"
@@ -35,6 +33,8 @@
 #include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/utils/number.h"
+#include "service/utils/startup.h"
+#include "service/utils/uuid.h"
 
 namespace service::configuration {
 
@@ -48,8 +48,9 @@ using service::collector::RuntimeSnapshot;
 
 // DTU 注册包/心跳包内容 → 字节。
 inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_view content) {
-    if (mode == "OFF" || content.empty())
+    if (mode == "OFF" || content.empty()) {
         return {};
+    }
     if (mode == "ASCII") {
         std::vector<std::uint8_t> bytes;
         bytes.reserve(content.size());
@@ -59,84 +60,104 @@ inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_
                 continue;
             }
             switch (content[index + 1]) {
-            case 'r':
-                bytes.push_back(0x0D);
-                ++index;
-                break;
-            case 'n':
-                bytes.push_back(0x0A);
-                ++index;
-                break;
-            case 't':
-                bytes.push_back(0x09);
-                ++index;
-                break;
-            case '\\':
-                bytes.push_back('\\');
-                ++index;
-                break;
-            default:
-                bytes.push_back(static_cast<std::uint8_t>(content[index]));
-                break;
+                case 'r':
+                    bytes.push_back(0x0D);
+                    ++index;
+                    break;
+                case 'n':
+                    bytes.push_back(0x0A);
+                    ++index;
+                    break;
+                case 't':
+                    bytes.push_back(0x09);
+                    ++index;
+                    break;
+                case '\\':
+                    bytes.push_back('\\');
+                    ++index;
+                    break;
+                default:
+                    bytes.push_back(static_cast<std::uint8_t>(content[index]));
+                    break;
             }
         }
         return bytes;
     }
-    if (mode != "HEX")
+    if (mode != "HEX") {
         throw std::runtime_error("Unsupported DTU registration mode: " + std::string(mode));
+    }
     std::string normalized;
     normalized.reserve(content.size());
-    for (const auto character : content)
-        if (!std::isspace(static_cast<unsigned char>(character)))
+    for (const auto character : content) {
+        if (!std::isspace(static_cast<unsigned char>(character))) {
             normalized.push_back(character);
+        }
+    }
     const auto bytes = message::fromHex(normalized);
-    if (bytes.empty() && !normalized.empty())
+    if (bytes.empty() && !normalized.empty()) {
         throw std::runtime_error("Invalid HEX DTU registration content");
+    }
     return bytes;
 }
 
 namespace detail {
 inline std::string_view trim(std::string_view value) noexcept {
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
         value.remove_prefix(1);
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
         value.remove_suffix(1);
+    }
     return value;
 }
 
 inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) noexcept {
     value = trim(value);
-    if (value.empty())
+    if (value.empty()) {
         return fallback;
+    }
     std::int64_t result = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
     return error == std::errc{} && end == value.data() + value.size() ? result : fallback;
 }
 
-inline std::int64_t integerInRange(std::string_view value, std::int64_t minimum,
-                                   std::int64_t maximum, std::int64_t fallback) noexcept {
+inline std::int64_t integerInRange(std::string_view value, std::int64_t minimum, std::int64_t maximum, std::int64_t fallback) noexcept {
     const auto parsed = integer(value, fallback);
     return parsed < minimum || parsed > maximum ? fallback : parsed;
 }
 
-template <typename Row> std::string cell(const Row& row, std::size_t column) {
+template <typename Row>
+std::string cell(const Row& row, std::size_t column) {
     return std::string(row[column].value().value_or(std::string_view{}));
 }
+
 template <typename Row>
 std::int64_t cellInt(const Row& row, std::size_t column, std::int64_t fallback = 0) {
     return integer(row[column].value().value_or(std::string_view{}), fallback);
 }
+
 template <typename Row>
 std::uint16_t cellPort(const Row& row, std::size_t column, std::uint16_t fallback = 0) {
     return static_cast<std::uint16_t>(integerInRange(
-        row[column].value().value_or(std::string_view{}), 0, std::numeric_limits<std::uint16_t>::max(), fallback));
+        row[column].value().value_or(std::string_view{}),
+        0,
+        std::numeric_limits<std::uint16_t>::max(),
+        fallback
+    ));
 }
+
 template <typename Row>
 std::uint8_t cellUInt8(const Row& row, std::size_t column, std::uint8_t fallback = 0) {
     return static_cast<std::uint8_t>(integerInRange(
-        row[column].value().value_or(std::string_view{}), 0, std::numeric_limits<std::uint8_t>::max(), fallback));
+        row[column].value().value_or(std::string_view{}),
+        0,
+        std::numeric_limits<std::uint8_t>::max(),
+        fallback
+    ));
 }
-template <typename Row> bool cellBool(const Row& row, std::size_t column) {
+
+template <typename Row>
+bool cellBool(const Row& row, std::size_t column) {
     const auto value = row[column].value().value_or(std::string_view{});
     return value == "t" || value == "true" || value == "1";
 }
@@ -437,24 +458,7 @@ ruvia::task<std::vector<DeviceDefinition>> loadDeviceDefinitions(Database& db, s
         device.modelId = cell(row, 30);
         device.sl651ResponseMode = cell(row, 31);
         device.debugEnabled = cellBool(row, 32);
-        service::collector::ConnectionConfig::apply(device, {
-            {"mc_frame", cell(row, 33)},
-            {"dlt645_version", cell(row, 34)},
-            {"mc_network", cell(row, 35)},
-            {"mc_station", cell(row, 36)},
-            {"mc_module_io", cell(row, 37)},
-            {"mc_multidrop", cell(row, 38)},
-            {"mc_monitoring_timer", cell(row, 39)},
-            {"fins_destination_network", cell(row, 40)},
-            {"fins_destination_node", cell(row, 41)},
-            {"fins_destination_unit", cell(row, 42)},
-            {"fins_source_network", cell(row, 43)},
-            {"fins_source_node", cell(row, 44)},
-            {"fins_source_unit", cell(row, 45)},
-            {"dlt645_wakeup_bytes", cell(row, 46)},
-            {"dlt645_write_password", cell(row, 47)},
-            {"dlt645_operator_code", cell(row, 48)}
-        });
+        service::collector::ConnectionConfig::apply(device, { { "mc_frame", cell(row, 33) }, { "dlt645_version", cell(row, 34) }, { "mc_network", cell(row, 35) }, { "mc_station", cell(row, 36) }, { "mc_module_io", cell(row, 37) }, { "mc_multidrop", cell(row, 38) }, { "mc_monitoring_timer", cell(row, 39) }, { "fins_destination_network", cell(row, 40) }, { "fins_destination_node", cell(row, 41) }, { "fins_destination_unit", cell(row, 42) }, { "fins_source_network", cell(row, 43) }, { "fins_source_node", cell(row, 44) }, { "fins_source_unit", cell(row, 45) }, { "dlt645_wakeup_bytes", cell(row, 46) }, { "dlt645_write_password", cell(row, 47) }, { "dlt645_operator_code", cell(row, 48) } });
         devices.push_back(std::move(device));
     }
     co_await detail::loadDeviceElements(db, deviceId, devices);
@@ -534,34 +538,29 @@ ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Database& db) {
     const auto configuredProtocol = [](std::string_view protocol, std::string_view arrayKey, int order) {
         ruvia::db_query query;
         query.from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(),
-                query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
+            .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceModelEntity::table_name(), query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"device_id">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")), "p")
             .and_where(query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"protocol">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::equal, query.value(protocol)))
             .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")));
-        const auto entries = query.call("jsonb_array_elements", { query.coalesce({
-            query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
+        const auto entries = query.call("jsonb_array_elements", { query.coalesce({ query.binary(query.column(std::tuple_element_t<service::configuration::persistence::DeviceModelEntity::column_index<"config">(), service::configuration::persistence::DeviceModelEntity::columns_type>::name.view(), "p"), Op::json_get, query.value(arrayKey)), query.cast(query.value("[]"), Type::jsonb) }) });
         if (protocol == "SL651" && arrayKey == "funcs") {
-            query.join_function(ruvia::db_join_type::cross, entries, {}, "functions",
-                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } })
-                .join_function(ruvia::db_join_type::cross, query.call("jsonb_array_elements", { query.coalesce({
-                    query.binary(query.column("function"), Op::json_get, query.value("elements")), query.cast(query.value("[]"), Type::jsonb) }) }),
-                    {}, "elements", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } })
+            query.join_function(ruvia::db_join_type::cross, entries, {}, "functions", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } })
+                .join_function(ruvia::db_join_type::cross, query.call("jsonb_array_elements", { query.coalesce({ query.binary(query.column("function"), Op::json_get, query.value("elements")), query.cast(query.value("[]"), Type::jsonb) }) }), {}, "elements", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } })
                 .and_where(query.binary(query.binary(query.column("function"), Op::json_get_text, query.value("dir")), Op::equal, query.value("UP")))
                 .select({ query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("function_position"), query.column("element_position") });
         } else {
-            query.join_function(ruvia::db_join_type::cross, entries, {}, "entry",
-                { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "position" } } })
+            query.join_function(ruvia::db_join_type::cross, entries, {}, "entry", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "position" } } })
                 .select({ query.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), query.column("element"), query.cast(query.value(order), Type::integer), query.column("position"), query.cast(query.value(0), Type::big_int) });
         }
-        query.and_where(query.binary(query.coalesce({ query.binary(query.column("element"), Op::json_get_text, query.value("encode")), query.value("") }),
-            Op::not_equal, query.value("JPEG")));
+        query.and_where(query.binary(query.coalesce({ query.binary(query.column("element"), Op::json_get_text, query.value("encode")), query.value("") }), Op::not_equal, query.value("JPEG")));
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
-    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645", "MQTT"})
+    for (const auto protocol : { "Modbus", "S7", "SL651", "MC", "FINS", "DLT645", "MQTT" }) {
         configured.combine(ruvia::db_set_operation::union_all, configuredProtocol(protocol, "derivedPoints", 5));
-    for (const auto protocol : {"MC", "FINS", "DLT645", "MQTT"})
+    }
+    for (const auto protocol : { "MC", "FINS", "DLT645", "MQTT" }) {
         configured.combine(ruvia::db_set_operation::union_all, configuredProtocol(protocol, "points", 4));
+    }
     const auto s7Configured = configuredProtocol("S7", "areas", 2);
     const auto sl651Configured = configuredProtocol("SL651", "funcs", 3);
     configured.combine(ruvia::db_set_operation::union_all, s7Configured).combine(ruvia::db_set_operation::union_all, sl651Configured);
@@ -570,15 +569,14 @@ ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Database& db) {
         return realtime.binary(realtime.column("element", "configured"), Op::json_get_text, realtime.value(key));
     };
     realtime.with("configured", configured, { .columns_ = { "device_id", "element", "protocol_order", "function_order", "element_order" } })
-        .select({ realtime.cast(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text),
-            realtime.coalesce({ realtime.binary(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, realtime.value("device_code")), realtime.value("") }),
-            realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), realtimeText("id"), realtime.coalesce({ realtimeText("name"), realtimeText("id") }),
-            realtime.coalesce({ realtimeText("unit"), realtime.value("") }) })
+        .select({ realtime.cast(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Type::text), realtime.coalesce({ realtime.binary(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"protocol_params">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), Op::json_get_text, realtime.value("device_code")), realtime.value("") }), realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"name">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"), realtimeText("id"), realtime.coalesce({ realtimeText("name"), realtimeText("id") }), realtime.coalesce({ realtimeText("unit"), realtime.value("") }) })
         .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
         .join(ruvia::db_join_type::left, "configured", realtime.binary(realtime.column("device_id", "configured"), Op::equal, realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
         .and_where(realtime.unary(ruvia::db_unary_operator::is_null, realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"deleted_at">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")))
-        .add_order_by(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d")).add_order_by(realtime.column("protocol_order", "configured"))
-        .add_order_by(realtime.column("function_order", "configured")).add_order_by(realtime.column("element_order", "configured"));
+        .add_order_by(realtime.column(std::tuple_element_t<service::configuration::persistence::DeviceEntity::column_index<"id">(), service::configuration::persistence::DeviceEntity::columns_type>::name.view(), "d"))
+        .add_order_by(realtime.column("protocol_order", "configured"))
+        .add_order_by(realtime.column("function_order", "configured"))
+        .add_order_by(realtime.column("element_order", "configured"));
     const auto realtimeRows = co_await db.query(realtime);
     RealtimeDeviceDefinition* realtimeDevice = nullptr;
     for (const auto& row : realtimeRows) {
@@ -591,9 +589,11 @@ ruvia::task<RuntimeSnapshot> loadRuntimeSnapshot(Database& db) {
             snapshot.realtimeDevices.push_back(std::move(device));
             realtimeDevice = &snapshot.realtimeDevices.back();
         }
-        if (row[3].value().has_value())
+        if (row[3].value().has_value()) {
             realtimeDevice->points.push_back(
-                RealtimePointDefinition{cell(row, 3), cell(row, 4), cell(row, 5)});
+                RealtimePointDefinition{ cell(row, 3), cell(row, 4), cell(row, 5) }
+            );
+        }
     }
 
     co_return snapshot;
@@ -609,11 +609,13 @@ class ConfigurationService final {
     static ruvia::task<void> initialize(Context& context) {
         const auto& identity = context.template worker_state<std::optional<service::common::WorkerIdentity>>().value();
         co_await service::utils::initializeOnce(
-            context, service::message::lock::kConfigurationStartup,
+            context,
+            service::message::lock::kConfigurationStartup,
             service::message::configuration::startupProjectionKey(identity.instanceId),
             [](Context& owner) -> ruvia::task<void> {
                 (void)co_await project(owner);
-            });
+            }
+        );
     }
 
     template <typename Context>
@@ -623,16 +625,16 @@ class ConfigurationService final {
         // after earlier projections finish, so a slower request can never overwrite a newer DB
         // state.
         ruvia::db_query lock;
-        lock.select(lock.call("pg_advisory_xact_lock", {
-            lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
+        lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
         (void)co_await transaction.query(lock);
         auto snapshot =
             co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
             co_await service::collector::config::project(context.redis(), snapshot, context.template worker_state<service::common::UuidV7State>());
         co_await transaction.commit();
-        if (notify)
+        if (notify) {
             co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
+        }
         co_return version;
     }
 
@@ -643,8 +645,7 @@ class ConfigurationService final {
     static ruvia::task<std::optional<std::int64_t>> retireSnapshots(Context& context) {
         auto transaction = co_await context.db().begin_transaction();
         ruvia::db_query lock;
-        lock.select(lock.call("pg_advisory_xact_lock", {
-            lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
+        lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
         (void)co_await transaction.query(lock);
         const auto redis = context.redis();
         const auto active = co_await redis.get(service::message::projection::kRuntimeActiveVersionKey);
@@ -652,10 +653,8 @@ class ConfigurationService final {
             co_await transaction.commit();
             co_return std::nullopt;
         }
-        co_await service::collector::config::eraseExpiredSnapshots(redis,
-            service::message::utcNowMilliseconds(), *active);
-        const auto generations = co_await redis.command("ZRANGE",
-            service::message::projection::kRuntimeVersionsKey, "0", "1", "WITHSCORES");
+        co_await service::collector::config::eraseExpiredSnapshots(redis, service::message::utcNowMilliseconds(), *active);
+        const auto generations = co_await redis.command("ZRANGE", service::message::projection::kRuntimeVersionsKey, "0", "1", "WITHSCORES");
         if (generations.kind() != ruvia::redis_value::kind_type::array) {
             service::utils::redis::throwValue("runtime snapshot deadlines", generations);
         }
@@ -704,7 +703,15 @@ class ConfigurationService final {
         }
         if (deviceChanged) {
             const std::vector<service::message::StreamField> fields{ { "aggregate", "device" } };
-            (void)co_await service::messaging::stream::publishAndWake(context.redis(), service::message::alert::kMetadataChangesStream, fields, std::nullopt, service::message::WorkerStreamTask::FreshnessAlerts);
+            (void)co_await service::messaging::stream::publishAndWake(
+                context.redis(),
+                service::message::alert::kMetadataChangesStream,
+                fields,
+                std::nullopt,
+                service::message::WorkerStreamTask::FreshnessAlerts,
+                10000,
+                context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId
+            );
         }
         co_await service::messaging::idempotency::markProcessed(context, consumer, eventIds);
         co_return projectionRequired;
