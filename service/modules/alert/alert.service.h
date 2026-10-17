@@ -1,23 +1,22 @@
 #pragma once
 
-#include <tuple>
-
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <ruvia/web/context.h>
-#include <ruvia/web/model_object.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/model_object.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -155,7 +154,9 @@ class AlertService final {
     template <typename Context>
     ruvia::task<void> createTemplate(Context& c, const TemplateInput& input) {
         alertRequest::validateConditions(input.get<"conditions">().view());
-        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->is_array()) service::common::fail(17002, "applicable_protocols 必须是数组", 400);
+        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->is_array()) {
+            service::common::fail(17002, "applicable_protocols 必须是数组", 400);
+        }
         co_await ensureTemplateName(c, service::utils::trim(input.get<"name">().view()), std::nullopt);
         if (!input.get<"protocolConfigId">()->view().empty()) {
             co_await ensureProtocolConfig(c, input.get<"protocolConfigId">()->view());
@@ -170,7 +171,9 @@ class AlertService final {
     template <typename Context>
     ruvia::task<void> updateTemplate(Context& c, std::string_view id, const TemplateInput& input) {
         alertRequest::validateConditions(input.get<"conditions">().view());
-        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->is_array()) service::common::fail(17002, "applicable_protocols 必须是数组", 400);
+        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->is_array()) {
+            service::common::fail(17002, "applicable_protocols 必须是数组", 400);
+        }
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
         co_await requireTemplate(c, id);
         co_await ensureTemplateName(c, service::utils::trim(input.get<"name">().view()), std::string(id));
@@ -550,6 +553,5 @@ class AlertService final {
         }
     }
 };
-
 
 } // namespace service::alert

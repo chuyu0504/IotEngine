@@ -14,8 +14,8 @@
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/validation.h"
-#include "service/modules/open_access/open_access.types.h"
 #include "service/modules/open_access/open_access.service.h"
+#include "service/modules/open_access/open_access.types.h"
 #include "service/utils/change_feed.h"
 #include "service/utils/json.h"
 #include "service/utils/text.h"
@@ -146,23 +146,26 @@ class AccessAdminController final {
 
     ruvia::task<ruvia::http_response> mqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        auto data = co_await AccessService::instance().listMqtt(request,c.req().validated<WebhookQueryParams>());
-        co_return c.json(service::common::ok<MqttListResponse>(c,std::move(data)));
+        auto data = co_await AccessService::instance().listMqtt(request, c.req().validated<WebhookQueryParams>());
+        co_return c.json(service::common::ok<MqttListResponse>(c, std::move(data)));
     }
+
     ruvia::task<ruvia::http_response> createMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await AccessService::instance().saveMqtt(request,std::nullopt,c.req().validated<MqttSaveBody>());
-        co_return c.json(service::common::operation(c,"MQTT 配置已创建"));
+        co_await AccessService::instance().saveMqtt(request, std::nullopt, c.req().validated<MqttSaveBody>());
+        co_return c.json(service::common::operation(c, "MQTT 配置已创建"));
     }
+
     ruvia::task<ruvia::http_response> updateMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await AccessService::instance().saveMqtt(request,id(c),c.req().validated<MqttSaveBody>());
-        co_return c.json(service::common::operation(c,"MQTT 配置已更新"));
+        co_await AccessService::instance().saveMqtt(request, id(c), c.req().validated<MqttSaveBody>());
+        co_return c.json(service::common::operation(c, "MQTT 配置已更新"));
     }
+
     ruvia::task<ruvia::http_response> removeMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await AccessService::instance().removeMqtt(request,id(c));
-        co_return c.json(service::common::operation(c,"MQTT 配置已删除"));
+        co_await AccessService::instance().removeMqtt(request, id(c));
+        co_return c.json(service::common::operation(c, "MQTT 配置已删除"));
     }
 
     ruvia::task<ruvia::http_response> removeWebhook(ruvia::context& c) {
@@ -289,22 +292,29 @@ class AccessController final {
 
     // Ids of devices whose change can alter a result bound to `session`.
     static auto boundDevice(const std::shared_ptr<AccessSession>& session) {
-        return [session](const std::string& id) { return session->allowsDevice(id); };
+        return [session](const std::string& id) {
+            return session->allowsDevice(id);
+        };
     }
 
     static auto requestedDevice(ruvia::context& c) {
-        return [id = std::string(service::utils::trim(c.req().query("deviceId").value_or("")))](const std::string& changed) { return changed == id; };
+        return [id = std::string(service::utils::trim(c.req().query("deviceId").value_or("")))](const std::string& changed) {
+            return changed == id;
+        };
     }
 
     ruvia::task<void> devices(ruvia::context& c) {
         bool audited = false;
         auto session = std::make_shared<AccessSession>();
-        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDevice) },
-            [this, &c, &audited, session]() { return devicesSnapshot(c, audited, *session); },
-            [session](const service::utils::ChangeSet& changes) {
-                return touches(changes, service::message::live::topic::kDevice, boundDevice(session));
-            },
-            [&c, session]() -> ruvia::task<void> { *session = co_await AccessService::instance().authenticate(c, {}); });
+        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDevice) }, [this, &c, &audited, session]() {
+            return devicesSnapshot(c, audited, *session);
+        },
+                                  [session](const service::utils::ChangeSet& changes) {
+                                      return touches(changes, service::message::live::topic::kDevice, boundDevice(session));
+                                  },
+                                  [&c, session]() -> ruvia::task<void> {
+                                      *session = co_await AccessService::instance().authenticate(c, {});
+                                  });
     }
 
     ruvia::task<std::string> devicesSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {
@@ -319,16 +329,19 @@ class AccessController final {
 
     ruvia::task<void> realtime(ruvia::context& c) {
         bool audited = false;
-        co_await servePublicQuery(c,
-            { std::string(service::message::live::topic::kDeviceRealtime), std::string(service::message::live::topic::kDeviceState), std::string(service::message::live::topic::kDevice) },
-            [this, &c, &audited]() { return realtimeSnapshot(c, audited); },
-            [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
-                return touches(changes, service::message::live::topic::kDeviceRealtime, device) ||
-                    touches(changes, service::message::live::topic::kDeviceState, device) ||
-                    touches(changes, service::message::live::topic::kDevice, device);
-            },
-            [&c]() -> ruvia::task<void> { (void)co_await AccessService::instance().authenticate(c, kScopeRealtime); });
+        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceRealtime), std::string(service::message::live::topic::kDeviceState), std::string(service::message::live::topic::kDevice) }, [this, &c, &audited]() {
+            return realtimeSnapshot(c, audited);
+        },
+                                  [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
+                                      return touches(changes, service::message::live::topic::kDeviceRealtime, device) ||
+                                          touches(changes, service::message::live::topic::kDeviceState, device) ||
+                                          touches(changes, service::message::live::topic::kDevice, device);
+                                  },
+                                  [&c]() -> ruvia::task<void> {
+                                      (void)co_await AccessService::instance().authenticate(c, kScopeRealtime);
+                                  });
     }
+
     ruvia::task<std::string> realtimeSnapshot(ruvia::context& c, bool& audited) {
         const auto session = co_await AccessService::instance().authenticate(c, kScopeRealtime);
         const auto id = service::utils::trim(c.req().query("deviceId").value_or(""));
@@ -342,12 +355,15 @@ class AccessController final {
 
     ruvia::task<void> history(ruvia::context& c) {
         bool audited = false;
-        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceHistory) },
-            [this, &c, &audited]() { return historySnapshot(c, audited); },
-            [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
-                return touches(changes, service::message::live::topic::kDeviceHistory, device);
-            },
-            [&c]() -> ruvia::task<void> { (void)co_await AccessService::instance().authenticate(c, kScopeHistory); });
+        co_await servePublicQuery(c, { std::string(service::message::live::topic::kDeviceHistory) }, [this, &c, &audited]() {
+            return historySnapshot(c, audited);
+        },
+                                  [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
+                                      return touches(changes, service::message::live::topic::kDeviceHistory, device);
+                                  },
+                                  [&c]() -> ruvia::task<void> {
+                                      (void)co_await AccessService::instance().authenticate(c, kScopeHistory);
+                                  });
     }
 
     ruvia::task<std::string> historySnapshot(ruvia::context& c, bool& audited) {
@@ -365,8 +381,7 @@ class AccessController final {
         const auto session = co_await AccessService::instance().authenticate(c, kScopeCommand);
         const auto parsedBody = co_await c.req().json_if<service::device::DeviceCommandBody>();
         if (!parsedBody) {
-            throw ruvia::http_error({ .status_ = ruvia::http_status::unsupported_media_type,
-                .code_ = "unsupported_media_type", .message_ = "request body must be application/json" });
+            throw ruvia::http_error({ .status_ = ruvia::http_status::unsupported_media_type, .code_ = "unsupported_media_type", .message_ = "request body must be application/json" });
         }
         auto result = co_await AccessService::instance().publicCommand(c, session, *parsedBody);
         co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(c, std::move(result)));
@@ -375,14 +390,17 @@ class AccessController final {
     ruvia::task<void> alerts(ruvia::context& c) {
         bool audited = false;
         auto session = std::make_shared<AccessSession>();
-        co_await servePublicQuery(c, { std::string(service::message::live::topic::kAlert), std::string(service::message::live::topic::kDevice) },
-            [this, &c, &audited, session]() { return alertsSnapshot(c, audited, *session); },
-            [session](const service::utils::ChangeSet& changes) {
-                // Alert record ids cannot be mapped to devices without a query.
-                return changes.find(service::message::live::topic::kAlert) != nullptr ||
-                    touches(changes, service::message::live::topic::kDevice, boundDevice(session));
-            },
-            [&c, session]() -> ruvia::task<void> { *session = co_await AccessService::instance().authenticate(c, kScopeAlert); });
+        co_await servePublicQuery(c, { std::string(service::message::live::topic::kAlert), std::string(service::message::live::topic::kDevice) }, [this, &c, &audited, session]() {
+            return alertsSnapshot(c, audited, *session);
+        },
+                                  [session](const service::utils::ChangeSet& changes) {
+                                      // Alert record ids cannot be mapped to devices without a query.
+                                      return changes.find(service::message::live::topic::kAlert) != nullptr ||
+                                          touches(changes, service::message::live::topic::kDevice, boundDevice(session));
+                                  },
+                                  [&c, session]() -> ruvia::task<void> {
+                                      *session = co_await AccessService::instance().authenticate(c, kScopeAlert);
+                                  });
     }
 
     ruvia::task<std::string> alertsSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {

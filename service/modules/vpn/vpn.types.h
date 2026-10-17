@@ -20,8 +20,6 @@ namespace service::vpn {
 inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
 inline constexpr auto kDefaultPageSize = RUVIA_DEFAULT(20){};
 
-
-
 inline bool validVpnNodeSelection(const ruvia::array<ruvia::string>& values) {
     std::unordered_set<std::string> unique;
     for (const auto& value : values) {

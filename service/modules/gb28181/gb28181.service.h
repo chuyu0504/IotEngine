@@ -17,13 +17,12 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/modules/gb28181/gb28181.entity.h"
-#include "service/utils/rpc_client.h"
 #include "service/modules/gb28181/gb28181.types.h"
+#include "service/utils/rpc_client.h"
 
 namespace service::gb28181 {
 
 namespace detail {
-
 
 template <typename Response, typename Context>
 Response parseResponse(Context& c, std::string_view body) {

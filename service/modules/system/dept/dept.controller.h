@@ -8,8 +8,8 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/system/dept/dept.types.h"
 #include "service/modules/system/dept/dept.service.h"
+#include "service/modules/system/dept/dept.types.h"
 
 namespace service::dept {
 
@@ -32,18 +32,15 @@ class DeptController final {
     ruvia::task<ruvia::http_response> list(ruvia::context& c) {
         const auto& query = c.req().validated<DeptListQuery>();
         const auto keyword = query.get<"keyword">()
-                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
-                                 : std::nullopt;
+            ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
+            : std::nullopt;
         const auto status = query.get<"status">()
-                                ? std::optional<std::string>(std::string(query.get<"status">()->view()))
-                                : std::nullopt;
+            ? std::optional<std::string>(std::string(query.get<"status">()->view()))
+            : std::nullopt;
         const auto parentId =
             query.get<"parentId">() ? std::optional<std::string>(std::string(query.get<"parentId">()->view()))
-                             : std::nullopt;
-        co_return c.json(service::common::ok<DeptPageResponse>(
-            c, co_await DeptService::instance().list(c, static_cast<std::int64_t>(*query.get<"page">()),
-                                           static_cast<std::int64_t>(*query.get<"pageSize">()), keyword,
-                                           status, parentId)));
+                                    : std::nullopt;
+        co_return c.json(service::common::ok<DeptPageResponse>(c, co_await DeptService::instance().list(c, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), keyword, status, parentId)));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {

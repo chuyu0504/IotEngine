@@ -5,8 +5,8 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/system/user/user.types.h"
 #include "service/modules/system/user/user.service.h"
+#include "service/modules/system/user/user.types.h"
 
 namespace service::user {
 
@@ -31,22 +31,20 @@ class UserController final {
         const auto page = static_cast<std::int64_t>(*query.get<"page">());
         const auto pageSize = static_cast<std::int64_t>(*query.get<"pageSize">());
         const auto keyword = query.get<"keyword">()
-                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
-                                 : std::nullopt;
+            ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
+            : std::nullopt;
         const auto status = query.get<"status">()
-                                ? std::optional<std::string>(std::string(query.get<"status">()->view()))
-                                : std::nullopt;
-        co_return c.json(service::common::ok<UserPageResponse>(
-            c, co_await UserService::instance().list(c, page, pageSize, keyword, status)));
+            ? std::optional<std::string>(std::string(query.get<"status">()->view()))
+            : std::nullopt;
+        co_return c.json(service::common::ok<UserPageResponse>(c, co_await UserService::instance().list(c, page, pageSize, keyword, status)));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {
         const auto& query = c.req().validated<UserOptionsQuery>();
         const auto keyword = query.get<"keyword">()
-                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
-                                 : std::nullopt;
-        co_return c.json(service::common::ok<UserOptionsResponse>(
-            c, co_await UserService::instance().options(c, keyword)));
+            ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
+            : std::nullopt;
+        co_return c.json(service::common::ok<UserOptionsResponse>(c, co_await UserService::instance().options(c, keyword)));
     }
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {

@@ -1,12 +1,11 @@
 #pragma once
 
-#include <vector>
-
 #include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include <ruvia/web/app.h>
 #include <ruvia/web/auth/jwt.h>
@@ -331,7 +330,7 @@ class AuthService {
         }
 
         ruvia::db_query expressions(c.pool());
-        constexpr std::string_view kPermissionColumn = "permission";
+        constexpr char kPermissionColumn[] = "permission";
         auto permissionQuery = enabledRoles(c, userId);
         permissionQuery.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "p") } })
             .distinct()

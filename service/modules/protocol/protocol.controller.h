@@ -4,14 +4,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+
 #include <ruvia/web/controller.h>
+
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/validation.h"
-#include "service/modules/protocol/protocol.types.h"
 #include "service/modules/protocol/protocol.service.h"
+#include "service/modules/protocol/protocol.types.h"
 
 namespace service::protocol {
 
@@ -51,7 +53,9 @@ class ProtocolController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& query = c.req().validated<ProtocolListQuery>();
         const auto& protocol = query.get<"protocol">();
-        if (!protocol) service::common::fail(16003, "protocol 不能为空", 400);
+        if (!protocol) {
+            service::common::fail(16003, "protocol 不能为空", 400);
+        }
         const auto data = co_await ProtocolService::instance().options(request, std::string(protocol->view()), static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()));
         c.header("Content-Type", "application/json");
         const auto payload = service::middleware::dataJson(data);

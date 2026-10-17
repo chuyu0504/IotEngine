@@ -8,8 +8,8 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/system/role/role.types.h"
 #include "service/modules/system/role/role.service.h"
+#include "service/modules/system/role/role.types.h"
 
 namespace service::role {
 
@@ -32,15 +32,12 @@ class RoleController final {
     ruvia::task<ruvia::http_response> list(ruvia::context& c) {
         const auto& query = c.req().validated<RoleListQuery>();
         const auto keyword = query.get<"keyword">()
-                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
-                                 : std::nullopt;
+            ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
+            : std::nullopt;
         const auto status = query.get<"status">()
-                                ? std::optional<std::string>(std::string(query.get<"status">()->view()))
-                                : std::nullopt;
-        co_return c.json(service::common::ok<RolePageResponse>(
-            c, co_await RoleService::instance().list(c, static_cast<std::int64_t>(*query.get<"page">()),
-                                           static_cast<std::int64_t>(*query.get<"pageSize">()), keyword,
-                                           status)));
+            ? std::optional<std::string>(std::string(query.get<"status">()->view()))
+            : std::nullopt;
+        co_return c.json(service::common::ok<RolePageResponse>(c, co_await RoleService::instance().list(c, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), keyword, status)));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {

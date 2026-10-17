@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -172,7 +172,7 @@ class DeptService {
         if (!changed) {
             co_return;
         }
-        changes.push_back({ entities::DeptEntity::column<"updated_at">().name(), query.call("now") });
+        changes.push_back({ std::string(entities::DeptEntity::column<"updated_at">().name()), query.call("now") });
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(entities::DeptEntity::column<"id">() == id, changes);
     }
 
@@ -191,10 +191,12 @@ class DeptService {
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { entities::DeptEntity::column<"deleted_at">().name(), expressions.call("now") }, { entities::DeptEntity::column<"updated_at">().name(), expressions.call("now") }
+            { std::string(entities::DeptEntity::column<"deleted_at">().name()), expressions.call("now") },
+            { std::string(entities::DeptEntity::column<"updated_at">().name()), expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(
-            entities::DeptEntity::column<"id">() == id, deletionChanges
+            entities::DeptEntity::column<"id">() == id,
+            deletionChanges
         );
     }
 
@@ -289,6 +291,5 @@ class DeptService {
         }
     }
 };
-
 
 } // namespace service::dept

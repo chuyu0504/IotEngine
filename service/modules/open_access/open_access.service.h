@@ -1,13 +1,11 @@
 #pragma once
 
-#include <tuple>
-
-#include <memory>
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <memory_resource>
 #include <openssl/rand.h>
 #include <optional>
@@ -15,12 +13,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include <ruvia/web/model_object.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/model_object.h>
 
 #include "service/common/database.h"
 #include "service/common/http.h"
@@ -30,7 +29,6 @@
 #include "service/modules/alert/alert.entity.h"
 #include "service/modules/command/command.service.h"
 #include "service/modules/device/device.entity.h"
-#include "service/utils/rpc_client.h"
 #include "service/modules/device/device.service.h"
 #include "service/modules/open_access/open_access.entity.h"
 #include "service/modules/open_access/open_access.types.h"
@@ -38,6 +36,7 @@
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
 #include "service/utils/number.h"
+#include "service/utils/rpc_client.h"
 #include "service/utils/text.h"
 
 namespace service::open_access {
@@ -76,8 +75,8 @@ class AccessService final {
             .group_by({ keyId });
         ruvia::db_query query(c.pool());
         const std::array<ruvia::db_order_term, 1> keyOrder{ { ruvia::db_order_term{ query.column(service::open_access::entities::OpenAccessKeyEntity::column<"created_at">().name(), "listed"),
-                                                                                ruvia::db_order_direction::desc,
-                                                                                ruvia::db_nulls_order::default_value } } };
+                                                                                    ruvia::db_order_direction::desc,
+                                                                                    ruvia::db_nulls_order::default_value } } };
         query.select(db::text(query, query.coalesce({ query.aggregate("jsonb_agg", { query.column("item", "listed") }, false, keyOrder), emptyJsonArray(query) })))
             .from(listed, "listed");
         co_return firstJson(co_await c.db().query(query));
@@ -127,7 +126,7 @@ class AccessService final {
             { db::text(query, "id"), db::text(query, query.column(service::device::entities::DeviceEntity::column<"id">().name())), db::text(query, "name"), query.column(service::device::entities::DeviceEntity::column<"name">().name()), db::text(query, "deviceCode"), db::jsonText(query, params, "device_code"), db::text(query, "canCommand"), canCommand }
         );
         const std::array<ruvia::db_order_term, 2> deviceOrder{ { ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"name">().name()), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value },
-                                                               ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"id">().name()), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
+                                                                 ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"id">().name()), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
         query.select(db::text(query, query.coalesce({ query.aggregate("jsonb_agg", { item }, false, deviceOrder), emptyJsonArray(query) })))
             .from("scoped_device")
             .where(query.binary(query.column("access_rank"), ruvia::db_binary_operator::greater, db::integer(query, 0)));
@@ -238,9 +237,7 @@ class AccessService final {
             .where(db::andAll(webhookUpdate, webhookUpdate.binary(webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column<"access_key_id">().name()), ruvia::db_binary_operator::equal, db::uuid(webhookUpdate, id)), webhookUpdate.unary(ruvia::db_unary_operator::is_null, webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(webhookUpdate);
         ruvia::db_query mqttUpdate(c.pool());
-        mqttUpdate.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),mqttUpdate.call("now"))
-            .set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),mqttUpdate.call("now"))
-            .where(db::andAll(mqttUpdate,mqttUpdate.binary(mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(mqttUpdate,id)),mqttUpdate.unary(ruvia::db_unary_operator::is_null,mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
+        mqttUpdate.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(), mqttUpdate.call("now")).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(), mqttUpdate.call("now")).where(db::andAll(mqttUpdate, mqttUpdate.binary(mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()), ruvia::db_binary_operator::equal, db::uuid(mqttUpdate, id)), mqttUpdate.unary(ruvia::db_unary_operator::is_null, mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(mqttUpdate);
         ruvia::db_query keyUpdate(c.pool());
         keyUpdate.update(service::open_access::entities::OpenAccessKeyEntity::table_name())
@@ -274,8 +271,8 @@ class AccessService final {
         }
         ruvia::db_query query(c.pool());
         const std::array<ruvia::db_order_term, 1> webhookOrder{ { ruvia::db_order_term{ query.column(service::open_access::entities::OpenWebhookEntity::column<"created_at">().name(), "listed"),
-                                                                                    ruvia::db_order_direction::desc,
-                                                                                    ruvia::db_nulls_order::default_value } } };
+                                                                                        ruvia::db_order_direction::desc,
+                                                                                        ruvia::db_nulls_order::default_value } } };
         query.select(db::text(query, query.coalesce({ query.aggregate("jsonb_agg", { query.column("item", "listed") }, false, webhookOrder), emptyJsonArray(query) })))
             .from(listed, "listed");
         co_return firstJson(co_await c.db().query(query));
@@ -283,7 +280,9 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<std::string> createWebhook(Context& c, const CreateWebhookBody& payload) {
-        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
+        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) {
+            service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
+        }
         const auto accessKeyId = payload.get<"accessKeyId">().view();
         (void)co_await requireKey(c, accessKeyId);
         const auto name = service::utils::trim(payload.get<"name">().view());
@@ -292,7 +291,7 @@ class AccessService final {
         const auto timeout = payload.get<"timeoutSeconds">()->value_;
         const auto skipTlsVerify = payload.get<"skipTlsVerify">()->value_;
         const std::string headers(payload.get<"headers">() ? payload.get<"headers">()->view() : "{}");
-        const auto events = payload.get<"eventTypes">() ? accessStringSet(*payload.get<"eventTypes">()) : std::set<std::string, std::less<>>{"device.data.reported"};
+        const auto events = payload.get<"eventTypes">() ? accessStringSet(*payload.get<"eventTypes">()) : std::set<std::string, std::less<>>{ "device.data.reported" };
         const auto secret = trimAccessText(payload.get<"secret">());
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::nullopt);
         const auto id = c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next();
@@ -315,7 +314,9 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<void> updateWebhook(Context& c, std::string_view id, const UpdateWebhookBody& payload) {
-        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
+        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) {
+            service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
+        }
         service::common::requireUuid(19002, id, "Webhook ID 无效");
         const auto existing = co_await requireWebhook(c, id);
         const auto accessKeyId = trimAccessText(payload.get<"accessKeyId">()).value_or(existing.accessKeyId);
@@ -368,40 +369,34 @@ class AccessService final {
     template <typename Context>
     ruvia::task<ruvia::boxed_array<MqttItem>> listMqtt(Context& c, const WebhookQueryParams& filters) {
         ruvia::db_query q(c.pool());
-        q.select({db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name(),"m")), db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m")),
-            q.column(service::open_access::entities::OpenAccessKeyEntity::column<"name">().name(),"k"), q.column(service::open_access::entities::OpenMqttEntity::column<"name">().name(),"m"),
-            q.column(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(),"m"),
-            q.column(service::open_access::entities::OpenMqttEntity::column<"status">().name(),"m"), q.column(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(),"m"),
-            db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(),"m")), q.column(service::open_access::entities::OpenMqttEntity::column<"username">().name(),"m"),
-            q.case_when({{q.unary(ruvia::db_unary_operator::is_not_null,q.column(service::open_access::entities::OpenMqttEntity::column<"password">().name(),"m")),q.value("1")}},q.value("0")),
-            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_triggered_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_success_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_failure_at">().name(),"m")}),
-            q.column(service::open_access::entities::OpenMqttEntity::column<"last_error">().name(),"m"),
-            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),"m")})})
-            .from(service::open_access::entities::OpenMqttEntity::table_name(),"m")
-            .join(ruvia::db_join_type::inner,service::open_access::entities::OpenAccessKeyEntity::table_name(),q.binary(q.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name(),"k"),ruvia::db_binary_operator::equal,q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m")),"k")
-            .where(q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),"m")))
-            .and_where(q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenAccessKeyEntity::column<"deleted_at">().name(),"k")))
-            .order_by(q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(),"m"),ruvia::db_order_direction::desc);
-        if (const auto& key = filters.get<"accessKeyId">(); key)
-            q.and_where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m"),ruvia::db_binary_operator::equal,db::uuid(q,key->view())));
+        q.select({ db::text(q, q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name(), "m")), db::text(q, q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), "m")), q.column(service::open_access::entities::OpenAccessKeyEntity::column<"name">().name(), "k"), q.column(service::open_access::entities::OpenMqttEntity::column<"name">().name(), "m"), q.column(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(), "m"), q.column(service::open_access::entities::OpenMqttEntity::column<"status">().name(), "m"), q.column(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(), "m"), db::text(q, q.column(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(), "m")), q.column(service::open_access::entities::OpenMqttEntity::column<"username">().name(), "m"), q.case_when({ { q.unary(ruvia::db_unary_operator::is_not_null, q.column(service::open_access::entities::OpenMqttEntity::column<"password">().name(), "m")), q.value("1") } }, q.value("0")), q.call("iot_utc_timestamp", { q.column(service::open_access::entities::OpenMqttEntity::column<"last_triggered_at">().name(), "m") }), q.call("iot_utc_timestamp", { q.column(service::open_access::entities::OpenMqttEntity::column<"last_success_at">().name(), "m") }), q.call("iot_utc_timestamp", { q.column(service::open_access::entities::OpenMqttEntity::column<"last_failure_at">().name(), "m") }), q.column(service::open_access::entities::OpenMqttEntity::column<"last_error">().name(), "m"), q.call("iot_utc_timestamp", { q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(), "m") }), q.call("iot_utc_timestamp", { q.column(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(), "m") }) })
+            .from(service::open_access::entities::OpenMqttEntity::table_name(), "m")
+            .join(ruvia::db_join_type::inner, service::open_access::entities::OpenAccessKeyEntity::table_name(), q.binary(q.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name(), "k"), ruvia::db_binary_operator::equal, q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), "m")), "k")
+            .where(q.unary(ruvia::db_unary_operator::is_null, q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(), "m")))
+            .and_where(q.unary(ruvia::db_unary_operator::is_null, q.column(service::open_access::entities::OpenAccessKeyEntity::column<"deleted_at">().name(), "k")))
+            .order_by(q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(), "m"), ruvia::db_order_direction::desc);
+        if (const auto& key = filters.get<"accessKeyId">(); key) {
+            q.and_where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), "m"), ruvia::db_binary_operator::equal, db::uuid(q, key->view())));
+        }
         const auto rows = co_await c.db().query(q);
-        ruvia::boxed_array<MqttItem> result(ruvia::model_options{.resource_=c.arena()});
+        ruvia::boxed_array<MqttItem> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{.resource_=c.arena()});
-            const auto field = [&row](std::size_t i) { return row[i].value().value_or(std::string_view{}); };
-            item.set<"id">(field(0)).template set<"accessKeyId">(field(1)).template set<"accessKeyName">(field(2))
-                .template set<"name">(field(3)).template set<"brokerUrl">(field(4))
-                .template set<"status">(field(5)).template set<"timeoutSeconds">(service::utils::parseInt64(row[6].value()).value_or(5))
-                .template set<"hasPassword">(field(9)=="1").template set<"createdAt">(field(14)).template set<"updatedAt">(field(15));
-            ruvia::array<ruvia::string> events(ruvia::model_options{.resource_=c.arena()});
-            for (const auto& event : parseStringArray(field(7))) events.push_back(ruvia::string(event));
+            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            const auto field = [&row](std::size_t i) {
+                return row[i].value().value_or(std::string_view{});
+            };
+            item.set<"id">(field(0)).template set<"accessKeyId">(field(1)).template set<"accessKeyName">(field(2)).template set<"name">(field(3)).template set<"brokerUrl">(field(4)).template set<"status">(field(5)).template set<"timeoutSeconds">(service::utils::parseInt64(row[6].value()).value_or(5)).template set<"hasPassword">(field(9) == "1").template set<"createdAt">(field(14)).template set<"updatedAt">(field(15));
+            ruvia::array<ruvia::string> events(ruvia::model_options{ .resource_ = c.arena() });
+            for (const auto& event : parseStringArray(field(7))) {
+                events.push_back(ruvia::string(event));
+            }
             item.set<"eventTypes">(std::move(events));
             const auto nullable = [&]<ruvia::fixed_string Name>(std::size_t index) {
-                if (row[index].value()) item.template set<Name>(*row[index].value());
-                else item.template set<Name>(nullptr);
+                if (row[index].value()) {
+                    item.template set<Name>(*row[index].value());
+                } else {
+                    item.template set<Name>(nullptr);
+                }
             };
             nullable.template operator()<"username">(8);
             nullable.template operator()<"lastTriggeredAt">(10);
@@ -415,60 +410,68 @@ class AccessService final {
     template <typename Context>
     ruvia::task<void> saveMqtt(Context& c, std::optional<std::string> id, const MqttSaveBody& payload) {
         const auto keyId = payload.get<"accessKeyId">().view();
-        const auto key = co_await requireKey(c,keyId);
-        co_await ensureDevicesAccessible(c,key.deviceIds,false);
+        const auto key = co_await requireKey(c, keyId);
+        co_await ensureDevicesAccessible(c, key.deviceIds, false);
         const auto events = accessStringSet(payload.get<"eventTypes">());
         for (const auto& event : events) {
-            const auto scope = event.starts_with("device.alert.") ? kScopeAlert :
-                event.starts_with("device.command.") ? kScopeCommand : kScopeRealtime;
-            if (!key.scopes.contains(scope)) service::common::fail(19011,"事件超出调用配置的开放权限",403);
+            const auto scope = event.starts_with("device.alert.") ? kScopeAlert : event.starts_with("device.command.") ? kScopeCommand
+                                                                                                                       : kScopeRealtime;
+            if (!key.scopes.contains(scope)) {
+                service::common::fail(19011, "事件超出调用配置的开放权限", 403);
+            }
         }
         std::string password;
         if (id) {
             ruvia::db_query current(c.pool());
-            current.select(current.column(service::open_access::entities::OpenMqttEntity::column<"password">().name())).from(service::open_access::entities::OpenMqttEntity::table_name())
-                .where(db::andAll(current,current.binary(current.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(current,*id)),current.unary(ruvia::db_unary_operator::is_null,current.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
+            current.select(current.column(service::open_access::entities::OpenMqttEntity::column<"password">().name())).from(service::open_access::entities::OpenMqttEntity::table_name()).where(db::andAll(current, current.binary(current.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(current, *id)), current.unary(ruvia::db_unary_operator::is_null, current.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
             const auto rows = co_await c.db().query(current);
-            if (rows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
+            if (rows.empty()) {
+                service::common::fail(19001, "MQTT 配置不存在", 404);
+            }
             password = rows.front()[0].value().value_or(std::string_view{});
         }
-        if (payload.template is_present<"password">())
+        if (payload.template is_present<"password">()) {
             password = payload.get<"password">() ? std::string(payload.get<"password">()->view()) : "";
+        }
         const auto username = payload.get<"username">() ? std::string(payload.get<"username">()->view()) : "";
-        if (!service::utils::mqtt::validText(username) || password.size()>65535 || (!password.empty() && username.empty()))
-            service::common::fail(19002,"MQTT 凭据无效；设置密码时必须提供用户名",400);
+        if (!service::utils::mqtt::validText(username) || password.size() > 65535 || (!password.empty() && username.empty())) {
+            service::common::fail(19002, "MQTT 凭据无效；设置密码时必须提供用户名", 400);
+        }
         const auto name = service::utils::trim(payload.get<"name">().view());
         ruvia::db_query duplicate(c.pool());
-        duplicate.select(duplicate.value(1)).from(service::open_access::entities::OpenMqttEntity::table_name())
-            .where(db::andAll(duplicate,duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(duplicate,keyId)),
-                duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"name">().name()),ruvia::db_binary_operator::equal,duplicate.value(name)),
-                duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
-        if (id) duplicate.and_where(duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::not_equal,db::uuid(duplicate,*id)));
+        duplicate.select(duplicate.value(1)).from(service::open_access::entities::OpenMqttEntity::table_name()).where(db::andAll(duplicate, duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()), ruvia::db_binary_operator::equal, db::uuid(duplicate, keyId)), duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"name">().name()), ruvia::db_binary_operator::equal, duplicate.value(name)), duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
+        if (id) {
+            duplicate.and_where(duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()), ruvia::db_binary_operator::not_equal, db::uuid(duplicate, *id)));
+        }
         const auto duplicateRows = co_await c.db().query(duplicate);
-        if (!duplicateRows.empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
+        if (!duplicateRows.empty()) {
+            service::common::fail(19003, "同一调用配置下的 MQTT 名称已存在", 409);
+        }
         const auto targetId = id.value_or(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         const auto eventJson = stringArrayJson(events);
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query q(c.pool());
-        const auto userValue = q.null_if(q.value(username),q.value(""));
-        const auto passwordValue = q.null_if(q.value(password),q.value(""));
-        const auto eventValue = q.cast(q.value(eventJson),ruvia::db_data_type::jsonb);
+        const auto userValue = q.null_if(q.value(username), q.value(""));
+        const auto passwordValue = q.null_if(q.value(password), q.value(""));
+        const auto eventValue = q.cast(q.value(eventJson), ruvia::db_data_type::jsonb);
         if (id) {
             q.update(service::open_access::entities::OpenMqttEntity::table_name())
-                .set(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),db::uuid(q,keyId)).set(service::open_access::entities::OpenMqttEntity::column<"name">().name(),q.value(name))
-                .set(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(),q.value(payload.get<"brokerUrl">().view()))
-                .set(service::open_access::entities::OpenMqttEntity::column<"username">().name(),userValue).set(service::open_access::entities::OpenMqttEntity::column<"password">().name(),passwordValue)
-                .set(service::open_access::entities::OpenMqttEntity::column<"status">().name(),q.value(payload.get<"status">()->view()))
-                .set(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(),q.value(payload.get<"timeoutSeconds">()->value_))
-                .set(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(),eventValue).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),q.call("now"))
-                .where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,targetId)));
+                .set(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), db::uuid(q, keyId))
+                .set(service::open_access::entities::OpenMqttEntity::column<"name">().name(), q.value(name))
+                .set(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(), q.value(payload.get<"brokerUrl">().view()))
+                .set(service::open_access::entities::OpenMqttEntity::column<"username">().name(), userValue)
+                .set(service::open_access::entities::OpenMqttEntity::column<"password">().name(), passwordValue)
+                .set(service::open_access::entities::OpenMqttEntity::column<"status">().name(), q.value(payload.get<"status">()->view()))
+                .set(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(), q.value(payload.get<"timeoutSeconds">()->value_))
+                .set(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(), eventValue)
+                .set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(), q.call("now"))
+                .where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(q, targetId)));
         } else {
-            q.insert_into(service::open_access::entities::OpenMqttEntity::table_name(),{ service::open_access::entities::OpenMqttEntity::column<"id">().name(), service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), service::open_access::entities::OpenMqttEntity::column<"name">().name(), service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(), service::open_access::entities::OpenMqttEntity::column<"username">().name(), service::open_access::entities::OpenMqttEntity::column<"password">().name(), service::open_access::entities::OpenMqttEntity::column<"status">().name(), service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(), service::open_access::entities::OpenMqttEntity::column<"event_types">().name() })
-                .values({db::uuid(q,targetId),db::uuid(q,keyId),q.value(name),q.value(payload.get<"brokerUrl">().view()),userValue,passwordValue,
-                    q.value(payload.get<"status">()->view()),q.value(payload.get<"timeoutSeconds">()->value_),eventValue});
+            q.insert_into(service::open_access::entities::OpenMqttEntity::table_name(), { service::open_access::entities::OpenMqttEntity::column<"id">().name(), service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), service::open_access::entities::OpenMqttEntity::column<"name">().name(), service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(), service::open_access::entities::OpenMqttEntity::column<"username">().name(), service::open_access::entities::OpenMqttEntity::column<"password">().name(), service::open_access::entities::OpenMqttEntity::column<"status">().name(), service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(), service::open_access::entities::OpenMqttEntity::column<"event_types">().name() })
+                .values({ db::uuid(q, targetId), db::uuid(q, keyId), q.value(name), q.value(payload.get<"brokerUrl">().view()), userValue, passwordValue, q.value(payload.get<"status">()->view()), q.value(payload.get<"timeoutSeconds">()->value_), eventValue });
         }
         (void)co_await transaction.execute(q);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt",id ? "updated" : "created",targetId,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "mqtt", id ? "updated" : "created", targetId, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
     }
 
@@ -476,12 +479,12 @@ class AccessService final {
     ruvia::task<void> removeMqtt(Context& c, std::string_view id) {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query q(c.pool());
-        q.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),q.call("now")).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),q.call("now"))
-            .where(db::andAll(q,q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))))
-            .returning({q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name())});
+        q.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(), q.call("now")).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(), q.call("now")).where(db::andAll(q, q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()), ruvia::db_binary_operator::equal, db::uuid(q, id)), q.unary(ruvia::db_unary_operator::is_null, q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name())))).returning({ q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()) });
         const auto existingRows = co_await transaction.query(q);
-        if (existingRows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
-        co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        if (existingRows.empty()) {
+            service::common::fail(19001, "MQTT 配置不存在", 404);
+        }
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "mqtt", "deleted", id, c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
     }
 
@@ -489,8 +492,10 @@ class AccessService final {
     ruvia::task<std::string> listLogs(Context& c, const AccessLogParams& filters) {
         const auto pageNumber = filters.get<"page">()->value_;
         const auto pageSize = filters.get<"pageSize">()->value_;
-        if (pageNumber - 1 > std::numeric_limits<std::int64_t>::max() / pageSize) service::common::fail(19002, "分页超出允许范围", 400);
-        const service::common::Page pagination{pageNumber, pageSize, (pageNumber - 1) * pageSize};
+        if (pageNumber - 1 > std::numeric_limits<std::int64_t>::max() / pageSize) {
+            service::common::fail(19002, "分页超出允许范围", 400);
+        }
+        const service::common::Page pagination{ pageNumber, pageSize, (pageNumber - 1) * pageSize };
         const auto accessKeyId = trimAccessText(filters.get<"accessKeyId">());
         const auto webhookId = trimAccessText(filters.get<"webhookId">());
         const auto mqttId = trimAccessText(filters.get<"mqttId">());
@@ -546,18 +551,18 @@ class AccessService final {
             .from(pageRows, "page_rows")
             .join(ruvia::db_join_type::left, service::open_access::entities::OpenAccessKeyEntity::table_name(), page.binary(page.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name(), "key"), ruvia::db_binary_operator::equal, page.column(service::open_access::entities::OpenAccessLogEntity::column<"access_key_id">().name(), "page_rows")), "key")
             .join(ruvia::db_join_type::left, service::open_access::entities::OpenWebhookEntity::table_name(), page.binary(page.column(service::open_access::entities::OpenWebhookEntity::column<"id">().name(), "webhook"), ruvia::db_binary_operator::equal, page.column(service::open_access::entities::OpenAccessLogEntity::column<"webhook_id">().name(), "page_rows")), "webhook")
-            .join(ruvia::db_join_type::left,service::open_access::entities::OpenMqttEntity::table_name(),page.binary(page.column(service::open_access::entities::OpenMqttEntity::column<"id">().name(),"mqtt"),ruvia::db_binary_operator::equal,page.column(service::open_access::entities::OpenAccessLogEntity::column<"mqtt_id">().name(),"page_rows")),"mqtt");
+            .join(ruvia::db_join_type::left, service::open_access::entities::OpenMqttEntity::table_name(), page.binary(page.column(service::open_access::entities::OpenMqttEntity::column<"id">().name(), "mqtt"), ruvia::db_binary_operator::equal, page.column(service::open_access::entities::OpenAccessLogEntity::column<"mqtt_id">().name(), "page_rows")), "mqtt");
         ruvia::db_query query(c.pool());
         query.with("counted", counted).with("page_rows", pageRows).with("page", page);
         const auto total = query.subquery(counted);
         const auto item = query.call(
             "jsonb_build_object",
-            { db::text(query, "id"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"id">().name(), "page")), db::text(query, "accessKeyId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"access_key_id">().name(), "page")), db::text(query, "accessKeyName"), query.column("access_key_name", "page"), db::text(query, "webhookId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"webhook_id">().name(), "page")), db::text(query, "webhookName"), query.column("webhook_name", "page"), db::text(query,"mqttId"),db::text(query,query.column(service::open_access::entities::OpenAccessLogEntity::column<"mqtt_id">().name(),"page")),db::text(query,"mqttName"),query.column("mqtt_name","page"), db::text(query, "direction"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"direction">().name(), "page"), db::text(query, "action"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"action">().name(), "page"), db::text(query, "eventType"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"event_type">().name(), "page"), db::text(query, "status"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"status">().name(), "page"), db::text(query, "httpMethod"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"http_method">().name(), "page"), db::text(query, "target"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"target">().name(), "page"), db::text(query, "requestIp"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"request_ip">().name(), "page"), db::text(query, "httpStatus"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"http_status">().name(), "page"), db::text(query, "deviceId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"device_id">().name(), "page")), db::text(query, "deviceCode"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"device_code">().name(), "page"), db::text(query, "message"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"message">().name(), "page"), db::text(query, "requestPayload"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"request_payload">().name(), "page"), db::text(query, "responsePayload"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"response_payload">().name(), "page"), db::text(query, "createdAt"), query.call("iot_utc_timestamp", { query.column(service::open_access::entities::OpenAccessLogEntity::column<"created_at">().name(), "page") }) }
+            { db::text(query, "id"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"id">().name(), "page")), db::text(query, "accessKeyId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"access_key_id">().name(), "page")), db::text(query, "accessKeyName"), query.column("access_key_name", "page"), db::text(query, "webhookId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"webhook_id">().name(), "page")), db::text(query, "webhookName"), query.column("webhook_name", "page"), db::text(query, "mqttId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"mqtt_id">().name(), "page")), db::text(query, "mqttName"), query.column("mqtt_name", "page"), db::text(query, "direction"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"direction">().name(), "page"), db::text(query, "action"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"action">().name(), "page"), db::text(query, "eventType"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"event_type">().name(), "page"), db::text(query, "status"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"status">().name(), "page"), db::text(query, "httpMethod"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"http_method">().name(), "page"), db::text(query, "target"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"target">().name(), "page"), db::text(query, "requestIp"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"request_ip">().name(), "page"), db::text(query, "httpStatus"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"http_status">().name(), "page"), db::text(query, "deviceId"), db::text(query, query.column(service::open_access::entities::OpenAccessLogEntity::column<"device_id">().name(), "page")), db::text(query, "deviceCode"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"device_code">().name(), "page"), db::text(query, "message"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"message">().name(), "page"), db::text(query, "requestPayload"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"request_payload">().name(), "page"), db::text(query, "responsePayload"), query.column(service::open_access::entities::OpenAccessLogEntity::column<"response_payload">().name(), "page"), db::text(query, "createdAt"), query.call("iot_utc_timestamp", { query.column(service::open_access::entities::OpenAccessLogEntity::column<"created_at">().name(), "page") }) }
         );
         const std::array<ruvia::db_order_term, 2> logOrder{ { ruvia::db_order_term{ query.column(service::open_access::entities::OpenAccessLogEntity::column<"created_at">().name(), "page"),
-                                                                                ruvia::db_order_direction::desc,
-                                                                                ruvia::db_nulls_order::default_value },
-                                                            ruvia::db_order_term{ query.column(service::open_access::entities::OpenAccessLogEntity::column<"id">().name(), "page"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
+                                                                                    ruvia::db_order_direction::desc,
+                                                                                    ruvia::db_nulls_order::default_value },
+                                                              ruvia::db_order_term{ query.column(service::open_access::entities::OpenAccessLogEntity::column<"id">().name(), "page"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
         const auto list = query.coalesce(
             { query.aggregate("jsonb_agg", { item }, false, logOrder),
               emptyJsonArray(query) }
@@ -674,7 +679,7 @@ class AccessService final {
         );
         const auto total = query.subquery(counted);
         const std::array<ruvia::db_order_term, 2> deviceListOrder{ { ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"name">().name(), "page"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value },
-                                                                   ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"id">().name(), "page"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
+                                                                     ruvia::db_order_term{ query.column(service::device::entities::DeviceEntity::column<"id">().name(), "page"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
         const auto list = query.coalesce(
             { query.aggregate("jsonb_agg", { item }, false, deviceListOrder),
               emptyJsonArray(query) }
@@ -791,9 +796,9 @@ class AccessService final {
         );
         const auto total = query.subquery(counted);
         const std::array<ruvia::db_order_term, 2> alertOrder{ { ruvia::db_order_term{ query.column(service::alert::entities::OpenAlertRecordEntity::column<"triggered_at">().name(), "page"),
-                                                                                  ruvia::db_order_direction::desc,
-                                                                                  ruvia::db_nulls_order::default_value },
-                                                              ruvia::db_order_term{ query.column(service::alert::entities::OpenAlertRecordEntity::column<"id">().name(), "page"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
+                                                                                      ruvia::db_order_direction::desc,
+                                                                                      ruvia::db_nulls_order::default_value },
+                                                                ruvia::db_order_term{ query.column(service::alert::entities::OpenAlertRecordEntity::column<"id">().name(), "page"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
         const auto list = query.coalesce(
             { query.aggregate("jsonb_agg", { item }, false, alertOrder),
               emptyJsonArray(query) }
@@ -1381,9 +1386,9 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
             { query.subquery(counted), query.cast(query.value(0), ruvia::db_data_type::big_int) }
         );
         const std::array<ruvia::db_order_term, 2> historyOrder{ { ruvia::db_order_term{ query.column(service::device::entities::DeviceDataEntity::column<"report_time">().name(), "items"),
-                                                                                    ruvia::db_order_direction::desc,
-                                                                                    ruvia::db_nulls_order::default_value },
-                                                                ruvia::db_order_term{ query.column(service::device::entities::DeviceDataEntity::column<"id">().name(), "items"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
+                                                                                        ruvia::db_order_direction::desc,
+                                                                                        ruvia::db_nulls_order::default_value },
+                                                                  ruvia::db_order_term{ query.column(service::device::entities::DeviceDataEntity::column<"id">().name(), "items"), ruvia::db_order_direction::desc, ruvia::db_nulls_order::default_value } } };
         const auto list = query.coalesce(
             { query.aggregate(
                   "jsonb_agg",
@@ -1405,6 +1410,5 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         return query;
     }
 };
-
 
 } // namespace service::open_access

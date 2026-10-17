@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -196,12 +196,12 @@ class UserService {
             append(entities::UserEntity::column<"password_hash">().name(), service::utils::hashPassword(body.get<"password">()->view()));
         }
         if (body.get<"departmentId">()) {
-            changes.push_back({ entities::UserEntity::column<"department_id">().name(), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
+            changes.push_back({ std::string(entities::UserEntity::column<"department_id">().name()), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
             changed = true;
         }
         auto tx = co_await c.db().begin_transaction();
         if (changed) {
-            changes.push_back({ entities::UserEntity::column<"updated_at">().name(), query.call("now") });
+            changes.push_back({ std::string(entities::UserEntity::column<"updated_at">().name()), query.call("now") });
             (void)co_await tx.template get_repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
         }
         if (body.get<"roleIds">()) {
@@ -226,10 +226,12 @@ class UserService {
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { "deleted_at", expressions.call("now") }, { "updated_at", expressions.call("now") }
+            { "deleted_at", expressions.call("now") },
+            { "updated_at", expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::UserEntity>().update(
-            entities::UserEntity::column<"id">() == id, deletionChanges
+            entities::UserEntity::column<"id">() == id,
+            deletionChanges
         );
     }
 
@@ -341,6 +343,5 @@ class UserService {
         }
     }
 };
-
 
 } // namespace service::user
