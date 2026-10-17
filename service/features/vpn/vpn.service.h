@@ -32,6 +32,7 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/common/wireguard.h"
+#include "service/common/worker.h"
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.protocol.h"

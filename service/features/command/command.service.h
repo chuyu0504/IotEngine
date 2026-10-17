@@ -199,7 +199,7 @@ class CommandDispatchService final {
                     }
                 }
                 const std::vector<PendingDispatch> pending{ std::move(item) };
-                published = co_await dispatchPendingBatch(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(1), list ? PendingQueueKind::List : PendingQueueKind::Stream, pending, static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
+                published = co_await dispatchPendingBatch(context.redis(), context.template worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(1), list ? PendingQueueKind::List : PendingQueueKind::Stream, pending, static_cast<std::size_t>(utils::parseInt64(cell(4)).value_or(1)));
                 if (!published) {
                     failure = "queue_capacity_exceeded";
                 }
@@ -223,7 +223,7 @@ class CommandDispatchService final {
             }
             co_await update.commit();
             if (published && !cell(3).empty()) {
-                co_await edge::dispatch::notifyNode(context.redis(), context.worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(3));
+                co_await edge::dispatch::notifyNode(context.redis(), context.template worker_state<std::optional<common::WorkerIdentity>>().value().channels, cell(3));
             }
         }
         auto expiry = co_await context.db().begin_transaction();
