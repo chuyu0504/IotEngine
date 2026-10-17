@@ -127,7 +127,7 @@ class CommandService final {
         if (deviceId.empty()) {
             service::common::fail(18012, "下发状态数据无效", 500);
         }
-        (void)co_await service::device::deviceAccessService().require(
+        (void)co_await service::device::DeviceAccessService::instance().require(
             context,
             deviceId,
             service::device::DeviceAccessLevel::operate,
@@ -933,7 +933,7 @@ class CommandService final {
 };
 
 inline CommandService& commandService() {
-    static thread_local CommandService service(service::device::deviceAccessService());
+    static thread_local CommandService service(service::device::DeviceAccessService::instance());
     return service;
 }
 

@@ -85,7 +85,7 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<std::string> deviceOptions(Context& c) {
-        const auto actor = co_await service::device::deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await service::device::DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         service::device::DeviceAccessService::addScopedDevicesCtes(query, actor);
         const auto params = query.column(service::device::entities::DeviceEntity::column<"protocol_params">().name());
@@ -238,10 +238,9 @@ class AccessService final {
             .where(db::andAll(webhookUpdate, webhookUpdate.binary(webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column<"access_key_id">().name()), ruvia::db_binary_operator::equal, db::uuid(webhookUpdate, id)), webhookUpdate.unary(ruvia::db_unary_operator::is_null, webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(webhookUpdate);
         ruvia::db_query mqttUpdate(c.pool());
-        using M = service::open_access::entities::OpenMqttEntity;
-        mqttUpdate.update(M::table_name()).set(M::column<"deleted_at">().name(),mqttUpdate.call("now"))
-            .set(M::column<"updated_at">().name(),mqttUpdate.call("now"))
-            .where(db::andAll(mqttUpdate,mqttUpdate.binary(mqttUpdate.column(M::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(mqttUpdate,id)),mqttUpdate.unary(ruvia::db_unary_operator::is_null,mqttUpdate.column(M::column<"deleted_at">().name()))));
+        mqttUpdate.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),mqttUpdate.call("now"))
+            .set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),mqttUpdate.call("now"))
+            .where(db::andAll(mqttUpdate,mqttUpdate.binary(mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(mqttUpdate,id)),mqttUpdate.unary(ruvia::db_unary_operator::is_null,mqttUpdate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
         (void)co_await transaction.execute(mqttUpdate);
         ruvia::db_query keyUpdate(c.pool());
         keyUpdate.update(service::open_access::entities::OpenAccessKeyEntity::table_name())
@@ -368,28 +367,26 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<MqttItem>> listMqtt(Context& c, const WebhookQueryParams& filters) {
-        using E = service::open_access::entities::OpenMqttEntity;
-        using K = service::open_access::entities::OpenAccessKeyEntity;
         ruvia::db_query q(c.pool());
-        q.select({db::text(q,q.column(E::column<"id">().name(),"m")), db::text(q,q.column(E::column<"access_key_id">().name(),"m")),
-            q.column(K::column<"name">().name(),"k"), q.column(E::column<"name">().name(),"m"),
-            q.column(E::column<"broker_url">().name(),"m"),
-            q.column(E::column<"status">().name(),"m"), q.column(E::column<"timeout_seconds">().name(),"m"),
-            db::text(q,q.column(E::column<"event_types">().name(),"m")), q.column(E::column<"username">().name(),"m"),
-            q.case_when({{q.unary(ruvia::db_unary_operator::is_not_null,q.column(E::column<"password">().name(),"m")),q.value("1")}},q.value("0")),
-            q.call("iot_utc_timestamp",{q.column(E::column<"last_triggered_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column<"last_success_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column<"last_failure_at">().name(),"m")}),
-            q.column(E::column<"last_error">().name(),"m"),
-            q.call("iot_utc_timestamp",{q.column(E::column<"created_at">().name(),"m")}),
-            q.call("iot_utc_timestamp",{q.column(E::column<"updated_at">().name(),"m")})})
-            .from(E::table_name(),"m")
-            .join(ruvia::db_join_type::inner,K::table_name(),q.binary(q.column(K::column<"id">().name(),"k"),ruvia::db_binary_operator::equal,q.column(E::column<"access_key_id">().name(),"m")),"k")
-            .where(q.unary(ruvia::db_unary_operator::is_null,q.column(E::column<"deleted_at">().name(),"m")))
-            .and_where(q.unary(ruvia::db_unary_operator::is_null,q.column(K::column<"deleted_at">().name(),"k")))
-            .order_by(q.column(E::column<"created_at">().name(),"m"),ruvia::db_order_direction::desc);
+        q.select({db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name(),"m")), db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m")),
+            q.column(service::open_access::entities::OpenAccessKeyEntity::column<"name">().name(),"k"), q.column(service::open_access::entities::OpenMqttEntity::column<"name">().name(),"m"),
+            q.column(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(),"m"),
+            q.column(service::open_access::entities::OpenMqttEntity::column<"status">().name(),"m"), q.column(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(),"m"),
+            db::text(q,q.column(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(),"m")), q.column(service::open_access::entities::OpenMqttEntity::column<"username">().name(),"m"),
+            q.case_when({{q.unary(ruvia::db_unary_operator::is_not_null,q.column(service::open_access::entities::OpenMqttEntity::column<"password">().name(),"m")),q.value("1")}},q.value("0")),
+            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_triggered_at">().name(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_success_at">().name(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"last_failure_at">().name(),"m")}),
+            q.column(service::open_access::entities::OpenMqttEntity::column<"last_error">().name(),"m"),
+            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(),"m")}),
+            q.call("iot_utc_timestamp",{q.column(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),"m")})})
+            .from(service::open_access::entities::OpenMqttEntity::table_name(),"m")
+            .join(ruvia::db_join_type::inner,service::open_access::entities::OpenAccessKeyEntity::table_name(),q.binary(q.column(service::open_access::entities::OpenAccessKeyEntity::column<"id">().name(),"k"),ruvia::db_binary_operator::equal,q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m")),"k")
+            .where(q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),"m")))
+            .and_where(q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenAccessKeyEntity::column<"deleted_at">().name(),"k")))
+            .order_by(q.column(service::open_access::entities::OpenMqttEntity::column<"created_at">().name(),"m"),ruvia::db_order_direction::desc);
         if (const auto& key = filters.get<"accessKeyId">(); key)
-            q.and_where(q.binary(q.column(E::column<"access_key_id">().name(),"m"),ruvia::db_binary_operator::equal,db::uuid(q,key->view())));
+            q.and_where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),"m"),ruvia::db_binary_operator::equal,db::uuid(q,key->view())));
         const auto rows = co_await c.db().query(q);
         ruvia::boxed_array<MqttItem> result(ruvia::model_options{.resource_=c.arena()});
         for (const auto& row : rows) {
@@ -417,7 +414,6 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<void> saveMqtt(Context& c, std::optional<std::string> id, const MqttSaveBody& payload) {
-        using E = service::open_access::entities::OpenMqttEntity;
         const auto keyId = payload.get<"accessKeyId">().view();
         const auto key = co_await requireKey(c,keyId);
         co_await ensureDevicesAccessible(c,key.deviceIds,false);
@@ -430,8 +426,8 @@ class AccessService final {
         std::string password;
         if (id) {
             ruvia::db_query current(c.pool());
-            current.select(current.column(E::column<"password">().name())).from(E::table_name())
-                .where(db::andAll(current,current.binary(current.column(E::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(current,*id)),current.unary(ruvia::db_unary_operator::is_null,current.column(E::column<"deleted_at">().name()))));
+            current.select(current.column(service::open_access::entities::OpenMqttEntity::column<"password">().name())).from(service::open_access::entities::OpenMqttEntity::table_name())
+                .where(db::andAll(current,current.binary(current.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(current,*id)),current.unary(ruvia::db_unary_operator::is_null,current.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
             const auto rows = co_await c.db().query(current);
             if (rows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
             password = rows.front()[0].value().value_or(std::string_view{});
@@ -443,11 +439,11 @@ class AccessService final {
             service::common::fail(19002,"MQTT 凭据无效；设置密码时必须提供用户名",400);
         const auto name = service::utils::trim(payload.get<"name">().view());
         ruvia::db_query duplicate(c.pool());
-        duplicate.select(duplicate.value(1)).from(E::table_name())
-            .where(db::andAll(duplicate,duplicate.binary(duplicate.column(E::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(duplicate,keyId)),
-                duplicate.binary(duplicate.column(E::column<"name">().name()),ruvia::db_binary_operator::equal,duplicate.value(name)),
-                duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(E::column<"deleted_at">().name()))));
-        if (id) duplicate.and_where(duplicate.binary(duplicate.column(E::column<"id">().name()),ruvia::db_binary_operator::not_equal,db::uuid(duplicate,*id)));
+        duplicate.select(duplicate.value(1)).from(service::open_access::entities::OpenMqttEntity::table_name())
+            .where(db::andAll(duplicate,duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name()),ruvia::db_binary_operator::equal,db::uuid(duplicate,keyId)),
+                duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"name">().name()),ruvia::db_binary_operator::equal,duplicate.value(name)),
+                duplicate.unary(ruvia::db_unary_operator::is_null,duplicate.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))));
+        if (id) duplicate.and_where(duplicate.binary(duplicate.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::not_equal,db::uuid(duplicate,*id)));
         const auto duplicateRows = co_await c.db().query(duplicate);
         if (!duplicateRows.empty()) service::common::fail(19003,"同一调用配置下的 MQTT 名称已存在",409);
         const auto targetId = id.value_or(c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -458,16 +454,16 @@ class AccessService final {
         const auto passwordValue = q.null_if(q.value(password),q.value(""));
         const auto eventValue = q.cast(q.value(eventJson),ruvia::db_data_type::jsonb);
         if (id) {
-            q.update(E::table_name())
-                .set(E::column<"access_key_id">().name(),db::uuid(q,keyId)).set(E::column<"name">().name(),q.value(name))
-                .set(E::column<"broker_url">().name(),q.value(payload.get<"brokerUrl">().view()))
-                .set(E::column<"username">().name(),userValue).set(E::column<"password">().name(),passwordValue)
-                .set(E::column<"status">().name(),q.value(payload.get<"status">()->view()))
-                .set(E::column<"timeout_seconds">().name(),q.value(payload.get<"timeoutSeconds">()->value_))
-                .set(E::column<"event_types">().name(),eventValue).set(E::column<"updated_at">().name(),q.call("now"))
-                .where(q.binary(q.column(E::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,targetId)));
+            q.update(service::open_access::entities::OpenMqttEntity::table_name())
+                .set(service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(),db::uuid(q,keyId)).set(service::open_access::entities::OpenMqttEntity::column<"name">().name(),q.value(name))
+                .set(service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(),q.value(payload.get<"brokerUrl">().view()))
+                .set(service::open_access::entities::OpenMqttEntity::column<"username">().name(),userValue).set(service::open_access::entities::OpenMqttEntity::column<"password">().name(),passwordValue)
+                .set(service::open_access::entities::OpenMqttEntity::column<"status">().name(),q.value(payload.get<"status">()->view()))
+                .set(service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(),q.value(payload.get<"timeoutSeconds">()->value_))
+                .set(service::open_access::entities::OpenMqttEntity::column<"event_types">().name(),eventValue).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),q.call("now"))
+                .where(q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,targetId)));
         } else {
-            q.insert_into(E::table_name(),{ E::column<"id">().name(), E::column<"access_key_id">().name(), E::column<"name">().name(), E::column<"broker_url">().name(), E::column<"username">().name(), E::column<"password">().name(), E::column<"status">().name(), E::column<"timeout_seconds">().name(), E::column<"event_types">().name() })
+            q.insert_into(service::open_access::entities::OpenMqttEntity::table_name(),{ service::open_access::entities::OpenMqttEntity::column<"id">().name(), service::open_access::entities::OpenMqttEntity::column<"access_key_id">().name(), service::open_access::entities::OpenMqttEntity::column<"name">().name(), service::open_access::entities::OpenMqttEntity::column<"broker_url">().name(), service::open_access::entities::OpenMqttEntity::column<"username">().name(), service::open_access::entities::OpenMqttEntity::column<"password">().name(), service::open_access::entities::OpenMqttEntity::column<"status">().name(), service::open_access::entities::OpenMqttEntity::column<"timeout_seconds">().name(), service::open_access::entities::OpenMqttEntity::column<"event_types">().name() })
                 .values({db::uuid(q,targetId),db::uuid(q,keyId),q.value(name),q.value(payload.get<"brokerUrl">().view()),userValue,passwordValue,
                     q.value(payload.get<"status">()->view()),q.value(payload.get<"timeoutSeconds">()->value_),eventValue});
         }
@@ -478,12 +474,11 @@ class AccessService final {
 
     template <typename Context>
     ruvia::task<void> removeMqtt(Context& c, std::string_view id) {
-        using E = service::open_access::entities::OpenMqttEntity;
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query q(c.pool());
-        q.update(E::table_name()).set(E::column<"deleted_at">().name(),q.call("now")).set(E::column<"updated_at">().name(),q.call("now"))
-            .where(db::andAll(q,q.binary(q.column(E::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(E::column<"deleted_at">().name()))))
-            .returning({q.column(E::column<"id">().name())});
+        q.update(service::open_access::entities::OpenMqttEntity::table_name()).set(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name(),q.call("now")).set(service::open_access::entities::OpenMqttEntity::column<"updated_at">().name(),q.call("now"))
+            .where(db::andAll(q,q.binary(q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name()),ruvia::db_binary_operator::equal,db::uuid(q,id)),q.unary(ruvia::db_unary_operator::is_null,q.column(service::open_access::entities::OpenMqttEntity::column<"deleted_at">().name()))))
+            .returning({q.column(service::open_access::entities::OpenMqttEntity::column<"id">().name())});
         const auto existingRows = co_await transaction.query(q);
         if (existingRows.empty()) service::common::fail(19001,"MQTT 配置不存在",404);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction,"mqtt","deleted",id,c.template worker_state<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -722,7 +717,7 @@ class AccessService final {
         }
     }
 
-    ruvia::task<PublicCommandResult> publicCommand(ruvia::context& c, const AccessSession& session, const PublicCommandBody& body) {
+    ruvia::task<service::device::DeviceCommandCreateDto> publicCommand(ruvia::context& c, const AccessSession& session, const service::device::DeviceCommandBody& body) {
         const auto id = body.get<"deviceId">() ? std::string(body.get<"deviceId">()->view()) : std::string{};
         service::common::requireUuid(19002, id, "设备 ID 无效");
         if (!session.allowsDevice(id)) {
@@ -1060,7 +1055,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
 
     template <typename Context>
     ruvia::task<void> ensureDevicesAccessible(Context& c, const std::vector<std::string>& ids, bool requireOperate) {
-        const auto actor = co_await service::device::deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await service::device::DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         service::device::DeviceAccessService::addScopedDevicesCtes(query, actor);
         std::vector<ruvia::db_query::expr_type> deviceIds;
@@ -1411,8 +1406,5 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
     }
 };
 
-inline AccessService& accessService() {
-    return AccessService::instance();
-}
 
 } // namespace service::open_access

@@ -37,7 +37,7 @@ class UserController final {
                                 ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
         co_return c.json(service::common::ok<UserPageResponse>(
-            c, co_await userService().list(c, page, pageSize, keyword, status)));
+            c, co_await UserService::instance().list(c, page, pageSize, keyword, status)));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {
@@ -46,22 +46,22 @@ class UserController final {
                                  ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
                                  : std::nullopt;
         co_return c.json(service::common::ok<UserOptionsResponse>(
-            c, co_await userService().options(c, keyword)));
+            c, co_await UserService::instance().options(c, keyword)));
     }
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
-        co_await userService().create(c, c.req().validated<CreateUserBody>());
+        co_await UserService::instance().create(c, c.req().validated<CreateUserBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
-        co_await userService().update(c, id(c), c.req().validated<UpdateUserBody>());
+        co_await UserService::instance().update(c, id(c), c.req().validated<UpdateUserBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
         const auto principal = service::middleware::requireAuth(c);
-        co_await userService().remove(c, id(c), principal.userId);
+        co_await UserService::instance().remove(c, id(c), principal.userId);
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

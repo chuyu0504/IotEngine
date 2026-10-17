@@ -38,27 +38,27 @@ class RoleController final {
                                 ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
         co_return c.json(service::common::ok<RolePageResponse>(
-            c, co_await roleService().list(c, static_cast<std::int64_t>(*query.get<"page">()),
+            c, co_await RoleService::instance().list(c, static_cast<std::int64_t>(*query.get<"page">()),
                                            static_cast<std::int64_t>(*query.get<"pageSize">()), keyword,
                                            status)));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {
-        co_return c.json(service::common::ok<RoleOptionsResponse>(c, co_await roleService().options(c)));
+        co_return c.json(service::common::ok<RoleOptionsResponse>(c, co_await RoleService::instance().options(c)));
     }
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
-        co_await roleService().create(c, c.req().validated<CreateRoleBody>());
+        co_await RoleService::instance().create(c, c.req().validated<CreateRoleBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
-        co_await roleService().update(c, id(c), c.req().validated<UpdateRoleBody>());
+        co_await RoleService::instance().update(c, id(c), c.req().validated<UpdateRoleBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
-        co_await roleService().remove(c, id(c));
+        co_await RoleService::instance().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

@@ -67,7 +67,7 @@ class AccessAdminController final {
     }
 
     ruvia::task<std::string> devicesSnapshot(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::middleware::dataJson(co_await accessService().deviceOptions(request));
+        co_return service::middleware::dataJson(co_await AccessService::instance().deviceOptions(request));
     }
 
     ruvia::task<ruvia::http_response> keys(ruvia::context& c) {
@@ -78,7 +78,7 @@ class AccessAdminController final {
     }
 
     ruvia::task<std::string> keysSnapshot(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::middleware::dataJson(co_await accessService().listKeys(request));
+        co_return service::middleware::dataJson(co_await AccessService::instance().listKeys(request));
     }
 
     ruvia::task<ruvia::http_response> webhooks(ruvia::context& c) {
@@ -90,7 +90,7 @@ class AccessAdminController final {
     }
 
     ruvia::task<std::string> webhooksSnapshot(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::middleware::dataJson(co_await accessService().listWebhooks(request, c.req().validated<WebhookQueryParams>()));
+        co_return service::middleware::dataJson(co_await AccessService::instance().listWebhooks(request, c.req().validated<WebhookQueryParams>()));
     }
 
     ruvia::task<ruvia::http_response> logs(ruvia::context& c) {
@@ -102,73 +102,73 @@ class AccessAdminController final {
     }
 
     ruvia::task<std::string> logsSnapshot(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::middleware::dataJson(co_await accessService().listLogs(request, c.req().validated<AccessLogParams>()));
+        co_return service::middleware::dataJson(co_await AccessService::instance().listLogs(request, c.req().validated<AccessLogParams>()));
     }
 
     ruvia::task<ruvia::http_response> createKey(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<CreateAccessKeyBody>();
-        co_return jsonData(c, co_await accessService().createKey(request, body));
+        co_return jsonData(c, co_await AccessService::instance().createKey(request, body));
     }
 
     ruvia::task<ruvia::http_response> updateKey(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().updateKey(request, id(c), c.req().validated<UpdateAccessKeyBody>());
+        co_await AccessService::instance().updateKey(request, id(c), c.req().validated<UpdateAccessKeyBody>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
     ruvia::task<ruvia::http_response> rotateKey(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return jsonData(c, co_await accessService().rotateKey(request, id(c)));
+        co_return jsonData(c, co_await AccessService::instance().rotateKey(request, id(c)));
     }
 
     ruvia::task<ruvia::http_response> removeKey(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().removeKey(request, id(c));
+        co_await AccessService::instance().removeKey(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
     ruvia::task<ruvia::http_response> createWebhook(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<CreateWebhookBody>();
-        co_return jsonData(c, co_await accessService().createWebhook(request, body));
+        co_return jsonData(c, co_await AccessService::instance().createWebhook(request, body));
     }
 
     ruvia::task<ruvia::http_response> updateWebhook(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().updateWebhook(request, id(c), c.req().validated<UpdateWebhookBody>());
+        co_await AccessService::instance().updateWebhook(request, id(c), c.req().validated<UpdateWebhookBody>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
     ruvia::task<ruvia::http_response> mqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        auto data = co_await accessService().listMqtt(request,c.req().validated<WebhookQueryParams>());
+        auto data = co_await AccessService::instance().listMqtt(request,c.req().validated<WebhookQueryParams>());
         co_return c.json(service::common::ok<MqttListResponse>(c,std::move(data)));
     }
     ruvia::task<ruvia::http_response> createMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().saveMqtt(request,std::nullopt,c.req().validated<MqttSaveBody>());
+        co_await AccessService::instance().saveMqtt(request,std::nullopt,c.req().validated<MqttSaveBody>());
         co_return c.json(service::common::operation(c,"MQTT 配置已创建"));
     }
     ruvia::task<ruvia::http_response> updateMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().saveMqtt(request,id(c),c.req().validated<MqttSaveBody>());
+        co_await AccessService::instance().saveMqtt(request,id(c),c.req().validated<MqttSaveBody>());
         co_return c.json(service::common::operation(c,"MQTT 配置已更新"));
     }
     ruvia::task<ruvia::http_response> removeMqtt(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().removeMqtt(request,id(c));
+        co_await AccessService::instance().removeMqtt(request,id(c));
         co_return c.json(service::common::operation(c,"MQTT 配置已删除"));
     }
 
     ruvia::task<ruvia::http_response> removeWebhook(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await accessService().removeWebhook(request, id(c));
+        co_await AccessService::instance().removeWebhook(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 };
@@ -304,14 +304,14 @@ class AccessController final {
             [session](const service::utils::ChangeSet& changes) {
                 return touches(changes, service::message::live::topic::kDevice, boundDevice(session));
             },
-            [&c, session]() -> ruvia::task<void> { *session = co_await accessService().authenticate(c, {}); });
+            [&c, session]() -> ruvia::task<void> { *session = co_await AccessService::instance().authenticate(c, {}); });
     }
 
     ruvia::task<std::string> devicesSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {
-        session = co_await accessService().authenticate(c, {});
-        const auto data = co_await accessService().publicDevices(c, session);
+        session = co_await AccessService::instance().authenticate(c, {});
+        const auto data = co_await AccessService::instance().publicDevices(c, session);
         if (!audited) {
-            co_await accessService().audit(c, "device-list", session, std::string_view{}, "{}", data);
+            co_await AccessService::instance().audit(c, "device-list", session, std::string_view{}, "{}", data);
             audited = true;
         }
         co_return service::middleware::dataJson(data);
@@ -327,14 +327,14 @@ class AccessController final {
                     touches(changes, service::message::live::topic::kDeviceState, device) ||
                     touches(changes, service::message::live::topic::kDevice, device);
             },
-            [&c]() -> ruvia::task<void> { (void)co_await accessService().authenticate(c, kScopeRealtime); });
+            [&c]() -> ruvia::task<void> { (void)co_await AccessService::instance().authenticate(c, kScopeRealtime); });
     }
     ruvia::task<std::string> realtimeSnapshot(ruvia::context& c, bool& audited) {
-        const auto session = co_await accessService().authenticate(c, kScopeRealtime);
+        const auto session = co_await AccessService::instance().authenticate(c, kScopeRealtime);
         const auto id = service::utils::trim(c.req().query("deviceId").value_or(""));
-        const auto data = co_await accessService().publicRealtime(c, session, id);
+        const auto data = co_await AccessService::instance().publicRealtime(c, session, id);
         if (!audited) {
-            co_await accessService().audit(c, "realtime", session, id, "{}", data);
+            co_await AccessService::instance().audit(c, "realtime", session, id, "{}", data);
             audited = true;
         }
         co_return service::middleware::dataJson(data);
@@ -347,29 +347,29 @@ class AccessController final {
             [device = requestedDevice(c)](const service::utils::ChangeSet& changes) {
                 return touches(changes, service::message::live::topic::kDeviceHistory, device);
             },
-            [&c]() -> ruvia::task<void> { (void)co_await accessService().authenticate(c, kScopeHistory); });
+            [&c]() -> ruvia::task<void> { (void)co_await AccessService::instance().authenticate(c, kScopeHistory); });
     }
 
     ruvia::task<std::string> historySnapshot(ruvia::context& c, bool& audited) {
-        const auto session = co_await accessService().authenticate(c, kScopeHistory);
+        const auto session = co_await AccessService::instance().authenticate(c, kScopeHistory);
         const auto id = service::utils::trim(c.req().query("deviceId").value_or(""));
-        const auto data = co_await accessService().publicHistory(c, session, id);
+        const auto data = co_await AccessService::instance().publicHistory(c, session, id);
         if (!audited) {
-            co_await accessService().audit(c, "history", session, id, "{}", data);
+            co_await AccessService::instance().audit(c, "history", session, id, "{}", data);
             audited = true;
         }
         co_return service::middleware::dataJson(data);
     }
 
     ruvia::task<ruvia::http_response> command(ruvia::context& c) {
-        const auto session = co_await accessService().authenticate(c, kScopeCommand);
-        const auto parsedBody = co_await c.req().json_if<PublicCommandBody>();
+        const auto session = co_await AccessService::instance().authenticate(c, kScopeCommand);
+        const auto parsedBody = co_await c.req().json_if<service::device::DeviceCommandBody>();
         if (!parsedBody) {
             throw ruvia::http_error({ .status_ = ruvia::http_status::unsupported_media_type,
                 .code_ = "unsupported_media_type", .message_ = "request body must be application/json" });
         }
-        auto result = co_await accessService().publicCommand(c, session, *parsedBody);
-        co_return c.json(service::common::ok<PublicCommandResponse>(c, std::move(result)));
+        auto result = co_await AccessService::instance().publicCommand(c, session, *parsedBody);
+        co_return c.json(service::common::ok<service::device::DeviceCommandCreateResponse>(c, std::move(result)));
     }
 
     ruvia::task<void> alerts(ruvia::context& c) {
@@ -382,14 +382,14 @@ class AccessController final {
                 return changes.find(service::message::live::topic::kAlert) != nullptr ||
                     touches(changes, service::message::live::topic::kDevice, boundDevice(session));
             },
-            [&c, session]() -> ruvia::task<void> { *session = co_await accessService().authenticate(c, kScopeAlert); });
+            [&c, session]() -> ruvia::task<void> { *session = co_await AccessService::instance().authenticate(c, kScopeAlert); });
     }
 
     ruvia::task<std::string> alertsSnapshot(ruvia::context& c, bool& audited, AccessSession& session) {
-        session = co_await accessService().authenticate(c, kScopeAlert);
-        const auto data = co_await accessService().publicAlerts(c, session);
+        session = co_await AccessService::instance().authenticate(c, kScopeAlert);
+        const auto data = co_await AccessService::instance().publicAlerts(c, session);
         if (!audited) {
-            co_await accessService().audit(c, "alert", session, std::string_view{}, "{}", data);
+            co_await AccessService::instance().audit(c, "alert", session, std::string_view{}, "{}", data);
             audited = true;
         }
         co_return service::middleware::dataJson(data);

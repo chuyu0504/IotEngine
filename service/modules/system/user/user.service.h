@@ -51,7 +51,7 @@ class UserService {
         );
         auto query = userSelect(c);
         query.where(options.where_)
-            .order_by("id", ruvia::db_order_direction::desc)
+            .order_by(entities::UserEntity::column<"id">().name(), ruvia::db_order_direction::desc)
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::UserDetails>();
@@ -196,12 +196,12 @@ class UserService {
             append("password_hash", service::utils::hashPassword(body.get<"password">()->view()));
         }
         if (body.get<"departmentId">()) {
-            changes.push_back({ "department_id", query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
+            changes.push_back({ entities::UserEntity::column<"department_id">().name(), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
             changed = true;
         }
         auto tx = co_await c.db().begin_transaction();
         if (changed) {
-            changes.push_back({ "updated_at", query.call("now") });
+            changes.push_back({ entities::UserEntity::column<"updated_at">().name(), query.call("now") });
             (void)co_await tx.template get_repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
         }
         if (body.get<"roleIds">()) {
@@ -238,11 +238,10 @@ class UserService {
     static ruvia::db_query_builder<entities::UserEntity, ruvia::db_handle> userSelect(Context& c) {
         using namespace ruvia;
         using entities::UserEntity;
-        using service::dept::entities::DeptEntity;
         db_query expressions(c.pool());
         auto query = c.db().template get_repository<UserEntity>().create_query_builder("u");
-        query.select({ { "id", UserEntity::column<"id">().expression(expressions, "u") }, { "username", UserEntity::column<"username">().expression(expressions, "u") }, { "nickname", expressions.coalesce({ expressions.cast(UserEntity::column<"nickname">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(UserEntity::column<"phone">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(UserEntity::column<"email">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "status", UserEntity::column<"status">().expression(expressions, "u") }, { "department_id", expressions.coalesce({ expressions.cast(UserEntity::column<"department_id">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"created_at">().expression(expressions, "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"updated_at">().expression(expressions, "u") }) } });
-        query.template join<DeptEntity>(db_join_type::left, "d", expressions.binary(DeptEntity::column<"id">().expression(expressions, "d"), db_binary_operator::equal, UserEntity::column<"department_id">().expression(expressions, "u")));
+        query.select({ { "id", UserEntity::column<"id">().expression(expressions, "u") }, { "username", UserEntity::column<"username">().expression(expressions, "u") }, { "nickname", expressions.coalesce({ expressions.cast(UserEntity::column<"nickname">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(UserEntity::column<"phone">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(UserEntity::column<"email">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "status", UserEntity::column<"status">().expression(expressions, "u") }, { "department_id", expressions.coalesce({ expressions.cast(UserEntity::column<"department_id">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(service::dept::entities::DeptEntity::column<"name">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"created_at">().expression(expressions, "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"updated_at">().expression(expressions, "u") }) } });
+        query.template join<service::dept::entities::DeptEntity>(db_join_type::left, "d", expressions.binary(service::dept::entities::DeptEntity::column<"id">().expression(expressions, "d"), db_binary_operator::equal, UserEntity::column<"department_id">().expression(expressions, "u")));
         return query;
     }
 
@@ -268,7 +267,7 @@ class UserService {
             .template join<entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
             .where(expressions.binary(entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
             .and_where(service::role::entities::RoleEntity::column<"deleted_at">().is_null())
-            .order_by("id");
+            .order_by(service::role::entities::RoleEntity::column<"id">().name());
         const auto rows = co_await query.get_many();
         ruvia::boxed_array<service::role::RoleOptionDto> roles(
             ruvia::model_options{ .resource_ = c.arena() }
@@ -343,8 +342,5 @@ class UserService {
     }
 };
 
-inline UserService& userService() {
-    return UserService::instance();
-}
 
 } // namespace service::user

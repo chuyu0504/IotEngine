@@ -187,25 +187,22 @@ class AuthService {
 
     template <typename Context>
     static ruvia::task<void> requirePermission(Context& c, std::string_view userId, std::string_view permission) {
-        using service::role::entities::RoleEntity;
-        using service::user::entities::UserEntity;
-        using service::user::entities::UserRoleEntity;
         auto granted = [&c, userId, permission]() -> ruvia::task<bool> {
             ruvia::db_query expressions(c.pool());
             auto query = enabledRoles(c, userId);
-            query.template join<UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(UserEntity::column<"id">().expression(expressions, "u"), ruvia::db_binary_operator::equal, UserRoleEntity::column<"user_id">().expression(expressions, "ur")))
+            query.template join<service::user::entities::UserEntity>(ruvia::db_join_type::inner, "u", expressions.binary(service::user::entities::UserEntity::column<"id">().expression(expressions, "u"), ruvia::db_binary_operator::equal, service::user::entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur")))
                 .and_where(expressions.binary(
-                    expressions.binary(UserEntity::column<"status">().expression(expressions, "u"), ruvia::db_binary_operator::equal, expressions.value("enabled")),
+                    expressions.binary(service::user::entities::UserEntity::column<"status">().expression(expressions, "u"), ruvia::db_binary_operator::equal, expressions.value("enabled")),
                     ruvia::db_binary_operator::and_value,
-                    expressions.unary(ruvia::db_unary_operator::is_null, UserEntity::column<"deleted_at">().expression(expressions, "u"))
+                    expressions.unary(ruvia::db_unary_operator::is_null, service::user::entities::UserEntity::column<"deleted_at">().expression(expressions, "u"))
                 ))
                 .and_where(expressions.binary(
-                    expressions.binary(RoleEntity::column<"code">().expression(expressions, "r"), ruvia::db_binary_operator::equal, expressions.value("superadmin")),
+                    expressions.binary(service::role::entities::RoleEntity::column<"code">().expression(expressions, "r"), ruvia::db_binary_operator::equal, expressions.value("superadmin")),
                     ruvia::db_binary_operator::or_value,
                     expressions.binary(
-                        expressions.binary(RoleEntity::column<"permissions">().expression(expressions, "r"), ruvia::db_binary_operator::json_has_key, expressions.value("*")),
+                        expressions.binary(service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r"), ruvia::db_binary_operator::json_has_key, expressions.value("*")),
                         ruvia::db_binary_operator::or_value,
-                        expressions.binary(RoleEntity::column<"permissions">().expression(expressions, "r"), ruvia::db_binary_operator::json_has_key, expressions.value(permission))
+                        expressions.binary(service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r"), ruvia::db_binary_operator::json_has_key, expressions.value(permission))
                     )
                 ));
             co_return co_await query.get_exists();
@@ -307,13 +304,11 @@ class AuthService {
     template <typename Context>
     static ruvia::db_query_builder<service::role::entities::RoleEntity, ruvia::db_handle>
     enabledRoles(Context& c, std::string_view userId) {
-        using service::role::entities::RoleEntity;
-        using service::user::entities::UserRoleEntity;
         ruvia::db_query expressions(c.pool());
-        auto query = c.db().template get_repository<RoleEntity>().create_query_builder("r");
-        query.template join<UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, RoleEntity::column<"id">().expression(expressions, "r")))
-            .where(expressions.binary(UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
-            .and_where(RoleEntity::column<"status">() == "enabled" && RoleEntity::column<"deleted_at">().is_null());
+        auto query = c.db().template get_repository<service::role::entities::RoleEntity>().create_query_builder("r");
+        query.template join<service::user::entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(service::user::entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
+            .where(expressions.binary(service::user::entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
+            .and_where(service::role::entities::RoleEntity::column<"status">() == "enabled" && service::role::entities::RoleEntity::column<"deleted_at">().is_null());
         return query;
     }
 
@@ -325,7 +320,7 @@ class AuthService {
         );
 
         auto roleQuery = enabledRoles(c, userId);
-        roleQuery.select({ { "id" }, { "name" }, { "code" } }).order_by("id");
+        roleQuery.select({ { "id" }, { "name" }, { "code" } }).order_by(service::role::entities::RoleEntity::column<"id">().name());
         const auto roles = co_await roleQuery.get_many();
         auto& roleItems = user.ensure<"roles">();
         for (const auto& row : roles) {
@@ -336,11 +331,12 @@ class AuthService {
         }
 
         ruvia::db_query expressions(c.pool());
+        constexpr std::string_view kPermissionColumn = "permission";
         auto permissionQuery = enabledRoles(c, userId);
-        permissionQuery.select({ { "permission", expressions.column("permission", "p") } })
+        permissionQuery.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "p") } })
             .distinct()
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", {}, { .lateral_ = true, .columns_ = { { .name_ = "permission" } } })
-            .order_by(expressions.column("permission", "p"));
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", {}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
+            .order_by(expressions.column(kPermissionColumn, "p"));
         const auto permissions = co_await permissionQuery.template get_many<service::role::entities::RolePermission>();
         auto& permissionItems = user.ensure<"permissions">();
         for (const auto& row : permissions) {

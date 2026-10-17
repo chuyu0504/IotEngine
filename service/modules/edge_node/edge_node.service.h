@@ -670,17 +670,16 @@ class EdgeService {
     // Edge nodes holding a VPN peer in one of `networks`.
     template <typename Context>
     ruvia::task<service::utils::ChangeSet::Ids> networkNodes(Context& c, const service::utils::ChangeSet::Ids& networks) {
-        using Peer = service::vpn::entities::VpnPeerEntity;
         service::utils::ChangeSet::Ids result;
         ruvia::db_query query(c.pool());
         const auto values = uuidList(query, networks);
         if (values.empty()) {
             co_return result;
         }
-        const auto node = query.column(Peer::column<"edge_node_id">().name());
+        const auto node = query.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name());
         query.select(query.cast(node, Type::text))
-            .from(Peer::table_name())
-            .where(query.binary(query.column(Peer::column<"network_id">().name()), Op::in, query.list(values)))
+            .from(service::vpn::entities::VpnPeerEntity::table_name())
+            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column<"network_id">().name()), Op::in, query.list(values)))
             .and_where(query.unary(Unary::is_not_null, node));
         for (const auto& row : co_await c.db().query(query)) {
             result.emplace(row[0].value().value_or(std::string_view{}));
@@ -691,12 +690,11 @@ class EdgeService {
     // VPN networks in which `nodeId` holds a peer.
     template <typename Context>
     ruvia::task<service::utils::ChangeSet::Ids> nodeNetworks(Context& c, std::string_view nodeId) {
-        using Peer = service::vpn::entities::VpnPeerEntity;
         service::utils::ChangeSet::Ids result;
         ruvia::db_query query(c.pool());
-        query.select(query.cast(query.column(Peer::column<"network_id">().name()), Type::text))
-            .from(Peer::table_name())
-            .where(query.binary(query.column(Peer::column<"edge_node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
+        query.select(query.cast(query.column(service::vpn::entities::VpnPeerEntity::column<"network_id">().name()), Type::text))
+            .from(service::vpn::entities::VpnPeerEntity::table_name())
+            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
         for (const auto& row : co_await c.db().query(query)) {
             result.emplace(row[0].value().value_or(std::string_view{}));
         }
@@ -706,8 +704,8 @@ class EdgeService {
     template <typename Context>
     ruvia::task<std::string> vpnState(Context& c, std::string_view nodeId) {
         co_await service::auth::AuthService::requirePermission(c, c.userId, "iot:vpn:query");
-        const auto peers = co_await service::vpn::vpnService().peers(c, std::nullopt, std::string(nodeId));
-        const auto routes = co_await service::vpn::vpnService().routes(c, std::nullopt, std::string(nodeId));
+        const auto peers = co_await service::vpn::VpnService::instance().peers(c, std::nullopt, std::string(nodeId));
+        const auto routes = co_await service::vpn::VpnService::instance().routes(c, std::nullopt, std::string(nodeId));
         co_return "{\"peers\":" + peers + ",\"routes\":" + routes + "}";
     }
 
@@ -2179,8 +2177,6 @@ class EdgeService {
     static constexpr std::string_view kBridgePortColumn = "value";
 
     static ruvia::db_query nodeSelect(std::pmr::memory_resource* resource) {
-        using Route = service::vpn::entities::VpnRouteEntity;
-        using Peer = service::vpn::entities::VpnPeerEntity;
         ruvia::db_query query(resource);
         const auto nodeId = query.column(entities::EdgeNodeEntity::column<"id">().name(), "node");
         const auto status = query.column(entities::EdgeNodeEntity::column<"status">().name(), "node");
@@ -2204,15 +2200,15 @@ class EdgeService {
 
         ruvia::db_query vpn(resource);
         const auto vpnNodeId = vpn.import_expression(nodeId, "node", "node");
-        const auto virtualCidr = vpn.column(Route::column<"virtual_cidr">().name(), "route");
+        const auto virtualCidr = vpn.column(service::vpn::entities::VpnRouteEntity::column<"virtual_cidr">().name(), "route");
         const std::array<ruvia::db_order_term, 1> vpnOrder{ { { virtualCidr, ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
         vpn.select(vpn.aggregate("string_agg", { virtualCidr, vpn.cast(vpn.value(","), Type::text) }, false, vpnOrder))
-            .from(Route::table_name(), "route")
-            .join(ruvia::db_join_type::inner, Peer::table_name(), vpn.binary(vpn.column(Peer::column<"id">().name(), "peer"), Op::equal, vpn.column(Route::column<"edge_peer_id">().name(), "route")), "peer")
-            .where(vpn.binary(vpn.column(Peer::column<"edge_node_id">().name(), "peer"), Op::equal, vpnNodeId))
-            .and_where(vpn.binary(vpn.column(Peer::column<"status">().name(), "peer"), Op::equal, vpn.value("active")))
-            .and_where(vpn.unary(Unary::is_true, vpn.column(Route::column<"enabled">().name(), "route")))
-            .and_where(vpn.binary(vpn.column(Route::column<"status">().name(), "route"), Op::equal, vpn.value("active")));
+            .from(service::vpn::entities::VpnRouteEntity::table_name(), "route")
+            .join(ruvia::db_join_type::inner, service::vpn::entities::VpnPeerEntity::table_name(), vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"id">().name(), "peer"), Op::equal, vpn.column(service::vpn::entities::VpnRouteEntity::column<"edge_peer_id">().name(), "route")), "peer")
+            .where(vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name(), "peer"), Op::equal, vpnNodeId))
+            .and_where(vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"status">().name(), "peer"), Op::equal, vpn.value("active")))
+            .and_where(vpn.unary(Unary::is_true, vpn.column(service::vpn::entities::VpnRouteEntity::column<"enabled">().name(), "route")))
+            .and_where(vpn.binary(vpn.column(service::vpn::entities::VpnRouteEntity::column<"status">().name(), "route"), Op::equal, vpn.value("active")));
 
         const auto nodeColumn = [&query](std::string_view name) { return query.column(name, "node"); };
         const auto firmwareColumn = [&query](std::string_view name) { return query.column(name, "firmware"); };
