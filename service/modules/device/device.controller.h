@@ -57,13 +57,13 @@ class DeviceController final {
     }
 
     ruvia::task<DeviceDebugPacketsResponse> queryDebugPackets(service::middleware::RequestContext& request, std::string_view deviceId) {
-        co_return service::common::ok<DeviceDebugPacketsResponse>(request, co_await deviceService().debugPackets(request, deviceId));
+        co_return service::common::ok<DeviceDebugPacketsResponse>(request, co_await DeviceService::instance().debugPackets(request, deviceId));
     }
 
     ruvia::task<ruvia::http_response> setDebug(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().setDebug(request, id(c), c.req().validated<DeviceDebugBody>().get<"enabled">());
+        co_await DeviceService::instance().setDebug(request, id(c), c.req().validated<DeviceDebugBody>().get<"enabled">());
         co_return c.json(service::common::operation(c, "调试设置已保存"));
     }
 
@@ -82,17 +82,17 @@ class DeviceController final {
         const auto& events = c.req().validated<DeviceEventsQuery>();
         std::vector<service::middleware::LiveChannel> channels;
         channels.push_back(deviceRows<DevicePageResponse>("devices", { std::string(topic::kDevice), std::string(topic::kDeviceState), std::string(topic::kDeviceGroup), std::string(topic::kLink), std::string(topic::kProtocol), std::string(topic::kEdge) }, [](service::middleware::RequestContext& request, const std::vector<std::string>* ids) {
-            return deviceService().list(request, ids);
+            return DeviceService::instance().list(request, ids);
         }));
         // 分组树的设备计数随设备增删、换组变化；设备主题只来自配置写入，不含遥测。
         channels.push_back({ "groups", { std::string(topic::kDeviceGroup), std::string(topic::kDevice) }, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                                 co_await service::middleware::requirePermission(request, "iot:device-group:query");
-                                co_return service::middleware::modelJson(service::common::ok<DeviceGroupListResponse>(request, co_await deviceService().listGroups(request)));
+                                co_return service::middleware::modelJson(service::common::ok<DeviceGroupListResponse>(request, co_await DeviceService::instance().listGroups(request)));
                             },
                              {} });
         // device-group：分组改挂父级会改变继承的共享范围，受影响设备按子树重新判定可见性。
         channels.push_back(deviceRows<DeviceRealtimeResponse>("realtime", { std::string(topic::kDeviceRealtime), std::string(topic::kDeviceState), std::string(topic::kDevice), std::string(topic::kDeviceGroup), std::string(topic::kLink), std::string(topic::kProtocol), std::string(topic::kEdge) }, [](service::middleware::RequestContext& request, const std::vector<std::string>* ids) {
-            return deviceService().realtime(request, ids);
+            return DeviceService::instance().realtime(request, ids);
         }));
         std::string debugId;
         if (const auto& debugDeviceId = events.get<"debugDeviceId">()) {
@@ -179,7 +179,7 @@ class DeviceController final {
                 devices.insert(ids->begin(), ids->end());
             }
         }
-        for (auto& id : co_await deviceService().devicesReferencing(request, links, protocols, nodes, groups)) {
+        for (auto& id : co_await DeviceService::instance().devicesReferencing(request, links, protocols, nodes, groups)) {
             devices.insert(std::move(id));
         }
         co_return devices;
@@ -229,18 +229,18 @@ class DeviceController final {
     }
 
     ruvia::task<DevicePageResponse> queryList(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::common::ok<DevicePageResponse>(request, co_await deviceService().list(request));
+        co_return service::common::ok<DevicePageResponse>(request, co_await DeviceService::instance().list(request));
     }
 
     ruvia::task<ruvia::http_response> options(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceOptionsResponse>(request, co_await deviceService().options(request)));
+        co_return c.json(service::common::ok<DeviceOptionsResponse>(request, co_await DeviceService::instance().options(request)));
     }
 
     ruvia::task<ruvia::http_response> detail(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceDetailResponse>(request, co_await deviceService().detail(request, id(c))));
+        co_return c.json(service::common::ok<DeviceDetailResponse>(request, co_await DeviceService::instance().detail(request, id(c))));
     }
 
     ruvia::task<ruvia::http_response> history(ruvia::context& c) {
@@ -252,46 +252,46 @@ class DeviceController final {
     }
 
     ruvia::task<std::string> historySnapshot(ruvia::context& c, service::middleware::RequestContext& request) {
-        co_return service::middleware::dataJson(co_await deviceService().history(request, id(c), c.req().validated<DeviceHistoryQuery>()));
+        co_return service::middleware::dataJson(co_await DeviceService::instance().history(request, id(c), c.req().validated<DeviceHistoryQuery>()));
     }
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().create(request, c.req().validated<CreateDeviceBody>());
+        co_await DeviceService::instance().create(request, c.req().validated<CreateDeviceBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().update(request, id(c), c.req().validated<UpdateDeviceBody>());
+        co_await DeviceService::instance().update(request, id(c), c.req().validated<UpdateDeviceBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().remove(request, id(c));
+        co_await DeviceService::instance().remove(request, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 
     ruvia::task<ruvia::http_response> shares(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceSharesResponse>(request, co_await deviceShareService().list(request, id(c))));
+        co_return c.json(service::common::ok<DeviceSharesResponse>(request, co_await DeviceShareService::instance().list(request, id(c))));
     }
 
     ruvia::task<ruvia::http_response> shareTargets(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceShareTargetsResponse>(request, co_await deviceShareService().targets(request, id(c))));
+        co_return c.json(service::common::ok<DeviceShareTargetsResponse>(request, co_await DeviceShareService::instance().targets(request, id(c))));
     }
 
     ruvia::task<ruvia::http_response> replaceShares(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceShareService().replace(request, id(c), c.req().validated<ReplaceDeviceSharesBody>());
+        co_await DeviceShareService::instance().replace(request, id(c), c.req().validated<ReplaceDeviceSharesBody>());
         co_return c.json(service::common::operation(c, "设备分享已更新"));
     }
 
@@ -300,40 +300,40 @@ class DeviceController final {
     ruvia::task<ruvia::http_response> groupShares(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceSharesResponse>(request, co_await deviceShareService().listGroup(request, id(c))));
+        co_return c.json(service::common::ok<DeviceSharesResponse>(request, co_await DeviceShareService::instance().listGroup(request, id(c))));
     }
 
     ruvia::task<ruvia::http_response> groupShareTargets(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<DeviceShareTargetsResponse>(request, co_await deviceShareService().groupTargets(request, id(c))));
+        co_return c.json(service::common::ok<DeviceShareTargetsResponse>(request, co_await DeviceShareService::instance().groupTargets(request, id(c))));
     }
 
     ruvia::task<ruvia::http_response> replaceGroupShares(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceShareService().replaceGroup(request, id(c), c.req().validated<ReplaceDeviceSharesBody>());
+        co_await DeviceShareService::instance().replaceGroup(request, id(c), c.req().validated<ReplaceDeviceSharesBody>());
         co_return c.json(service::common::operation(c, "设备分组分享已更新"));
     }
 
     ruvia::task<ruvia::http_response> groupCreate(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().createGroup(request, c.req().validated<CreateDeviceGroupBody>());
+        co_await DeviceService::instance().createGroup(request, c.req().validated<CreateDeviceGroupBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> groupUpdate(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().updateGroup(request, id(c), c.req().validated<UpdateDeviceGroupBody>());
+        co_await DeviceService::instance().updateGroup(request, id(c), c.req().validated<UpdateDeviceGroupBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> groupRemove(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await deviceService().removeGroup(request, id(c));
+        co_await DeviceService::instance().removeGroup(request, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

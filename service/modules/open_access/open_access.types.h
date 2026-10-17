@@ -36,11 +36,6 @@ inline bool supportedScope(std::string_view value) {
     return value == kScopeRealtime || value == kScopeHistory || value == kScopeCommand || value == kScopeAlert;
 }
 
-// 第三方开放接口下发设备命令的请求体与响应，沿用设备命令契约。
-using PublicCommandBody = service::device::DeviceCommandBody;
-using PublicCommandResponse = service::device::DeviceCommandCreateResponse;
-using PublicCommandResult = service::device::DeviceCommandCreateDto;
-
 struct AccessSession final {
     std::string id;
     std::string name;

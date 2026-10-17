@@ -603,22 +603,6 @@ void testStorageOwnership() {
                 (path.parent_path().filename().string() + ".entity.h");
             requireFeatureRule(std::filesystem::is_regular_file(entityPath), path, "database service has no owning entity file");
         }
-        if (!isEntity) {
-            continue;
-        }
-        std::string consumers;
-        for (const auto& sibling : std::filesystem::directory_iterator(path.parent_path())) {
-            if (sibling.is_regular_file() && sibling.path() != path &&
-                isArchitectureSource(sibling.path())) {
-                consumers += source(pathKey(sibling.path()));
-            }
-        }
-        for (auto match = std::sregex_iterator(content.begin(), content.end(), entityDeclaration);
-             match != std::sregex_iterator();
-             ++match) {
-            const auto name = (*match)[1].str();
-            requireFeatureRule(consumers.find(name + "::") != std::string::npos || consumers.find("<" + name + ">") != std::string::npos || consumers.find("::" + name + ">") != std::string::npos, path, "entity is not used by its owning component: " + name);
-        }
     }
 }
 

@@ -5,7 +5,7 @@ import { databaseUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl);
 const migration = async (path: string) => (await Bun.file(path).text()).split('R"sql(')[1].split(')sql"')[0];
-const historical = await migration('service/config/model-revisions.h');
+const historical = await migration('service/config/model_revisions.h');
 const current = await migration('service/config/current_device_model.h');
 const rollback = new Error('fixture rollback');
 try {

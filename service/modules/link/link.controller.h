@@ -34,12 +34,12 @@ class LinkController final {
 
   private:
     ruvia::task<LinkDebugPacketsResponse> queryDebugPackets(ruvia::context& c, service::middleware::RequestContext& request, std::string_view linkId) {
-        co_return service::common::ok<LinkDebugPacketsResponse>(request, co_await linkService().debugPackets(request, linkId));
+        co_return service::common::ok<LinkDebugPacketsResponse>(request, co_await LinkService::instance().debugPackets(request, linkId));
     }
 
     ruvia::task<ruvia::http_response> setDebug(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await linkService().setDebug(request, id(c), c.req().validated<LinkDebugBody>().get<"enabled">());
+        co_await LinkService::instance().setDebug(request, id(c), c.req().validated<LinkDebugBody>().get<"enabled">());
         co_return c.json(service::common::operation(c, "调试设置已保存"));
     }
 
@@ -85,11 +85,11 @@ class LinkController final {
                     devices.insert(devices.end(), ids->begin(), ids->end());
                 }
             }
-            for (auto& id : co_await linkService().linksOfDevices(request, devices)) {
+            for (auto& id : co_await LinkService::instance().linksOfDevices(request, devices)) {
                 requested.insert(std::move(id));
             }
             const auto& query = c.req().validated<LinkListQuery>();
-            const auto links = co_await linkService().listByIds(request, std::vector<std::string>(requested.begin(), requested.end()), text(query.get<"keyword">()), text(query.get<"mode">()), text(query.get<"protocol">()), text(query.get<"status">()));
+            const auto links = co_await LinkService::instance().listByIds(request, std::vector<std::string>(requested.begin(), requested.end()), text(query.get<"keyword">()), text(query.get<"mode">()), text(query.get<"protocol">()), text(query.get<"status">()));
             auto answer = visible->answer(requested, rows(links));
             if (answer.outcome == service::middleware::LiveCollection::Outcome::Snapshot) {
                 co_return co_await linksSnapshot(request);
@@ -130,7 +130,7 @@ class LinkController final {
             },
             [&c, &debugAuthorized, debugId]() -> ruvia::task<void> {
                 if (!debugId.empty() && debugAuthorized) {
-                    co_await linkService().extendDebugLease(c, debugId);
+                    co_await LinkService::instance().extendDebugLease(c, debugId);
                 }
                 co_return;
             }
@@ -149,36 +149,36 @@ class LinkController final {
 
     static ruvia::task<LinkPageDataDto> queryPage(ruvia::context& c, service::middleware::RequestContext& request) {
         const auto& query = c.req().validated<LinkListQuery>();
-        co_return co_await linkService().list(request, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), text(query.get<"keyword">()), text(query.get<"mode">()), text(query.get<"protocol">()), text(query.get<"status">()));
+        co_return co_await LinkService::instance().list(request, static_cast<std::int64_t>(*query.get<"page">()), static_cast<std::int64_t>(*query.get<"pageSize">()), text(query.get<"keyword">()), text(query.get<"mode">()), text(query.get<"protocol">()), text(query.get<"status">()));
     }
 
     ruvia::task<ruvia::http_response> enums(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<LinkEnumsResponse>(request, linkService().enums(request)));
+        co_return c.json(service::common::ok<LinkEnumsResponse>(request, LinkService::instance().enums(request)));
     }
 
     ruvia::task<ruvia::http_response> publicIp(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         PublicIpDto result(ruvia::model_options{ .resource_ = request.arena() });
-        result.set<"ip">(co_await linkService().publicIp(request));
+        result.set<"ip">(co_await LinkService::instance().publicIp(request));
         co_return c.json(service::common::ok<PublicIpResponse>(request, std::move(result)));
     }
 
     ruvia::task<ruvia::http_response> create(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await linkService().create(request, c.req().validated<SaveLinkBody>());
+        co_await LinkService::instance().create(request, c.req().validated<SaveLinkBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::task<ruvia::http_response> update(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await linkService().update(request, id(c), c.req().validated<SaveLinkBody>());
+        co_await LinkService::instance().update(request, id(c), c.req().validated<SaveLinkBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::task<ruvia::http_response> remove(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await linkService().remove(request, id(c));
+        co_await LinkService::instance().remove(request, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

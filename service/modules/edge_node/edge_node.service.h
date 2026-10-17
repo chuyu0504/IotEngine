@@ -57,11 +57,11 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
+#include "service/middleware/auth.h"
 #include "service/middleware/log.h"
 #include "service/middleware/request_context.h"
 #include "service/modules/edge_node/edge_node.entity.h"
 #include "service/modules/edge_node/edge_node.types.h"
-#include "service/modules/system/auth/auth.service.h"
 #include "service/modules/system/outbox/outbox.service.h"
 #include "service/modules/vpn/vpn.entity.h"
 #include "service/modules/vpn/vpn.service.h"
@@ -461,6 +461,11 @@ class FirmwareUpload final {
 
 class EdgeService {
   public:
+    static EdgeService& instance() {
+        static thread_local EdgeService service;
+        return service;
+    }
+
     template <typename Context>
     ruvia::task<std::string> dtuChannels(Context& c, std::string_view nodeId) {
         ruvia::db_query node(c.pool());
@@ -729,17 +734,16 @@ class EdgeService {
     // Edge nodes holding a VPN peer in one of `networks`.
     template <typename Context>
     ruvia::task<service::message::live::ChangeSet::Ids> networkNodes(Context& c, const service::message::live::ChangeSet::Ids& networks) {
-        using Peer = service::vpn::entities::VpnPeerEntity;
         service::message::live::ChangeSet::Ids result;
         ruvia::db_query query(c.pool());
         const auto values = uuidList(query, networks);
         if (values.empty()) {
             co_return result;
         }
-        const auto node = query.column(Peer::column<"edge_node_id">().name());
+        const auto node = query.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name());
         query.select(query.cast(node, Type::text))
-            .from(Peer::table_name())
-            .where(query.binary(query.column(Peer::column<"network_id">().name()), Op::in, query.list(values)))
+            .from(service::vpn::entities::VpnPeerEntity::table_name())
+            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column<"network_id">().name()), Op::in, query.list(values)))
             .and_where(query.unary(Unary::is_not_null, node));
         for (const auto& row : co_await c.db().query(query)) {
             result.emplace(row[0].value().value_or(std::string_view{}));
@@ -750,12 +754,11 @@ class EdgeService {
     // VPN networks in which `nodeId` holds a peer.
     template <typename Context>
     ruvia::task<service::message::live::ChangeSet::Ids> nodeNetworks(Context& c, std::string_view nodeId) {
-        using Peer = service::vpn::entities::VpnPeerEntity;
         service::message::live::ChangeSet::Ids result;
         ruvia::db_query query(c.pool());
-        query.select(query.cast(query.column(Peer::column<"network_id">().name()), Type::text))
-            .from(Peer::table_name())
-            .where(query.binary(query.column(Peer::column<"edge_node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
+        query.select(query.cast(query.column(service::vpn::entities::VpnPeerEntity::column<"network_id">().name()), Type::text))
+            .from(service::vpn::entities::VpnPeerEntity::table_name())
+            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
         for (const auto& row : co_await c.db().query(query)) {
             result.emplace(row[0].value().value_or(std::string_view{}));
         }
@@ -764,9 +767,9 @@ class EdgeService {
 
     template <typename Context>
     ruvia::task<std::string> vpnState(Context& c, std::string_view nodeId) {
-        co_await service::auth::AuthService::requirePermission(c, c.userId, "iot:vpn:query");
-        const auto peers = co_await service::vpn::vpnService().peers(c, std::nullopt, std::string(nodeId));
-        const auto routes = co_await service::vpn::vpnService().routes(c, std::nullopt, std::string(nodeId));
+        co_await service::middleware::authPort(c).requirePermission(c, c.userId, "iot:vpn:query");
+        const auto peers = co_await service::vpn::VpnService::instance().peers(c, std::nullopt, std::string(nodeId));
+        const auto routes = co_await service::vpn::VpnService::instance().routes(c, std::nullopt, std::string(nodeId));
         co_return "{\"peers\":" + peers + ",\"routes\":" + routes + "}";
     }
 
@@ -1512,8 +1515,13 @@ class EdgeService {
     ruvia::task<debug::EventResult> authenticateDebugConnection(debug::EventContext& c, const DebugAuthenticationBody& body) {
         const auto revision = c.identity.revision;
         const auto token = body.get<"token">().view();
-        const auto principal = service::auth::AuthTokenService::verifyAccessToken(c, token);
-        (void)co_await service::auth::authService().current(c, principal.userId);
+        const auto principal = service::middleware::authPort(c).verifyAccessToken(c.connection, token);
+        if (principal.state != service::middleware::AccessTokenState::valid) {
+            const bool expired = principal.state == service::middleware::AccessTokenState::expired;
+            throw debug::EventError(expired ? 11005 : 11006, expired ? "登录已过期" : "登录令牌无效");
+        }
+        c.userId = principal.userId;
+        (void)co_await service::middleware::authPort(c).currentUserSnapshot(c);
         if (c.stop.stop_requested() || c.identity.revision != revision) {
             throw debug::EventError(10002, "认证操作已取消或会话已变更");
         }
@@ -2306,8 +2314,6 @@ class EdgeService {
     static constexpr std::string_view kBridgePortColumn = "value";
 
     static ruvia::db_query nodeSelect(std::pmr::memory_resource* resource) {
-        using Route = service::vpn::entities::VpnRouteEntity;
-        using Peer = service::vpn::entities::VpnPeerEntity;
         ruvia::db_query query(resource);
         const auto nodeId = query.column(entities::EdgeNodeEntity::column<"id">().name(), "node");
         const auto status = query.column(entities::EdgeNodeEntity::column<"status">().name(), "node");
@@ -2331,15 +2337,15 @@ class EdgeService {
 
         ruvia::db_query vpn(resource);
         const auto vpnNodeId = vpn.import_expression(nodeId, "node", "node");
-        const auto virtualCidr = vpn.column(Route::column<"virtual_cidr">().name(), "route");
+        const auto virtualCidr = vpn.column(service::vpn::entities::VpnRouteEntity::column<"virtual_cidr">().name(), "route");
         const std::array<ruvia::db_order_term, 1> vpnOrder{ { { virtualCidr, ruvia::db_order_direction::asc, ruvia::db_nulls_order::default_value } } };
         vpn.select(vpn.aggregate("string_agg", { virtualCidr, vpn.cast(vpn.value(","), Type::text) }, false, vpnOrder))
-            .from(Route::table_name(), "route")
-            .join(ruvia::db_join_type::inner, Peer::table_name(), vpn.binary(vpn.column(Peer::column<"id">().name(), "peer"), Op::equal, vpn.column(Route::column<"edge_peer_id">().name(), "route")), "peer")
-            .where(vpn.binary(vpn.column(Peer::column<"edge_node_id">().name(), "peer"), Op::equal, vpnNodeId))
-            .and_where(vpn.binary(vpn.column(Peer::column<"status">().name(), "peer"), Op::equal, vpn.value("active")))
-            .and_where(vpn.unary(Unary::is_true, vpn.column(Route::column<"enabled">().name(), "route")))
-            .and_where(vpn.binary(vpn.column(Route::column<"status">().name(), "route"), Op::equal, vpn.value("active")));
+            .from(service::vpn::entities::VpnRouteEntity::table_name(), "route")
+            .join(ruvia::db_join_type::inner, service::vpn::entities::VpnPeerEntity::table_name(), vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"id">().name(), "peer"), Op::equal, vpn.column(service::vpn::entities::VpnRouteEntity::column<"edge_peer_id">().name(), "route")), "peer")
+            .where(vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"edge_node_id">().name(), "peer"), Op::equal, vpnNodeId))
+            .and_where(vpn.binary(vpn.column(service::vpn::entities::VpnPeerEntity::column<"status">().name(), "peer"), Op::equal, vpn.value("active")))
+            .and_where(vpn.unary(Unary::is_true, vpn.column(service::vpn::entities::VpnRouteEntity::column<"enabled">().name(), "route")))
+            .and_where(vpn.binary(vpn.column(service::vpn::entities::VpnRouteEntity::column<"status">().name(), "route"), Op::equal, vpn.value("active")));
 
         const auto nodeColumn = [&query](std::string_view name) {
             return query.column(name, "node");
@@ -2904,19 +2910,14 @@ class EdgeService {
     }
 };
 
-inline EdgeService& edgeService() {
-    thread_local EdgeService instance;
-    return instance;
-}
-
 namespace debug {
 
 inline ruvia::task<void> TerminalSession::close(EventContext& c) {
-    (void)co_await edgeService().terminalOperation(c, node, id, connection, "terminal-close");
+    (void)co_await EdgeService::instance().terminalOperation(c, node, id, connection, "terminal-close");
 }
 
 inline ruvia::task<void> SerialSession::close(EventContext& c) {
-    (void)co_await edgeService().serialOperation(c, node, id, connection, "serial-close");
+    (void)co_await EdgeService::instance().serialOperation(c, node, id, connection, "serial-close");
 }
 
 } // namespace debug
@@ -3067,10 +3068,14 @@ class DebugConnection final {
                         if (identity_.accessToken.empty()) {
                             throw debug::EventError(11004, "未登录");
                         }
-                        const auto principal = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
+                        const auto principal = service::middleware::authPort(event).verifyAccessToken(context_, identity_.accessToken);
+                        if (principal.state != service::middleware::AccessTokenState::valid) {
+                            const bool expired = principal.state == service::middleware::AccessTokenState::expired;
+                            throw debug::EventError(expired ? 11005 : 11006, expired ? "登录已过期" : "登录令牌无效");
+                        }
                         event.userId = principal.userId;
                         if (!policy.permission.empty()) {
-                            co_await service::auth::AuthService::requirePermission(event, event.userId, policy.permission);
+                            co_await service::middleware::authPort(event).requirePermission(event, event.userId, policy.permission);
                         }
                         if (stop.stop_requested() || identity_.revision != revision) {
                             break;
@@ -3091,7 +3096,15 @@ class DebugConnection final {
                                 pending->stop.request_stop();
                             }
                         }
-                        const auto owner = identity_.accessToken.empty() ? std::string{} : service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
+                        std::string owner;
+                        if (!identity_.accessToken.empty()) {
+                            auto principal = service::middleware::authPort(event).verifyAccessToken(context_, identity_.accessToken);
+                            if (principal.state != service::middleware::AccessTokenState::valid) {
+                                const bool expired = principal.state == service::middleware::AccessTokenState::expired;
+                                throw debug::EventError(expired ? 11005 : 11006, expired ? "登录已过期" : "登录令牌无效");
+                            }
+                            owner = std::move(principal.userId);
+                        }
                         co_await closeResources(owner);
                     }
                     if (first || result.incremental || previous != result.data) {
@@ -3130,12 +3143,6 @@ class DebugConnection final {
             const auto info = error.info();
             code = service::common::errorCode(info.code(), info.status().value());
             message = info.message();
-        } catch (const service::auth::JwtExpiredError&) {
-            code = 11005;
-            message = "登录已过期";
-        } catch (const service::auth::JwtInvalidError&) {
-            code = 11006;
-            message = "登录令牌无效";
         } catch (const std::exception& error) {
             LOG_WARN << "edge debug event " << request.event << " failed: " << error.what();
             code = 10004;
@@ -3229,13 +3236,18 @@ class DebugConnection final {
                 debug::EventContext event(context_, identity_, request, stop, resources_, state);
                 bool denied = false;
                 try {
-                    event.userId = service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken).userId;
+                    auto principal = service::middleware::authPort(event).verifyAccessToken(context_, identity_.accessToken);
+                    if (principal.state != service::middleware::AccessTokenState::valid) {
+                        const bool expired = principal.state == service::middleware::AccessTokenState::expired;
+                        throw debug::EventError(expired ? 11005 : 11006, expired ? "登录已过期" : "登录令牌无效");
+                    }
+                    event.userId = std::move(principal.userId);
                     std::unordered_set<std::string> permissions;
                     for (const auto& [id, resource] : resources_) {
                         permissions.insert(resource->permission);
                     }
                     for (const auto& permission : permissions) {
-                        co_await service::auth::AuthService::requirePermission(event, event.userId, permission);
+                        co_await service::middleware::authPort(event).requirePermission(event, event.userId, permission);
                         if (identity_.revision != revision || stop.stop_requested()) {
                             break;
                         }
@@ -3267,12 +3279,9 @@ class DebugConnection final {
             if (identity_.accessToken.empty()) {
                 continue;
             }
-            const debug::Request request;
-            std::any state;
-            debug::EventContext event(context_, identity_, request, stop, resources_, state);
             bool expired = false;
             try {
-                (void)service::auth::AuthTokenService::verifyAccessToken(event, identity_.accessToken);
+                expired = service::middleware::authPort(context_).verifyAccessToken(context_, identity_.accessToken).state != service::middleware::AccessTokenState::valid;
             } catch (const std::exception& error) {
                 LOG_DEBUG << "edge debug authorization expired: " << error.what();
                 expired = true;

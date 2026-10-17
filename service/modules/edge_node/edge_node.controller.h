@@ -40,7 +40,7 @@ class EdgeController final {
 
     static void registerDebugOperations(Registry& registry) {
         using service::edge_node::debug::invokeEvent;
-        auto* handlers = &edgeService();
+        auto* handlers = &EdgeService::instance();
         registry.add("edge.debug.authenticate", handlers, &invokeEvent<EdgeService, &EdgeService::authenticateDebugConnection, DebugAuthenticationBody>, { .authenticated = false });
         registry.add("edge.serial.open", handlers, &invokeEvent<EdgeService, &EdgeService::openSerial, NodeSerialOpenInput>, { .permission = "iot:edge:terminal" });
         registry.add("edge.serial.command", handlers, &invokeEvent<EdgeService, &EdgeService::sendSerialCommand, NodeSerialCommandInput>, { .permission = "iot:edge:terminal" });
@@ -142,8 +142,8 @@ class EdgeManagementController final {
 
         const auto inventory = std::make_shared<Inventory>();
         auto nodes = [inventory](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-            const auto all = co_await edgeService().inventory(request);
+            co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+            const auto all = co_await EdgeService::instance().inventory(request);
             inventory->vpnNodes.clear();
             const auto rows = nodeRows(all, inventory->vpnNodes);
             inventory->collection.assign(rows);
@@ -158,15 +158,15 @@ class EdgeManagementController final {
         };
         std::vector<service::middleware::LiveChannel> channels;
         channels.push_back({ "nodes", { std::string(topic::kEdge), std::string(topic::kEdgeGroup), std::string(topic::kVpn) }, nodes, [nodes, inventory](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
-                                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-                                const auto ids = co_await edgeService().changedNodeIds(request, changes, inventory->vpnNodes);
+                                co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                                const auto ids = co_await EdgeService::instance().changedNodeIds(request, changes, inventory->vpnNodes);
                                 if (!ids) {
                                     co_return co_await nodes(request);
                                 }
                                 if (ids->empty()) {
                                     co_return std::nullopt;
                                 }
-                                const auto changed = co_await edgeService().inventory(request, *ids);
+                                const auto changed = co_await EdgeService::instance().inventory(request, *ids);
                                 auto vpnNodes = inventory->vpnNodes;
                                 for (const auto& id : *ids) {
                                     vpnNodes.erase(id);
@@ -188,8 +188,8 @@ class EdgeManagementController final {
         if (nodeId) {
             const auto id = *nodeId;
             auto detail = [id](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-                co_return service::middleware::dataJson(service::middleware::modelJson(co_await edgeService().detail(request, id)));
+                co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                co_return service::middleware::dataJson(service::middleware::modelJson(co_await EdgeService::instance().detail(request, id)));
             };
             channels.push_back({ "detail", { std::string(topic::kEdge) }, detail, [detail, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                     if (!touches(changes, topic::kEdge, id)) {
@@ -199,8 +199,8 @@ class EdgeManagementController final {
                                 } });
             if (*scope.get<"dtu">()) {
                 auto dtu = [id](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                    co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-                    co_return service::middleware::dataJson(co_await edgeService().dtuChannels(request, id));
+                    co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                    co_return service::middleware::dataJson(co_await EdgeService::instance().dtuChannels(request, id));
                 };
                 channels.push_back({ "dtu", { std::string(topic::kEdgeDtu) }, dtu, [dtu, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         if (!touches(changes, topic::kEdgeDtu, id)) {
@@ -211,8 +211,8 @@ class EdgeManagementController final {
             }
             if (*scope.get<"logs">()) {
                 auto logs = [id, &c](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                    co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-                    co_return service::middleware::dataJson(service::middleware::modelJson(co_await edgeService().logSnapshot(request, id, c.req().validated<LogsQuery>())));
+                    co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                    co_return service::middleware::dataJson(service::middleware::modelJson(co_await EdgeService::instance().logSnapshot(request, id, c.req().validated<LogsQuery>())));
                 };
                 channels.push_back({ "logs", { std::string(topic::kEdgeLogs) }, logs, [logs, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         if (!touches(changes, topic::kEdgeLogs, id)) {
@@ -226,15 +226,15 @@ class EdgeManagementController final {
                 // held or now holds a peer in one of them.
                 const auto networks = std::make_shared<service::message::live::ChangeSet::Ids>();
                 auto vpn = [id, networks](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                    co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-                    *networks = co_await edgeService().nodeNetworks(request, id);
-                    co_return service::middleware::dataJson(co_await edgeService().vpnState(request, id));
+                    co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                    *networks = co_await EdgeService::instance().nodeNetworks(request, id);
+                    co_return service::middleware::dataJson(co_await EdgeService::instance().vpnState(request, id));
                 };
                 channels.push_back({ "vpn", { std::string(topic::kVpn), std::string(topic::kEdge) }, vpn, [vpn, id, networks](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         bool changed = touches(changes, topic::kEdge, id);
                                         if (const auto* ids = changes.find(topic::kVpn); !changed && ids) {
                                             changed = !*ids || touchesAny(**ids, *networks) ||
-                                                touchesAny(**ids, co_await edgeService().nodeNetworks(request, id));
+                                                touchesAny(**ids, co_await EdgeService::instance().nodeNetworks(request, id));
                                         }
                                         if (!changed) {
                                             co_return std::nullopt;
@@ -252,7 +252,7 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& query = c.req().validated<EdgeListQuery>();
-        auto result = co_await edgeService().list(request, *query.get<"page">(), *query.get<"pageSize">(), text(query.get<"keyword">()), text(query.get<"status">()), text(query.get<"groupId">()));
+        auto result = co_await EdgeService::instance().list(request, *query.get<"page">(), *query.get<"pageSize">(), text(query.get<"keyword">()), text(query.get<"status">()), text(query.get<"groupId">()));
         co_return c.json(service::common::ok<EdgePageResponse>(request, std::move(result)));
     }
 
@@ -260,20 +260,20 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeIdParams>();
-        auto result = co_await edgeService().detail(request, body.get<"id">().view());
+        auto result = co_await EdgeService::instance().detail(request, body.get<"id">().view());
         co_return c.json(service::common::ok<EdgeNodeResponse>(request, std::move(result)));
     }
 
     ruvia::task<ruvia::http_response> groups(ruvia::context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(service::common::ok<EdgeGroupsResponse>(request, co_await edgeService().groups(request)));
+        co_return c.json(service::common::ok<EdgeGroupsResponse>(request, co_await EdgeService::instance().groups(request)));
     }
 
     ruvia::task<ruvia::http_response> createGroup(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeGroupBody>();
-        co_await edgeService().createGroup(request, body);
+        co_await EdgeService::instance().createGroup(request, body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -282,7 +282,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeGroupBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().updateGroup(request, std::string(id), body);
+        co_await EdgeService::instance().updateGroup(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -290,7 +290,7 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeIdParams>();
-        co_await edgeService().removeGroup(request, body.get<"id">().view());
+        co_await EdgeService::instance().removeGroup(request, body.get<"id">().view());
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -299,7 +299,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EnrollmentBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().setEnrollment(request, std::string(id), body);
+        co_await EdgeService::instance().setEnrollment(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -307,7 +307,7 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeIdParams>();
-        co_await edgeService().removeEnrollment(request, body.get<"id">().view());
+        co_await EdgeService::instance().removeEnrollment(request, body.get<"id">().view());
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -316,7 +316,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<NodeNameBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().renameNode(request, std::string(id), body);
+        co_await EdgeService::instance().renameNode(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -325,7 +325,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<NodeGroupBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().setNodeGroup(request, std::string(id), body);
+        co_await EdgeService::instance().setNodeGroup(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -334,14 +334,14 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<NetworkBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().queueNetwork(request, std::string(id), body);
+        co_await EdgeService::instance().queueNetwork(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
     ruvia::task<ruvia::http_response> dtuChannels(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto result = service::middleware::dataJson(co_await edgeService().dtuChannels(request, c.req().validated<EdgeIdParams>().get<"id">().view()));
+        const auto result = service::middleware::dataJson(co_await EdgeService::instance().dtuChannels(request, c.req().validated<EdgeIdParams>().get<"id">().view()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(result));
     }
@@ -350,7 +350,7 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto body = c.req().validated_json<DtuChannelBody>();
-        co_await edgeService().saveDtuChannel(request, c.req().validated<EdgeIdParams>().get<"id">().view(), body.value(), body.raw());
+        co_await EdgeService::instance().saveDtuChannel(request, c.req().validated<EdgeIdParams>().get<"id">().view(), body.value(), body.raw());
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -358,7 +358,7 @@ class EdgeManagementController final {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<DtuChannelParams>();
-        co_await edgeService().deleteDtuChannel(request, body.get<"id">().view(), body.get<"channelId">().view());
+        co_await EdgeService::instance().deleteDtuChannel(request, body.get<"id">().view(), body.get<"channelId">().view());
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -376,7 +376,7 @@ class EdgeManagementController final {
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
         const auto& body = c.req().validated<FirmwareReuseBody>();
         FirmwareReuseResult result(ruvia::model_options{ .resource_ = c.arena() });
-        result.set<"reused">(co_await edgeService().reuseFirmware(request, id, body));
+        result.set<"reused">(co_await EdgeService::instance().reuseFirmware(request, id, body));
         co_return c.json(result);
     }
 
@@ -389,7 +389,7 @@ class EdgeManagementController final {
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
         const auto& configuration = c.req().validated<FirmwareUploadBody>();
         try {
-            const auto directory = co_await edgeService().prepareFirmwareUpload(request, id);
+            const auto directory = co_await EdgeService::instance().prepareFirmwareUpload(request, id);
             service::edge_node::FirmwareUpload file(service::utils::nextUuid(request.template worker_state<service::common::UuidV7State>()), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
             auto& reader = c.req().get_body_reader();
             while (auto chunk = co_await reader.read()) {
@@ -411,8 +411,8 @@ class EdgeManagementController final {
                 service::common::fail(17017, "固件上传尚未完成", 400);
             }
             (void)service::middleware::requireAuth(c);
-            co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:firmware");
-            co_await edgeService().finishFirmwareUpload(request, id, configuration, file.path, hash, static_cast<std::int64_t>(file.received));
+            co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:firmware");
+            co_await EdgeService::instance().finishFirmwareUpload(request, id, configuration, file.path, hash, static_cast<std::int64_t>(file.received));
         } catch (const ruvia::http_error&) {
             throw;
         } catch (const std::exception& error) {
@@ -428,7 +428,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<EdgeIdParams>();
         const LogsQuery query;
-        (void)co_await edgeService().logs(request, body.get<"id">().view(), query);
+        (void)co_await EdgeService::instance().logs(request, body.get<"id">().view(), query);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -437,7 +437,7 @@ class EdgeManagementController final {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto& body = c.req().validated<LogLevelBody>();
         const auto id = c.req().validated<EdgeIdParams>().get<"id">().view();
-        co_await edgeService().setLogLevel(request, std::string(id), body);
+        co_await EdgeService::instance().setLogLevel(request, std::string(id), body);
         co_return c.json(service::common::operation(c, "ok"));
     }
 };
@@ -454,7 +454,7 @@ class EdgePublicController final {
 
         const auto& id = c.req().validated<EdgeIdParams>();
         const auto& query = c.req().validated<FirmwareDownloadQuery>();
-        auto [path, fileName] = co_await edgeService().firmwareDownload(
+        auto [path, fileName] = co_await EdgeService::instance().firmwareDownload(
             c,
             id.get<"id">().view(),
             query.get<"token">().view()

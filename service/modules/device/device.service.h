@@ -354,10 +354,6 @@ class DeviceAccessService {
     }
 };
 
-inline DeviceAccessService& deviceAccessService() {
-    return DeviceAccessService::instance();
-}
-
 using DeviceItems = std::map<std::string, DeviceItemDto*, std::less<>>;
 
 // 命令状态与可写命令目录归 command 模块（command 依赖 device）。设备详情与设备事件流的
@@ -403,7 +399,7 @@ class DeviceService {
             result.template set<"list">(ruvia::boxed_array<DeviceItemDto>(ruvia::model_options{ .resource_ = c.arena() })).template set<"total">(0);
             co_return result;
         }
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         selectItemColumns(query);
@@ -439,7 +435,7 @@ class DeviceService {
             result.template set<"list">(ruvia::boxed_array<DeviceRealtimeDto>(ruvia::model_options{ .resource_ = c.arena() })).template set<"total">(0);
             co_return result;
         }
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         const auto executionIsEdge = query.binary(query.column(service::link::entities::LinkEntity::column<"execution">().name(), "l"), ruvia::db_binary_operator::equal, query.value("edge"));
@@ -496,7 +492,6 @@ class DeviceService {
     template <typename Context>
     ruvia::task<std::vector<std::string>> devicesReferencing(Context& c, const std::vector<std::string>& linkIds, const std::vector<std::string>& protocolConfigIds, const std::vector<std::string>& edgeNodeIds, const std::vector<std::string>& groupIds) {
         using Device = service::device::entities::DeviceEntity;
-        using Link = service::link::entities::LinkEntity;
         using Group = service::device::entities::DeviceGroupEntity;
         const auto links = validIds(linkIds);
         const auto protocols = validIds(protocolConfigIds);
@@ -515,7 +510,7 @@ class DeviceService {
             conditions.push_back(query.binary(query.column(Device::column<"protocol_config_id">().name(), "d"), ruvia::db_binary_operator::in, uuidList(query, protocols)));
         }
         if (!nodes.empty()) {
-            conditions.push_back(query.binary(query.column(Link::column<"edge_node_id">().name(), "l"), ruvia::db_binary_operator::in, uuidList(query, nodes)));
+            conditions.push_back(query.binary(query.column(service::link::entities::LinkEntity::column<"edge_node_id">().name(), "l"), ruvia::db_binary_operator::in, uuidList(query, nodes)));
         }
         if (!groups.empty()) {
             ruvia::db_query roots(query.resource());
@@ -538,7 +533,7 @@ class DeviceService {
         }
         query.select(db::text(query, query.column(Device::column<"id">().name(), "d")))
             .from(Device::table_name(), "d")
-            .join(ruvia::db_join_type::left, Link::table_name(), query.binary(query.column(Link::column<"id">().name(), "l"), ruvia::db_binary_operator::equal, query.column(Device::column<"link_id">().name(), "d")), "l")
+            .join(ruvia::db_join_type::left, service::link::entities::LinkEntity::table_name(), query.binary(query.column(service::link::entities::LinkEntity::column<"id">().name(), "l"), ruvia::db_binary_operator::equal, query.column(Device::column<"link_id">().name(), "d")), "l")
             .where(db::andAll(query, query.unary(ruvia::db_unary_operator::is_null, query.column(Device::column<"deleted_at">().name(), "d")), matches));
         const auto rows = co_await c.db().query(query);
         result.reserve(rows.size());
@@ -550,7 +545,7 @@ class DeviceService {
 
     template <typename Context>
     ruvia::task<DeviceItemDto> detail(Context& c, std::string_view id) {
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         selectItemColumns(query);
@@ -574,7 +569,7 @@ class DeviceService {
 
     template <typename Context>
     ruvia::task<std::string> history(Context& c, std::string_view id, const DeviceHistoryQuery& body) {
-        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::view, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, id, DeviceAccessLevel::view, c.userId);
         const auto start = body.template get<"startTime">().view();
         const auto end = body.template get<"endTime">().view();
         const auto requestedPage = static_cast<std::int64_t>(*body.template get<"page">());
@@ -598,7 +593,7 @@ class DeviceService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceOptionDto>> options(Context& c) {
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addScopedDevicesCtes(query, actor);
         query.select({ db::text(query, query.column(service::device::entities::DeviceEntity::column<"id">().name())), query.column(service::device::entities::DeviceEntity::column<"name">().name()), db::jsonText(query, query.column(service::device::entities::DeviceEntity::column<"protocol_params">().name()), "device_code"), DeviceAccessService::remoteControlEnabled(query, query.column(service::device::entities::DeviceEntity::column<"protocol_params">().name())), query.column(kAccessRankColumn) })
@@ -704,7 +699,7 @@ class DeviceService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
-        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, id, DeviceAccessLevel::owner, c.userId);
         co_await touchDebug(c.redis(), id);
         // 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
         const auto key = service::message::packet_log::deviceIndexKey(id);
@@ -814,7 +809,7 @@ return result
 
     template <typename Context>
     ruvia::task<void> setDebug(Context& c, std::string_view id, bool enabled) {
-        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, id, DeviceAccessLevel::owner, c.userId);
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query query(c.pool());
         query.update(service::device::entities::DeviceEntity::table_name())
@@ -877,7 +872,7 @@ return result
     ruvia::task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& input) {
         const auto& body = input;
         std::string resolvedLinkId = str(body.template get<"linkId">());
-        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, id, DeviceAccessLevel::owner, c.userId);
         ruvia::db_query currentQuery(c.pool());
         currentQuery
             .select({ db::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"link_id">().name(), "d")), currentQuery.coalesce({ db::text(currentQuery, currentQuery.column(service::link::entities::LinkEntity::column<"edge_node_id">().name(), "l")), currentQuery.value("") }), db::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"protocol_config_id">().name(), "d")), db::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"protocol_params">().name(), "d"), "device_code"), currentQuery.column(service::link::entities::LinkEntity::column<"execution">().name(), "l"), db::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"status">().name(), "d")) })
@@ -1058,7 +1053,7 @@ return result
 
     template <typename Context>
     ruvia::task<void> remove(Context& c, std::string_view id) {
-        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, id, DeviceAccessLevel::owner, c.userId);
         ruvia::db_query currentQuery(c.pool());
         currentQuery
             .select({ db::jsonText(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"protocol_params">().name(), "d"), "device_code"), currentQuery.coalesce({ db::text(currentQuery, currentQuery.column(service::link::entities::LinkEntity::column<"edge_node_id">().name(), "l")), currentQuery.value("") }), db::text(currentQuery, currentQuery.column(service::device::entities::DeviceEntity::column<"link_id">().name(), "d")), currentQuery.column(service::link::entities::LinkEntity::column<"execution">().name(), "l") })
@@ -1100,7 +1095,7 @@ return result
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceGroupItemDto>> listGroups(Context& c) {
-        const auto actor = co_await deviceAccessService().actor(c, c.userId);
+        const auto actor = co_await DeviceAccessService::instance().actor(c, c.userId);
         ruvia::db_query query(c.pool());
         DeviceAccessService::addVisibleGroupsCtes(query, actor);
         ruvia::db_query visible(query.resource());
@@ -2399,7 +2394,7 @@ class DeviceShareService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceShareItemDto>> list(Context& c, std::string_view deviceId) {
-        (void)co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
         ruvia::db_query currentDevice(c.pool());
         currentDevice.select(currentDevice.column(service::device::entities::DeviceEntity::column<"group_id">().name()))
             .from(service::device::entities::DeviceEntity::table_name())
@@ -2489,7 +2484,7 @@ class DeviceShareService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceShareTargetDto>> targets(Context& c, std::string_view deviceId) {
-        (void)co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
+        (void)co_await DeviceAccessService::instance().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
         ruvia::db_query owner(c.pool());
         owner.select(owner.column(service::device::entities::DeviceEntity::column<"created_by">().name()))
             .from(service::device::entities::DeviceEntity::table_name())
@@ -2525,7 +2520,7 @@ class DeviceShareService {
     template <typename Context>
     ruvia::task<void> replace(Context& c, std::string_view deviceId, const ReplaceDeviceSharesBody& body) {
         auto decision =
-            co_await deviceAccessService().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
+            co_await DeviceAccessService::instance().require(c, deviceId, DeviceAccessLevel::owner, c.userId);
         auto shares = normalize(body);
 
         auto transaction = co_await c.db().begin_transaction();
@@ -2567,7 +2562,7 @@ class DeviceShareService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceShareItemDto>> listGroup(Context& c, std::string_view groupId) {
-        (void)co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
+        (void)co_await DeviceAccessService::instance().requireGroupOwner(c, groupId, c.userId);
         ruvia::db_query query(c.pool());
         const auto isUser = query.unary(ruvia::db_unary_operator::is_not_null, query.column(service::device::entities::DeviceGroupAccessGrantEntity::column<"user_id">().name(), "access_grant"));
         const auto subjectType = query.case_when(
@@ -2611,7 +2606,7 @@ class DeviceShareService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<DeviceShareTargetDto>> groupTargets(Context& c, std::string_view groupId) {
-        (void)co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
+        (void)co_await DeviceAccessService::instance().requireGroupOwner(c, groupId, c.userId);
         ruvia::db_query owner(c.pool());
         owner.select(owner.column(service::device::entities::DeviceGroupEntity::column<"created_by">().name()))
             .from(service::device::entities::DeviceGroupEntity::table_name())
@@ -2646,7 +2641,7 @@ class DeviceShareService {
 
     template <typename Context>
     ruvia::task<void> replaceGroup(Context& c, std::string_view groupId, const ReplaceDeviceSharesBody& body) {
-        auto actor = co_await deviceAccessService().requireGroupOwner(c, groupId, c.userId);
+        auto actor = co_await DeviceAccessService::instance().requireGroupOwner(c, groupId, c.userId);
         auto shares = normalize(body);
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query groupQuery(c.pool());
@@ -2747,13 +2742,5 @@ class DeviceShareService {
         }
     }
 };
-
-inline DeviceShareService& deviceShareService() {
-    return DeviceShareService::instance();
-}
-
-inline DeviceService& deviceService() {
-    return DeviceService::instance();
-}
 
 } // namespace service::device

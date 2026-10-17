@@ -1,27 +1,28 @@
 #pragma once
-#include "service/config/mqtt.h"
-
 #include <algorithm>
-#include <vector>
 #include <stdexcept>
-#include <ruvia/web/db/db_schema.h>
-#include "service/utils/crypto.h"
-#include <ruvia/web/db/db_migration.h>
 #include <utility>
-#include "service/config/model-revisions.h"
-#include "service/config/current_device_model.h"
-#include "service/config/native_points.h"
-#include "service/config/device_parameters.h"
-#include "service/config/device_parameter_definitions.h"
-#include "service/config/industrial_protocols.h"
+#include <vector>
+
+#include <ruvia/web/db/db_migration.h>
+#include <ruvia/web/db/db_schema.h>
+
 #include "service/config/channels.h"
+#include "service/config/current_device_model.h"
+#include "service/config/device_parameter_definitions.h"
+#include "service/config/device_parameters.h"
+#include "service/config/industrial_protocols.h"
+#include "service/config/model_revisions.h"
+#include "service/config/mqtt.h"
+#include "service/config/native_points.h"
+#include "service/utils/crypto.h"
 
 namespace service::config {
 
 inline const auto kSchemaMigrations = [] {
     using Type = ruvia::db_data_type;
     std::vector<ruvia::db_migration> migrations{
-    ruvia::db_migration({.id_="0000_unified_link_boundary", .sql_=R"sql(
+        ruvia::db_migration({ .id_ = "0000_unified_link_boundary", .sql_ = R"sql(
 DO $schema$
 BEGIN
 IF NOT EXISTS (SELECT 1 FROM sys_schema_migrations) THEN
@@ -184,8 +185,8 @@ ALTER TABLE link
     DROP COLUMN agent_gateway;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0001_initial_schema", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0001_initial_schema", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE EXTENSION IF NOT EXISTS timescaledb;
@@ -426,8 +427,8 @@ EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), 'UTC'
 PERFORM set_config('TimeZone', 'UTC', false);
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0002_device_access_control", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0002_device_access_control", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE device_access_grant (
@@ -473,8 +474,8 @@ CREATE INDEX idx_security_audit_actor_time
     ON security_audit_log(actor_user_id, occurred_at DESC);
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0003_device_share_without_manage", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0003_device_share_without_manage", .sql_ = R"sql(
 DO $schema$
 BEGIN
 UPDATE device_access_grant
@@ -490,8 +491,8 @@ ALTER TABLE device_access_grant
     CHECK (access_level IN ('view', 'operate'));
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0004_device_group_access_control", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0004_device_group_access_control", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE device_group_access_grant (
@@ -519,8 +520,8 @@ CREATE INDEX idx_device_group_access_department_scope
     ON device_group_access_grant(department_id, group_id) WHERE department_id IS NOT NULL;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0005_open_access", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0005_open_access", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE open_access_key (
@@ -628,8 +629,8 @@ CREATE INDEX idx_open_alert_status_time
     ON open_alert_record(status, triggered_at DESC);
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0006_edge_node_management", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0006_edge_node_management", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE edge_node (
@@ -738,8 +739,8 @@ CREATE TABLE edge_task (
 CREATE INDEX idx_edge_task_node_created ON edge_task(node_id, created_at DESC);
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0007_edge_device_assignment", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0007_edge_device_assignment", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_node
@@ -766,8 +767,8 @@ CREATE INDEX idx_edge_config_revision_created
     ON edge_config_revision(node_id, created_at DESC);
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0008_edge_network_management", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0008_edge_network_management", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_node
@@ -792,8 +793,8 @@ CREATE TABLE edge_node_network (
 );
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0009_edge_modem_management", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0009_edge_modem_management", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_node
@@ -820,8 +821,8 @@ ALTER TABLE edge_task ADD CONSTRAINT edge_task_task_type_check
                          'platform_upsert', 'platform_delete'));
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0010_unified_json_runtime_design", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0010_unified_json_runtime_design", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_node
@@ -908,8 +909,8 @@ ALTER TABLE edge_node_platform
     DROP COLUMN last_message;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0011_edge_log_status", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0011_edge_log_status", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_node
@@ -923,8 +924,8 @@ SET status = jsonb_set(
 WHERE NOT (status ? 'log') OR status->'log'->>'level' IS NULL;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0012_alert_center", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0012_alert_center", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE alert_rule (
@@ -1011,8 +1012,8 @@ CREATE TABLE alert_rule_state (
 );
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0013_timestamp_contract", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0013_timestamp_contract", .sql_ = R"sql(
 DO $schema$
 BEGIN
 EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), 'UTC');
@@ -1036,8 +1037,8 @@ COMMENT ON FUNCTION iot_utc_timestamp(TIMESTAMPTZ) IS
 $definition$;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0014_gb28181_projection", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0014_gb28181_projection", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE gb28181_device (
@@ -1098,43 +1099,33 @@ CREATE INDEX idx_gb28181_stream_online
     ON gb28181_stream(online, updated_at DESC);
 END
 $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_index({.name_="idx_alert_rule_enabled_device", .table_="alert_rule", .keys_={{.column_="device_id"}},
-            .where_=q.binary(q.unary(ruvia::db_unary_operator::is_null, q.column("deleted_at")), ruvia::db_binary_operator::and_value, q.binary(q.column("status"), ruvia::db_binary_operator::equal, q.value("enabled")))});
-        schema.create_index({.name_="idx_gb28181_record_device_time", .table_="gb28181_record",
-            .keys_={{.column_="device_id"},{.column_="start_time",.order_=ruvia::db_order_direction::desc}}});
-        auto result = schema.compile("0015_sql_query_optimization");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_index({.name_="idx_open_access_log_time", .table_="open_access_log",
-            .keys_={{.column_="created_at",.order_=ruvia::db_order_direction::desc},{.column_="id",.order_=ruvia::db_order_direction::desc}}});
-        schema.create_index({.name_="idx_open_alert_time", .table_="open_alert_record",
-            .keys_={{.column_="triggered_at",.order_=ruvia::db_order_direction::desc},{.column_="id",.order_=ruvia::db_order_direction::desc}}});
-        schema.create_index({.name_="idx_open_alert_unresolved_summary", .table_="open_alert_record",
-            .keys_={{.column_="severity"},{.column_="device_id"}},
-            .where_=q.binary(q.column("status"), ruvia::db_binary_operator::in, q.list({q.value("active"), q.value("acknowledged")}))});
-        schema.create_index({.name_="idx_open_alert_resolved_time", .table_="open_alert_record",
-            .keys_={{.column_="resolved_at",.order_=ruvia::db_order_direction::desc}},
-            .where_=q.binary(q.column("status"), ruvia::db_binary_operator::equal, q.value("resolved"))});
-        auto result = schema.compile("0016_mass_data_query_optimization");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.set_compression("device_data", {.enabled_=true, .segment_by_={"device_id"},
-            .order_by_={{.column_="report_time", .direction_=ruvia::db_order_direction::desc},
-                      {.column_="id", .direction_=ruvia::db_order_direction::desc}}});
-        auto result = schema.compile("0017_device_data_compression_layout");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0018_device_data_ingest_state", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_index({ .name_ = "idx_alert_rule_enabled_device", .table_ = "alert_rule", .keys_ = { { .column_ = "device_id" } }, .where_ = q.binary(q.unary(ruvia::db_unary_operator::is_null, q.column("deleted_at")), ruvia::db_binary_operator::and_value, q.binary(q.column("status"), ruvia::db_binary_operator::equal, q.value("enabled"))) });
+            schema.create_index({ .name_ = "idx_gb28181_record_device_time", .table_ = "gb28181_record", .keys_ = { { .column_ = "device_id" }, { .column_ = "start_time", .order_ = ruvia::db_order_direction::desc } } });
+            auto result = schema.compile("0015_sql_query_optimization");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_index({ .name_ = "idx_open_access_log_time", .table_ = "open_access_log", .keys_ = { { .column_ = "created_at", .order_ = ruvia::db_order_direction::desc }, { .column_ = "id", .order_ = ruvia::db_order_direction::desc } } });
+            schema.create_index({ .name_ = "idx_open_alert_time", .table_ = "open_alert_record", .keys_ = { { .column_ = "triggered_at", .order_ = ruvia::db_order_direction::desc }, { .column_ = "id", .order_ = ruvia::db_order_direction::desc } } });
+            schema.create_index({ .name_ = "idx_open_alert_unresolved_summary", .table_ = "open_alert_record", .keys_ = { { .column_ = "severity" }, { .column_ = "device_id" } }, .where_ = q.binary(q.column("status"), ruvia::db_binary_operator::in, q.list({ q.value("active"), q.value("acknowledged") })) });
+            schema.create_index({ .name_ = "idx_open_alert_resolved_time", .table_ = "open_alert_record", .keys_ = { { .column_ = "resolved_at", .order_ = ruvia::db_order_direction::desc } }, .where_ = q.binary(q.column("status"), ruvia::db_binary_operator::equal, q.value("resolved")) });
+            auto result = schema.compile("0016_mass_data_query_optimization");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.set_compression("device_data", { .enabled_ = true, .segment_by_ = { "device_id" }, .order_by_ = { { .column_ = "report_time", .direction_ = ruvia::db_order_direction::desc }, { .column_ = "id", .direction_ = ruvia::db_order_direction::desc } } });
+            auto result = schema.compile("0017_device_data_compression_layout");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0018_device_data_ingest_state", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE device_data_ingest_state (
@@ -1178,36 +1169,24 @@ WHERE recent.last_report_time IS NOT NULL
 ON CONFLICT (device_id) DO NOTHING;
 END
 $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="alert_event_outbox",.columns_={
-            {.name_="event_id",.type_={.data_type_=Type::uuid}},
-            {.name_="event_type",.type_={.data_type_=Type::varchar,.length_=64}},
-            {.name_="rule_id",.type_={.data_type_=Type::uuid}},
-            {.name_="device_id",.type_={.data_type_=Type::uuid}},
-            {.name_="device_code",.type_={.data_type_=Type::varchar,.length_=255},.default_value_=q.value("")},
-            {.name_="occurred_at_ms",.type_={.data_type_=Type::big_int}},
-            {.name_="data",.type_={.data_type_=Type::jsonb}},
-            {.name_="created_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")}},
-            .constraints_={{.name_="alert_event_outbox_pkey",.kind_=ruvia::db_constraint_kind::primary_key,.columns_={"event_id","event_type"}}}});
-        schema.create_index({.name_="idx_alert_event_outbox_created",.table_="alert_event_outbox",.keys_={{.column_="created_at"},{.column_="event_id"}}});
-        auto result = schema.compile("0019_alert_event_outbox");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="alert_evaluation_receipt", .columns_={
-            {.name_="message_id",.type_={.data_type_=Type::uuid},.primary_key_=true},
-            {.name_="device_id",.type_={.data_type_=Type::uuid}},
-            {.name_="created_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")}}});
-        schema.create_index({.name_="idx_alert_evaluation_receipt_created",.table_="alert_evaluation_receipt",.keys_={{.column_="created_at"}}});
-        auto result = schema.compile("0020_alert_evaluation_receipt");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0021_device_latest_value", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "alert_event_outbox", .columns_ = { { .name_ = "event_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "event_type", .type_ = { .data_type_ = Type::varchar, .length_ = 64 } }, { .name_ = "rule_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "device_code", .type_ = { .data_type_ = Type::varchar, .length_ = 255 }, .default_value_ = q.value("") }, { .name_ = "occurred_at_ms", .type_ = { .data_type_ = Type::big_int } }, { .name_ = "data", .type_ = { .data_type_ = Type::jsonb } }, { .name_ = "created_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") } }, .constraints_ = { { .name_ = "alert_event_outbox_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "event_id", "event_type" } } } });
+            schema.create_index({ .name_ = "idx_alert_event_outbox_created", .table_ = "alert_event_outbox", .keys_ = { { .column_ = "created_at" }, { .column_ = "event_id" } } });
+            auto result = schema.compile("0019_alert_event_outbox");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "alert_evaluation_receipt", .columns_ = { { .name_ = "message_id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "created_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") } } });
+            schema.create_index({ .name_ = "idx_alert_evaluation_receipt_created", .table_ = "alert_evaluation_receipt", .keys_ = { { .column_ = "created_at" } } });
+            auto result = schema.compile("0020_alert_evaluation_receipt");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0021_device_latest_value", .sql_ = R"sql(
 DO $schema$
 BEGIN
 CREATE TABLE device_latest_value (
@@ -1231,58 +1210,40 @@ ORDER BY history.device_id, point.key, history.report_time DESC, history.id DESC
 ON CONFLICT (device_id, element_id) DO NOTHING;
 END
 $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        for (const auto table : {"gb28181_device", "gb28181_channel"})
-            schema.add_column(table, {.name_="custom_name", .type_={.data_type_=Type::varchar, .length_=255}, .nullable_=true});
-        auto result = schema.compile("0022_gb28181_custom_names");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="outbox_event", .columns_={
-            {.name_="id",.type_={.data_type_=Type::uuid},.primary_key_=true},
-            {.name_="event_type",.type_={.data_type_=Type::varchar,.length_=100}},
-            {.name_="aggregate_type",.type_={.data_type_=Type::varchar,.length_=100}},
-            {.name_="aggregate_id",.type_={.data_type_=Type::text}},
-            {.name_="action",.type_={.data_type_=Type::varchar,.length_=50}},
-            {.name_="schema_version",.type_={.data_type_=Type::integer}},
-            {.name_="payload",.type_={.data_type_=Type::jsonb},.default_value_=q.cast(q.value("{}"),Type::jsonb)},
-            {.name_="occurred_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")},
-            {.name_="available_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")},
-            {.name_="attempts",.type_={.data_type_=Type::integer},.default_value_=q.value(0)},
-            {.name_="last_error",.type_={.data_type_=Type::text},.nullable_=true},
-            {.name_="published_at",.type_={.data_type_=Type::timestamp_tz},.nullable_=true},
-            {.name_="dead_lettered_at",.type_={.data_type_=Type::timestamp_tz},.nullable_=true}}});
-        schema.create_index({.name_="idx_outbox_event_pending",.table_="outbox_event",
-            .keys_={{.column_="available_at"},{.column_="occurred_at"},{.column_="id"}},
-            .where_=q.binary(q.unary(ruvia::db_unary_operator::is_null,q.column("published_at")),ruvia::db_binary_operator::and_value,q.unary(ruvia::db_unary_operator::is_null,q.column("dead_lettered_at")))});
-        auto result=schema.compile("0023_transactional_outbox");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="outbox_consumer_receipt",.columns_={
-            {.name_="consumer_name",.type_={.data_type_=Type::varchar,.length_=150}},
-            {.name_="event_id",.type_={.data_type_=Type::uuid}},
-            {.name_="processed_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")}},
-            .constraints_={{.name_="outbox_consumer_receipt_pkey",.kind_=ruvia::db_constraint_kind::primary_key,.columns_={"consumer_name","event_id"}}}});
-        schema.create_index({.name_="idx_outbox_consumer_receipt_processed_at",.table_="outbox_consumer_receipt",.keys_={{.column_="processed_at"}}});
-        auto result=schema.compile("0024_outbox_consumer_receipt");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.add_column("open_webhook", {.name_="skip_tls_verify", .type_={.data_type_=Type::boolean}, .default_value_=q.value(false)});
-        auto result = schema.compile("0025_webhook_tls_verification");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0026_unify_protocol_read_interval", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "gb28181_device", "gb28181_channel" }) {
+                schema.add_column(table, { .name_ = "custom_name", .type_ = { .data_type_ = Type::varchar, .length_ = 255 }, .nullable_ = true });
+            }
+            auto result = schema.compile("0022_gb28181_custom_names");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "outbox_event", .columns_ = { { .name_ = "id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "event_type", .type_ = { .data_type_ = Type::varchar, .length_ = 100 } }, { .name_ = "aggregate_type", .type_ = { .data_type_ = Type::varchar, .length_ = 100 } }, { .name_ = "aggregate_id", .type_ = { .data_type_ = Type::text } }, { .name_ = "action", .type_ = { .data_type_ = Type::varchar, .length_ = 50 } }, { .name_ = "schema_version", .type_ = { .data_type_ = Type::integer } }, { .name_ = "payload", .type_ = { .data_type_ = Type::jsonb }, .default_value_ = q.cast(q.value("{}"), Type::jsonb) }, { .name_ = "occurred_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "available_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "attempts", .type_ = { .data_type_ = Type::integer }, .default_value_ = q.value(0) }, { .name_ = "last_error", .type_ = { .data_type_ = Type::text }, .nullable_ = true }, { .name_ = "published_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true }, { .name_ = "dead_lettered_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true } } });
+            schema.create_index({ .name_ = "idx_outbox_event_pending", .table_ = "outbox_event", .keys_ = { { .column_ = "available_at" }, { .column_ = "occurred_at" }, { .column_ = "id" } }, .where_ = q.binary(q.unary(ruvia::db_unary_operator::is_null, q.column("published_at")), ruvia::db_binary_operator::and_value, q.unary(ruvia::db_unary_operator::is_null, q.column("dead_lettered_at"))) });
+            auto result = schema.compile("0023_transactional_outbox");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "outbox_consumer_receipt", .columns_ = { { .name_ = "consumer_name", .type_ = { .data_type_ = Type::varchar, .length_ = 150 } }, { .name_ = "event_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "processed_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") } }, .constraints_ = { { .name_ = "outbox_consumer_receipt_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "consumer_name", "event_id" } } } });
+            schema.create_index({ .name_ = "idx_outbox_consumer_receipt_processed_at", .table_ = "outbox_consumer_receipt", .keys_ = { { .column_ = "processed_at" } } });
+            auto result = schema.compile("0024_outbox_consumer_receipt");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.add_column("open_webhook", { .name_ = "skip_tls_verify", .type_ = { .data_type_ = Type::boolean }, .default_value_ = q.value(false) });
+            auto result = schema.compile("0025_webhook_tls_verification");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0026_unify_protocol_read_interval", .sql_ = R"sql(
 DO $schema$
 BEGIN
 UPDATE protocol_config
@@ -1296,8 +1257,8 @@ ALTER TABLE protocol_config
     CHECK (NOT (config ? 'pollInterval'));
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0027_unify_protocol_storage_policy", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0027_unify_protocol_storage_policy", .sql_ = R"sql(
 DO $schema$
 BEGIN
 UPDATE protocol_config
@@ -1318,8 +1279,8 @@ ALTER TABLE protocol_config
            AND COALESCE(config->>'storagePolicy' IN ('report', 'change'), FALSE));
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0028_remove_edge_enrollment_rejection", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0028_remove_edge_enrollment_rejection", .sql_ = R"sql(
 DO $schema$
 BEGIN
 UPDATE edge_node
@@ -1334,8 +1295,8 @@ ALTER TABLE edge_node
     CHECK (enrollment_status IN ('pending', 'approved'));
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0029_vpn_core", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0029_vpn_core", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE edge_task DROP CONSTRAINT IF EXISTS edge_task_task_type_check;
@@ -1449,8 +1410,8 @@ CREATE INDEX idx_vpn_enrollment_active ON vpn_enrollment(network_id, expires_at)
     WHERE used_at IS NULL;
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0030_vpn_iot_server_default", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0030_vpn_iot_server_default", .sql_ = R"sql(
 DO $schema$
 BEGIN
 INSERT INTO vpn_network(id, name, overlay_cidr, hub_public_key, hub_endpoint,
@@ -1462,48 +1423,34 @@ SET name = 'iot-server', overlay_cidr = '100.96.0.0/16', deleted_at = NULL,
     updated_at = NOW();
 END
 $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.add_column("vpn_network", {.name_="hub_private_key", .type_={.data_type_=Type::varchar, .length_=44}, .default_value_=q.value("")}, true);
-        auto result = schema.compile("0031_vpn_hub_database_config");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="edge_node_group",.columns_={
-            {.name_="id",.type_={.data_type_=Type::uuid},.primary_key_=true},
-            {.name_="name",.type_={.data_type_=Type::varchar,.length_=100}},
-            {.name_="parent_id",.type_={.data_type_=Type::uuid},.nullable_=true},
-            {.name_="status",.type_={.custom_name_="status_enum"},.default_value_=q.value("enabled")},
-            {.name_="sort_order",.type_={.data_type_=Type::integer},.default_value_=q.value(0)},
-            {.name_="remark",.type_={.data_type_=Type::varchar,.length_=500},.nullable_=true},
-            {.name_="created_by",.type_={.data_type_=Type::uuid}},
-            {.name_="created_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")},
-            {.name_="updated_at",.type_={.data_type_=Type::timestamp_tz},.default_value_=q.call("now")},
-            {.name_="deleted_at",.type_={.data_type_=Type::timestamp_tz},.nullable_=true}},
-            .constraints_={
-                {.name_="edge_node_group_parent_id_fkey",.kind_=ruvia::db_constraint_kind::foreign_key,.columns_={"parent_id"},.referenced_table_="edge_node_group",.referenced_columns_={"id"},.on_delete_=ruvia::db_referential_action::restrict},
-                {.name_="edge_node_group_created_by_fkey",.kind_=ruvia::db_constraint_kind::foreign_key,.columns_={"created_by"},.referenced_table_="sys_user",.referenced_columns_={"id"},.on_delete_=ruvia::db_referential_action::restrict},
-                {.name_="edge_node_group_sort_order_check",.check_=q.binary(q.column("sort_order"),ruvia::db_binary_operator::greater_equal,q.value(0))}}});
-        schema.create_index({.name_="idx_edge_node_group_name_active",.table_="edge_node_group",.keys_={{.column_="name"}},.unique_=true,.where_=q.unary(ruvia::db_unary_operator::is_null,q.column("deleted_at"))});
-        schema.create_index({.name_="idx_edge_node_group_parent",.table_="edge_node_group",.keys_={{.column_="parent_id"},{.column_="sort_order"}},.where_=q.unary(ruvia::db_unary_operator::is_null,q.column("deleted_at"))});
-        schema.add_column("edge_node",{.name_="group_id",.type_={.data_type_=Type::uuid},.nullable_=true});
-        schema.add_constraint("edge_node",{.name_="edge_node_group_id_fkey",.kind_=ruvia::db_constraint_kind::foreign_key,.columns_={"group_id"},.referenced_table_="edge_node_group",.referenced_columns_={"id"},.on_delete_=ruvia::db_referential_action::restrict});
-        schema.create_index({.name_="idx_edge_node_group_id",.table_="edge_node",.keys_={{.column_="group_id"}}});
-        auto result=schema.compile("0032_edge_node_group");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.add_column("vpn_peer", {.name_="client_private_key", .type_={.data_type_=Type::varchar, .length_=44}, .default_value_=q.value("")}, true);
-        auto result = schema.compile("0033_vpn_client_repeat_download");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0034_device_address_scope", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.add_column("vpn_network", { .name_ = "hub_private_key", .type_ = { .data_type_ = Type::varchar, .length_ = 44 }, .default_value_ = q.value("") }, true);
+            auto result = schema.compile("0031_vpn_hub_database_config");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "edge_node_group", .columns_ = { { .name_ = "id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "name", .type_ = { .data_type_ = Type::varchar, .length_ = 100 } }, { .name_ = "parent_id", .type_ = { .data_type_ = Type::uuid }, .nullable_ = true }, { .name_ = "status", .type_ = { .custom_name_ = "status_enum" }, .default_value_ = q.value("enabled") }, { .name_ = "sort_order", .type_ = { .data_type_ = Type::integer }, .default_value_ = q.value(0) }, { .name_ = "remark", .type_ = { .data_type_ = Type::varchar, .length_ = 500 }, .nullable_ = true }, { .name_ = "created_by", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "created_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "updated_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "deleted_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true } }, .constraints_ = { { .name_ = "edge_node_group_parent_id_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "parent_id" }, .referenced_table_ = "edge_node_group", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::restrict }, { .name_ = "edge_node_group_created_by_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "created_by" }, .referenced_table_ = "sys_user", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::restrict }, { .name_ = "edge_node_group_sort_order_check", .check_ = q.binary(q.column("sort_order"), ruvia::db_binary_operator::greater_equal, q.value(0)) } } });
+            schema.create_index({ .name_ = "idx_edge_node_group_name_active", .table_ = "edge_node_group", .keys_ = { { .column_ = "name" } }, .unique_ = true, .where_ = q.unary(ruvia::db_unary_operator::is_null, q.column("deleted_at")) });
+            schema.create_index({ .name_ = "idx_edge_node_group_parent", .table_ = "edge_node_group", .keys_ = { { .column_ = "parent_id" }, { .column_ = "sort_order" } }, .where_ = q.unary(ruvia::db_unary_operator::is_null, q.column("deleted_at")) });
+            schema.add_column("edge_node", { .name_ = "group_id", .type_ = { .data_type_ = Type::uuid }, .nullable_ = true });
+            schema.add_constraint("edge_node", { .name_ = "edge_node_group_id_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "group_id" }, .referenced_table_ = "edge_node_group", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::restrict });
+            schema.create_index({ .name_ = "idx_edge_node_group_id", .table_ = "edge_node", .keys_ = { { .column_ = "group_id" } } });
+            auto result = schema.compile("0032_edge_node_group");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.add_column("vpn_peer", { .name_ = "client_private_key", .type_ = { .data_type_ = Type::varchar, .length_ = 44 }, .default_value_ = q.value("") }, true);
+            auto result = schema.compile("0033_vpn_client_repeat_download");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0034_device_address_scope", .sql_ = R"sql(
 DO $schema$ BEGIN
 
 DROP INDEX idx_device_protocol_params_code;
@@ -1516,8 +1463,8 @@ CREATE UNIQUE INDEX idx_device_link_code_active
  WHERE deleted_at IS NULL AND COALESCE(protocol_params->>'device_code', '') <> '';
 
 END $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0035_durable_commands", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0035_durable_commands", .sql_ = R"sql(
 DO $schema$ BEGIN
 
 UPDATE open_webhook SET event_types=(
@@ -1554,8 +1501,8 @@ CREATE INDEX idx_command_attempt_pending ON command_attempt(deadline) WHERE clai
 CREATE INDEX idx_command_operation_device ON command_operation(device_id, created_at DESC);
 
 END $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0036_live_query_changes", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0036_live_query_changes", .sql_ = R"sql(
 DO $schema$ BEGIN
 CREATE FUNCTION publish_query_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
@@ -1636,32 +1583,21 @@ CREATE TRIGGER live_gb28181_stream AFTER INSERT OR UPDATE OR DELETE ON gb28181_s
 CREATE TRIGGER live_command_operation AFTER INSERT OR UPDATE OR DELETE ON command_operation
   FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('command');
 END $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0037_model_revisions", .sql_=std::string(kModelRevisionMigration)}),
-    ruvia::db_migration({.id_="0038_physical_channels", .sql_=std::string(kChannelMigration)}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="alert_input_state",.columns_={
-            {.name_="device_id",.type_={.data_type_=Type::uuid},.primary_key_=true},
-            {.name_="observed_at_ms",.type_={.data_type_=Type::big_int}},
-            {.name_="message_id",.type_={.data_type_=Type::uuid}},
-            {.name_="data",.type_={.data_type_=Type::jsonb}},
-            {.name_="previous_data",.type_={.data_type_=Type::jsonb}}},
-            .constraints_={{.name_="alert_input_state_device_id_fkey",.kind_=ruvia::db_constraint_kind::foreign_key,.columns_={"device_id"},.referenced_table_="device",.referenced_columns_={"id"}}}});
-        q.from("device_data_ingest_state").select({q.column("device_id"),
-            q.cast(q.binary(q.extract(ruvia::db_date_part::epoch,q.column("last_observed_at")),ruvia::db_binary_operator::multiply,q.value(1000)),Type::big_int),
-            q.column("last_observed_id"),q.coalesce({q.column("last_data"),q.cast(q.value("{}"),Type::jsonb)}),
-            q.coalesce({q.column("previous_data"),q.cast(q.value("{}"),Type::jsonb)})})
-            .where(q.unary(ruvia::db_unary_operator::is_not_null,q.column("last_observed_at")))
-            .and_where(q.unary(ruvia::db_unary_operator::is_not_null,q.column("last_observed_id")));
-        ruvia::db_query insert;
-        insert.insert_into("alert_input_state",{"device_id","observed_at_ms","message_id","data","previous_data"}).insert_from(q);
-        schema.execute(insert);
-        auto result=schema.compile("0039_alert_input_state");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0040_channel_transport_guard", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0037_model_revisions", .sql_ = std::string(kModelRevisionMigration) }),
+        ruvia::db_migration({ .id_ = "0038_physical_channels", .sql_ = std::string(kChannelMigration) }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "alert_input_state", .columns_ = { { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "observed_at_ms", .type_ = { .data_type_ = Type::big_int } }, { .name_ = "message_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "data", .type_ = { .data_type_ = Type::jsonb } }, { .name_ = "previous_data", .type_ = { .data_type_ = Type::jsonb } } }, .constraints_ = { { .name_ = "alert_input_state_device_id_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "device_id" }, .referenced_table_ = "device", .referenced_columns_ = { "id" } } } });
+            q.from("device_data_ingest_state").select({ q.column("device_id"), q.cast(q.binary(q.extract(ruvia::db_date_part::epoch, q.column("last_observed_at")), ruvia::db_binary_operator::multiply, q.value(1000)), Type::big_int), q.column("last_observed_id"), q.coalesce({ q.column("last_data"), q.cast(q.value("{}"), Type::jsonb) }), q.coalesce({ q.column("previous_data"), q.cast(q.value("{}"), Type::jsonb) }) }).where(q.unary(ruvia::db_unary_operator::is_not_null, q.column("last_observed_at"))).and_where(q.unary(ruvia::db_unary_operator::is_not_null, q.column("last_observed_id")));
+            ruvia::db_query insert;
+            insert.insert_into("alert_input_state", { "device_id", "observed_at_ms", "message_id", "data", "previous_data" }).insert_from(q);
+            schema.execute(insert);
+            auto result = schema.compile("0039_alert_input_state");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0040_channel_transport_guard", .sql_ = R"sql(
 CREATE OR REPLACE FUNCTION protect_channel_binding() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF (NEW.protocol,NEW.execution,NEW.edge_node_id,NEW.deleted_at,
@@ -1672,8 +1608,8 @@ BEGIN
     RAISE EXCEPTION 'Move or remove bound devices before changing channel identity';
   END IF;
   RETURN NEW;
-END $fn$;)sql"}),
-    ruvia::db_migration({.id_="0041_outbox_notifications", .sql_=R"sql(
+END $fn$;)sql" }),
+        ruvia::db_migration({ .id_ = "0041_outbox_notifications", .sql_ = R"sql(
 DO $schema$ BEGIN
 CREATE FUNCTION notify_outbox_pending() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
@@ -1686,8 +1622,8 @@ FOR EACH ROW
 WHEN (NEW.published_at IS NULL AND NEW.dead_lettered_at IS NULL)
 EXECUTE FUNCTION notify_outbox_pending();
 END $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0042_vpn_desktop_selection", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0042_vpn_desktop_selection", .sql_ = R"sql(
 DO $schema$
 BEGIN
 ALTER TABLE vpn_peer ADD COLUMN IF NOT EXISTS client_managed BOOLEAN NOT NULL DEFAULT FALSE;
@@ -1748,8 +1684,8 @@ JOIN vpn_route route ON route.edge_peer_id = access.edge_peer_id
   AND route.network_id = access.network_id AND route.enabled AND route.status = 'active';
 END
 $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0043_nonempty_query_notifications", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0043_nonempty_query_notifications", .sql_ = R"sql(
 DO $schema$
 DECLARE source RECORD; operation TEXT; transition_kind TEXT;
 BEGIN
@@ -1782,64 +1718,58 @@ CREATE TRIGGER command_pending_notification
 AFTER INSERT OR UPDATE OF deadline ON command_attempt
 FOR EACH ROW EXECUTE FUNCTION notify_outbox_pending();
 END $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        for (const auto table : {"gb28181_device", "gb28181_stream"})
-            schema.add_column(table, {.name_="projection_cursor", .type_={.data_type_=Type::numeric, .precision_=40}, .default_value_=q.value(0)});
-        auto result = schema.compile("0044_gb28181_projection_cursor");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.drop_index("idx_vpn_peer_network_ip");
-        schema.create_index({.name_="idx_vpn_peer_network_ip", .table_="vpn_peer",
-            .keys_={{.column_="network_id"},{.column_="assigned_ipv4"}}, .unique_=true,
-            .where_=q.binary(q.binary(q.column("peer_type"), ruvia::db_binary_operator::not_equal, q.value("windows")), ruvia::db_binary_operator::or_value, q.binary(q.column("status"), ruvia::db_binary_operator::not_equal, q.value("revoked")))});
-        auto result = schema.compile("0045_vpn_windows_address_reuse");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0046_current_device_model", .sql_=std::string(kCurrentDeviceModelMigration)}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="outbox_replay_counter", .columns_={
-            {.name_="id", .type_={.data_type_=Type::text}},
-            {.name_="replays", .type_={.data_type_=Type::big_int}, .default_value_=q.value(0)},
-            {.name_="updated_at", .type_={.data_type_=Type::timestamp_tz}, .default_value_=q.call("now")}},
-            .constraints_={{.name_="outbox_replay_counter_pkey", .kind_=ruvia::db_constraint_kind::primary_key, .columns_={"id"}}}});
-        auto result = schema.compile("0047_outbox_replay_counter");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        for (const auto table : {"device", "link"})
-            schema.add_column(table, {.name_="debug_enabled", .type_={.data_type_=Type::boolean}, .default_value_=q.value(false)});
-        auto result = schema.compile("0048_packet_debug_switches");
-        return std::move(result.front());
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        for (const auto table : {"link", "protocol_config", "device_data"}) {
-            const auto name = std::string(table) + "_protocol_check";
-            schema.drop_constraint(table, name);
-            schema.add_constraint(table, {.name_=name, .kind_=ruvia::db_constraint_kind::check,
-                .check_=q.binary(q.column("protocol"), ruvia::db_binary_operator::in,
-                    q.list({q.value("SL651"), q.value("Modbus"), q.value("S7"),
-                        q.value("MC"), q.value("FINS"), q.value("DLT645")}))});
-        }
-        auto statements = schema.compile("0049_industrial_protocols");
-        std::string sql = "DO $industrial$ BEGIN\n";
-        for (const auto& statement : statements)
-            sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
-        sql += "EXECUTE $ddl$" + std::string(kIndustrialProtocolAddressMigration) + "$ddl$;\nEND $industrial$;";
-        return ruvia::db_migration({.id_="0049_industrial_protocols", .sql_=std::move(sql)});
-    }(),
-    ruvia::db_migration({.id_="0050_dead_letter_query_changes", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "gb28181_device", "gb28181_stream" }) {
+                schema.add_column(table, { .name_ = "projection_cursor", .type_ = { .data_type_ = Type::numeric, .precision_ = 40 }, .default_value_ = q.value(0) });
+            }
+            auto result = schema.compile("0044_gb28181_projection_cursor");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.drop_index("idx_vpn_peer_network_ip");
+            schema.create_index({ .name_ = "idx_vpn_peer_network_ip", .table_ = "vpn_peer", .keys_ = { { .column_ = "network_id" }, { .column_ = "assigned_ipv4" } }, .unique_ = true, .where_ = q.binary(q.binary(q.column("peer_type"), ruvia::db_binary_operator::not_equal, q.value("windows")), ruvia::db_binary_operator::or_value, q.binary(q.column("status"), ruvia::db_binary_operator::not_equal, q.value("revoked"))) });
+            auto result = schema.compile("0045_vpn_windows_address_reuse");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0046_current_device_model", .sql_ = std::string(kCurrentDeviceModelMigration) }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "outbox_replay_counter", .columns_ = { { .name_ = "id", .type_ = { .data_type_ = Type::text } }, { .name_ = "replays", .type_ = { .data_type_ = Type::big_int }, .default_value_ = q.value(0) }, { .name_ = "updated_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") } }, .constraints_ = { { .name_ = "outbox_replay_counter_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "id" } } } });
+            auto result = schema.compile("0047_outbox_replay_counter");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "device", "link" }) {
+                schema.add_column(table, { .name_ = "debug_enabled", .type_ = { .data_type_ = Type::boolean }, .default_value_ = q.value(false) });
+            }
+            auto result = schema.compile("0048_packet_debug_switches");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "link", "protocol_config", "device_data" }) {
+                const auto name = std::string(table) + "_protocol_check";
+                schema.drop_constraint(table, name);
+                schema.add_constraint(table, { .name_ = name, .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.column("protocol"), ruvia::db_binary_operator::in, q.list({ q.value("SL651"), q.value("Modbus"), q.value("S7"), q.value("MC"), q.value("FINS"), q.value("DLT645") })) });
+            }
+            auto statements = schema.compile("0049_industrial_protocols");
+            std::string sql = "DO $industrial$ BEGIN\n";
+            for (const auto& statement : statements) {
+                sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
+            }
+            sql += "EXECUTE $ddl$" + std::string(kIndustrialProtocolAddressMigration) + "$ddl$;\nEND $industrial$;";
+            return ruvia::db_migration({ .id_ = "0049_industrial_protocols", .sql_ = std::move(sql) });
+        }(),
+        ruvia::db_migration({ .id_ = "0050_dead_letter_query_changes", .sql_ = R"sql(
 DO $schema$ BEGIN
 CREATE FUNCTION publish_dead_letter_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
@@ -1859,8 +1789,8 @@ END $fn$;
 CREATE TRIGGER live_dead_letters AFTER INSERT OR UPDATE OR DELETE ON outbox_event
 FOR EACH ROW EXECUTE FUNCTION publish_dead_letter_change();
 END $schema$;
-)sql"}),
-    ruvia::db_migration({.id_="0051_edge_dtu", .sql_=R"sql(
+)sql" }),
+        ruvia::db_migration({ .id_ = "0051_edge_dtu", .sql_ = R"sql(
 DO $schema$ BEGIN
 CREATE TABLE edge_dtu (
     node_id UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
@@ -1881,62 +1811,38 @@ END $fn$;
 CREATE TRIGGER live_edge_dtu AFTER INSERT OR UPDATE OR DELETE ON edge_dtu
 FOR EACH ROW EXECUTE FUNCTION publish_edge_dtu_change();
 END $schema$;
-)sql"}),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        for (const auto table : {"link", "protocol_config", "device_data"}) {
-            const auto name = std::string(table) + "_protocol_check";
-            schema.drop_constraint(table, name);
-            schema.add_constraint(table, {.name_=name, .kind_=ruvia::db_constraint_kind::check,
-                .check_=q.binary(q.column("protocol"), ruvia::db_binary_operator::in,
-                    q.list({q.value("SL651"), q.value("Modbus"), q.value("S7"),
-                        q.value("MC"), q.value("FINS"), q.value("DLT645"), q.value("MQTT")}))});
-        }
-        auto statements = schema.compile("0052_mqtt_client");
-        std::string sql = "DO $mqtt$ BEGIN\n";
-        for (const auto& statement : statements)
-            sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
-        sql += "EXECUTE $ddl$ALTER TABLE link ADD CONSTRAINT link_mqtt_client_check CHECK (protocol <> 'MQTT' OR (execution = 'collector' AND endpoint->>'mode' = 'TCP Client') IS TRUE)$ddl$;\n";
-        sql += "EXECUTE $ddl$" + std::string(kMqttDeviceAddressMigration) + "$ddl$;\nEND $mqtt$;";
-        return ruvia::db_migration({.id_="0052_mqtt_client", .sql_=std::move(sql)});
-    }(),
-    [] {
-        ruvia::db_schema schema({.driver_=ruvia::db_driver::postgresql});
-        ruvia::db_query q;
-        schema.create_table({.name_="open_mqtt", .columns_={
-            {.name_="id", .type_={.data_type_=Type::uuid}, .primary_key_=true},
-            {.name_="access_key_id", .type_={.data_type_=Type::uuid}},
-            {.name_="name", .type_={.data_type_=Type::varchar, .length_=64}},
-            {.name_="broker_url", .type_={.data_type_=Type::text}},
-            {.name_="username", .type_={.data_type_=Type::text}, .nullable_=true},
-            {.name_="password", .type_={.data_type_=Type::text}, .nullable_=true},
-            {.name_="status", .type_={.data_type_=Type::text}, .default_value_=q.value("enabled")},
-            {.name_="event_types", .type_={.data_type_=Type::jsonb}, .default_value_=q.cast(q.value("[\"device.data.reported\"]"), Type::jsonb)},
-            {.name_="timeout_seconds", .type_={.data_type_=Type::integer}, .default_value_=q.value(5)},
-            {.name_="last_triggered_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
-            {.name_="last_success_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
-            {.name_="last_failure_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true},
-            {.name_="last_error", .type_={.data_type_=Type::text}, .nullable_=true},
-            {.name_="created_at", .type_={.data_type_=Type::timestamp_tz}, .default_value_=q.call("now")},
-            {.name_="updated_at", .type_={.data_type_=Type::timestamp_tz}, .default_value_=q.call("now")},
-            {.name_="deleted_at", .type_={.data_type_=Type::timestamp_tz}, .nullable_=true}},
-            .constraints_={
-                {.name_="open_mqtt_access_key_fkey", .kind_=ruvia::db_constraint_kind::foreign_key, .columns_={"access_key_id"}, .referenced_table_="open_access_key", .referenced_columns_={"id"}, .on_delete_=ruvia::db_referential_action::cascade},
-                {.name_="open_mqtt_status_check", .kind_=ruvia::db_constraint_kind::check, .check_=q.binary(q.column("status"), ruvia::db_binary_operator::in, q.list({q.value("enabled"),q.value("disabled")}))},
-                {.name_="open_mqtt_timeout_check", .kind_=ruvia::db_constraint_kind::check, .check_=q.binary(q.binary(q.column("timeout_seconds"), ruvia::db_binary_operator::greater_equal,q.value(1)),ruvia::db_binary_operator::and_value,q.binary(q.column("timeout_seconds"),ruvia::db_binary_operator::less_equal,q.value(30)))}}});
-        schema.create_index({.name_="idx_open_mqtt_name_active", .table_="open_mqtt",
-            .keys_={{.column_="access_key_id"},{.column_="name"}}, .unique_=true, .where_=q.unary(ruvia::db_unary_operator::is_null,q.column("deleted_at"))});
-        schema.add_column("open_access_log", {.name_="mqtt_id", .type_={.data_type_=Type::uuid}, .nullable_=true});
-        schema.add_constraint("open_access_log", {.name_="open_access_log_mqtt_fkey", .kind_=ruvia::db_constraint_kind::foreign_key,
-            .columns_={"mqtt_id"}, .referenced_table_="open_mqtt", .referenced_columns_={"id"}, .on_delete_=ruvia::db_referential_action::set_null});
-        auto result = schema.compile("0053_open_mqtt");
-        return std::move(result.front());
-    }(),
-    ruvia::db_migration({.id_="0054_native_point_calculations", .sql_=std::string(kNativePointCalculationsMigration)}),
-    ruvia::db_migration({.id_="0055_device_parameters", .sql_=std::string(kDeviceParametersMigration)}),
-    ruvia::db_migration({.id_="0056_device_parameter_definitions", .sql_=std::string(kDeviceParameterDefinitionsMigration)}),
-    ruvia::db_migration({.id_="0057_entity_live_changes", .sql_=R"sql(
+)sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "link", "protocol_config", "device_data" }) {
+                const auto name = std::string(table) + "_protocol_check";
+                schema.drop_constraint(table, name);
+                schema.add_constraint(table, { .name_ = name, .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.column("protocol"), ruvia::db_binary_operator::in, q.list({ q.value("SL651"), q.value("Modbus"), q.value("S7"), q.value("MC"), q.value("FINS"), q.value("DLT645"), q.value("MQTT") })) });
+            }
+            auto statements = schema.compile("0052_mqtt_client");
+            std::string sql = "DO $mqtt$ BEGIN\n";
+            for (const auto& statement : statements) {
+                sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
+            }
+            sql += "EXECUTE $ddl$ALTER TABLE link ADD CONSTRAINT link_mqtt_client_check CHECK (protocol <> 'MQTT' OR (execution = 'collector' AND endpoint->>'mode' = 'TCP Client') IS TRUE)$ddl$;\n";
+            sql += "EXECUTE $ddl$" + std::string(kMqttDeviceAddressMigration) + "$ddl$;\nEND $mqtt$;";
+            return ruvia::db_migration({ .id_ = "0052_mqtt_client", .sql_ = std::move(sql) });
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "open_mqtt", .columns_ = { { .name_ = "id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "access_key_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "name", .type_ = { .data_type_ = Type::varchar, .length_ = 64 } }, { .name_ = "broker_url", .type_ = { .data_type_ = Type::text } }, { .name_ = "username", .type_ = { .data_type_ = Type::text }, .nullable_ = true }, { .name_ = "password", .type_ = { .data_type_ = Type::text }, .nullable_ = true }, { .name_ = "status", .type_ = { .data_type_ = Type::text }, .default_value_ = q.value("enabled") }, { .name_ = "event_types", .type_ = { .data_type_ = Type::jsonb }, .default_value_ = q.cast(q.value("[\"device.data.reported\"]"), Type::jsonb) }, { .name_ = "timeout_seconds", .type_ = { .data_type_ = Type::integer }, .default_value_ = q.value(5) }, { .name_ = "last_triggered_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true }, { .name_ = "last_success_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true }, { .name_ = "last_failure_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true }, { .name_ = "last_error", .type_ = { .data_type_ = Type::text }, .nullable_ = true }, { .name_ = "created_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "updated_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = q.call("now") }, { .name_ = "deleted_at", .type_ = { .data_type_ = Type::timestamp_tz }, .nullable_ = true } }, .constraints_ = { { .name_ = "open_mqtt_access_key_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "access_key_id" }, .referenced_table_ = "open_access_key", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::cascade }, { .name_ = "open_mqtt_status_check", .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.column("status"), ruvia::db_binary_operator::in, q.list({ q.value("enabled"), q.value("disabled") })) }, { .name_ = "open_mqtt_timeout_check", .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.binary(q.column("timeout_seconds"), ruvia::db_binary_operator::greater_equal, q.value(1)), ruvia::db_binary_operator::and_value, q.binary(q.column("timeout_seconds"), ruvia::db_binary_operator::less_equal, q.value(30))) } } });
+            schema.create_index({ .name_ = "idx_open_mqtt_name_active", .table_ = "open_mqtt", .keys_ = { { .column_ = "access_key_id" }, { .column_ = "name" } }, .unique_ = true, .where_ = q.unary(ruvia::db_unary_operator::is_null, q.column("deleted_at")) });
+            schema.add_column("open_access_log", { .name_ = "mqtt_id", .type_ = { .data_type_ = Type::uuid }, .nullable_ = true });
+            schema.add_constraint("open_access_log", { .name_ = "open_access_log_mqtt_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "mqtt_id" }, .referenced_table_ = "open_mqtt", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::set_null });
+            auto result = schema.compile("0053_open_mqtt");
+            return std::move(result.front());
+        }(),
+        ruvia::db_migration({ .id_ = "0054_native_point_calculations", .sql_ = std::string(kNativePointCalculationsMigration) }),
+        ruvia::db_migration({ .id_ = "0055_device_parameters", .sql_ = std::string(kDeviceParametersMigration) }),
+        ruvia::db_migration({ .id_ = "0056_device_parameter_definitions", .sql_ = std::string(kDeviceParameterDefinitionsMigration) }),
+        ruvia::db_migration({ .id_ = "0057_entity_live_changes", .sql_ = R"sql(
 DO $schema$
 DECLARE source RECORD; operation TEXT; transition_kind TEXT; target_topic TEXT; id_column TEXT;
 BEGIN
@@ -2021,38 +1927,38 @@ BEGIN
   RETURN NULL;
 END $fn$;
 END $schema$;
-)sql"}),
+)sql" }),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.
-    ruvia::db_schema adoption({.driver_=ruvia::db_driver::postgresql});
+    ruvia::db_schema adoption({ .driver_ = ruvia::db_driver::postgresql });
     constexpr std::pair<std::string_view, std::string_view> originalChecksums[] = {
-        {"0015_sql_query_optimization", "1c0e9800209a1eb7daef1b8eb517ceed0a15aa42e2de31ba221f2d66f8a91b89"},
-        {"0016_mass_data_query_optimization", "696aeef5ad92c0137af08b4b987c13fabecd60c589c8757a3b6cdad9aabbe9af"},
-        {"0017_device_data_compression_layout", "f242219083c311c5b1409e0227a8339628d9f5941fef54b6a7e37b286c77a6c1"},
-        {"0019_alert_event_outbox", "53b7c5b379b27a9233c86f974df67418ae2b6951d8ebf96124d766795001917b"},
-        {"0020_alert_evaluation_receipt", "448b71fbe63a6988c712e30f98bf89f6f377a7ceb811f31f3bcf5e4aa2906cc1"},
-        {"0022_gb28181_custom_names", "7d3b1fda358e2ed480df49b5f326ad02e9def00201c56730762e51102e80c849"},
-        {"0025_webhook_tls_verification", "96b75f7609ce3e73e11860ac59d3b62b878bebf5d9a289f93c5ee67e3d64e1c0"},
-        {"0031_vpn_hub_database_config", "772de366d9e192c1b45866d80d678169526d1b7439990d29c36732cbdd5f9de2"},
-        {"0033_vpn_client_repeat_download", "5b30acb4142d60711da6fa069e682ee57c8191c11e92baa24cb9140554dc1bc8"},
-        {"0044_gb28181_projection_cursor", "6264c9aefdac64bd392177221b6296e090d73b70c8ab91f7ff746faa1846930a"},
-        {"0045_vpn_windows_address_reuse", "15b2fe914fdd329c4239c2d73a44f5c2eb190818065a40271dc4f095a54ef84d"},
-        {"0023_transactional_outbox", "1a2097a3cac62a766273ebbd18c65c7af8a4732c944b821b4703b9e4f186f008"},
-        {"0024_outbox_consumer_receipt", "88697553cbc721fdc18abe370cf619904b2d05b080e620630782253a243f8a0f"},
-        {"0032_edge_node_group", "f333cf9f9954562bd9234507811250c899349ff943cdd222674e846f52341c42"},
-        {"0039_alert_input_state", "e0057d351f57397cd756792fbb29f7c23b7df8e2573ba030e59bdfee0f18c576"},
+        { "0015_sql_query_optimization", "1c0e9800209a1eb7daef1b8eb517ceed0a15aa42e2de31ba221f2d66f8a91b89" },
+        { "0016_mass_data_query_optimization", "696aeef5ad92c0137af08b4b987c13fabecd60c589c8757a3b6cdad9aabbe9af" },
+        { "0017_device_data_compression_layout", "f242219083c311c5b1409e0227a8339628d9f5941fef54b6a7e37b286c77a6c1" },
+        { "0019_alert_event_outbox", "53b7c5b379b27a9233c86f974df67418ae2b6951d8ebf96124d766795001917b" },
+        { "0020_alert_evaluation_receipt", "448b71fbe63a6988c712e30f98bf89f6f377a7ceb811f31f3bcf5e4aa2906cc1" },
+        { "0022_gb28181_custom_names", "7d3b1fda358e2ed480df49b5f326ad02e9def00201c56730762e51102e80c849" },
+        { "0025_webhook_tls_verification", "96b75f7609ce3e73e11860ac59d3b62b878bebf5d9a289f93c5ee67e3d64e1c0" },
+        { "0031_vpn_hub_database_config", "772de366d9e192c1b45866d80d678169526d1b7439990d29c36732cbdd5f9de2" },
+        { "0033_vpn_client_repeat_download", "5b30acb4142d60711da6fa069e682ee57c8191c11e92baa24cb9140554dc1bc8" },
+        { "0044_gb28181_projection_cursor", "6264c9aefdac64bd392177221b6296e090d73b70c8ab91f7ff746faa1846930a" },
+        { "0045_vpn_windows_address_reuse", "15b2fe914fdd329c4239c2d73a44f5c2eb190818065a40271dc4f095a54ef84d" },
+        { "0023_transactional_outbox", "1a2097a3cac62a766273ebbd18c65c7af8a4732c944b821b4703b9e4f186f008" },
+        { "0024_outbox_consumer_receipt", "88697553cbc721fdc18abe370cf619904b2d05b080e620630782253a243f8a0f" },
+        { "0032_edge_node_group", "f333cf9f9954562bd9234507811250c899349ff943cdd222674e846f52341c42" },
+        { "0039_alert_input_state", "e0057d351f57397cd756792fbb29f7c23b7df8e2573ba030e59bdfee0f18c576" },
     };
     for (const auto& [id, digest] : originalChecksums) {
-        const auto migration = std::find_if(migrations.begin(), migrations.end(),
-            [id](const auto& value) { return value.id() == id; });
-        if (migration == migrations.end()) throw std::logic_error("missing converted schema migration");
+        const auto migration = std::find_if(migrations.begin(), migrations.end(), [id](const auto& value) {
+            return value.id() == id;
+        });
+        if (migration == migrations.end()) {
+            throw std::logic_error("missing converted schema migration");
+        }
         const auto nextChecksum = service::utils::sha256(migration->sql());
         ruvia::db_query invalid;
-        invalid.from("sys_schema_migrations").select(invalid.value(1))
-            .where(invalid.binary(invalid.column("migration_id"), ruvia::db_binary_operator::equal, invalid.value(id)))
-            .and_where(invalid.binary(invalid.column("checksum"), ruvia::db_binary_operator::not_in,
-                invalid.list({invalid.value(digest), invalid.value(nextChecksum), invalid.value("")})));
+        invalid.from("sys_schema_migrations").select(invalid.value(1)).where(invalid.binary(invalid.column("migration_id"), ruvia::db_binary_operator::equal, invalid.value(id))).and_where(invalid.binary(invalid.column("checksum"), ruvia::db_binary_operator::not_in, invalid.list({ invalid.value(digest), invalid.value(nextChecksum), invalid.value("") })));
         ruvia::db_query condition;
         ruvia::db_procedure guard;
         guard.begin_if(condition.exists(invalid));
@@ -2062,13 +1968,13 @@ END $schema$;
         ruvia::db_query update;
         update.update("sys_schema_migrations")
             .set("checksum", update.value(nextChecksum))
-            .where(update.binary(update.binary(update.column("migration_id"), ruvia::db_binary_operator::equal, update.value(id)), ruvia::db_binary_operator::and_value,
-                update.binary(update.column("checksum"), ruvia::db_binary_operator::equal, update.value(digest))));
+            .where(update.binary(update.binary(update.column("migration_id"), ruvia::db_binary_operator::equal, update.value(id)), ruvia::db_binary_operator::and_value, update.binary(update.column("checksum"), ruvia::db_binary_operator::equal, update.value(digest))));
         adoption.execute(update);
     }
     auto transition = adoption.compile("orm_schema_checksum_transition_20260914");
-    const auto firstConverted = std::find_if(migrations.begin(), migrations.end(),
-        [](const auto& value) { return value.id() == "0015_sql_query_optimization"; });
+    const auto firstConverted = std::find_if(migrations.begin(), migrations.end(), [](const auto& value) {
+        return value.id() == "0015_sql_query_optimization";
+    });
     migrations.insert(firstConverted, std::move(transition.front()));
     return migrations;
 }();

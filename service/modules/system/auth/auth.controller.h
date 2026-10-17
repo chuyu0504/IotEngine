@@ -8,8 +8,8 @@
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
-#include "service/modules/system/auth/auth.types.h"
 #include "service/modules/system/auth/auth.service.h"
+#include "service/modules/system/auth/auth.types.h"
 
 namespace service::auth {
 
@@ -45,28 +45,28 @@ class AuthController final {
     }
 
     static ruvia::task<std::string> currentUserSnapshot(service::middleware::RequestContext& request) {
-        const auto response = service::common::ok<CurrentUserResponse>(request, co_await authService().current(request, request.userId));
+        const auto response = service::common::ok<CurrentUserResponse>(request, co_await AuthService::instance().current(request, request.userId));
         const auto encoded = ruvia::to_json(response);
         co_return std::string(encoded.data(), encoded.size());
     }
 
     ruvia::task<ruvia::http_response> login(ruvia::context& c) {
 
-        co_return c.json(service::common::ok<LoginResponse>(
-            c, co_await authService().login(c, c.req().validated<LoginBody>())));
+        co_return c.json(service::common::ok<LoginResponse>(c, co_await AuthService::instance().login(c, c.req().validated<LoginBody>())));
     }
+
     ruvia::task<ruvia::http_response> refresh(ruvia::context& c) {
 
-        co_return c.json(service::common::ok<LoginResponse>(
-            c, co_await authService().refresh(c, c.req().validated<RefreshBody>())));
+        co_return c.json(service::common::ok<LoginResponse>(c, co_await AuthService::instance().refresh(c, c.req().validated<RefreshBody>())));
     }
+
     ruvia::task<ruvia::http_response> logout(ruvia::context& c) {
         co_return c.json(service::common::operation(c, "退出成功"));
     }
+
     ruvia::task<ruvia::http_response> me(ruvia::context& c) {
         const auto principal = service::middleware::requireAuth(c);
-        co_return c.json(service::common::ok<CurrentUserResponse>(
-            c, co_await authService().current(c, principal.userId)));
+        co_return c.json(service::common::ok<CurrentUserResponse>(c, co_await AuthService::instance().current(c, principal.userId)));
     }
 };
 

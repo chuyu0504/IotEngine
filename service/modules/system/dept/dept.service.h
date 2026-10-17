@@ -53,8 +53,8 @@ class DeptService {
         );
         auto query = departmentSelect(c);
         query.where(options.where_)
-            .order_by("sort_order")
-            .add_order_by("id")
+            .order_by(entities::DeptEntity::column<"sort_order">().name())
+            .add_order_by(entities::DeptEntity::column<"id">().name())
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::DepartmentDetails>();
@@ -153,27 +153,27 @@ class DeptService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append("name", query.value(body.get<"name">()->view()));
+            append(entities::DeptEntity::column<"name">().name(), query.value(body.get<"name">()->view()));
         }
         if (body.get<"code">()) {
-            append("code", query.null_if(query.value(body.get<"code">()->view()), query.value("")));
+            append(entities::DeptEntity::column<"code">().name(), query.null_if(query.value(body.get<"code">()->view()), query.value("")));
         }
         if (body.get<"parentId">()) {
-            append("parent_id", query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column<"parent_id">().name(), query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"leaderId">()) {
-            append("leader_id", query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column<"leader_id">().name(), query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"sortOrder">()) {
-            append("sort_order", query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
+            append(entities::DeptEntity::column<"sort_order">().name(), query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
         }
         if (body.get<"status">()) {
-            append("status", query.value(body.get<"status">()->view()));
+            append(entities::DeptEntity::column<"status">().name(), query.value(body.get<"status">()->view()));
         }
         if (!changed) {
             co_return;
         }
-        changes.push_back({ "updated_at", query.call("now") });
+        changes.push_back({ std::string(entities::DeptEntity::column<"updated_at">().name()), query.call("now") });
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(entities::DeptEntity::column<"id">() == id, changes);
     }
 
@@ -192,8 +192,8 @@ class DeptService {
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { "deleted_at", expressions.call("now") },
-            { "updated_at", expressions.call("now") }
+            { std::string(entities::DeptEntity::column<"deleted_at">().name()), expressions.call("now") },
+            { std::string(entities::DeptEntity::column<"updated_at">().name()), expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(
             entities::DeptEntity::column<"id">() == id,
@@ -227,12 +227,11 @@ class DeptService {
     static ruvia::db_query_builder<entities::DeptEntity, ruvia::db_handle> departmentSelect(Context& c) {
         using namespace ruvia;
         using entities::DeptEntity;
-        using service::user::entities::UserEntity;
         db_query expressions(c.pool());
         auto query = c.db().template get_repository<DeptEntity>().create_query_builder("d");
-        query.select({ { "id", expressions.cast(DeptEntity::column<"id">().expression(expressions, "d"), db_data_type::text) }, { "name", DeptEntity::column<"name">().expression(expressions, "d") }, { "code", expressions.coalesce({ expressions.cast(DeptEntity::column<"code">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"parent_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"leader_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ UserEntity::column<"nickname">().expression(expressions, "u"), UserEntity::column<"username">().expression(expressions, "u"), expressions.value("") }) }, { "sort_order", DeptEntity::column<"sort_order">().expression(expressions, "d") }, { "status", DeptEntity::column<"status">().expression(expressions, "d") }, { "created_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"created_at">().expression(expressions, "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"updated_at">().expression(expressions, "d") }) } });
+        query.select({ { "id", expressions.cast(DeptEntity::column<"id">().expression(expressions, "d"), db_data_type::text) }, { "name", DeptEntity::column<"name">().expression(expressions, "d") }, { "code", expressions.coalesce({ expressions.cast(DeptEntity::column<"code">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"parent_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"leader_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ service::user::entities::UserEntity::column<"nickname">().expression(expressions, "u"), service::user::entities::UserEntity::column<"username">().expression(expressions, "u"), expressions.value("") }) }, { "sort_order", DeptEntity::column<"sort_order">().expression(expressions, "d") }, { "status", DeptEntity::column<"status">().expression(expressions, "d") }, { "created_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"created_at">().expression(expressions, "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"updated_at">().expression(expressions, "d") }) } });
         query.template join<DeptEntity>(db_join_type::left, "parent", expressions.binary(DeptEntity::column<"id">().expression(expressions, "parent"), db_binary_operator::equal, DeptEntity::column<"parent_id">().expression(expressions, "d")))
-            .template join<UserEntity>(db_join_type::left, "u", expressions.binary(expressions.binary(UserEntity::column<"id">().expression(expressions, "u"), db_binary_operator::equal, DeptEntity::column<"leader_id">().expression(expressions, "d")), db_binary_operator::and_value, expressions.unary(db_unary_operator::is_null, UserEntity::column<"deleted_at">().expression(expressions, "u"))));
+            .template join<service::user::entities::UserEntity>(db_join_type::left, "u", expressions.binary(expressions.binary(service::user::entities::UserEntity::column<"id">().expression(expressions, "u"), db_binary_operator::equal, DeptEntity::column<"leader_id">().expression(expressions, "d")), db_binary_operator::and_value, expressions.unary(db_unary_operator::is_null, service::user::entities::UserEntity::column<"deleted_at">().expression(expressions, "u"))));
         return query;
     }
 
@@ -293,9 +292,5 @@ class DeptService {
         }
     }
 };
-
-inline DeptService& deptService() {
-    return DeptService::instance();
-}
 
 } // namespace service::dept

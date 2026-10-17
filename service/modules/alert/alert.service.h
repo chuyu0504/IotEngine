@@ -382,12 +382,11 @@ class AlertService final {
     static Query recordListing(Context& c) {
         using Record = service::alert::entities::OpenAlertRecordEntity;
         using Rule = service::alert::entities::AlertRuleEntity;
-        using Device = service::device::entities::DeviceEntity;
         Query listed(c.pool());
-        listed.select({ listed.star("page_rows"), listed.alias(listed.column(Rule::column<"name">().name(), "rule"), "rule_name"), listed.alias(listed.column(Device::column<"name">().name(), "device"), "device_name") })
+        listed.select({ listed.star("page_rows"), listed.alias(listed.column(Rule::column<"name">().name(), "rule"), "rule_name"), listed.alias(listed.column(service::device::entities::DeviceEntity::column<"name">().name(), "device"), "device_name") })
             .from("page_rows")
             .join(ruvia::db_join_type::left, Rule::table_name(), listed.binary(listed.column(Rule::column<"id">().name(), "rule"), Op::equal, listed.column(Record::column<"rule_id">().name(), "page_rows")), "rule")
-            .join(ruvia::db_join_type::inner, Device::table_name(), listed.binary(listed.column(Device::column<"id">().name(), "device"), Op::equal, listed.column(Record::column<"device_id">().name(), "page_rows")));
+            .join(ruvia::db_join_type::inner, service::device::entities::DeviceEntity::table_name(), listed.binary(listed.column(service::device::entities::DeviceEntity::column<"id">().name(), "device"), Op::equal, listed.column(Record::column<"device_id">().name(), "page_rows")));
         return listed;
     }
 
@@ -555,9 +554,5 @@ class AlertService final {
         }
     }
 };
-
-inline AlertService& alertService() {
-    return AlertService::instance();
-}
 
 } // namespace service::alert
