@@ -60,11 +60,11 @@ build/                       # 构建、后端生成代码、临时验证产物
 |`<name>.service.h`|modules、features|业务规则、业务权限、查询、写入、事务|
 |`<name>.types.h`|modules、features|DTO、请求模型及字段校验、领域值、内部状态；无 I/O|
 |`<name>.error.h`|modules、features|稳定错误|
-|`<name>.controller.h`|modules|路由、参数、中间件与响应|
+|`<name>.controller.h`|modules|管理 API 的路由、参数、中间件与响应|
 |`<name>.runtime.h`|features|启停、调度、消费、生命周期|
 |`<name>.config.h`|features|配置类型、解析、默认值；无业务数据库访问|
 |`<name>.protocol.h`|features|编解码、帧解析、协议状态；无数据库或网络 I/O|
-|`<name>.transport.h`|features|网络、设备、SDK 适配；无业务数据库访问|
+|`<name>.transport.h`|features|网络、设备协议接入端点、SDK 适配；无业务数据库访问|
 |`<name>.proto`|features|Protobuf 消息|
 |`index.tsx`|web/pages|页面入口与私有 UI|
 |`<name>.types.ts` / `.schema.ts`|web/pages|类型与 DTO / 请求与表单校验|
@@ -87,7 +87,7 @@ build/                       # 构建、后端生成代码、临时验证产物
 |`server.cpp`|公开装配入口|
 
 - 依赖无环，不访问其他组件内部状态；公共代码不反向依赖业务或页面。
-- Controller 负责请求接入，Runtime 负责运行驱动，业务与数据库操作归 Service。Service 不依赖 Controller 或 Runtime，不接管生命周期。
+- Controller 负责管理请求接入，Transport 负责设备协议接入，Runtime 驱动连接与任务，业务与数据库操作归 Service。接入端点使用 Ruvia 唯一路由注册入口，不复制协议判断；Transport 不反向依赖 Service 或 Runtime。Service 不依赖 Controller 或 Runtime，不接管生命周期。
 - `modules` 与 `features` 互不引用或调用，只通过 Redis 消息或数据库交互；不借共享层、回调、全局对象或装配入口绕过。
 - 双方共享的消息格式、Redis 键名与 Stream、RPC 请求与回执、advisory lock ID 及版本只在 `common/message.h` 定义一次，调用方不重复字面量。
 - 跨页面只依赖其他模块公开的 `service`、`types`。会话状态只负责读写，认证刷新归所属 Service，在应用入口注入请求层。
@@ -146,8 +146,8 @@ build/                       # 构建、后端生成代码、临时验证产物
 - 首次订阅发送一次初始快照；断线恢复补发遗漏事件或发送一次恢复快照。高频事件合并同批变化；连续数据保证顺序与背压，不静默丢失必须交付的数据。
 - 新增订阅须明确实时展示需求与事件来源，只订阅当前视图需要的数据；调试、日志、进度视图关闭后取消对应订阅。权限变化可随已有连接推送，服务端始终独立校验。
 - 每个页面最多一条 SSE，页面内组件、弹窗、抽屉共享连接，按事件类型分发并只更新对应 TanStack Query 缓存；指标变化只更新指标，配置或分组变化才更新相关列表。无实时需求的页面及公共布局不建 SSE，最后一个实时视图关闭即释放连接。
-- 订阅范围随查询条件变化时取消旧订阅、按新条件建立。断线有界退避重连，正常连接不靠重连刷新数据；保活只发 SSE 注释心跳，不携带业务数据、不触发业务查询或缓存更新。
-- SSE 失败时显示连接状态并允许手动重试，不降级为轮询，不改变 HTTP 查询与写入方式。取消订阅、离开页面、退出登录、断线时清理所属 Worker 的资源。
+- 订阅范围随查询条件变化时取消旧订阅、按新条件建立。只在连接真正结束或失败后有界退避重连，正常连接不设空闲重连定时器；保活只发 SSE 注释心跳，不携带业务数据、不触发业务查询或缓存更新。
+- SSE 断线时立即显示连接状态并允许手动重试；重连状态不等同业务失败，不丢弃已接受操作的跟踪身份。不降级为轮询；取消订阅、离开页面、退出登录、断线时清理所属 Worker 的资源。
 
 禁止轮询：
 
@@ -164,9 +164,10 @@ build/                       # 构建、后端生成代码、临时验证产物
 - Service Worker 处理接口与业务；Collector Worker 持有 GB28181 SIP 接入、注册、心跳、会话与控制，两类经 Redis 指令与回执交互。无全局 SIP 运行时，不绕过 Ruvia 公开接口。
 - 各 Worker 独占组件、数据库与 Redis 连接、网络连接、缓存、会话、订阅、定时器与任务状态。连接从接入到关闭，解析、执行、SDK 调用及响应均归原 Worker。
 - 禁止共享可变对象、跨 Worker 调用、回调、内存转发或连接转交；不按设备 ID、哈希、分片、轮询改派，也不借 Redis 或数据库转交同类 Worker 的工作。
-- 定向消息（RPC 回执、终端与串口帧）发往所属 Worker 的流；广播流只承载业务变化事件。
+- RPC 回执、终端与串口帧使用所属操作或连接的专属频道，不广播到其他 Worker；业务变化频道只承载实体变更通知。Pub/Sub 先确认订阅再请求或查询快照，通知不替代持久结果、序号与确认，断线后从持久状态恢复。
 - 无连接任务用相同机制独立认领，由认领者完成，以事务和幂等避免重复执行，不按编号或哈希分工。恢复与清理按实际归属执行。
 - 独立 Collector 用公开 `redis_client(event_loop, redis_config)`，每个 Worker 独占客户端；停止业务任务后在所属 `event_loop` 等待 `shutdown()` 再关闭线程，不用私有 `redis_registry` 或新增 Redis 转发包装。
+- 已启动协程取消后必须 await/join；运行状态由所属 Runtime 持有，公共工具只接收显式状态，不持有共享运行对象。进程身份在装配时生成并注入，各 Worker 的 UUID 状态独立持有。
 - ZLMediaKit 可有独立运行时与 SDK 线程，但业务状态及异步结果归发起 Worker。其他 SDK 或全局资源的隔离障碍须记录并解决。
 - 不保留新旧并行实现或旧路由、分片、兼容队列；保留必要的固件兼容路径。覆盖重启、缩容、异常退出、幂等与过期清理。
 

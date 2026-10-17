@@ -27,7 +27,7 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
-#include "service/features/gb28181/device/device.runtime.h"
+#include "service/features/gb28181/device/device.protocol.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/gb28181.service.h"
 #include "service/features/gb28181/gb28181.types.h"

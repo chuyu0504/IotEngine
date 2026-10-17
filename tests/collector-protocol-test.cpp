@@ -49,7 +49,7 @@
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/telemetry/latest/latest.service.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/uuid.h"
 
 #include "tests/redis_reply.fixture.h"
@@ -3048,9 +3048,9 @@ void testTcpServerListenersAreWorkerLocal() {
     };
 
     service::common::UuidV7State firstWorkerUuids;
-    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
+    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0.borrowTcpDeadlines(), 0, 2, onConnection0, noPacket, noDisconnect, onState);
     service::common::UuidV7State secondWorkerUuids;
-    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
+    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1.borrowTcpDeadlines(), 1, 2, onConnection1, noPacket, noDisconnect, onState);
     firstWorker.reload(snapshot);
     secondWorker.reload(snapshot);
 
@@ -3126,7 +3126,7 @@ void testTcpClientTargetReconcile() {
     std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
     std::vector<std::string> disconnected;
     service::common::UuidV7State tcpUuids;
-    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectedByTarget](collector::ProtocolConnectionInfo info) {
+    collector::TcpTransport tcp(tcpUuids, io, scheduler.borrowTcpDeadlines(), 0, 1, [&connectedByTarget](collector::ProtocolConnectionInfo info) {
         connectedByTarget[info.targetId].push_back(std::move(info.connectionId));
     },
                                 [](collector::IngressPacket) {
@@ -3224,7 +3224,7 @@ void testTcpClientTargetsUseConnectionClaim() {
     const auto noState = [](collector::LinkState) {
     };
     service::common::UuidV7State firstWorkerUuids;
-    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0, 0, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
+    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0.borrowTcpDeadlines(), 0, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
         require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
         connectedWorkers.push_back(0);
         (void)info;
@@ -3235,7 +3235,7 @@ void testTcpClientTargetsUseConnectionClaim() {
                                         claim,
                                         release);
     service::common::UuidV7State secondWorkerUuids;
-    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1, 1, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
+    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1.borrowTcpDeadlines(), 1, 2, [&connectedWorkers, &claimTokens](collector::ProtocolConnectionInfo info) {
         require(claimTokens.contains(info.connectionId), "TCP connection lost its claimed generation");
         connectedWorkers.push_back(1);
         (void)info;
@@ -3284,7 +3284,7 @@ void testTcpClientLateClaimCompletionAfterStop() {
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
     service::common::UuidV7State tcpUuids;
-    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
+    collector::TcpTransport tcp(tcpUuids, io, scheduler.borrowTcpDeadlines(), 0, 1, [](collector::ProtocolConnectionInfo) {
     },
                                 [](collector::IngressPacket) {
                                 },
@@ -3363,7 +3363,7 @@ void testTcpClientRevokePendingConnect() {
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
     service::common::UuidV7State tcpUuids;
-    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [](collector::ProtocolConnectionInfo) {
+    collector::TcpTransport tcp(tcpUuids, io, scheduler.borrowTcpDeadlines(), 0, 1, [](collector::ProtocolConnectionInfo) {
     },
                                 [](collector::IngressPacket) {
                                 },
@@ -3412,7 +3412,7 @@ void testTcpCloseDuringPendingWrite() {
     std::string connectionId;
     int writeCompletions = 0;
     service::common::UuidV7State tcpUuids;
-    collector::TcpTransport tcp(tcpUuids, io, scheduler, 0, 1, [&connectionId](collector::ProtocolConnectionInfo info) {
+    collector::TcpTransport tcp(tcpUuids, io, scheduler.borrowTcpDeadlines(), 0, 1, [&connectionId](collector::ProtocolConnectionInfo info) {
         connectionId = std::move(info.connectionId);
     },
                                 [](collector::IngressPacket) {

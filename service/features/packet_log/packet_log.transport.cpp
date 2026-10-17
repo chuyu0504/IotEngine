@@ -16,7 +16,7 @@
 #include <string>
 #include <utility>
 
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 
 namespace service::packet_log {
 namespace {

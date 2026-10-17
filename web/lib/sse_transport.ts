@@ -108,6 +108,7 @@ export class SseTransport implements LiveTransport<string> {
                     sink.fail(error);
                     return;
                 }
+                sink.interrupted(error);
                 try {
                     await (this.options.retryDelay ?? waitBeforeReconnect)(failures, signal);
                 } catch {

@@ -36,9 +36,10 @@
 #include "service/features/collector/modbus/modbus.protocol.h"
 #include "service/features/collector/mqtt/mqtt.protocol.h"
 #include "service/features/collector/s7/s7.protocol.h"
+#include "service/features/collector/scheduling/scheduling.runtime.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/uuid.h"
 
 namespace service::collector {
@@ -67,7 +68,7 @@ class CollectorWorker final {
           tcp_(
               uuidState_,
               loop_.io_context(),
-              scheduler_,
+              scheduler_.borrowTcpDeadlines(),
               identity_.index,
               identity_.count,
               [this](ProtocolConnectionInfo info) {

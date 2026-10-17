@@ -2,6 +2,7 @@
 
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/mqtt/mqtt.protocol.h"
+#include "service/features/collector/scheduling/scheduling.runtime.h"
 #include "service/features/collector/tcp/tcp.transport.h"
 #include "service/utils/uuid.h"
 
@@ -70,7 +71,7 @@ void testBrokerReconnect() {
             }
         }
     };
-    TcpTransport tcp(uuid, io, scheduler, 1, 3, [&](ProtocolConnectionInfo info) {
+    TcpTransport tcp(uuid, io, scheduler.borrowTcpDeadlines(), 1, 3, [&](ProtocolConnectionInfo info) {
         connections.insert(info.connectionId);
         apply(engine.connected(std::move(info)));
     },

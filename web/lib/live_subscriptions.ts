@@ -24,6 +24,8 @@ export interface LiveSink {
     delta(channel: string, delta: SnapshotDelta): void;
     /** One channel was rejected; the other channels of the source stay live. */
     reject(channel: string, error: Error): void;
+    /** Transport is disconnected, but its bounded automatic retry is still active. */
+    interrupted(error: Error): void;
     /** The source ended. `unauthorized` asks the registry to refresh the session once. */
     fail(error: Error, unauthorized?: boolean): void;
 }
@@ -48,6 +50,7 @@ interface Entry<Target> {
     observers: Map<SnapshotObserver<unknown>, string>;
     run?: Run;
     failure?: Error;
+    connectionError?: Error;
     /** Latest full value per channel; deltas are merged into it for late readers. */
     values: Map<string, unknown>;
     errors: Map<string, Error>;
@@ -69,6 +72,7 @@ export class LiveSubscriptions<Target> {
     private sharedValue: unknown;
     private sharedReceived = false;
     private sharedError?: Error;
+    private sharedConnectionError: Error | null = null;
 
     constructor(
         private readonly options: {
@@ -127,7 +131,7 @@ export class LiveSubscriptions<Target> {
                 queueMicrotask(() => this.start(entry));
             }
         }
-        return new SnapshotStream((observer) => {
+        return new SnapshotStream((observer, options) => {
             this.sessionChanged();
             if (!this.session.token) {
                 observer.error(new Error('登录状态无效'));
@@ -135,8 +139,16 @@ export class LiveSubscriptions<Target> {
             }
             const untyped = untypedObserver(observer);
             this.sharedObservers.add(untyped);
+            const primary = this.connectionSource();
+            const awaitingRecovery = !!(options?.fresh && primary?.connectionError);
+            if (primary && options?.fresh && primary.connectionError) {
+                this.close(primary);
+                primary.failure = undefined;
+                queueMicrotask(() => this.start(primary));
+            }
+            reportConnectionError(untyped, primary?.connectionError ?? null);
             if (this.sharedError) observer.error(this.sharedError);
-            else if (this.sharedReceived) observer.next(this.sharedValue as T);
+            else if (this.sharedReceived && !awaitingRecovery) observer.next(this.sharedValue as T);
             queueMicrotask(() => this.syncShared());
             return () => {
                 this.sharedObservers.delete(untyped);
@@ -146,8 +158,8 @@ export class LiveSubscriptions<Target> {
     }
 
     /**
-     * One channel of the source `target` identifies. A fresh read reconnects only a failed
-     * source or channel; a healthy source is current because every change is pushed.
+     * One channel of the source `target` identifies. A fresh read reconnects a failed or
+     * interrupted source or channel; a healthy source is current because every change is pushed.
      */
     create<T>(target: Target, channel: string): SnapshotStream<T> {
         const key = this.options.transport.key(target);
@@ -171,17 +183,25 @@ export class LiveSubscriptions<Target> {
                 this.entries.set(key, entry);
             }
             const subscribed = entry;
-            if (options?.fresh && (entry.failure || entry.errors.has(channel))) {
+            const awaitingRecovery = !!(options?.fresh && entry.connectionError);
+            if (
+                options?.fresh &&
+                (entry.failure || entry.connectionError || entry.errors.has(channel))
+            ) {
                 this.close(entry);
-                entry.values.clear();
-                entry.errors.clear();
+                if (!entry.connectionError || entry.failure || entry.errors.has(channel)) {
+                    entry.values.clear();
+                    entry.errors.clear();
+                }
                 entry.failure = undefined;
             }
             const untyped = untypedObserver(observer);
             entry.observers.set(untyped, channel);
+            reportConnectionError(untyped, entry.connectionError ?? null);
             const error = entry.failure ?? entry.errors.get(channel);
             if (error) observer.error(error);
-            else if (entry.values.has(channel)) observer.next(entry.values.get(channel) as T);
+            else if (entry.values.has(channel) && !awaitingRecovery)
+                observer.next(entry.values.get(channel) as T);
             queueMicrotask(() => {
                 this.syncShared();
                 this.start(subscribed);
@@ -223,6 +243,9 @@ export class LiveSubscriptions<Target> {
                 reject: (channel, error) => {
                     if (current()) this.reject(entry, channel, error);
                 },
+                interrupted: (error) => {
+                    if (current()) this.setConnectionError(entry, error);
+                },
                 fail: (error, unauthorized) => {
                     if (!current()) return;
                     this.close(entry);
@@ -243,6 +266,7 @@ export class LiveSubscriptions<Target> {
     }
 
     private deliver(entry: Entry<Target>, channel: string, value: unknown, delta?: SnapshotDelta) {
+        if (!delta) this.setConnectionError(entry, null);
         entry.refreshed = false;
         entry.errors.delete(channel);
         entry.values.set(channel, value);
@@ -323,9 +347,32 @@ export class LiveSubscriptions<Target> {
         return undefined;
     }
 
+    /** Keep a terminally interrupted source retryable without publishing its business failure. */
+    private connectionSource() {
+        const primary = this.primary();
+        if (primary) return primary;
+        for (const entry of this.entries.values())
+            if (entry.observers.size && entry.connectionError) return entry;
+        return undefined;
+    }
+
+    private setConnectionError(entry: Entry<Target>, error: Error | null) {
+        if ((entry.connectionError ?? null) === error) return;
+        entry.connectionError = error ?? undefined;
+        for (const observer of [...entry.observers.keys()]) reportConnectionError(observer, error);
+        if (entry === this.primary()) this.publishSharedConnectionError(error);
+    }
+
+    private publishSharedConnectionError(error: Error | null) {
+        if (this.sharedConnectionError === error) return;
+        this.sharedConnectionError = error;
+        for (const observer of [...this.sharedObservers]) reportConnectionError(observer, error);
+    }
+
     private syncShared() {
         if (!this.sharedChannel) return;
         const primary = this.primary();
+        this.publishSharedConnectionError(this.connectionSource()?.connectionError ?? null);
         if (!primary) {
             this.sharedReceived = false;
             this.sharedValue = undefined;
@@ -367,6 +414,7 @@ function untypedObserver<T>(observer: SnapshotObserver<T>): SnapshotObserver<unk
     return {
         next: (value) => observer.next(value as T),
         error: (error) => observer.error(error),
+        connectionError: observer.connectionError,
         ...(delta
             ? { delta: (change: SnapshotDelta, value: unknown) => delta(change, value as T) }
             : {}),
@@ -378,5 +426,13 @@ function reportError(observer: SnapshotObserver<unknown>, error: Error) {
         observer.error(error);
     } catch {
         /* Other subscribers remain independent. */
+    }
+}
+
+function reportConnectionError(observer: SnapshotObserver<unknown>, error: Error | null) {
+    try {
+        observer.connectionError?.(error);
+    } catch {
+        /* Connection-state observers remain independent of business delivery. */
     }
 }

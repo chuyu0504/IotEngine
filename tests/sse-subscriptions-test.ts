@@ -1,6 +1,7 @@
 import { getEdgeInventory, observeEdgeDetail, getLogs, getEdgeVpnState } from '../web/pages/edge_node/edge_node.api';
 import { getDeviceList, getDeviceRealtimeSnapshot, getDeviceGroupsWithCount, getDeviceCommandStatuses, getDebugPackets as getDevicePackets } from '../web/pages/device/device.api';
 import { expect, spyOn, test } from 'bun:test';
+import { createServer, type ServerResponse } from 'node:http';
 import { queryUrl } from '../web/lib/http';
 import { type LiveSession, LiveSubscriptions } from '../web/lib/live_subscriptions';
 import { SseTransport } from '../web/lib/sse_transport';
@@ -81,12 +82,18 @@ test('disconnect retries are bounded, and release cancels an open stream', async
         fetch: (async () => { calls++; throw new TypeError('network failure'); }) as typeof fetch,
         retryDelay: async () => { delays++; },
     });
-    const errors: Error[] = [];
-    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({ next: () => {}, error: error => errors.push(error) });
+    const errors: Error[] = [], interruptions: Array<Error | null> = [];
+    const release = subscriptions.create('/v1/link/events', 'snapshot').subscribe({
+        next: () => {},
+        error: error => errors.push(error),
+        connectionError: error => interruptions.push(error),
+    });
     await tick();
     expect(calls).toBe(9);
     expect(delays).toBe(8);
     expect(errors).toHaveLength(1);
+    expect(interruptions[0]).toBeNull();
+    expect(interruptions.filter(error => error !== null)).toHaveLength(8);
     release();
 });
 
@@ -724,9 +731,11 @@ for (const termination of ['close', 'error'] as const) {
             retryDelay: async attempt => { attempts.push(attempt); },
         });
         const values: unknown[][] = [[], []], errors: Error[] = [];
+        const states: Array<Array<Error | null>> = [[], []];
         const stream = subscriptions.create('/v1/device/events', 'snapshot');
-        const releases = values.map(received => stream.subscribe({
+        const releases = values.map((received, index) => stream.subscribe({
             next: value => received.push(value), error: error => errors.push(error),
+            connectionError: error => states[index].push(error),
         }));
         try {
             await tick();
@@ -736,12 +745,20 @@ for (const termination of ['close', 'error'] as const) {
             await tick();
             expect(calls).toBe(2);
             expect(attempts).toEqual([1]);
+            expect(values[0]).toEqual([['initial']]);
+            expect(states[0][0]).toBeNull();
+            expect(states[0].at(-1)).toBeInstanceOf(Error);
+            expect(states[1]).toEqual(states[0]);
+            expect(errors).toEqual([]);
             wires[1].send('snapshot', { code: 0, data: ['recovered'] });
             wires[1].send('snapshot', { code: 0, data: ['later'] });
             await tick();
             expect(values[0]).toEqual([['initial'], ['recovered'], ['later']]);
             expect(values[1]).toEqual(values[0]);
             expect(errors).toEqual([]);
+            expect(states[0]).toHaveLength(3);
+            expect(states[0].at(-1)).toBeNull();
+            expect(states[1]).toEqual(states[0]);
             expect(calls).toBe(2);
         } finally {
             releases.forEach(release => release());
@@ -749,4 +766,150 @@ for (const termination of ['close', 'error'] as const) {
         }
         expect(wires[1].cancelled()).toBe(true);
     });
+}
+
+for (const recovery of ['automatic', 'manual-page', 'manual-shared'] as const) {
+    test(`real HTTP disconnect preserves authorized commands and recovers through ${recovery}`, async () => {
+        const commandId = crypto.randomUUID();
+        const accepted = { complete: false, statuses: [{ command_id: commandId, status: 'accepted' }] };
+        const requests: string[] = [];
+        let response: ServerResponse | undefined, active = 0, maximumActive = 0, generation = 0;
+        const server = createServer((request, outgoing) => {
+            requests.push(request.url ?? '');
+            expect(request.headers.authorization).toBe('Bearer token');
+            expect(request.headers['x-sse-user']).toBe('1');
+            active++;
+            maximumActive = Math.max(maximumActive, active);
+            outgoing.once('close', () => { active--; });
+            response = outgoing;
+            outgoing.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+            outgoing.write(`event: devices\ndata: ${JSON.stringify({ code: 0, data: [{ id: 'device', generation }] })}\n\n`);
+            outgoing.write(`event: commands\ndata: ${JSON.stringify({ code: 0, data: accepted })}\n\n`);
+            outgoing.write(`event: user\ndata: ${JSON.stringify({ code: 0, data: { id: 'user', generation } })}\n\n`);
+        });
+        await new Promise<void>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolve);
+        });
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('SSE fixture has no address');
+        const origin = `http://127.0.0.1:${address.port}`;
+        let resume!: () => void, retrySignal: AbortSignal | undefined;
+        const paused = new Promise<void>(resolve => { resume = resolve; });
+        const retryAborted: boolean[] = [];
+        const subscriptions = sseRegistry({
+            session: () => ({ token: 'token', userId: 'user' }),
+            refresh: async () => { throw new Error('network interruption must not refresh authentication'); },
+            fetch: ((url, init) => fetch(new URL(String(url), origin), init)) as typeof fetch,
+            retryDelay: async (_attempt, signal) => {
+                retrySignal = signal;
+                await new Promise<void>((resolve, reject) => {
+                    const abort = () => {
+                        retryAborted.push(true);
+                        reject(signal.reason);
+                    };
+                    signal.addEventListener('abort', abort, { once: true });
+                    void paused.then(() => {
+                        signal.removeEventListener('abort', abort);
+                        resolve();
+                    });
+                    if (signal.aborted) abort();
+                });
+            },
+        });
+        const url = queryUrl('/v1/device/events', { commandIds: commandId });
+        const devices = subscriptions.create<Array<{ id: string; generation: number }>>(url, 'devices');
+        const commands = subscriptions.create<typeof accepted>(url, 'commands');
+        const shared = subscriptions.createShared<{ id: string; generation: number }>('user');
+        const values: unknown[] = [], commandValues: unknown[] = [], userValues: unknown[] = [];
+        const errors: Error[] = [], states: Array<Error | null> = [], commandStates: Array<Error | null> = [], userStates: Array<Error | null> = [];
+        let disconnected!: () => void;
+        const interrupted = new Promise<void>(resolve => { disconnected = resolve; });
+        const releases: Array<() => void> = [];
+        const controller = new AbortController();
+        // A business error would lose the already accepted command ids; transport state must not.
+        let trackedCommandIds = [commandId];
+        const businessError = (error: Error) => { errors.push(error); trackedCommandIds = []; };
+        releases.push(shared.subscribe({
+            next: value => userValues.push(value), error: businessError,
+            connectionError: error => userStates.push(error),
+        }));
+        releases.push(devices.subscribe({
+            next: value => values.push(value), error: businessError,
+            connectionError: error => { states.push(error); if (error) disconnected(); },
+        }));
+        releases.push(commands.subscribe({
+            next: value => commandValues.push(value), error: businessError,
+            connectionError: error => commandStates.push(error),
+        }));
+        const completed = commands.filter(value => value.complete).first(controller.signal);
+        void completed.catch(() => {});
+        try {
+            expect(await devices.first(controller.signal)).toEqual([{ id: 'device', generation: 0 }]);
+            expect(await shared.first(controller.signal)).toEqual({ id: 'user', generation: 0 });
+            response?.destroy();
+            await interrupted;
+            expect(retrySignal?.aborted).toBe(false);
+            expect(errors).toEqual([]);
+            expect(trackedCommandIds).toEqual([commandId]);
+            expect(values).toHaveLength(1);
+            expect(commandValues).toEqual([accepted]);
+            expect(await commands.first(controller.signal)).toEqual(accepted);
+            const lateStates: Array<Error | null> = [], lateUsers: Array<Error | null> = [];
+            releases.push(devices.subscribe({
+                next: () => {}, error: businessError,
+                connectionError: error => lateStates.push(error),
+            }));
+            releases.push(shared.subscribe({
+                next: () => {}, error: businessError,
+                connectionError: error => lateUsers.push(error),
+            }));
+            expect(lateStates[0]).toBe(states.at(-1));
+            expect(commandStates.at(-1)).toBe(states.at(-1));
+            expect(userStates.at(-1)).toBe(states.at(-1));
+            expect(lateUsers[0]).toBe(states.at(-1));
+            generation = 1;
+            let fresh: Promise<unknown> | undefined;
+            if (recovery === 'automatic') resume();
+            else {
+                let resolved = false;
+                fresh = (recovery === 'manual-page' ? devices : shared)
+                    .first(controller.signal, { fresh: true })
+                    .then(value => { resolved = true; return value; });
+                expect(resolved).toBe(false);
+                expect(retrySignal?.aborted).toBe(true);
+                expect(retryAborted).toEqual([true]);
+            }
+            if (fresh) {
+                expect(await fresh).toEqual(recovery === 'manual-page'
+                    ? [{ id: 'device', generation: 1 }]
+                    : { id: 'user', generation: 1 });
+            } else {
+                expect(await devices.filter(rows => rows[0]?.generation === 1).first(controller.signal))
+                    .toEqual([{ id: 'device', generation: 1 }]);
+            }
+            expect(await shared.filter(user => user.generation === 1).first(controller.signal))
+                .toEqual({ id: 'user', generation: 1 });
+            expect(states.at(-1)).toBeNull();
+            expect(commandStates.at(-1)).toBeNull();
+            expect(userStates.at(-1)).toBeNull();
+            expect(lateStates.at(-1)).toBeNull();
+            expect(lateUsers.at(-1)).toBeNull();
+            expect(values).toEqual([[{ id: 'device', generation: 0 }], [{ id: 'device', generation: 1 }]]);
+            expect(userValues).toEqual([{ id: 'user', generation: 0 }, { id: 'user', generation: 1 }]);
+            expect(trackedCommandIds).toEqual([commandId]);
+            expect(requests).toEqual([url, url]);
+            expect(maximumActive).toBe(1);
+            const terminal = { complete: true, statuses: [{ command_id: commandId, status: 'succeeded' }] };
+            response?.write(`event: commands\ndata: ${JSON.stringify({ code: 0, data: terminal })}\n\n`);
+            expect(await completed).toEqual(terminal);
+            expect(errors).toEqual([]);
+        } finally {
+            controller.abort();
+            releases.forEach(release => release());
+            resume();
+            server.closeAllConnections();
+            await new Promise<void>(resolve => server.close(() => resolve()));
+        }
+    }, 10000);
 }

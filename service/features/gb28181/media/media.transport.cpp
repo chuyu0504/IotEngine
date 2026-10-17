@@ -19,7 +19,7 @@
 #include <ruvia/core/worker_post_types.h>
 #include <ruvia/web/model_json.h>
 
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 
 namespace service::gb28181::media {
 

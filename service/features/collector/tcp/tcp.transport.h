@@ -27,7 +27,6 @@
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
 #include "service/features/collector/engine/engine.types.h"
-#include "service/features/collector/scheduling/scheduling.runtime.h"
 #include "service/features/collector/tcp/tcp.types.h"
 
 namespace service::collector {
@@ -43,8 +42,8 @@ class TcpTransport final {
         std::function<void(std::string, std::string, std::string, std::function<void(bool)>)>;
     using TargetReleaseHandler = std::function<void(std::string, std::string, std::string)>;
 
-    TcpTransport(service::common::UuidV7State& uuidState, asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
-        : uuidState_(uuidState), ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
+    TcpTransport(service::common::UuidV7State& uuidState, asio::io_context& ioContext, TcpDeadlineCallbacks deadlines, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
+        : uuidState_(uuidState), ioContext_(ioContext), deadlines_(std::move(deadlines)), workerIndex_(workerIndex),
           workerCount_(workerCount), onConnected_(std::move(onConnected)),
           onPacket_(std::move(onPacket)), onDisconnected_(std::move(onDisconnected)),
           onState_(std::move(onState)), onTargetClaim_(std::move(onTargetClaim)),
@@ -421,7 +420,7 @@ class TcpTransport final {
         TcpTransport& owner;
         LinkDefinition link;
         LinkTargetDefinition target;
-        DeadlineScheduler::Token reconnectToken = 0;
+        TcpDeadlineCallbacks::Token reconnectToken = 0;
         std::string connectionId;
         std::shared_ptr<Attempt> attempt;
         bool stopped = false;
@@ -445,7 +444,7 @@ class TcpTransport final {
         void stop() {
             stopped = true;
             if (reconnectToken != 0) {
-                owner.scheduler_.cancel(reconnectToken);
+                owner.deadlines_.cancel(reconnectToken);
                 reconnectToken = 0;
             }
             const auto currentAttempt = attempt;
@@ -661,7 +660,7 @@ class TcpTransport final {
             if (stopped || reconnectToken != 0) {
                 return;
             }
-            reconnectToken = owner.scheduler_.scheduleAfter(std::chrono::seconds(2), [self = shared_from_this()] {
+            reconnectToken = owner.deadlines_.scheduleAfter(std::chrono::seconds(2), [self = shared_from_this()] {
                 self->reconnectToken = 0;
                 self->connect();
             });
@@ -874,7 +873,7 @@ class TcpTransport final {
                 client->second->connectionId.clear();
                 client->second->failed = true;
                 if (!client->second->stopped && client->second->reconnectToken == 0) {
-                    client->second->reconnectToken = scheduler_.scheduleAfter(
+                    client->second->reconnectToken = deadlines_.scheduleAfter(
                         std::chrono::seconds(2),
                         [target = client->second] {
                             target->reconnectToken = 0;
@@ -932,7 +931,7 @@ class TcpTransport final {
 
     service::common::UuidV7State& uuidState_;
     asio::io_context& ioContext_;
-    DeadlineScheduler& scheduler_;
+    TcpDeadlineCallbacks deadlines_;
     std::size_t workerIndex_ = 0;
     std::size_t workerCount_ = 1;
     ConnectedHandler onConnected_;

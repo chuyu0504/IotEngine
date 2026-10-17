@@ -31,7 +31,7 @@
 #include "service/features/packet_log/packet_log.service.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/telemetry/derived/derived.service.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 #include "service/utils/uuid.h"

@@ -14,7 +14,7 @@ export function LiveQueryError({
         <Alert
             type="error"
             showIcon
-            message="实时数据更新中断"
+            message="实时连接已断开"
             description={error.message}
             action={
                 <Button loading={loading} onClick={() => void retry()}>

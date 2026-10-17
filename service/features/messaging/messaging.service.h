@@ -28,7 +28,7 @@
 #include "service/features/messaging/messaging.entity.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/observability/observability.service.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 
 namespace service::messaging::outbox {
 

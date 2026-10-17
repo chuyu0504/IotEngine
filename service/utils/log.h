@@ -1,11 +1,10 @@
 #pragma once
 
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <utility>
 
-#include <spdlog/spdlog.h>
-
-namespace service::middleware {
+namespace service::utils {
 
 class LogLine final {
   public:
@@ -23,7 +22,8 @@ class LogLine final {
     LogLine(LogLine&&) = delete;
     LogLine& operator=(LogLine&&) = delete;
 
-    template <typename T> LogLine& operator<<(T&& value) {
+    template <typename T>
+    LogLine& operator<<(T&& value) {
         output_ << std::forward<T>(value);
         return *this;
     }
@@ -33,10 +33,10 @@ class LogLine final {
     std::ostringstream output_;
 };
 
-} // namespace service::middleware
+} // namespace service::utils
 
-#define LOG_TRACE ::service::middleware::LogLine(spdlog::level::trace)
-#define LOG_DEBUG ::service::middleware::LogLine(spdlog::level::debug)
-#define LOG_INFO ::service::middleware::LogLine(spdlog::level::info)
-#define LOG_WARN ::service::middleware::LogLine(spdlog::level::warn)
-#define LOG_ERROR ::service::middleware::LogLine(spdlog::level::err)
+#define LOG_TRACE ::service::utils::LogLine(spdlog::level::trace)
+#define LOG_DEBUG ::service::utils::LogLine(spdlog::level::debug)
+#define LOG_INFO ::service::utils::LogLine(spdlog::level::info)
+#define LOG_WARN ::service::utils::LogLine(spdlog::level::warn)
+#define LOG_ERROR ::service::utils::LogLine(spdlog::level::err)

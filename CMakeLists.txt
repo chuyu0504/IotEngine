@@ -286,7 +286,7 @@ add_executable(iot-engine
     service/server.cpp
     service/features/messaging/postgres_notifier/postgres_notifier.transport.cpp
     service/features/packet_log/packet_log.transport.cpp
-    service/features/gb28181/device/device.runtime.cpp
+    service/features/gb28181/device/device.protocol.cpp
     service/features/gb28181/media/media.runtime.cpp
     service/features/gb28181/media/media.transport.cpp
     service/features/gb28181/gb28181.runtime.cpp
@@ -514,7 +514,7 @@ iot_engine_add_test(gb28181-projector LARGE
         tests/gb28181-projector-test.cpp
         service/features/packet_log/packet_log.transport.cpp
         service/features/gb28181/media/media.transport.cpp
-        service/features/gb28181/device/device.runtime.cpp
+        service/features/gb28181/device/device.protocol.cpp
         service/features/gb28181/media/media.runtime.cpp
     LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
     DEFINITIONS IOT_ENGINE_TESTING)
@@ -522,7 +522,7 @@ iot_engine_add_test(gb28181-projector LARGE
 iot_engine_add_test(gb28181-sip
     SOURCES
         tests/gb28181-sip-test.cpp
-        service/features/gb28181/device/device.runtime.cpp
+        service/features/gb28181/device/device.protocol.cpp
         service/features/gb28181/media/media.transport.cpp
         service/features/gb28181/sip/sip.protocol.cpp
         service/features/gb28181/sip/sip.transport.cpp

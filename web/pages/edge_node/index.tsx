@@ -240,7 +240,7 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
                 />
             )}
             <LiveQueryError
-                error={dataQuery.error}
+                error={dataQuery.error ?? dataQuery.connectionError}
                 retry={dataQuery.refetch}
                 loading={dataQuery.isFetching}
             />
@@ -1158,6 +1158,7 @@ export function EdgeNodePage() {
         isFetching,
         refetch,
         error: inventoryError,
+        connectionError: inventoryConnectionError,
     } = useEdgeInventory(canQuery, eventScope);
     const { data: edgeGroups = EMPTY_GROUPS, isLoading: groupsLoading } = useEdgeGroupTree();
     const groupSave = useEdgeGroupSave();
@@ -1197,6 +1198,7 @@ export function EdgeNodePage() {
         data: detail,
         isLoading: detailLoading,
         error: detailError,
+        connectionError: detailConnectionError,
         refetch: retryDetail,
     } = useEdgeDetail(eventScope);
     const {
@@ -1204,6 +1206,7 @@ export function EdgeNodePage() {
         isFetching: eventLogsLoading,
         refetch: refreshEventLogs,
         error: eventLogsError,
+        connectionError: eventLogsConnectionError,
     } = useEdgeLogs(
         eventScope,
         Boolean(
@@ -1776,14 +1779,17 @@ export function EdgeNodePage() {
                 error={
                     inventoryError ??
                     detailError ??
-                    (detailTab === 'events' ? eventLogsError : null)
+                    (detailTab === 'events' ? eventLogsError : null) ??
+                    inventoryConnectionError ??
+                    detailConnectionError ??
+                    (detailTab === 'events' ? eventLogsConnectionError : null)
                 }
-                retry={() =>
-                    Promise.all([
-                        refetch(),
-                        ...(selectedId ? [retryDetail()] : []),
-                        ...(eventLogsError && detailTab === 'events' ? [refreshEventLogs()] : []),
-                    ])
+                retry={
+                    inventoryError || inventoryConnectionError
+                        ? refetch
+                        : detailError || detailConnectionError
+                          ? retryDetail
+                          : refreshEventLogs
                 }
                 loading={isFetching}
             />
@@ -1903,6 +1909,11 @@ export function EdgeNodePage() {
                 size="min(960px, 92vw)"
                 loading={detailLoading}
             >
+                <LiveQueryError
+                    error={detailError ?? detailConnectionError ?? inventoryConnectionError}
+                    retry={detailError || detailConnectionError ? retryDetail : refetch}
+                    loading={detailLoading}
+                />
                 {detail && (
                     <>
                         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
@@ -2910,7 +2921,11 @@ function DtuPanel({ node, scope }: { node: Edge.Node; scope: Edge.EventScope }) 
     ];
     return (
         <div className="flex min-h-0 flex-col gap-3">
-            <LiveQueryError error={query.error} retry={query.refetch} loading={query.isFetching} />
+            <LiveQueryError
+                error={query.error ?? query.connectionError}
+                retry={query.refetch}
+                loading={query.isFetching}
+            />
             {query.data && !query.data.supported && (
                 <Alert type="warning" title="当前固件未声明 DTU 能力，请升级支持透传的固件" />
             )}

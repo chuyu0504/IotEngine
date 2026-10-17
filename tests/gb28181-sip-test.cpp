@@ -23,7 +23,7 @@
 #include <ruvia/core/event_loop_pool.h>
 
 #include "service/common/timestamp.h"
-#include "service/features/gb28181/device/device.runtime.h"
+#include "service/features/gb28181/device/device.protocol.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
 #include "service/features/gb28181/sip/sip.transport.h"

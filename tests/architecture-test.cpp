@@ -332,6 +332,177 @@ std::optional<std::string> includeTarget(std::string_view line) {
     return std::string(line.substr(cursor, end - cursor));
 }
 
+struct SourceStructure {
+    std::vector<std::string> includes;
+    bool includeAfterDeclaration{ false };
+    bool declaresRoutes{ false };
+};
+
+SourceStructure sourceStructure(std::string_view input) {
+    // 先执行预处理续行，再屏蔽注释和字面量；两份视图保持位置一致，
+    // include 路径从保留字面量的视图读取，结构只从代码 token 判断。
+    std::string text;
+    text.reserve(input.size());
+    for (std::size_t cursor = 0; cursor < input.size(); ++cursor) {
+        if (input[cursor] == '\\' && cursor + 1 < input.size()) {
+            if (input[cursor + 1] == '\n') {
+                ++cursor;
+                continue;
+            }
+            if (input[cursor + 1] == '\r' && cursor + 2 < input.size() &&
+                input[cursor + 2] == '\n') {
+                cursor += 2;
+                continue;
+            }
+        }
+        text.push_back(input[cursor]);
+    }
+    auto tokens = text;
+    const auto mask = [](std::string& value, std::size_t begin, std::size_t end) {
+        for (auto cursor = begin; cursor < end; ++cursor) {
+            if (value[cursor] != '\n') {
+                value[cursor] = ' ';
+            }
+        }
+    };
+    for (std::size_t cursor = 0; cursor < text.size();) {
+        const auto begin = cursor;
+        if (text.compare(cursor, 2, "//") == 0) {
+            const auto end = text.find('\n', cursor + 2);
+            cursor = end == std::string::npos ? text.size() : end;
+            mask(tokens, begin, cursor);
+            mask(text, begin, cursor);
+        } else if (text.compare(cursor, 2, "/*") == 0) {
+            const auto end = text.find("*/", cursor + 2);
+            cursor = end == std::string::npos ? text.size() : end + 2;
+            mask(tokens, begin, cursor);
+            mask(text, begin, cursor);
+        } else if (text.compare(cursor, 2, "R\"") == 0) {
+            const auto opening = text.find('(', cursor + 2);
+            if (opening == std::string::npos || opening - cursor > 18) {
+                ++cursor;
+                continue;
+            }
+            const auto delimiter = text.substr(cursor + 2, opening - cursor - 2);
+            const auto closing = ")" + delimiter + "\"";
+            const auto end = text.find(closing, opening + 1);
+            cursor = end == std::string::npos ? text.size() : end + closing.size();
+            mask(tokens, begin, cursor);
+        } else if (text[cursor] == '"' || text[cursor] == '\'') {
+            // 数字分隔符不是字符字面量。
+            auto tokenStart = cursor;
+            while (tokenStart > 0 &&
+                   (std::isalnum(static_cast<unsigned char>(text[tokenStart - 1])) ||
+                    text[tokenStart - 1] == '_' || text[tokenStart - 1] == '\'')) {
+                --tokenStart;
+            }
+            if (text[cursor] == '\'' && tokenStart < cursor &&
+                std::isdigit(static_cast<unsigned char>(text[tokenStart]))) {
+                ++cursor;
+                continue;
+            }
+            const auto quote = text[cursor++];
+            while (cursor < text.size()) {
+                if (text[cursor] == '\\' && cursor + 1 < text.size()) {
+                    cursor += 2;
+                } else if (text[cursor++] == quote) {
+                    break;
+                }
+            }
+            mask(tokens, begin, cursor);
+        } else {
+            ++cursor;
+        }
+    }
+
+    static const std::regex routeDeclaration(
+        R"(\bRUVIA_(?:CONTROLLER_GROUP|ROUTES_BEGIN|ROUTES_END|GROUP_BEGIN|GROUP_END|GET(?:_STREAM|_SSE|_WS(?:_OPTIONS)?)?|POST(?:_STREAM)?|PUT(?:_STREAM)?|PATCH(?:_STREAM)?|DELETE|HEAD|OPTIONS|CONNECT(?:_PROTOCOL)?(?:_OPTIONS)?|METHOD|ALL|ON)\b)"
+    );
+
+    struct ConditionalBranch {
+        bool before;
+        bool previous;
+    };
+
+    std::vector<ConditionalBranch> branches;
+    bool declarationSeen = false;
+    SourceStructure result;
+    for (std::size_t start = 0; start < tokens.size();) {
+        const auto end = tokens.find('\n', start);
+        const auto length = end == std::string::npos ? tokens.size() - start : end - start;
+        const auto line = std::string_view(tokens).substr(start, length);
+        auto cursor = line.find_first_not_of(" \t\r");
+        if (cursor != std::string_view::npos && line[cursor] == '#') {
+            cursor = line.find_first_not_of(" \t\r", cursor + 1);
+            const auto directiveEnd = cursor == std::string_view::npos
+                ? cursor
+                : line.find_first_not_of("abcdefghijklmnopqrstuvwxyz_", cursor);
+            const auto directive = cursor == std::string_view::npos
+                ? std::string_view{}
+                : line.substr(cursor, directiveEnd - cursor);
+            if (directive == "define") {
+                result.declaresRoutes |= std::regex_search(line.begin(), line.end(), routeDeclaration);
+            }
+            if (directive == "include") {
+                result.includeAfterDeclaration |= declarationSeen;
+                if (const auto target = includeTarget(std::string_view(text).substr(start, length))) {
+                    result.includes.push_back(*target);
+                }
+            } else if (directive == "if" || directive == "ifdef" || directive == "ifndef") {
+                branches.push_back({ declarationSeen, false });
+            } else if ((directive == "else" || directive == "elif") && !branches.empty()) {
+                auto& branch = branches.back();
+                branch.previous |= declarationSeen;
+                declarationSeen = branch.before;
+            } else if (directive == "endif" && !branches.empty()) {
+                declarationSeen |= branches.back().previous;
+                branches.pop_back();
+            }
+        } else if (cursor != std::string_view::npos) {
+            declarationSeen = true;
+            result.declaresRoutes |= std::regex_search(line.begin(), line.end(), routeDeclaration);
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+void testSourceStructureDetection() {
+    const auto header = sourceStructure(
+        "/* #include \"ignored.h\" */\n"
+        "#pragma once\n#define FLAG \\\n 1\n"
+        "#if defined(PLATFORM)\n#include \"first.h\"\nstruct First {};\n"
+        "#else\n#include \"second.h\"\nstruct Second {};\n#endif\n"
+        "constexpr auto text = R\"code(\n#include \"ignored.h\"\n"
+        "RUVIA_ROUTES_BEGIN(Ignored)\n)code\";\n"
+        "constexpr auto letter = L'\\'';\nconstexpr auto count = 1'000;\n"
+        "// RUVIA_GET(\"/ignored\", ignored)\n"
+    );
+    require(header.includes == std::vector<std::string>{ "first.h", "second.h" }, "include lexer reads comments or raw string contents");
+    require(!header.includeAfterDeclaration, "mutually exclusive preprocessor branches reject header includes");
+    require(!header.declaresRoutes, "route lexer reads comments or string literals");
+    for (const auto* code : {
+             "struct Value {};\n#include \"late.h\"\n",
+             "constexpr auto letter = L'#';\n#include <late.h>\n",
+             "constexpr auto count = 1'000;\n#include <late.h>\n",
+             "#if FLAG\nstruct Value {};\n#endif\n#include <late.h>\n",
+             "namespace example {\n#if FLAG\n# include HEADER\n#endif\n}\n" }) {
+        require(sourceStructure(code).includeAfterDeclaration, "declaration followed by an include was missed");
+    }
+    for (const auto* code : {
+             "RUVIA_ROUTES_BEGIN(Endpoint)\nRUVIA_ROUTES_END",
+             "RUVIA_GET_SSE(\"/events\", events)",
+             "RUVIA_CONNECT_PROTOCOL_OPTIONS(\"protocol\", \"/\", stream, options)",
+             "RUVIA_GROUP_BEGIN(\"/group\")\nRUVIA_GROUP_END" }) {
+        require(sourceStructure(code).declaresRoutes, "structural routing macro was missed");
+    }
+    require(!sourceStructure("void route();\nvoid events();\n").declaresRoutes, "business function spelling was mistaken for a route declaration");
+    require(!sourceStructure("#ifdef RUVIA_ROUTES_END\n#endif\n").declaresRoutes, "preprocessor macro availability check was mistaken for a route declaration");
+}
+
 std::optional<std::string> resolveInclude(
     const std::filesystem::path& including,
     std::string_view spelling,
@@ -404,15 +575,19 @@ IncludeGraph buildIncludeGraph() {
         std::ifstream input(path, std::ios::binary);
         requireFeatureRule(input.good(), path, "cannot read service source for include graph");
         const auto from = pathKey(path);
-        std::string line;
-        while (std::getline(input, line)) {
-            const auto target = includeTarget(line);
-            if (!target) {
-                continue;
-            }
-            const auto resolved = resolveInclude(path, *target, graph.paths);
+        const std::string content{
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()
+        };
+        const auto structure = sourceStructure(content);
+        requireFeatureRule(!structure.includeAfterDeclaration, path, "include appears after a declaration");
+        const bool routeOwner = (from.starts_with("service/modules/") && from.ends_with(".controller.h")) ||
+            (from.starts_with("service/features/") && from.ends_with(".transport.h"));
+        requireFeatureRule(!structure.declaresRoutes || routeOwner, path, "routing macros declared outside a module controller or feature transport header");
+        for (const auto& target : structure.includes) {
+            const auto resolved = resolveInclude(path, target, graph.paths);
             if (!resolved) {
-                requireFeatureRule(!isLayerReference(*target), path, "service layer include target does not exist");
+                requireFeatureRule(!isLayerReference(target), path, "service layer include target does not exist");
                 continue;
             }
             auto& edges = graph.includes.at(from);
@@ -436,6 +611,67 @@ bool isRuntimePath(std::string_view key) {
     const auto separator = key.find_last_of('/');
     const auto filename = key.substr(separator == std::string_view::npos ? 0 : separator + 1);
     return filename.ends_with(".runtime.h") || filename.ends_with(".runtime.cpp");
+}
+
+bool isImplementationPath(std::string_view key) {
+    return isRuntimePath(key) || key.ends_with(".service.h") ||
+        key.ends_with(".controller.h") || key.ends_with(".transport.h") ||
+        key.ends_with(".transport.cpp");
+}
+
+std::string_view featureOwner(std::string_view key) {
+    constexpr std::string_view prefix = "service/features/";
+    if (!key.starts_with(prefix)) {
+        return {};
+    }
+    const auto end = key.find('/', prefix.size());
+    return key.substr(0, end);
+}
+
+std::optional<std::string_view> directIncludeViolation(std::string_view owner, std::string_view target) {
+    const auto directory = [](std::string_view key) {
+        return key.substr(0, key.find_last_of('/'));
+    };
+    if (isModulePath(owner) && owner.ends_with(".controller.h") &&
+        isModulePath(target) && directory(owner) != directory(target) &&
+        (target.ends_with(".service.h") || target.ends_with(".types.h") || target.ends_with(".entity.h"))) {
+        return "module controller directly includes another module's service, types or entity";
+    }
+    if (isFeaturePath(owner) && isRuntimePath(owner) && isFeaturePath(target) &&
+        featureOwner(owner) != featureOwner(target) && isImplementationPath(target)) {
+        return "feature runtime directly includes another feature's implementation";
+    }
+    if ((owner.ends_with(".transport.h") || owner.ends_with(".transport.cpp")) &&
+        (target.ends_with(".service.h") || isRuntimePath(target) || target.ends_with(".controller.h"))) {
+        return "transport directly includes service, runtime or controller implementation";
+    }
+    if (isFeaturePath(owner) && target.starts_with("service/middleware/")) {
+        return "feature directly includes request middleware";
+    }
+    return std::nullopt;
+}
+
+void testDirectIncludeBoundaryDetection() {
+    for (const auto& [owner, target] : {
+             std::pair{ "service/modules/alpha/alpha.controller.h", "service/modules/beta/beta.service.h" },
+             std::pair{ "service/modules/alpha/alpha.controller.h", "service/modules/beta/beta.types.h" },
+             std::pair{ "service/modules/system/alpha/alpha.controller.h", "service/modules/system/beta/beta.entity.h" },
+             std::pair{ "service/features/alpha/alpha.runtime.h", "service/features/beta/beta.service.h" },
+             std::pair{ "service/features/alpha/alpha.runtime.cpp", "service/features/beta/socket/socket.transport.h" },
+             std::pair{ "service/features/alpha/socket/socket.transport.h", "service/features/alpha/alpha.runtime.h" },
+             std::pair{ "service/features/alpha/socket/socket.transport.cpp", "service/features/alpha/alpha.service.h" },
+             std::pair{ "service/features/alpha/alpha.types.h", "service/middleware/auth.h" } }) {
+        require(directIncludeViolation(owner, target).has_value(), "direct include boundary violation was missed");
+    }
+    for (const auto& [owner, target] : {
+             std::pair{ "service/modules/alpha/alpha.controller.h", "service/modules/alpha/alpha.service.h" },
+             std::pair{ "service/modules/system/alpha/alpha.controller.h", "service/modules/system/alpha/alpha.types.h" },
+             std::pair{ "service/modules/alpha/alpha.service.h", "service/modules/beta/beta.service.h" },
+             std::pair{ "service/features/alpha/alpha.runtime.h", "service/features/alpha/socket/socket.transport.h" },
+             std::pair{ "service/features/alpha/alpha.runtime.h", "service/features/beta/beta.protocol.h" },
+             std::pair{ "service/features/alpha/socket/socket.transport.h", "service/features/alpha/alpha.protocol.h" } }) {
+        require(!directIncludeViolation(owner, target), "allowed direct include was rejected");
+    }
 }
 
 void requireNoLayerReachability(const IncludeGraph& graph, bool fromModules) {
@@ -473,11 +709,14 @@ void testIncludeGraphBoundaries() {
     requireNoLayerReachability(graph, true);
     requireNoLayerReachability(graph, false);
     for (const auto& [owner, imports] : graph.includes) {
-        if (!owner.starts_with("service/common/") && !owner.starts_with("service/utils/")) {
-            continue;
-        }
+        const bool infrastructure = owner.starts_with("service/common/") || owner.starts_with("service/utils/");
         for (const auto& target : imports) {
-            requireFeatureRule(!isModulePath(target) && !isFeaturePath(target), graph.paths.at(owner), "shared infrastructure depends on business implementation");
+            if (const auto violation = directIncludeViolation(owner, target)) {
+                throw std::runtime_error(std::string(*violation) + ": " + owner + " -> " + target);
+            }
+            if (infrastructure) {
+                requireFeatureRule(!isModulePath(target) && !isFeaturePath(target), graph.paths.at(owner), "shared infrastructure depends on business implementation");
+            }
         }
     }
 
@@ -733,6 +972,8 @@ int main() {
         testModuleFileLayout();
         testFeatureFileLayout();
         testCommonFileLayout();
+        testSourceStructureDetection();
+        testDirectIncludeBoundaryDetection();
         testIncludeGraphBoundaries();
         testFeatureDomainBoundaries();
         testStorageOwnership();

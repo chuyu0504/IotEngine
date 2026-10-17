@@ -24,7 +24,7 @@
 #include "service/common/message.h"
 #include "service/common/worker.h"
 #include "service/features/messaging/rpc/rpc.service.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 #include "service/utils/worker_task.h"

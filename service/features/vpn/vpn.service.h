@@ -41,7 +41,7 @@
 #include "service/features/vpn/vpn.entity.h"
 #include "service/features/vpn/wireguard/wireguard.config.h"
 #include "service/features/vpn/wireguard/wireguard.transport.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/network.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"

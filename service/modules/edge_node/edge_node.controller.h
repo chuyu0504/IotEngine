@@ -16,11 +16,11 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
-#include "service/middleware/log.h"
 #include "service/middleware/permission.h"
 #include "service/middleware/request_context.h"
 #include "service/modules/edge_node/edge_node.service.h"
 #include "service/modules/edge_node/edge_node.types.h"
+#include "service/utils/log.h"
 #include "service/utils/uuid.h"
 
 namespace service::edge_node {

@@ -14,7 +14,7 @@
 
 #include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/postgres_notifier/postgres_notifier.transport.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/worker_task.h"
 
 namespace service::messaging::outbox {

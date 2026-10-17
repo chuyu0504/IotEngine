@@ -23,9 +23,9 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/middleware/log.h"
 #include "service/middleware/request_context.h"
 #include "service/utils/json.h"
+#include "service/utils/log.h"
 
 namespace service::middleware {
 

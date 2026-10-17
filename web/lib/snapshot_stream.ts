@@ -7,6 +7,8 @@ export interface SnapshotDelta {
 export interface SnapshotObserver<T> {
     next: (value: T) => void;
     error: (error: Error) => void;
+    /** Transport interrupted or recovered; does not invalidate an authorized snapshot. */
+    connectionError?: (error: Error | null) => void;
     /**
      * Receives entity deltas with the merged snapshot instead of `next`; observers without it
      * are given the merged snapshot through `next`.
@@ -93,6 +95,7 @@ export class SnapshotStream<T> implements PromiseLike<T> {
         return new SnapshotStream((observer, options) => {
             const values: unknown[] = new Array(sources.length);
             const ready = new Set<number>();
+            const connectionError = combinedConnectionState(observer);
             const releases = sources.map((source, index) =>
                 source.subscribe(
                     {
@@ -103,6 +106,7 @@ export class SnapshotStream<T> implements PromiseLike<T> {
                                 observer.next([...values] as unknown as T);
                         },
                         error: observer.error,
+                        connectionError: (error) => connectionError(index, error),
                     },
                     options
                 )
@@ -116,13 +120,21 @@ export class SnapshotStream<T> implements PromiseLike<T> {
     switchMap<U>(transform: (value: T) => SnapshotStream<U>): SnapshotStream<U> {
         return new SnapshotStream((observer, options) => {
             let releaseChild: (() => void) | undefined;
+            const connectionError = combinedConnectionState(observer);
             const release = this.subscribe(
                 {
                     next: (value) => {
                         releaseChild?.();
                         releaseChild = undefined;
+                        connectionError(1, null);
                         try {
-                            releaseChild = transform(value).subscribe(observer, options);
+                            releaseChild = transform(value).subscribe(
+                                {
+                                    ...observer,
+                                    connectionError: (error) => connectionError(1, error),
+                                },
+                                options
+                            );
                         } catch (error) {
                             observer.error(
                                 error instanceof Error ? error : new Error(String(error))
@@ -130,6 +142,7 @@ export class SnapshotStream<T> implements PromiseLike<T> {
                         }
                     },
                     error: observer.error,
+                    connectionError: (error) => connectionError(0, error),
                 },
                 options
             );
@@ -154,6 +167,7 @@ export class SnapshotStream<T> implements PromiseLike<T> {
                         }
                     },
                     error: observer.error,
+                    connectionError: observer.connectionError,
                 },
                 options
             )
@@ -174,6 +188,7 @@ export class SnapshotStream<T> implements PromiseLike<T> {
                         }
                     },
                     error: observer.error,
+                    connectionError: observer.connectionError,
                 },
                 options
             )
@@ -222,4 +237,20 @@ export class SnapshotStream<T> implements PromiseLike<T> {
     ): Promise<TResult1 | TResult2> {
         return this.first().then(fulfilled, rejected);
     }
+}
+
+/** A healthy constituent must not hide another constituent's interrupted connection. */
+function combinedConnectionState(observer: Pick<SnapshotObserver<unknown>, 'connectionError'>) {
+    const errors = new Map<number, Error>();
+    let current: Error | null = null;
+    let received = false;
+    return (index: number, error: Error | null) => {
+        if (error) errors.set(index, error);
+        else errors.delete(index);
+        const next = errors.values().next().value ?? null;
+        if (received && next === current) return;
+        received = true;
+        current = next;
+        observer.connectionError?.(next);
+    };
 }

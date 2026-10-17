@@ -19,7 +19,7 @@
 #include "service/common/uuid.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/uuid.h"
 
 #include "tests/port_reservation.fixture.h"

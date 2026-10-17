@@ -24,7 +24,7 @@
 #include "service/features/edge/gateway/gateway.service.h"
 #include "service/features/edge/gateway/gateway.transport.h"
 #include "service/features/edge/gateway/gateway.types.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/uuid.h"
 #include "service/utils/worker_task.h"
 

@@ -57,6 +57,8 @@ function LinkDebug({
             pending={toggle.isPending}
             loading={packets.isLoading}
             error={packets.error}
+            connectionError={packets.connectionError}
+            retry={packets.refetch}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
             onOpen={onOpen}
@@ -126,7 +128,7 @@ export function IotLinkPage() {
     const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
     const { data: publicIp } = usePublicIp({ enabled: canQuery });
     const listParams = { ...pagination, keyword: keyword || undefined };
-    const { data, isLoading, error, refetch, isFetching } = useLinkList(
+    const { data, isLoading, error, connectionError, refetch, isFetching } = useLinkList(
         listParams,
         { enabled: canQuery },
         debugLinkId
@@ -407,7 +409,7 @@ export function IotLinkPage() {
                 </div>
             }
         >
-            <LiveQueryError error={error} retry={refetch} loading={isFetching} />
+            <LiveQueryError error={error ?? connectionError} retry={refetch} loading={isFetching} />
             <Table<Link.Item>
                 rowKey="id"
                 columns={columns}

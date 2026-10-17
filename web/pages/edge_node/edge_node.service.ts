@@ -576,7 +576,8 @@ export const useEdgeLogs = (scope: Edge.EventScope, enabled = true) => {
         ...result,
         refetch: async () => {
             if (!id) return;
-            if (result.error) await result.refetch({ throwOnError: true });
+            if (result.error || result.connectionError)
+                await result.refetch({ throwOnError: true });
             await captureLogs(id);
         },
     };
@@ -715,6 +716,7 @@ export const useEdgeVpn = (scope: Edge.EventScope, enabled: boolean) => {
     return {
         data,
         error: state.error ?? networks.error,
+        connectionError: state.connectionError,
         isLoading: state.isLoading || networks.isLoading,
         isFetching: state.isFetching || networks.isFetching,
         refetch,

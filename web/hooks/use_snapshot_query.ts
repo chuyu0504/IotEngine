@@ -42,7 +42,11 @@ interface StreamFailure {
 export function snapshotCacheObserver<T>(
     client: QueryClient,
     queryKey: QueryKey,
-    status: { received: () => void; error: (error: Error) => void }
+    status: {
+        received: () => void;
+        error: (error: Error) => void;
+        connectionError?: (error: Error | null) => void;
+    }
 ): SnapshotObserver<T> {
     return {
         next: (value) => {
@@ -56,12 +60,13 @@ export function snapshotCacheObserver<T>(
             );
         },
         error: status.error,
+        connectionError: status.connectionError,
     };
 }
 
 export function useSnapshotQuery<T, Selected = T>(
     options: Options<T, Selected>
-): UseQueryResult<Selected, Error> {
+): UseQueryResult<Selected, Error> & { connectionError: Error | null } {
     const client = useQueryClient();
     const token = useAuthStore((state) => state.token);
     const factory = useRef(options.queryFn);
@@ -70,6 +75,7 @@ export function useSnapshotQuery<T, Selected = T>(
     queryKey.current = options.queryKey;
     const subscription = hashKey([options.queryKey, options.streamKey ?? null]);
     const [failure, setFailure] = useState<StreamFailure | null>(null);
+    const [connectionFailure, setConnectionFailure] = useState<StreamFailure | null>(null);
     const result = useQuery({
         ...options,
         queryFn: ({ signal }) => factory.current().first(signal, { fresh: true }),
@@ -88,11 +94,23 @@ export function useSnapshotQuery<T, Selected = T>(
                         current?.subscription === subscription ? null : current
                     ),
                 error: (error) => setFailure({ subscription, error }),
+                connectionError: (error) =>
+                    setConnectionFailure((current) =>
+                        error
+                            ? { subscription, error }
+                            : current?.subscription === subscription
+                              ? null
+                              : current
+                    ),
             })
         );
     }, [client, subscription, enabled, token]);
     const error = failure?.subscription === subscription ? failure.error : null;
-    if (!error) return result;
+    const connectionError =
+        enabled && token && connectionFailure?.subscription === subscription
+            ? connectionFailure.error
+            : null;
+    if (!error) return { ...result, connectionError };
     // A failed stream no longer authorizes or refreshes the cached snapshot.
     const failed: QueryObserverLoadingErrorResult<Selected, Error> = {
         ...result,
@@ -107,5 +125,5 @@ export function useSnapshotQuery<T, Selected = T>(
         isPlaceholderData: false,
         status: 'error',
     };
-    return failed;
+    return { ...failed, connectionError };
 }

@@ -13,7 +13,7 @@
 
 #include "service/common/message.h"
 #include "service/features/live/live.service.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/redis.h"
 #include "service/utils/worker_task.h"
 

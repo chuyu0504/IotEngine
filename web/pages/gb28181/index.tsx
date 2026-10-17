@@ -1244,7 +1244,7 @@ export function Gb28181Page() {
     return (
         <PageContainer header={pageHeader}>
             <LiveQueryError
-                error={devicesQuery.error}
+                error={devicesQuery.error ?? devicesQuery.connectionError}
                 retry={devicesQuery.refetch}
                 loading={devicesQuery.isFetching}
             />

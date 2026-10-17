@@ -13,7 +13,7 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/features/gb28181/gb28181.protocol.h"
-#include "service/middleware/log.h"
+#include "service/utils/log.h"
 #include "service/utils/redis.h"
 #include "service/utils/uuid.h"
 

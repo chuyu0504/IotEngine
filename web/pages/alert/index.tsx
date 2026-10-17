@@ -1336,6 +1336,7 @@ const AlertPage = () => {
         data: stats,
         isLoading: statsLoading,
         error: statsError,
+        connectionError: statsConnectionError,
         refetch: retryStats,
     } = useAlertStats(recordParams, {
         enabled: canQuery,
@@ -1344,6 +1345,7 @@ const AlertPage = () => {
         data: recordPage,
         isLoading,
         error: recordsError,
+        connectionError: recordsConnectionError,
         refetch: retryRecords,
     } = useAlertRecordList(recordParams, { enabled: canQuery });
     const ackMutation = useAlertAcknowledge();
@@ -1428,8 +1430,14 @@ const AlertPage = () => {
     return (
         <PageContainer>
             <LiveQueryError
-                error={recordsError ?? statsError}
-                retry={() => Promise.all([retryRecords(), retryStats()])}
+                error={recordsError ?? statsError ?? recordsConnectionError ?? statsConnectionError}
+                retry={
+                    recordsError || statsError
+                        ? () => Promise.all([retryRecords(), retryStats()])
+                        : recordsConnectionError
+                          ? retryRecords
+                          : retryStats
+                }
             />
             {/* 概要统计 + 管理入口 */}
             <div className="flex items-center justify-between flex-wrap gap-2 mb-4">

@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition } from '@/types/packet_debug';
 import { formatDebugTerminal } from '@/utils/packet_debug';
+import { LiveQueryError } from './live_query_error';
 
 interface Props {
     scope: 'device' | 'link';
@@ -17,6 +18,8 @@ interface Props {
     pending: boolean;
     loading: boolean;
     error?: Error | null;
+    connectionError?: Error | null;
+    retry?: () => unknown;
     acquisitions?: DebugAcquisition[];
     onToggle: () => void;
     onOpen: () => void;
@@ -118,6 +121,13 @@ export function PacketDebugPanel(props: Props) {
                             type="error"
                             title="报文读取失败"
                             description={props.error.message}
+                        />
+                    )}
+                    {props.retry && (
+                        <LiveQueryError
+                            error={props.connectionError}
+                            retry={props.retry}
+                            loading={props.loading}
                         />
                     )}
                     {props.open && active && (

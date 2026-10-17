@@ -51,6 +51,7 @@ import { JsonEditor } from '@/components/json_editor';
 import { FormModal } from '@/components/form_modal';
 import type { GroupFormValues } from '@/components/group_form_modal';
 import { type GroupTreeAction, GroupTreePanel } from '@/components/group_tree_panel';
+import { LiveQueryError } from '@/components/live_query_error';
 import { PacketDebugPanel } from '@/components/packet_debug_panel';
 import { PageContainer } from '@/components/page_container';
 import { VirtualGrid } from '@/components/virtual_grid';
@@ -1937,6 +1938,8 @@ function DeviceDebug({
             pending={toggle.isPending}
             loading={packets.isLoading}
             error={packets.error}
+            connectionError={packets.connectionError}
+            retry={packets.refetch}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
             onOpen={onOpen}
@@ -2397,6 +2400,7 @@ const DevicePage = () => {
         data,
         isLoading,
         error: listError,
+        connectionError: listConnectionError,
         isFetching: isListFetching,
         refetch,
     } = useDeviceList({
@@ -2409,6 +2413,7 @@ const DevicePage = () => {
     const {
         data: realtimeSnapshotData,
         error: realtimeError,
+        connectionError: realtimeConnectionError,
         isFetching: isRealtimeSnapshotFetching,
         refetch: refetchRealtimeSnapshot,
     } = useDeviceRealtimeSnapshot({
@@ -2416,8 +2421,12 @@ const DevicePage = () => {
         commandIds,
         enabled: canQuery && !!data,
     });
-    const { data: groupTree = EMPTY_GROUP_TREE, isLoading: isGroupTreeLoading } =
-        useDeviceGroupTreeWithCount({ enabled: canQuery }, debugDeviceId, commandIds);
+    const {
+        data: groupTree = EMPTY_GROUP_TREE,
+        isLoading: isGroupTreeLoading,
+        connectionError: groupsConnectionError,
+        refetch: refetchGroups,
+    } = useDeviceGroupTreeWithCount({ enabled: canQuery }, debugDeviceId, commandIds);
     const { data: linkOptions = EMPTY_LINK_OPTIONS } = useLinkOptions({
         enabled: canQuery,
         refetchOnWindowFocus: false,
@@ -2770,6 +2779,17 @@ const DevicePage = () => {
             }
         >
             {unknownCommandWarning}
+            <LiveQueryError
+                error={listConnectionError ?? realtimeConnectionError ?? groupsConnectionError}
+                retry={
+                    listConnectionError
+                        ? refetch
+                        : realtimeConnectionError
+                          ? refetchRealtimeSnapshot
+                          : refetchGroups
+                }
+                loading={isListFetching || isRealtimeSnapshotFetching}
+            />
             <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden">
                 <Flex gap={12} className="mb-3" wrap>
                     {[
