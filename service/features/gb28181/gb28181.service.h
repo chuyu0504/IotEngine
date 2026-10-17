@@ -137,26 +137,22 @@ redis.call('PUBLISH', KEYS[5], wake)
 return { order, id }
 )lua";
 
-// Receipt write, PEL removal and the directed receipt to the publishing
-// Collector Worker are one Redis transaction.  The receipt stream exists only
-// while that Collector incarnation consumes it; the durable receipt key covers
-// a Collector that missed the directed message.
-// KEYS[1]=receipt key, KEYS[2]=projection stream, KEYS[3]=Collector receipt stream.
-// KEYS[4]=Collector receipt input channel, KEYS[5]=projection pending deadlines,
-// KEYS[6]=projection deadline change channel.
+// Durable receipt write, PEL removal and the direct Pub/Sub notification to the
+// publishing Collector Worker are one Redis transaction. The receipt key remains
+// authoritative when the Collector misses the notification.
+// KEYS[1]=receipt key, KEYS[2]=projection stream, KEYS[3]=Collector receipt topic,
+// KEYS[4]=projection pending deadlines, KEYS[5]=projection deadline change channel.
 // ARGV[1]=applied (0/1), ARGV[2]=receipt TTL seconds, ARGV[3]=group,
 // ARGV[4]=entry ID, ARGV[5]=projection ID.
 inline constexpr std::string_view kMarkProjectionDoneScript = R"lua(
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 local acknowledged = redis.call('XACK', KEYS[2], ARGV[3], ARGV[4])
 redis.call('XDEL', KEYS[2], ARGV[4])
-if redis.call('ZREM', KEYS[5], ARGV[4]) > 0 then
-  redis.call('PUBLISH', KEYS[6], ARGV[4])
+if redis.call('ZREM', KEYS[4], ARGV[4]) > 0 then
+  redis.call('PUBLISH', KEYS[5], ARGV[4])
 end
-if redis.call('EXISTS', KEYS[3]) == 1 then
-  local id = redis.call('XADD', KEYS[3], '*', 'projection_id', ARGV[5], 'applied', ARGV[1])
-  redis.call('EXPIRE', KEYS[3], ARGV[2])
-  redis.call('PUBLISH', KEYS[4], id)
+if KEYS[3] ~= '' then
+  redis.call('PUBLISH', KEYS[3], ARGV[5])
 end
 return acknowledged
 )lua";
@@ -1316,14 +1312,14 @@ class GbControlService final {
         co_return std::optional<std::string>(std::string(*value));
     }
 
-    // `receiptStream` is the publishing Collector Worker's receipt stream.
+    // `receiptTopic` is the publishing Collector Worker's projection receipt topic.
     static ruvia::task<void> markProjectionDoneAndAcknowledge(
         const ruvia::redis_handle& redis,
         std::string_view stream,
         std::string_view group,
         std::string_view messageId,
         std::string_view projectionId,
-        std::string_view receiptStream,
+        std::string_view receiptTopic,
         bool applied
     ) {
         if (projectionId.empty()) {
@@ -1332,10 +1328,9 @@ class GbControlService final {
         const auto doneKey = control_protocol::stream::projectionDone(projectionId);
         const std::string_view appliedValue{ applied ? "1" : "0" };
         const std::string_view ttl{ "600" };
-        const auto inputChannel = service::message::consumer::inputChannel(receiptStream);
         const auto deadlines = service::message::consumer::deadlineKey(stream, group);
         const auto deadlineChannel = service::message::consumer::deadlineChannel(stream, group);
-        const std::string_view keys[]{ doneKey, stream, receiptStream, inputChannel, deadlines, deadlineChannel };
+        const std::string_view keys[]{ doneKey, stream, receiptTopic, deadlines, deadlineChannel };
         const std::string_view arguments[]{ appliedValue, ttl, group, messageId, projectionId };
         const auto reply = co_await redis.eval(kMarkProjectionDoneScript, keys, arguments);
         if (reply.kind() != ruvia::redis_value::kind_type::integer) {

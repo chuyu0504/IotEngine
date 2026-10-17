@@ -12,14 +12,13 @@ const receipts = `${prefix}:receipts`;
 const group = 'gb-projection-test';
 const inputChannel = `iot:consumer:input:${stream}`;
 const wakeChannel = `iot:consumer:input:${wake}`;
-const receiptChannel = `iot:consumer:input:${receipts}`;
 const deadlines = `iot:consumer:pending:${group}:${stream}`;
 const deadlineChannel = `iot:consumer:deadline:${group}:${stream}`;
 const subscriber = new Bun.RedisClient(redisUrl);
 const notices: { payload: string; channel: string }[] = [];
 const barrierChannel = `${prefix}:barrier`;
 let barrier: (() => void) | undefined;
-for (const channel of [inputChannel, wakeChannel, receiptChannel, deadlineChannel]) {
+for (const channel of [inputChannel, wakeChannel, receipts, deadlineChannel]) {
     await subscriber.subscribe(channel, (payload, channel) => notices.push({ payload, channel }));
 }
 await subscriber.subscribe(barrierChannel, () => barrier?.());
@@ -45,7 +44,7 @@ const publish = (order: string, current: string) => redis.send('EVAL', [
 ]) as Promise<string[]>;
 const wakes = async () => Number(await redis.send('XLEN', [wake]));
 const markDone = async (entry: string, applied: string) => Number(await redis.send('EVAL', [
-    doneLua, '6', receipt, stream, receipts, receiptChannel, deadlines, deadlineChannel,
+    doneLua, '5', receipt, stream, receipts, deadlines, deadlineChannel,
     applied, '60', group, entry, prefix,
 ]));
 
@@ -86,40 +85,51 @@ try {
     assert.deepEqual(await drainNotices(), [], 'duplicate or invalid projection emitted a notification');
     console.log('PASS GB28181 projection deduplication, marker loss, ordered repair and wake');
 
-    // Completion acknowledges the entry and sends a directed receipt only while
-    // the publishing Collector's receipt stream exists.
+    // Completion acknowledges the entry and publishes directly to the Collector
+    // topic without requiring a receipt stream or any routing key.
     await redis.send('XGROUP', ['CREATE', stream, group, '0']);
     await redis.send('XREADGROUP', ['GROUP', group, 'consumer', 'COUNT', '10', 'STREAMS', stream, '>']);
     await redis.send('ZADD', [deadlines, String(Date.now() + 60000), repaired[1]]);
     assert.equal(await markDone(repaired[1], '1'), 1);
     assert.equal(await redis.send('GET', [receipt]), '1');
     assert.equal(Number(await redis.send('XLEN', [stream])), 0);
-    assert.equal(Number(await redis.send('EXISTS', [receipts])), 0, 'receipt created a stream for a stopped Collector');
+    assert.equal(Number(await redis.send('EXISTS', [receipts])), 0, 'receipt notification created a stream');
     assert.equal(await redis.send('ZSCORE', [deadlines, repaired[1]]), null);
-    assert.deepEqual(await drainNotices(), [{ payload: repaired[1], channel: deadlineChannel }],
-        'completion removes its pending deadline without waking a stopped Collector');
+    assert.deepEqual(await drainNotices(), [
+        { payload: repaired[1], channel: deadlineChannel },
+        { payload: prefix, channel: receipts },
+    ], 'completion atomically removes its pending deadline and publishes the projection ID');
     const next = await publish('', '');
     await drainNotices();
     await redis.send('DEL', [marker]);
-    await redis.send('XADD', [receipts, '*', 'init', '1']);
     await redis.send('XREADGROUP', ['GROUP', group, 'consumer', 'COUNT', '10', 'STREAMS', stream, '>']);
     await redis.send('ZADD', [deadlines, String(Date.now() + 60000), next[1]]);
     assert.equal(await markDone(next[1], '0'), 1);
     const completionNotices = await drainNotices();
     assert.equal(completionNotices[0]?.channel, deadlineChannel);
     assert.equal(completionNotices[0]?.payload, next[1]);
-    const receiptEntries = await redis.send('XRANGE', [receipts, '-', '+']) as [string, string[]][];
-    assert.deepEqual(completionNotices.slice(1), [{ payload: receiptEntries[1][0], channel: receiptChannel }]);
+    assert.deepEqual(completionNotices.slice(1), [{ payload: prefix, channel: receipts }]);
     assert.equal(await markDone(next[1], '0'), 0, 'duplicate completion acknowledged twice');
-    const delivered = await redis.send('XRANGE', [receipts, '-', '+']) as unknown as [string, string[]][];
-    assert.deepEqual(delivered[1][1], ['projection_id', prefix, 'applied', '0']);
     const duplicateNotices = await drainNotices();
     assert.equal(duplicateNotices.length, 1, 'duplicate ACK must not publish a removed deadline again');
-    assert.equal(duplicateNotices[0].channel, receiptChannel);
-    assert.equal(duplicateNotices[0].payload, delivered[2][0]);
-    const ttl = Number(await redis.send('TTL', [receipts]));
-    assert(ttl > 0 && ttl <= 60);
-    console.log('PASS GB28181 projection receipt, acknowledgement and directed delivery');
+    assert.equal(duplicateNotices[0].channel, receipts);
+    assert.equal(duplicateNotices[0].payload, prefix);
+    assert.equal(Number(await redis.send('EXISTS', [receipts])), 0);
+
+    // Pub/Sub is only a wakeup. A completion with no subscriber still persists
+    // the authoritative outcome, clears the PEL and leaves no receipt stream.
+    await subscriber.unsubscribe(receipts);
+    const disconnected = await publish('', '');
+    await drainNotices();
+    await redis.send('XREADGROUP', ['GROUP', group, 'consumer', 'COUNT', '10', 'STREAMS', stream, '>']);
+    await redis.send('ZADD', [deadlines, String(Date.now() + 60000), disconnected[1]]);
+    assert.equal(await markDone(disconnected[1], '1'), 1);
+    assert.equal(await redis.send('GET', [receipt]), '1');
+    assert.deepEqual(await drainNotices(), [{ payload: disconnected[1], channel: deadlineChannel }]);
+    assert.equal(Number(await redis.send('ZCARD', [deadlines])), 0);
+    assert.equal(Number(await redis.send('XLEN', [stream])), 0);
+    assert.equal(Number(await redis.send('EXISTS', [receipts])), 0);
+    console.log('PASS GB28181 durable projection receipt, atomic acknowledgement and direct Pub/Sub delivery');
 } finally {
     await redis.send('DEL', [stream, marker, wake, receipt, receipts, deadlines]);
     subscriber.close();
