@@ -4,10 +4,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -25,6 +27,9 @@
 #include <vector>
 
 #include <ruvia/core/event_loop_pool.h>
+#include <ruvia/web/redis/redis_client.h>
+
+#include "service/common/worker.h"
 
 #include "service/common/uuid.h"
 
@@ -45,11 +50,12 @@
 #include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/packet_log/packet_log.transport.h"
-#include "service/utils/uuid.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/middleware/log.h"
+#include "service/utils/uuid.h"
 
 #include "tests/redis_reply.fixture.h"
+#include "tests/redis_server.fixture.h"
 
 namespace collector = service::collector;
 
@@ -118,67 +124,15 @@ struct RecordingRedis {
         : reply(test::redisInteger(result, std::pmr::get_default_resource())) {}
 
     ruvia::task<ruvia::redis_value>
-    eval(std::string_view value, std::span<const std::string_view> inputKeys, std::span<const std::string_view> inputArguments) const {
-        script.assign(value);
+    eval(std::string_view, std::span<const std::string_view> inputKeys, std::span<const std::string_view> inputArguments) const {
         keys.assign(inputKeys.begin(), inputKeys.end());
         arguments.assign(inputArguments.begin(), inputArguments.end());
         co_return reply;
     }
 
-    mutable std::string script;
     mutable std::vector<std::string> keys;
     mutable std::vector<std::string> arguments;
     ruvia::redis_value reply;
-};
-
-struct AlertScheduleRedisState {
-    std::string script;
-    std::vector<std::vector<std::string>> pipelineCommands;
-    bool invalidStoredDuration = true;
-};
-
-struct AlertScheduleRedis {
-    std::shared_ptr<AlertScheduleRedisState> state =
-        std::make_shared<AlertScheduleRedisState>();
-
-    struct Pipeline {
-        std::shared_ptr<AlertScheduleRedisState> state;
-        std::vector<std::vector<std::string>> commands;
-
-        void command(std::span<const std::string_view> arguments) {
-            commands.emplace_back(arguments.begin(), arguments.end());
-        }
-
-        void eval_sha(std::string_view sha, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
-            std::vector<std::string> values{ "EVALSHA", std::string(sha), std::to_string(keys.size()) };
-            values.insert(values.end(), keys.begin(), keys.end());
-            values.insert(values.end(), arguments.begin(), arguments.end());
-            commands.push_back(std::move(values));
-        }
-
-        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
-            state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(), commands.end());
-            std::pmr::vector<ruvia::redis_value> replies;
-            replies.reserve(commands.size());
-            for (const auto& command : commands) {
-                if (!command.empty() && command.front() == "EVALSHA" &&
-                    state->invalidStoredDuration &&
-                    state->script.find("if duration then") == std::string::npos) {
-                    replies.push_back(test::redisError("attempt to perform arithmetic on a nil value", std::pmr::get_default_resource()));
-                    continue;
-                }
-                replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
-            }
-            co_return replies;
-        }
-    };
-
-    ruvia::task<std::string> script_load(std::string_view script) const {
-        state->script = std::string(script);
-        co_return "alert-schedule-sha";
-    }
-
-    [[nodiscard]] Pipeline pipeline() const { return Pipeline{ state }; }
 };
 
 struct FailingLatestPipeline {
@@ -278,94 +232,6 @@ struct FailingConfigRedis {
     bool hasActiveVersion;
 };
 
-struct RecordingLatestRedisState {
-    std::vector<std::vector<std::string>> pipelineCommands;
-    std::vector<std::vector<std::string>> directCommands;
-    std::string preservedOnlineUntilMs{ "2000000000000" };
-};
-
-struct RecordingLatestRedis {
-    std::shared_ptr<RecordingLatestRedisState> state =
-        std::make_shared<RecordingLatestRedisState>();
-
-    struct Pipeline {
-        std::shared_ptr<RecordingLatestRedisState> state;
-        std::vector<std::vector<std::string>> commands;
-
-        void command(std::span<const std::string_view> arguments) {
-            commands.emplace_back(arguments.begin(), arguments.end());
-        }
-
-        void eval_sha(std::string_view sha, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
-            std::vector<std::string> values{ "EVALSHA", std::string(sha), std::to_string(keys.size()) };
-            values.insert(values.end(), keys.begin(), keys.end());
-            values.insert(values.end(), arguments.begin(), arguments.end());
-            commands.push_back(std::move(values));
-        }
-
-        static ruvia::redis_value string(std::string_view value) {
-            return test::redisString(
-                value,
-                std::pmr::get_default_resource()
-            );
-        }
-
-        static ruvia::redis_value existingLatestReply() {
-            std::pmr::vector<ruvia::redis_value> values;
-            values.push_back(string("device-1"));
-            values.push_back(string("{\"temperature\":true}"));
-            return test::redisArray(
-                std::move(values),
-                std::pmr::get_default_resource()
-            );
-        }
-
-        ruvia::redis_value existingRuntimeReply() const {
-            std::pmr::vector<ruvia::redis_value> values;
-            values.push_back(string("device-1"));
-            values.push_back(string(state->preservedOnlineUntilMs));
-            return test::redisArray(
-                std::move(values),
-                std::pmr::get_default_resource()
-            );
-        }
-
-        ruvia::task<std::pmr::vector<ruvia::redis_value>> exec() && {
-            state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(), commands.end());
-            std::pmr::vector<ruvia::redis_value> replies;
-            replies.reserve(commands.size());
-            for (const auto& command : commands) {
-                if (command.size() >= 3 && command[0] == "HMGET" &&
-                    command[1] == "iot:v2:device:device-1:latest") {
-                    replies.push_back(existingLatestReply());
-                } else if (command.size() >= 3 && command[0] == "HMGET" &&
-                           command[1] == "iot:v2:runtime:device:device-1") {
-                    replies.push_back(existingRuntimeReply());
-                } else {
-                    replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
-                }
-            }
-            co_return replies;
-        }
-    };
-
-    [[nodiscard]] Pipeline pipeline() const { return Pipeline{ state }; }
-
-    ruvia::task<ruvia::redis_value>
-    command(std::span<const std::string_view> arguments) const {
-        state->directCommands.emplace_back(arguments.begin(), arguments.end());
-        if (!arguments.empty() && arguments.front() == "XADD") {
-            co_return test::redisString(
-                "1-0",
-                std::pmr::get_default_resource()
-            );
-        }
-        co_return test::redisInteger(
-            1,
-            std::pmr::get_default_resource()
-        );
-    }
-};
 
 struct LatestProjectionDb {
     ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
@@ -375,10 +241,10 @@ struct LatestProjectionDb {
         if (text.find("'online_timeout'") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "D1", "300000" });
         } else if (text.find("WITH \"configured\"") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "D1", "Modbus", "temperature", "New Name", "℃", "12.5", "1700000000000", "2", "1", "environment", "", "0", "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"12.5\",\"unit\":\"℃\","
+            result.values.emplace_back(FakeDbRow{ "device-1", "D1", "Modbus", "temperature", "New Name", "℃", "-", "", "2", "1", "environment", "", "0", "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"-\",\"unit\":\"℃\","
                                                                                                                                                                          "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
-                                                                                                                                                                         "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":1700000000000,"
-                                                                                                                                                                         "\"updatedAt\":1700000001000,\"source\":\"database\"}" });
+                                                                                                                                                                         "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":null,"
+                                                                                                                                                                         "\"updatedAt\":1700000001000,\"source\":\"empty\"}" });
         }
         co_return result;
     }
@@ -386,17 +252,94 @@ struct LatestProjectionDb {
 
 struct LatestProjectionContext {
     LatestProjectionDb database;
-    RecordingLatestRedis redisClient;
+    ruvia::redis_handle redisClient;
+    std::optional<service::common::WorkerIdentity> identity{std::in_place, "collector-test-instance", 0, 1};
 
     LatestProjectionDb& db() noexcept { return database; }
 
-    RecordingLatestRedis redis() const noexcept { return redisClient; }
+    ruvia::redis_handle redis() const noexcept { return redisClient; }
+
+    template <typename State>
+    State& worker_state() noexcept {
+        static_assert(std::is_same_v<State, std::optional<service::common::WorkerIdentity>>);
+        return identity;
+    }
 };
 
 void require(bool condition, std::string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
     }
+}
+
+ruvia::task<ruvia::redis_value> redisCommand(
+        const ruvia::redis_handle& redis, std::initializer_list<std::string_view> arguments) {
+    co_return co_await redis.command(std::span(arguments.begin(), arguments.size()));
+}
+
+std::int64_t redisInteger(const ruvia::redis_value& reply) {
+    require(reply.kind() == ruvia::redis_value::kind_type::integer, "Redis integer reply expected");
+    return reply.integer();
+}
+
+ruvia::task<std::string> redisField(
+        const ruvia::redis_handle& redis, std::string_view key, std::string_view field) {
+    const auto reply = co_await redis.hget(key, field);
+    co_return reply ? std::string(*reply) : std::string{};
+}
+
+ruvia::task<void> subscribeConfirmed(ruvia::redis_subscription& subscription, std::string_view channel) {
+    const std::string_view channels[]{channel};
+    co_await subscription.subscribe(channels);
+    const auto event = co_await subscription.read();
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed &&
+                event->channel() == channel && event->subscription_count() == 1,
+            "PubSub subscription was not confirmed before the projection");
+}
+
+ruvia::task<void> expectPubSub(
+        ruvia::redis_subscription& subscription, std::string_view channel, std::string_view payload) {
+    const auto event = co_await subscription.read();
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::message &&
+                event->channel() == channel && event->payload() == payload,
+            "PubSub message channel or affected ids differ");
+}
+
+template <typename Test>
+ruvia::task<void> runRedisTask(ruvia::event_loop loop, std::uint16_t port, Test test) {
+    ruvia::redis_config configuration;
+    configuration.host_ = "127.0.0.1";
+    configuration.port_ = port;
+    configuration.tls_.mode_ = ruvia::client_tls_mode::disabled;
+    configuration.pool_size_per_worker_ = 1;
+    configuration.command_timeout_ = std::chrono::seconds(3);
+    ruvia::redis_client client(loop, configuration);
+    co_await client.connect();
+    std::exception_ptr error;
+    try {
+        co_await test(client.handle());
+    } catch (...) {
+        error = std::current_exception();
+    }
+    co_await client.shutdown();
+    if (error) std::rethrow_exception(error);
+}
+
+template <typename Test>
+void runRedisTest(Test test) {
+    test::RedisServer redis(IOT_TEST_REDIS_SERVER, IOT_TEST_BUILD_DIRECTORY);
+    ruvia::event_loop_pool pool({.loop_count_ = 1});
+    pool.start();
+    auto completion = pool.loop(0).start(runRedisTask(pool.loop(0), redis.port(), std::move(test)));
+    try {
+        completion.get();
+    } catch (...) {
+        pool.stop();
+        pool.join();
+        throw;
+    }
+    pool.stop();
+    pool.join();
 }
 
 bool has(const std::vector<collector::ProtocolAction>& actions, collector::ProtocolActionKind kind) {
@@ -2354,35 +2297,81 @@ void testRuntimeWritableContract() {
 }
 
 void testAtomicStreamFinalizationContract() {
-    const std::vector<service::message::StreamField> deadLetterFields{
-        { "source_entry_id", "10-0" }
-    };
-    const std::vector<service::message::StreamField> resultFields{
-        { "command_id", "command-1" }
-    };
-    const std::array publications{
-        service::messaging::stream::StreamPublication{ "dead-letter", deadLetterFields, 100 },
-        service::messaging::stream::StreamPublication{
-            "command-result",
-            resultFields,
-            200,
-            service::messaging::stream::StreamWake{
-                0,
-                service::message::WorkerStreamTask::CommandResult } }
-    };
+    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
+        const std::vector<service::message::StreamField> deadLetterFields{{"source_entry_id", "10-0"}};
+        const std::vector<service::message::StreamField> resultFields{{"command_id", "command-1"}};
+        // These are durable consumer inputs, not live notification streams.
+        const std::array publications{
+            service::messaging::stream::StreamPublication{"dead-letter", deadLetterFields, 100},
+            service::messaging::stream::StreamPublication{"command-result", resultFields, 200}
+        };
+        (void)co_await redisCommand(redis, {"XGROUP", "CREATE", "command-input", "collector-group", "0", "MKSTREAM"});
+        (void)co_await redisCommand(redis, {"XADD", "command-input", "10-0", "command_id", "command-1"});
+        (void)co_await redisCommand(redis, {"XREADGROUP", "GROUP", "collector-group", "collector-0",
+            "COUNT", "1", "STREAMS", "command-input", ">"});
+        const auto pendingKey = service::message::consumer::deadlineKey("command-input", "collector-group");
+        const auto deadlineChannel = service::message::consumer::deadlineChannel("command-input", "collector-group");
+        const auto deadLetterChannel = service::message::consumer::inputChannel("dead-letter");
+        const auto resultChannel = service::message::consumer::inputChannel("command-result");
+        (void)co_await redisCommand(redis, {"ZADD", pendingKey, "9999999999999", "10-0"});
+        auto subscription = redis.subscription();
+        const std::string_view channels[]{ deadLetterChannel, resultChannel, deadlineChannel };
+        co_await subscription.subscribe(channels);
+        for (std::size_t index = 0; index < std::size(channels); ++index) {
+            const auto event = co_await subscription.read();
+            require(event && event->kind() == ruvia::redis_pubsub_event_kind::subscribed,
+                "finalization subscription was not confirmed before mutation");
+        }
 
-    RecordingRedis committed(1);
-    require(runTask(service::messaging::stream::publishAllAndAcknowledge(committed, publications, "command-input", "collector-group", "collector-0", "10-0")), "pending stream finalization did not report a commit");
-    require(committed.keys == std::vector<std::string>{ "dead-letter", "dead-letter", "command-result", service::message::workerWakeStream(0, service::runtime::instanceId()), "command-input" }, "atomic stream finalization changed Redis key order");
-    require(committed.arguments == std::vector<std::string>{ "collector-group", "10-0", "collector-0", "100", "1", "", "source_entry_id", "10-0", "200", "1", "command-result", "command_id", "command-1" }, "atomic stream finalization encoded invalid arguments");
-    const auto pendingCheck = committed.script.find("XPENDING");
-    const auto typeCheck = committed.script.find("TYPE");
-    const auto firstWrite = committed.script.find("XADD");
-    require(pendingCheck != std::string::npos && typeCheck != std::string::npos && firstWrite != std::string::npos && pendingCheck < firstWrite && typeCheck < firstWrite, "atomic stream finalization writes before validating ownership and key types");
-    require(committed.script.find("pending[1][2] ~= ARGV[3]") != std::string::npos, "atomic stream finalization did not enforce consumer ownership");
+        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(
+                    redis, publications, "command-input", "collector-group", "foreign-consumer", "10-0", "test-process")),
+                "foreign consumer finalized another consumer's pending entry");
+        require(!(co_await redis.exists("dead-letter")) && !(co_await redis.exists("command-result")) &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-input"})) == 1,
+                "ownership rejection wrote output or deleted the pending input");
 
-    RecordingRedis missingPending(0);
-    require(!runTask(service::messaging::stream::publishAllAndAcknowledge(missingPending, publications, "command-input", "collector-group", "collector-0", "10-0")), "missing PEL entry was reported as atomically finalized");
+        // A later output with the wrong Redis type must fail before any output is written.
+        (void)co_await redis.set("command-result", "wrong-type");
+        bool rejected = false;
+        try {
+            (void)co_await service::messaging::stream::publishAllAndAcknowledge(
+                redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        const auto wrongType = co_await redis.get("command-result");
+        require(rejected && !(co_await redis.exists("dead-letter")) &&
+                    wrongType && *wrongType == "wrong-type" &&
+                    redisInteger((co_await redisCommand(redis, {"XPENDING", "command-input", "collector-group"})).array()[0]) == 1,
+                "type preflight partially wrote outputs or acknowledged the input");
+        (void)co_await redis.del("command-result");
+
+        require(co_await service::messaging::stream::publishAllAndAcknowledge(
+                    redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process"),
+                "owned pending entry was not finalized");
+        const auto deadLetters = co_await redisCommand(redis, {"XRANGE", "dead-letter", "-", "+"});
+        const auto results = co_await redisCommand(redis, {"XRANGE", "command-result", "-", "+"});
+        require(deadLetters.array().size() == 1 && results.array().size() == 1 &&
+                    deadLetters.array()[0].array()[1].array()[0].string() == "source_entry_id" &&
+                    deadLetters.array()[0].array()[1].array()[1].string() == "10-0" &&
+                    results.array()[0].array()[1].array()[0].string() == "command_id" &&
+                    results.array()[0].array()[1].array()[1].string() == "command-1" &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-input"})) == 0 &&
+                    redisInteger((co_await redisCommand(redis, {"XPENDING", "command-input", "collector-group"})).array()[0]) == 0,
+                "finalization did not persist both payloads and ACK/delete the input");
+        co_await expectPubSub(subscription, deadLetterChannel, deadLetters.array()[0].array()[0].string());
+        co_await expectPubSub(subscription, resultChannel, results.array()[0].array()[0].string());
+        co_await expectPubSub(subscription, deadlineChannel, "10-0");
+        require((co_await redisCommand(redis, {"ZSCORE", pendingKey, "10-0"})).kind() == ruvia::redis_value::kind_type::null,
+            "finalization left a pending visibility deadline after ACK");
+        require(!(co_await service::messaging::stream::publishAllAndAcknowledge(
+                    redis, publications, "command-input", "collector-group", "collector-0", "10-0", "test-process")) &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", "dead-letter"})) == 1 &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", "command-result"})) == 1,
+                "already finalized input produced duplicate output");
+        (void)co_await redis.publish(deadLetterChannel, "test:finalized");
+        co_await expectPubSub(subscription, deadLetterChannel, "test:finalized");
+    });
 }
 
 void testRuntimeProjectionRejectsRedisErrors() {
@@ -2551,71 +2540,81 @@ void testLatestProjectionRejectsRedisErrors() {
 }
 
 void testLatestProjectionRefreshesPreservedElementMetadata() {
-    LatestProjectionContext context;
-    runTask(service::telemetry::latest::projectDevice(context, "device-1"));
-
-    bool skippedExistingElement = false;
-    bool refreshesElementMetadata = false;
-    for (const auto& command : context.redisClient.state->pipelineCommands) {
-        if (command.size() >= 4 && command[0] == "HSETNX" &&
-            command[1] == "iot:v2:device:device-1:latest" && command[2] == "temperature") {
-            skippedExistingElement = true;
-        }
-        if (!command.empty() && command[0] != "HSETNX") {
-            const auto hasElement = std::ranges::find(command, "temperature") != command.end();
-            const auto hasUpdatedName = std::ranges::any_of(command, [](const auto& argument) {
-                return argument.find("\"name\":\"New Name\"") != std::string::npos;
-            });
-            refreshesElementMetadata = refreshesElementMetadata || (hasElement && hasUpdatedName);
-        }
-    }
-    require(!skippedExistingElement, "latest projection skipped existing element metadata refresh with HSETNX");
-    require(refreshesElementMetadata, "latest projection did not write refreshed metadata for an existing element");
-    const auto publishedChange = std::ranges::any_of(
-        context.redisClient.state->directCommands,
-        [](const auto& command) {
-            return command.size() == 12 && command[0] == "XADD" &&
-                command[1] == service::message::live::kChanges &&
-                command[6] == "schema_version" && command[7] == "2" &&
-                command[8] == "topic" && command[9] == "device.realtime" &&
-                command[10] == "ids" && command[11] == "device-1";
-        }
-    );
-    require(publishedChange, "latest projection did not notify device realtime subscribers");
+    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
+        const auto latestKey = service::message::telemetry::latestKey("device-1");
+        const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
+        (void)co_await redisCommand(redis, {"HSET", latestKey, "_device_id", "device-1",
+            "_element_ids", "{\"temperature\":true}", "temperature",
+            R"({"id":"temperature","name":"Old Name","value":"27.5","observedAt":1800000000000,"source":"collector"})"});
+        (void)co_await redisCommand(redis, {"HSET", runtimeKey, "device_id", "device-1",
+            "online_until_ms", "2000000000000", "state", "online"});
+        const auto channel = service::message::live::channel(service::message::live::topic::kDeviceRealtime);
+        auto subscription = redis.subscription();
+        co_await subscribeConfirmed(subscription, channel);
+        LatestProjectionContext context{{}, redis};
+        co_await service::telemetry::latest::projectDevice(context, "device-1");
+        co_await expectPubSub(subscription, channel, "device-1");
+        const auto stored = co_await redisField(redis, latestKey, "temperature");
+        const auto point = ruvia::json_value::parse(stored);
+        require(point.has_value(), "persisted point is not valid JSON");
+        const auto name = point->get<ruvia::string>("name");
+        const auto unit = point->get<ruvia::string>("unit");
+        const auto value = point->get<ruvia::string>("value");
+        const auto observedAt = point->get<ruvia::int64>("observedAt");
+        const auto source = point->get<ruvia::string>("source");
+        require(name && name->view() == "New Name" && unit && unit->view() == "℃" &&
+                    value && value->view() == "27.5" && observedAt &&
+                    static_cast<std::int64_t>(*observedAt) == 1800000000000 &&
+                    source && source->view() == "collector",
+                "projection notification did not expose refreshed metadata with preserved live value");
+        require((co_await redisField(redis, runtimeKey, "state")) == "online" &&
+                    (co_await redisField(redis, runtimeKey, "online_until_ms")) == "2000000000000" &&
+                    (co_await redisCommand(redis, {"ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1"})).string() == "2000000000000",
+                "metadata refresh lost the preserved runtime state or deadline");
+        (void)co_await redis.publish(channel, "test:projection-complete");
+        co_await expectPubSub(subscription, channel, "test:projection-complete");
+    });
 }
 
 void testLatestProjectionRejectsInvalidPreservedDeadline() {
-    LatestProjectionContext context;
-    context.redisClient.state->preservedOnlineUntilMs = "not-a-number";
-    runTask(service::telemetry::latest::projectDevice(context, "device-1"));
-
-    bool emittedInvalidDeadline = false;
-    bool clearedDeadline = false;
-    const auto deadlineKey = service::telemetry::latest::onlineDeadlinesKey();
-    for (const auto& command : context.redisClient.state->pipelineCommands) {
-        if (command.size() >= 4 && command[0] == "ZADD" &&
-            command[1] == deadlineKey &&
-            command[2] == "not-a-number") {
-            emittedInvalidDeadline = true;
-        }
-        if (command.size() >= 3 && command[0] == "ZREM" &&
-            command[1] == deadlineKey && command[2] == "device-1") {
-            clearedDeadline = true;
-        }
-    }
-    require(!emittedInvalidDeadline, "latest projection reused an invalid preserved online deadline");
-    require(clearedDeadline, "latest projection did not clear an invalid preserved deadline");
+    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
+        const auto latestKey = service::message::telemetry::latestKey("device-1");
+        const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
+        (void)co_await redisCommand(redis, {"HSET", latestKey, "_device_id", "device-1",
+            "_element_ids", "{\"temperature\":true}"});
+        (void)co_await redisCommand(redis, {"HSET", runtimeKey, "device_id", "device-1",
+            "online_until_ms", "not-a-number"});
+        (void)co_await redisCommand(redis, {"ZADD", service::telemetry::latest::onlineDeadlinesKey(), "123", "device-1"});
+        const auto channel = service::message::live::channel(service::message::live::topic::kDeviceRealtime);
+        auto subscription = redis.subscription();
+        co_await subscribeConfirmed(subscription, channel);
+        LatestProjectionContext context{{}, redis};
+        co_await service::telemetry::latest::projectDevice(context, "device-1");
+        co_await expectPubSub(subscription, channel, "device-1");
+        require((co_await redisCommand(redis, {"ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1"})).kind() ==
+                    ruvia::redis_value::kind_type::null &&
+                    (co_await redisField(redis, runtimeKey, "online_until_ms")).empty() &&
+                    (co_await redisField(redis, runtimeKey, "state")) == "offline",
+                "invalid preserved deadline survived projection recovery");
+    });
 }
 
 void testAlertScheduleSkipsInvalidStoredDuration() {
-    AlertScheduleRedis redis;
-    service::message::ParsedDeviceMessage message;
-    message.deviceId = "device-1";
-    message.deviceCode = "D1";
-    message.observedAtMs = 1700000000000;
-
-    runTask(service::alert::metadata::schedule(redis, std::vector{ message }, "alert-test"));
-    require(!redis.state->pipelineCommands.empty(), "alert schedule did not issue a Redis pipeline command");
+    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
+        (void)co_await redisCommand(redis, {"HSET", service::alert::metadata::offlineDurationKey("device-1"),
+            "invalid-rule", "not-a-duration", "valid-rule", "1000"});
+        service::message::ParsedDeviceMessage message;
+        message.deviceId = "device-1";
+        message.deviceCode = "D1";
+        message.observedAtMs = 1700000000000;
+        co_await service::alert::metadata::schedule(redis, std::vector{message}, "collector-test-instance");
+        const auto deadlines = service::alert::metadata::offlineDeadlinesKey();
+        require((co_await redisCommand(redis, {"ZSCORE", deadlines, "invalid-rule"})).kind() ==
+                    ruvia::redis_value::kind_type::null &&
+                    (co_await redisCommand(redis, {"ZSCORE", deadlines, "valid-rule"})).string() == "1700000001000" &&
+                    redisInteger(co_await redisCommand(redis, {"ZCARD", deadlines})) == 1,
+                "alert scheduling did not skip invalid duration while retaining the valid rule");
+    });
 }
 
 void testCommandValueDecimalParsing() {
@@ -3659,13 +3658,28 @@ void testAtomicPendingCommandDispatch() {
     dispatches.push_back({ .task = first, .streamFields = { { "message_id", first.messageId }, { "device_id", first.deviceId } } });
     dispatches.push_back({ .task = second, .streamFields = { { "message_id", second.messageId }, { "device_id", second.deviceId } } });
 
-    RecordingRedis redis(2);
-    runTask(service::command::dispatchPendingBatch(redis, "iot:channel:command:worker:0:high", service::command::PendingQueueKind::Stream, dispatches, 10'000));
-    require(redis.keys.size() == 1, "queue must not own a second command status model");
-    require(redis.script.find("depth+count>tonumber(ARGV[2])") != std::string::npos, "queue must reject capacity overflow before writing");
-    require(redis.script.find("LTRIM") == std::string::npos && redis.script.find("MAXLEN") == std::string::npos, "accepted commands must never be trimmed");
-    RecordingRedis full(0);
-    require(!runTask(service::command::dispatchPendingBatch(full, "queue", service::command::PendingQueueKind::Stream, dispatches, 1)), "capacity rejection must be observable");
+    runRedisTest([&dispatches](const ruvia::redis_handle& redis) -> ruvia::task<void> {
+        constexpr std::string_view queue = "test:pending-command-queue";
+        (void)co_await redisCommand(redis, {"XADD", queue, "1-0", "message_id", "previously-accepted"});
+        require(!(co_await service::command::dispatchPendingBatch(
+                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 2)) &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", queue})) == 1,
+                "capacity rejection partially enqueued a command batch");
+        require(co_await service::command::dispatchPendingBatch(
+                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3),
+                "batch within capacity was rejected");
+        const auto accepted = co_await redisCommand(redis, {"XRANGE", queue, "-", "+"});
+        require(accepted.array().size() == 3 &&
+                    accepted.array()[0].array()[0].string() == "1-0" &&
+                    accepted.array()[0].array()[1].array()[1].string() == "previously-accepted" &&
+                    accepted.array()[1].array()[1].array()[1].string() == dispatches[0].task.messageId &&
+                    accepted.array()[2].array()[1].array()[1].string() == dispatches[1].task.messageId,
+                "enqueue trimmed accepted commands or changed batch ordering");
+        require(!(co_await service::command::dispatchPendingBatch(
+                    redis, queue, service::command::PendingQueueKind::Stream, dispatches, 3)) &&
+                    redisInteger(co_await redisCommand(redis, {"XLEN", queue})) == 3,
+                "full queue accepted or trimmed another command batch");
+    });
 }
 
 void testCollectorUuidOwnership() {
@@ -3718,6 +3732,10 @@ void testCollectorUuidOwnership() {
 } // namespace
 
 int main() {
+    if (std::string_view(IOT_TEST_REDIS_SERVER).empty()) {
+        std::cout << "collector protocol Redis behavior tests skipped: redis-server is not installed\n";
+        return 77;
+    }
     try {
         const auto run = [](std::string_view name, auto&& test) {
             std::cerr << "[ RUN      ] " << name << '\n';

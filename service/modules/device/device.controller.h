@@ -101,7 +101,7 @@ class DeviceController final {
                 co_await service::middleware::requirePermission(request, "iot:device:edit");
                 co_return service::middleware::modelJson(co_await queryDebugPackets(request, deviceId));
             };
-            auto update = [snapshot, deviceId = debugId](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+            auto update = [snapshot, deviceId = debugId](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                 if (!touches(changes, topic::kPacketDebug, { deviceId })) {
                     co_return std::nullopt;
                 }
@@ -117,7 +117,7 @@ class DeviceController final {
             auto snapshot = [this, ids = std::string(commandIds->view())](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                 co_return service::middleware::modelJson(co_await queryCommandStatuses(request, ids));
             };
-            auto update = [snapshot, subscribed = std::move(subscribed)](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+            auto update = [snapshot, subscribed = std::move(subscribed)](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                 if (!touches(changes, topic::kCommand, subscribed)) {
                     co_return std::nullopt;
                 }
@@ -142,7 +142,7 @@ class DeviceController final {
     }
 
     // Whether `topic` changed as a whole or for one of `ids`.
-    static bool touches(const service::utils::ChangeSet& changes, std::string_view topic, const std::set<std::string, std::less<>>& ids) {
+    static bool touches(const service::message::live::ChangeSet& changes, std::string_view topic, const std::set<std::string, std::less<>>& ids) {
         const auto* changed = changes.find(topic);
         if (changed == nullptr) {
             return false;
@@ -157,9 +157,9 @@ class DeviceController final {
 
     // Devices whose rows the changes may alter; nullopt when a topic changed as
     // a whole. Link, protocol, edge and group ids map to the devices showing them.
-    static ruvia::task<std::optional<service::utils::ChangeSet::Ids>> changedDevices(service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) {
+    static ruvia::task<std::optional<service::message::live::ChangeSet::Ids>> changedDevices(service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) {
         namespace topic = service::message::live::topic;
-        service::utils::ChangeSet::Ids devices;
+        service::message::live::ChangeSet::Ids devices;
         std::vector<std::string> links;
         std::vector<std::string> protocols;
         std::vector<std::string> nodes;
@@ -196,7 +196,7 @@ class DeviceController final {
             visible->assign(rows(page));
             co_return service::middleware::modelJson(service::common::ok<Response>(request, std::move(page)));
         };
-        auto update = [visible, read, snapshot](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+        auto update = [visible, read, snapshot](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
             co_await service::middleware::requirePermission(request, "iot:device:query");
             const auto requested = co_await changedDevices(request, changes);
             if (!requested) {

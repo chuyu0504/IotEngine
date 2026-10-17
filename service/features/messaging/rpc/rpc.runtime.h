@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -8,27 +9,31 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <ruvia/core/channel.h>
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/timer.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/messaging/rpc/rpc.service.h"
 #include "service/middleware/log.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
+#include "service/utils/worker_task.h"
 
 namespace service::messaging::rpc {
 
-// Consumes this Service Worker's RPC request stream and runs the registered
-// feature handlers; replies are announced on this worker's directed stream.
+// Durable requests belong to the accepting Service Worker. The cancellation
+// channel is only a wakeup: its persisted keys are checked on initial execution
+// and after a lost subscription. Completed results likewise remain persisted.
 class RpcConsumerRuntime final {
   public:
     using Handler = std::function<ruvia::task<std::string>(ruvia::web_worker_context&, std::string_view, std::string_view, ruvia::stop_token)>;
@@ -39,33 +44,34 @@ class RpcConsumerRuntime final {
         }
     }
 
-    void start(ruvia::web_worker_handle worker, std::size_t workerIndex) {
+    void start(ruvia::web_worker_handle worker) {
         worker_ = worker;
-        stream_ = service::message::rpc::Contract::requests(service::runtime::instanceId(), workerIndex);
-        replyStream_ = service::message::live::workerStream(service::runtime::instanceId(), workerIndex);
         stop_ = std::make_unique<ruvia::stop_source>();
-        auto ready = std::make_shared<std::promise<void>>();
-        auto done = std::make_shared<std::promise<void>>();
-        auto started = ready->get_future();
-        stopped_ = done->get_future();
-        if (!worker.post([this, ready, done](ruvia::web_worker_context& context) {
-                       return run(context, ready, done);
-                   })
-                 .accepted()) {
-            stop_.reset();
-            throw std::runtime_error("RPC worker rejected startup");
+        try {
+            service::utils::startWorkerTask(worker, stop_->token(), cancellationsStopped_,
+                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                    return cancellations(context, ready, stop);
+                });
+            service::utils::startWorkerTask(worker, stop_->token(), monitorStopped_,
+                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                    return monitor(context, ready, stop);
+                });
+            service::utils::startWorkerTask(worker, stop_->token(), stopped_,
+                [this](ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+                    return run(context, ready, stop);
+                });
+        } catch (...) {
+            this->stop();
+            throw;
         }
-        started.get();
     }
 
     void stop() {
-        if (!stop_) {
-            return;
-        }
+        if (!stop_) return;
         stop_->request_stop();
-        if (stopped_.valid()) {
-            stopped_.wait();
-        }
+        service::utils::stopWorkerTask(*stop_, stopped_);
+        service::utils::stopWorkerTask(*stop_, cancellationsStopped_);
+        service::utils::stopWorkerTask(*stop_, monitorStopped_);
         stop_.reset();
     }
 
@@ -76,6 +82,10 @@ class RpcConsumerRuntime final {
         ruvia::stop_source stop;
         std::int64_t deadline = 0;
         std::string requestId;
+    };
+    struct Wake {
+        ruvia::channel_sender<int> sender;
+        ruvia::channel_receiver<int> receiver;
     };
 
     ruvia::task<void> process(ruvia::web_worker_context& context, service::message::StreamMessage message, std::shared_ptr<Pending> pending) {
@@ -94,9 +104,7 @@ class RpcConsumerRuntime final {
                 result = previous->payload;
             } else {
                 const auto handler = handlers_.find(std::string(message.get("component")));
-                if (handler == handlers_.end()) {
-                    service::common::fail(10004, "Background component is unavailable", 503);
-                }
+                if (handler == handlers_.end()) service::common::fail(10004, "Background component is unavailable", 503);
                 const auto token = ruvia::combine_stop_tokens(context.get_stop_token(), pending->stop.token());
                 result = service::message::rpc::Contract::success(co_await handler->second(context, message.get("operation"), message.get("payload"), token));
             }
@@ -108,163 +116,151 @@ class RpcConsumerRuntime final {
         } catch (...) {
             result = service::message::rpc::Contract::failure(500, "10004", "Background operation failed");
         }
-        // Retry only persistence of the completed result, never the operation.
         while (true) {
             bool failed = false;
             try {
-                const RpcReplyRecord record{ result };
-                co_await RpcReceiptService::saveAndAcknowledge(context.redis(), id, replyStream_, stream_, kGroup, message.id, record);
+                co_await RpcReceiptService::saveAndAcknowledge(context.redis(), id, stream_, kGroup, message.id, RpcReplyRecord{ result });
             } catch (const std::exception& error) {
                 failed = true;
-                if (!stop_->token().stop_requested()) {
-                    LOG_ERROR << "RPC reply persistence: " << error.what();
-                }
+                if (!stop_->token().stop_requested()) LOG_ERROR << "RPC reply persistence: " << error.what();
             }
-            if (!failed || stop_->token().stop_requested()) {
-                break;
-            }
+            if (!failed || stop_->token().stop_requested()) break;
             (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), stop_->token());
         }
         pending_.erase(message.id);
+        if (wake_) (void)wake_->sender.send(1);
     }
 
-    ruvia::task<void> monitor(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> done) {
-        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
-        auto nextExpiryRefresh = std::int64_t{ 0 };
-        while (!stop.stop_requested()) {
-            std::vector<std::shared_ptr<Pending>> snapshot;
-            std::vector<std::string> arguments{ "MGET" };
-            for (const auto& [entry, pending] : pending_) {
-                snapshot.push_back(pending);
-                arguments.push_back(service::message::rpc::Contract::cancelled(pending->requestId));
-                if (pending->deadline <= service::message::rpc::Contract::now()) {
-                    pending->stop.request_stop();
-                }
-            }
-            if (!snapshot.empty()) {
-                try {
-                    const auto cancelled = co_await service::message::redis::command(context.redis(), arguments);
-                    if (cancelled.kind() == ruvia::redis_value::kind_type::array && cancelled.array().size() == snapshot.size()) {
-                        for (std::size_t index = 0; index < snapshot.size(); ++index) {
-                            if (cancelled.array()[index].kind() == ruvia::redis_value::kind_type::string) {
-                                snapshot[index]->stop.request_stop();
-                            }
-                        }
-                    }
-                } catch (const std::exception& error) {
-                    // The local deadline remains effective during Redis outages.
-                    LOG_WARN << "RPC cancellation check: " << error.what();
-                }
-            }
-            if (service::message::rpc::Contract::now() >= nextExpiryRefresh) {
-                try {
-                    const std::vector<std::string> expireArguments{ "EXPIRE", stream_, "86400" };
-                    (void)co_await service::message::redis::command(context.redis(), expireArguments);
-                    nextExpiryRefresh = service::message::rpc::Contract::now() + 60000;
-                } catch (const std::exception& error) {
-                    LOG_WARN << "RPC request stream expiry refresh: " << error.what();
-                }
-            }
-            (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(100), stop);
-        }
-        for (const auto& [entry, pending] : pending_) {
-            pending->stop.request_stop();
-        }
-        done->set_value();
-    }
-
-    ruvia::task<void> run(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done) {
-        const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), stop_->token());
+    ruvia::task<void> cancellations(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        stream_ = service::message::rpc::Contract::requests(identity.instanceId, identity.index);
+        const auto redis = context.redis().with_options({ .stop_token_ = stop });
         bool initialized = false;
-        auto monitorDone = std::make_shared<std::promise<void>>();
-        auto monitored = monitorDone->get_future();
-        bool monitorStarted = false;
-        try {
-            co_await service::message::redis::ensureGroup(context.redis(), stream_, kGroup);
-            monitorStarted = worker_.post([this, monitorDone](ruvia::web_worker_context& current) {
-                                        return monitor(current, monitorDone);
-                                    })
-                                 .accepted();
-            if (!monitorStarted) {
-                throw std::runtime_error("RPC monitor rejected startup");
+        while (!stop.stop_requested()) {
+            bool failed = false;
+            try {
+                auto subscription = redis.subscription();
+                const std::string_view channels[]{ stream_ };
+                co_await subscription.subscribe(channels);
+                bool confirmed = false;
+                while (auto event = co_await subscription.read()) {
+                    if (event->kind() == ruvia::redis_pubsub_event_kind::subscribed) { confirmed = true; break; }
+                }
+                if (!confirmed) break;
+                // Reconcile lost cancellation notifications only on reconnect.
+                std::vector<std::shared_ptr<Pending>> active;
+                std::vector<std::string> keys;
+                for (const auto& [entry, pending] : pending_) {
+                    active.push_back(pending);
+                    keys.push_back(service::message::rpc::Contract::cancelled(pending->requestId));
+                }
+                if (!keys.empty()) {
+                    const std::vector<std::string_view> views(keys.begin(), keys.end());
+                    const auto values = co_await redis.mget(views);
+                    for (std::size_t index = 0; index < active.size(); ++index) if (values[index]) active[index]->stop.request_stop();
+                }
+                if (!initialized) { ready.set_value(); initialized = true; }
+                while (auto event = co_await subscription.read()) {
+                    if (event->kind() != ruvia::redis_pubsub_event_kind::message) continue;
+                    for (const auto& [entry, pending] : pending_) if (pending->requestId == event->payload()) pending->stop.request_stop();
+                }
+            } catch (const std::exception& error) {
+                if (!initialized) throw;
+                if (stop.stop_requested()) break;
+                LOG_WARN << "RPC cancellation subscription: " << error.what();
+                failed = true;
             }
-            ready->set_value();
-            initialized = true;
-            bool recovering = true;
-            std::string recoveryId = "0";
-            while (!stop.stop_requested()) {
-                bool failed = false;
-                try {
-                    if (pending_.size() >= 128) {
-                        (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(10), stop);
-                        continue;
-                    }
-                    if (recovering) {
-                        co_await service::message::redis::ensureGroup(context.redis(), stream_, kGroup);
-                    }
-                    auto messages = recovering
-                        ? co_await service::message::redis::readGroup(context.redis(), stream_, kGroup, "control", recoveryId, std::chrono::milliseconds(0), 32)
-                        : co_await service::message::redis::readGroupBlocking(context.redis(), stream_, kGroup, "control", stop, 32);
-                    if (recovering) {
-                        if (messages.empty()) {
-                            recovering = false;
-                        } else {
-                            recoveryId = messages.back().id;
-                        }
-                    }
-                    for (auto& message : messages) {
-                        if (pending_.contains(message.id)) {
+            if (failed) (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(100), stop);
+        }
+    }
+
+    ruvia::task<void> monitor(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+        auto [sender, receiver] = ruvia::make_channel<int>(context.worker(), { .capacity_ = 1 });
+        wake_.emplace(Wake{ std::move(sender), std::move(receiver) });
+        ready.set_value();
+        auto nextLease = std::int64_t{ 0 };
+        while (!stop.stop_requested()) {
+            const auto now = service::message::rpc::Contract::now();
+            if (now >= nextLease) {
+                try { (void)co_await context.redis().expire(stream_, std::chrono::seconds(86400)); }
+                catch (const std::exception& error) { if (!stop.stop_requested()) LOG_WARN << "RPC stream lease: " << error.what(); }
+                nextLease = now + 60000;
+            }
+            auto next = nextLease;
+            for (const auto& [entry, pending] : pending_) {
+                if (pending->deadline <= now) pending->stop.request_stop();
+                else next = std::min(next, pending->deadline);
+            }
+            (void)co_await wake_->receiver.receive_for(std::chrono::milliseconds(std::max<std::int64_t>(1, next - now)), stop);
+        }
+        for (const auto& [entry, pending] : pending_) pending->stop.request_stop();
+        wake_.reset();
+    }
+
+    ruvia::task<void> run(ruvia::web_worker_context& context, service::utils::WorkerReady& ready, ruvia::stop_token stop) {
+        const auto redis = context.redis().with_options({ .stop_token_ = stop });
+        const std::vector<std::string> streams{ stream_ };
+        co_await service::utils::redis::ensureGroup(redis, stream_, kGroup);
+        std::exception_ptr failure;
+        try {
+        co_await service::utils::redis::withConsumerNotifications(
+            redis, context.worker(), streams, kGroup, stop,
+            [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
+                ready.set_value();
+                bool recovering = true;
+                while (!stop.stop_requested()) {
+                    bool failed = false;
+                    try {
+                        if (pending_.size() >= 128) {
+                            (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(10), stop);
                             continue;
                         }
-                        auto pending = std::make_shared<Pending>();
-                        pending->deadline = service::utils::parseInt64(message.get("deadline")).value_or(0);
-                        pending->requestId = std::string(message.get("id"));
-                        const auto entry = message.id;
-                        pending_[entry] = pending;
-                        if (!worker_.post([this, message = std::move(message), pending](ruvia::web_worker_context& current) mutable {
+                        auto batches = co_await service::utils::redis::consumeGroup(
+                            redis, streams, kGroup, "control", recovering, notifications, stop, std::nullopt, 32);
+                        for (auto& batch : batches) {
+                            for (auto& message : batch.messages) {
+                                if (pending_.contains(message.id)) continue;
+                                auto pending = std::make_shared<Pending>();
+                                pending->deadline = service::utils::parseInt64(message.get("deadline")).value_or(0);
+                                pending->requestId = std::string(message.get("id"));
+                                const auto entry = message.id;
+                                pending_[entry] = pending;
+                                if (wake_) (void)wake_->sender.send(1);
+                                if (!worker_.post([this, message = std::move(message), pending](ruvia::web_worker_context& current) mutable {
                                         return process(current, std::move(message), pending);
-                                    })
-                                 .accepted()) {
-                            pending_.erase(entry);
-                            throw std::runtime_error("RPC operation rejected");
+                                    }).accepted()) {
+                                    pending_.erase(entry);
+                                    throw std::runtime_error("RPC operation rejected");
+                                }
+                            }
                         }
+                    } catch (const std::exception& error) {
+                        if (stop.stop_requested()) break;
+                        LOG_ERROR << "RPC consumer: " << error.what();
+                        failed = true;
+                        recovering = true;
                     }
-                } catch (const std::exception& error) {
-                    if (stop.stop_requested()) {
-                        break;
-                    }
-                    LOG_ERROR << "RPC consumer: " << error.what();
-                    failed = true;
-                    recovering = true;
-                    recoveryId = "0";
+                    if (failed) (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), stop);
                 }
-                if (failed) {
-                    (void)co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), stop);
-                }
-            }
+            });
         } catch (...) {
-            if (!initialized) {
-                ready->set_exception(std::current_exception());
-            }
+            failure = std::current_exception();
         }
-        stop_->request_stop();
-        for (const auto& [entry, pending] : pending_) {
-            pending->stop.request_stop();
-        }
-        while (!pending_.empty() || (monitorStarted && monitored.wait_for(std::chrono::seconds(0)) != std::future_status::ready)) {
-            (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(10));
-        }
-        done->set_value();
+        for (const auto& [entry, pending] : pending_) pending->stop.request_stop();
+        while (!pending_.empty()) (void)co_await ruvia::sleep_for(context.worker(), std::chrono::milliseconds(10));
+        if (failure) std::rethrow_exception(failure);
     }
 
     static constexpr std::string_view kGroup = "control";
     std::string stream_;
-    std::string replyStream_;
     std::map<std::string, Handler> handlers_;
     std::map<std::string, std::shared_ptr<Pending>> pending_;
+    std::optional<Wake> wake_;
     ruvia::web_worker_handle worker_;
     std::unique_ptr<ruvia::stop_source> stop_;
     std::future<void> stopped_;
+    std::future<void> cancellationsStopped_;
+    std::future<void> monitorStopped_;
 };
 
 } // namespace service::messaging::rpc

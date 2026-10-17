@@ -539,6 +539,10 @@ void configureServer(
             [url = components.edge.publicBaseUrl, directory = components.edge.firmwareDirectory] {
                 return service::edge_node::FirmwareStorageConfig{url, directory};
             })
+        .use_worker_state<service::edge::gateway::transport::ConnectionDriver>([] {
+            return service::edge::gateway::transport::ConnectionDriver{
+                &service::edge::gateway::GatewayRuntime::runConnection};
+        })
         .use_worker_state<service::edge::SessionDispatcher>()
         .use_worker_state<service::edge::gateway::FirmwareCleanupSignal>()
         .use_worker_state<service::device::DeviceCommandPort>([] {

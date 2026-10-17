@@ -47,6 +47,10 @@ function imei() {
     const base='99'+String(Math.floor(Math.random()*1e12)).padStart(12,'0');let sum=0;
     for(let i=0;i<14;i++){let n=Number(base[i])*(i%2?2:1);if(n>9)n-=9;sum+=n;}return base+String((10-sum%10)%10);
 }
+async function pubsubClients() {
+    const clients = String(await redis.send('CLIENT', ['LIST', 'TYPE', 'PUBSUB']));
+    return new Set(clients.trim().split('\n').filter(Boolean).map(line => line.split(' ').find(field => field.startsWith('id='))!.slice(3)));
+}
 const node = crypto.randomUUID(), identity = imei();
 let socket: WebSocket | undefined;
 let release: (() => void) | undefined;
@@ -105,13 +109,11 @@ try {
     await until(async () => answers.size === Object.keys(expected).length, 'debug events were not answered');
     for (const [event, code] of Object.entries(expected)) assert.equal(answers.get(sent[event]), code, event);
     anonymous.close();
-    const changesBefore = (await redis.send('XREVRANGE', ['iot:live:changes', '+', '-', 'COUNT', '1']) as [string, string[]][])[0]?.[0] ?? '0-0';
     const sessionId = (await channel.request<{id:string}>('edge.serial.open', {id:node,path:'/dev/ttyS1'})).id;
-    const route = `iot:live:route:edge-serial:${node}:${sessionId}`;
-    assert.match(String(await redis.send('GET', [route])), /^iot:live:worker:/, 'serial events are not routed to the browser worker');
     const session = {id:node,sessionId};
     const sendCommand = (command: unknown) => channel.request('edge.serial.command',{...session,command});
     const events: {kind: string; requestId?: number; hex?: string; manual?: boolean; sequence?: number}[] = [];
+    const existingSubscribers = await pubsubClients();
     release = channel.subscribe<{events: typeof events}>('edge.serial.events.subscribe', session, {
         next: data => {
             events.push(...data.events);
@@ -128,6 +130,8 @@ try {
     ])));
     emit('state', 1, false);
     await until(async () => events.some(e => e.kind === 'state'), 'open state not delivered');
+    const outputSubscribers = [...await pubsubClients()].filter(id => !existingSubscribers.has(id));
+    assert.equal(outputSubscribers.length, 1, 'serial output must own one dedicated subscription');
     const intruder = new EdgeDebugConnection(() => new WebSocket(apiBase.replace('http:', 'ws:') + '/v1/edge/debug'));
     intruder.configureSessionRestore(async () => { await intruder.request('edge.debug.authenticate',{token},{anonymous:true}); });
     try {
@@ -143,6 +147,7 @@ try {
     emit('data', 0, true, Buffer.from([0, 255, 10, 128])); emit('sent', 3, true);
     await until(async () => events.some(e => e.kind === 'sent'), 'write acknowledgement missing');
     assert(events.some(e => e.hex === '00FF0A80'));
+    assert.equal(await redis.send('CLIENT', ['KILL', 'ID', outputSubscribers[0]]), 1);
     for (let index = 0; index < 40; index++) emit('data', 0, true, Buffer.alloc(1024, index));
     await until(async () => events.filter(event => event.kind === 'data').length === 41, 'burst serial data was lost');
     await rejected(sendCommand({action:'write',requestId:3,hex:'00FF0A80'}),17021);
@@ -155,9 +160,7 @@ try {
     await until(async () => events.some(e => e.requestId === 4 && !e.manual), 'resume acknowledgement missing');
     release(); release = undefined; channel.reset();
     await until(async () => commands.some(c => (c.get(3) as Buffer).toString() === 'close'), 'browser disconnect did not close serial session');
-    await until(async () => !(await redis.send('EXISTS', [route])), 'closed serial session kept its event route');
-    const broadcast = await redis.send('XRANGE', ['iot:live:changes', `(${changesBefore}`, '+']) as [string, string[]][];
-    assert(!broadcast.some(([, fields]) => fields.some(field => field.startsWith('edge-serial:'))), 'serial events reached the broadcast change stream');
+    await until(async () => !(await redis.send('EXISTS', [`iot:edge:serial:session:${node}:${sessionId}`])), 'closed serial session kept its owner');
 
     const closed = (sessionId: string) => commands.some(command =>
         (command.get(1) as Buffer).equals(bytes(sessionId)) && (command.get(3) as Buffer).toString() === 'close');

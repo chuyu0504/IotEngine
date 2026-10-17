@@ -97,12 +97,12 @@ class EdgeManagementController final {
     }
 
     // True when `topic` changed as a whole or for entity `id`.
-    static bool touches(const service::utils::ChangeSet& changes, std::string_view topic, std::string_view id) {
+    static bool touches(const service::message::live::ChangeSet& changes, std::string_view topic, std::string_view id) {
         const auto* ids = changes.find(topic);
         return ids && (!*ids || (*ids)->contains(id));
     }
 
-    static bool touchesAny(const service::utils::ChangeSet::Ids& changed, const service::utils::ChangeSet::Ids& shown) {
+    static bool touchesAny(const service::message::live::ChangeSet::Ids& changed, const service::message::live::ChangeSet::Ids& shown) {
         for (const auto& id : changed) {
             if (shown.contains(id)) {
                 return true;
@@ -112,7 +112,7 @@ class EdgeManagementController final {
     }
 
     // Inventory rows in snapshot shape; records nodes shown with VPN routes.
-    static std::vector<service::middleware::LiveCollection::Row> nodeRows(const ruvia::boxed_array<EdgeNodeDto>& nodes, service::utils::ChangeSet::Ids& vpnNodes) {
+    static std::vector<service::middleware::LiveCollection::Row> nodeRows(const ruvia::boxed_array<EdgeNodeDto>& nodes, service::message::live::ChangeSet::Ids& vpnNodes) {
         std::vector<service::middleware::LiveCollection::Row> rows;
         for (const auto& node : nodes) {
             std::string id(node.get<"id">()->view());
@@ -139,7 +139,7 @@ class EdgeManagementController final {
         // VPN route fields become deltas of the affected nodes only.
         struct Inventory final {
             service::middleware::LiveCollection collection;
-            service::utils::ChangeSet::Ids vpnNodes;
+            service::message::live::ChangeSet::Ids vpnNodes;
         };
 
         const auto inventory = std::make_shared<Inventory>();
@@ -159,7 +159,7 @@ class EdgeManagementController final {
             co_return service::middleware::dataJson(array + "]");
         };
         std::vector<service::middleware::LiveChannel> channels;
-        channels.push_back({ "nodes", { std::string(topic::kEdge), std::string(topic::kEdgeGroup), std::string(topic::kVpn) }, nodes, [nodes, inventory](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+        channels.push_back({ "nodes", { std::string(topic::kEdge), std::string(topic::kEdgeGroup), std::string(topic::kVpn) }, nodes, [nodes, inventory](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                                 const auto ids = co_await edgeService().changedNodeIds(request, changes, inventory->vpnNodes);
                                 if (!ids) {
@@ -193,7 +193,7 @@ class EdgeManagementController final {
                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                 co_return service::middleware::dataJson(service::middleware::modelJson(co_await edgeService().detail(request, id)));
             };
-            channels.push_back({ "detail", { std::string(topic::kEdge) }, detail, [detail, id](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+            channels.push_back({ "detail", { std::string(topic::kEdge) }, detail, [detail, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                     if (!touches(changes, topic::kEdge, id)) {
                                         co_return std::nullopt;
                                     }
@@ -204,7 +204,7 @@ class EdgeManagementController final {
                     co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                     co_return service::middleware::dataJson(co_await edgeService().dtuChannels(request, id));
                 };
-                channels.push_back({ "dtu", { std::string(topic::kEdgeDtu) }, dtu, [dtu, id](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+                channels.push_back({ "dtu", { std::string(topic::kEdgeDtu) }, dtu, [dtu, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         if (!touches(changes, topic::kEdgeDtu, id)) {
                                             co_return std::nullopt;
                                         }
@@ -216,7 +216,7 @@ class EdgeManagementController final {
                     co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                     co_return service::middleware::dataJson(service::middleware::modelJson(co_await edgeService().logSnapshot(request, id, c.req().validated<LogsQuery>())));
                 };
-                channels.push_back({ "logs", { std::string(topic::kEdgeLogs) }, logs, [logs, id](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+                channels.push_back({ "logs", { std::string(topic::kEdgeLogs) }, logs, [logs, id](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         if (!touches(changes, topic::kEdgeLogs, id)) {
                                             co_return std::nullopt;
                                         }
@@ -226,13 +226,13 @@ class EdgeManagementController final {
             if (*scope.get<"vpn">()) {
                 // VPN changes carry network ids: the view changes when the node
                 // held or now holds a peer in one of them.
-                const auto networks = std::make_shared<service::utils::ChangeSet::Ids>();
+                const auto networks = std::make_shared<service::message::live::ChangeSet::Ids>();
                 auto vpn = [id, networks](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                     co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
                     *networks = co_await edgeService().nodeNetworks(request, id);
                     co_return service::middleware::dataJson(co_await edgeService().vpnState(request, id));
                 };
-                channels.push_back({ "vpn", { std::string(topic::kVpn), std::string(topic::kEdge) }, vpn, [vpn, id, networks](service::middleware::RequestContext& request, const service::utils::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+                channels.push_back({ "vpn", { std::string(topic::kVpn), std::string(topic::kEdge) }, vpn, [vpn, id, networks](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
                                         bool changed = touches(changes, topic::kEdge, id);
                                         if (const auto* ids = changes.find(topic::kVpn); !changed && ids) {
                                             changed = !*ids || touchesAny(**ids, *networks) ||

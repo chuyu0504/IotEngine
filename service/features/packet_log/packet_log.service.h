@@ -31,7 +31,7 @@ return 1
         const std::vector<std::string_view> keys{key}, args{state};
         const auto result = co_await redis.eval(script, keys, args);
         if (result.kind() == ruvia::redis_value::kind_type::error)
-            message::redis::throwValue("finish debug acquisition", result);
+            utils::redis::throwValue("finish debug acquisition", result);
         co_await service::live::publish(redis, service::message::live::topic::kPacketDebug);
     }
     template <typename Redis>
@@ -253,7 +253,7 @@ return changed and 1 or 0
             for (const auto& field : parsedFields) args.push_back(field);
             const auto result = co_await redis.eval(script, keys, args);
             if (result.kind() == ruvia::redis_value::kind_type::error)
-                message::redis::throwValue("append debug packet", result);
+                utils::redis::throwValue("append debug packet", result);
         }
         std::vector<std::string> changedIds{ std::string(linkId) };
         if (!deviceId.empty()) changedIds.emplace_back(deviceId);

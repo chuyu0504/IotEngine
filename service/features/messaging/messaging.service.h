@@ -22,6 +22,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/uuid.h"
+#include "service/common/worker.h"
 #include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.config.h"
 #include "service/features/messaging/messaging.entity.h"
@@ -41,7 +42,8 @@ ruvia::task<void> publishConfigEnvelope(
     std::string_view action,
     std::string_view schemaVersion,
     std::string_view occurredAtMs,
-    std::size_t serviceWorkerCount = 1
+    std::size_t serviceWorkerCount,
+    std::string_view instance
 ) {
     const bool runtimeChange =
         aggregate == "link" || aggregate == "device" || aggregate == "protocol";
@@ -74,7 +76,8 @@ ruvia::task<void> publishConfigEnvelope(
             fields,
             std::nullopt,
             service::message::WorkerStreamTask::Reconciler,
-            10000
+            10000,
+            instance
         );
     }
     if (webhookChange) {
@@ -88,7 +91,8 @@ ruvia::task<void> publishConfigEnvelope(
                 fields,
                 workerIndex,
                 service::message::WorkerStreamTask::Webhook,
-                10000
+                10000,
+                instance
             );
         }
     }
@@ -99,11 +103,12 @@ ruvia::task<void> publishConfigEnvelope(
             fields,
             std::nullopt,
             service::message::WorkerStreamTask::Webhook,
-            10000
+            10000,
+            instance
         );
     }
     const auto replies = co_await std::move(pipeline).exec();
-    service::message::redis::requirePipelineSuccess("publish config change", replies);
+    service::utils::redis::requirePipelineSuccess("publish config change", replies);
     co_return;
 }
 
@@ -213,6 +218,7 @@ class OutboxService {
     }
 
     ruvia::task<bool> dispatch(ruvia::web_worker_context& context) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         auto transaction = co_await context.db().begin_transaction();
         ruvia::db_query pending(context.pool());
         const auto occurredAtMs = pending.call("floor", { pending.binary(
@@ -276,16 +282,18 @@ class OutboxService {
                         event.deviceCode,
                         integer(event.occurredAtMs),
                         event.data,
-                        service::runtime::instanceId()
+                        identity.instanceId
                     );
                     const std::vector<std::string_view> keys(publication.keys.begin(), publication.keys.end());
                     const std::vector<std::string_view> arguments(publication.arguments.begin(), publication.arguments.end());
                     const auto reply = co_await context.redis().eval(service::message::access::stream::kPublishEventScript, keys, arguments);
                     if (!reply.null() && reply.kind() != ruvia::redis_value::kind_type::string) {
-                        service::message::redis::throwValue("publish open-access event", reply);
+                        service::utils::redis::throwValue("publish open-access event", reply);
                     }
+                    co_await service::messaging::stream::wakeWorker(context.redis(), std::nullopt,
+                        service::message::WorkerStreamTask::CommandResult, identity.instanceId);
                 } else {
-                    co_await publishConfigEnvelope(context.redis(), event.id, event.type, event.aggregate, event.aggregateId, event.action, event.schemaVersion, event.occurredAtMs, serviceWorkerCount_);
+                    co_await publishConfigEnvelope(context.redis(), event.id, event.type, event.aggregate, event.aggregateId, event.action, event.schemaVersion, event.occurredAtMs, serviceWorkerCount_, identity.instanceId);
                 }
             } catch (const std::exception& error) {
                 publishError = error.what();
@@ -331,16 +339,7 @@ class OutboxService {
     }
 
     ruvia::task<void> collectMetrics(ruvia::web_worker_context& context) {
-        const auto workerText = observability_.workerIndex();
-        if (workerText.empty())
-            co_return;
-        std::size_t workerIndex{};
-        const auto parsed = std::from_chars(
-            workerText.data(), workerText.data() + workerText.size(), workerIndex);
-        if (parsed.ec != std::errc{} ||
-            parsed.ptr != workerText.data() + workerText.size()) {
-            co_return;
-        }
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         ruvia::db_query metrics(context.pool());
         const auto pending = metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()));
         const auto count = metrics.aggregate("count", { metrics.star() });
@@ -355,6 +354,9 @@ class OutboxService {
                 metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))), ruvia::db_data_type::text))
             .from(service::messaging::persistence::OutboxEventEntity::table_name())
             .and_where(metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"published_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())));
+        metrics.add_select(metrics.cast(metrics.cast(metrics.coalesce({ metrics.binary(
+            metrics.extract(ruvia::db_date_part::epoch, oldest), ruvia::db_binary_operator::multiply, metrics.value(1000)),
+            metrics.value(0) }), ruvia::db_data_type::big_int), ruvia::db_data_type::text));
         const auto rows = co_await context.db().query(metrics);
         if (!rows.empty()) {
             const auto pending =
@@ -363,11 +365,12 @@ class OutboxService {
                 integer(rows.front()[1].value().value_or(std::string_view{}));
             const auto deadLettered =
                 integer(rows.front()[2].value().value_or(std::string_view{}));
+            oldestOutboxAtMs_ = integer(rows.front()[3].value().value_or(std::string_view{}));
             observability_.setGauge("iot_engine_outbox_pending", pending);
             observability_.setGauge("iot_engine_outbox_oldest_age_ms", oldestAge);
             observability_.setGauge("iot_engine_outbox_dead_lettered", deadLettered);
             updateAlert("outbox_pending", pending, policy_.pendingAlertThreshold);
-            updateAlert("outbox_oldest_age", oldestAge, policy_.oldestAgeAlertMs);
+            updateAgeAlert();
             updateAlert("outbox_dead_lettered", deadLettered, policy_.deadLetterAlertThreshold);
         }
         observability_.setGauge("iot_engine_outbox_receipt_retention_days", policy_.receiptRetentionDays);
@@ -381,40 +384,67 @@ class OutboxService {
             co_await collectStream(context, "webhook_config_" + std::to_string(index), service::message::access::stream::catalogChanges(index), "iot-engine:open-webhook");
         }
         for (std::size_t index = 0; index < collectorWorkerCount_; ++index) {
-            co_await collectStream(context, "dead_letter_" + std::to_string(index), message::deadLetterStream(index, service::runtime::instanceId()), {});
+            co_await collectStream(context, "dead_letter_" + std::to_string(index), message::deadLetterStream(index, identity.instanceId), {});
         }
 
-        // The operations endpoints run on any Service Worker. Publish this
-        // worker's complete snapshot so those endpoints can aggregate every
-        // worker without reading another worker's in-memory runtime diagnostics.
+        co_await publishDiagnostics(context);
+    }
+
+    // No aggregate business query on the health lease. Unchanged diagnostics
+    // only extend the existing record; a real change or Redis recovery writes it.
+    ruvia::task<void> publishDiagnostics(ruvia::web_worker_context& context) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        const auto id = service::message::worker_metrics::snapshotId(identity.index, identity.instanceId);
+        auto snapshots = context.redis().get_repository<WorkerSnapshotEntity>();
+        const auto predicate = WorkerSnapshotEntity::field<"id">() == id;
+        const auto revision = observability_.revision();
+        if (snapshotRevision_ == revision && snapshotOldestAtMs_ == oldestOutboxAtMs_ &&
+            co_await snapshots.expire(predicate, std::chrono::duration_cast<std::chrono::seconds>(service::message::worker_metrics::kSnapshotTtl))) {
+            co_return;
+        }
         WorkerSnapshotEntity snapshot(context.pool());
-        snapshot.set<"id">(service::message::worker_metrics::snapshotId(workerIndex, service::runtime::instanceId()));
+        snapshot.set<"id">(id);
         snapshot.set<"metrics">(observability_.prometheus());
         snapshot.set<"ready">(observability_.areComponentsReady());
         snapshot.set<"health">(observability_.healthJson());
-        auto snapshots = context.redis().get_repository<WorkerSnapshotEntity>();
-        const ruvia::redis_write_options expiration{
-            .ttl_ = service::message::worker_metrics::kSnapshotTtl};
+        snapshot.set<"outbox_oldest_at_ms">(oldestOutboxAtMs_);
+        const ruvia::redis_write_options expiration{ .ttl_ = service::message::worker_metrics::kSnapshotTtl };
         (void)co_await snapshots.upsert(snapshot, expiration);
+        snapshotRevision_ = revision;
+        snapshotOldestAtMs_ = oldestOutboxAtMs_;
+    }
+
+    ruvia::task<void> retireDiagnostics(ruvia::web_worker_context& context) {
+        const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
+        const auto id = service::message::worker_metrics::snapshotId(identity.index, identity.instanceId);
+        auto snapshots = context.redis().get_repository<WorkerSnapshotEntity>();
+        (void)co_await snapshots.delete_by(WorkerSnapshotEntity::field<"id">() == id);
+        snapshotRevision_.reset();
+    }
+
+    [[nodiscard]] std::optional<Clock::time_point> nextAgeAlert() const {
+        if (oldestOutboxAtMs_ == 0 || policy_.oldestAgeAlertMs <= 0 || ageAlertActive_) return std::nullopt;
+        const auto delay = oldestOutboxAtMs_ + policy_.oldestAgeAlertMs - service::message::utcNowMilliseconds();
+        return Clock::now() + std::chrono::milliseconds(std::max<std::int64_t>(0, delay));
+    }
+
+    void updateAgeAlert() {
+        const auto age = oldestOutboxAtMs_ == 0 ? 0 : std::max<std::int64_t>(0, service::message::utcNowMilliseconds() - oldestOutboxAtMs_);
+        ageAlertActive_ = policy_.oldestAgeAlertMs > 0 && age >= policy_.oldestAgeAlertMs;
+        updateAlert("outbox_oldest_age", age, policy_.oldestAgeAlertMs);
     }
 
     ruvia::task<void> collectStream(ruvia::web_worker_context& context, std::string metricSuffix, std::string stream, std::string_view group) {
-        const std::vector<std::string> lengthArguments{ "XLEN", stream };
-        const auto length = co_await service::message::redis::command(
-            context.redis(),
-            lengthArguments
-        );
+        const std::string_view lengthArguments[]{ "XLEN", stream };
+        const auto length = co_await context.redis().command(lengthArguments);
         if (length.kind() == ruvia::redis_value::kind_type::integer) {
             observability_.setGauge("iot_engine_stream_" + metricSuffix + "_entries", length.integer());
         }
         if (group.empty()) {
             co_return;
         }
-        const std::vector<std::string> pendingArguments{ "XPENDING", stream, std::string(group) };
-        const auto pending = co_await service::message::redis::command(
-            context.redis(),
-            pendingArguments
-        );
+        const std::string_view pendingArguments[]{ "XPENDING", stream, group };
+        const auto pending = co_await context.redis().command(pendingArguments);
         if (pending.kind() == ruvia::redis_value::kind_type::array &&
             !pending.array().empty() &&
             pending.array().front().kind() == ruvia::redis_value::kind_type::integer) {
@@ -428,16 +458,46 @@ class OutboxService {
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
-    ruvia::task<void> cleanupReceipts(ruvia::web_worker_context& context) {
+    ruvia::task<Clock::time_point> cleanupReceipts(ruvia::web_worker_context& context) {
+        auto transaction = co_await context.db().begin_transaction();
+        ruvia::db_query ownership(context.pool());
+        ownership.select(ownership.call("pg_try_advisory_xact_lock", {
+            ownership.cast(ownership.value(service::message::lock::kOutboxReceiptCleanup), ruvia::db_data_type::big_int) }));
+        const auto claimed = co_await transaction.query(ownership);
+        if (claimed.empty() || claimed.front()[0].value().value_or("") != "t") {
+            co_await transaction.commit();
+            co_return Clock::now() + std::chrono::milliseconds(100);
+        }
+        using Receipt = service::messaging::persistence::OutboxConsumerReceiptEntity;
+        constexpr auto processedAt = std::tuple_element_t<Receipt::column_index<"processed_at">(), Receipt::columns_type>::name.view();
         ruvia::db_query expired(context.pool());
         const std::vector<ruvia::db_named_argument> intervalArgs{
             { "days", expired.cast(expired.value(policy_.receiptRetentionDays), ruvia::db_data_type::integer) }
         };
-        expired.delete_from(service::messaging::persistence::OutboxConsumerReceiptEntity::table_name())
-            .and_where(expired.binary(expired.column(std::tuple_element_t<service::messaging::persistence::OutboxConsumerReceiptEntity::column_index<"processed_at">(), service::messaging::persistence::OutboxConsumerReceiptEntity::columns_type>::name.view()), ruvia::db_binary_operator::less,
-                expired.binary(expired.call("now"), ruvia::db_binary_operator::subtract,
+        expired.delete_from(Receipt::table_name())
+            .and_where(expired.binary(expired.column(processedAt), ruvia::db_binary_operator::less_equal,
+                expired.binary(expired.call("clock_timestamp"), ruvia::db_binary_operator::subtract,
                     expired.call("make_interval", {}, intervalArgs))));
-        (void)co_await context.db().execute(expired);
+        (void)co_await transaction.execute(expired);
+        ruvia::db_query next(context.pool());
+        const std::vector<ruvia::db_named_argument> retentionArgs{
+            { "days", next.cast(next.value(policy_.receiptRetentionDays), ruvia::db_data_type::integer) }
+        };
+        const auto deadline = next.binary(next.aggregate("min", { next.column(processedAt) }),
+            ruvia::db_binary_operator::add, next.call("make_interval", {}, retentionArgs));
+        const auto delay = next.binary(next.extract(ruvia::db_date_part::epoch,
+            next.binary(deadline, ruvia::db_binary_operator::subtract, next.call("clock_timestamp"))),
+            ruvia::db_binary_operator::multiply, next.value(1000));
+        next.select(next.cast(next.cast(next.call("ceil", { delay }), ruvia::db_data_type::big_int),
+            ruvia::db_data_type::text)).from(Receipt::table_name());
+        const auto rows = co_await transaction.query(next);
+        co_await transaction.commit();
+        // New receipts cannot expire before now + retention. This is a bound
+        // derived from their lifetime, not a fixed-period cleanup scan.
+        const auto lifetime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::hours(24 * policy_.receiptRetentionDays));
+        const auto wait = rows.empty() || !rows.front()[0].value()
+            ? lifetime : std::chrono::milliseconds(std::clamp<std::int64_t>(integer(*rows.front()[0].value()), 1, lifetime.count()));
+        co_return Clock::now() + wait;
     }
 
     void updateAlert(std::string name, std::int64_t value, std::int64_t threshold) {
@@ -454,6 +514,10 @@ class OutboxService {
     std::size_t collectorWorkerCount_{};
     std::size_t serviceWorkerCount_{};
     Policy policy_;
+    std::optional<std::uint64_t> snapshotRevision_;
+    std::int64_t snapshotOldestAtMs_ = 0;
+    std::int64_t oldestOutboxAtMs_ = 0;
+    bool ageAlertActive_ = false;
 };
 
 } // namespace service::messaging::outbox

@@ -630,9 +630,9 @@ class ConfigurationService final {
             co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
             co_await service::collector::config::project(context.redis(), snapshot, context.template worker_state<service::common::UuidV7State>());
+        co_await transaction.commit();
         if (notify)
             co_await service::live::publish(context.redis(), service::message::live::topic::kRuntimeConfig);
-        co_await transaction.commit();
         co_return version;
     }
 

@@ -25,12 +25,12 @@ namespace service::edge::session_state {
 // Session leases always expire now+930s: every deadline written by claim or
 // refresh is later than every deadline already in kDeadlines, so a sleeper
 // woken at nextDeadline() never misses an earlier one written meanwhile.
-// KEYS: session key, kDeadlines, kChanges. ARGV: session value, node id.
+// KEYS: session key, kDeadlines, edge topic channel. ARGV: session value, node id.
 inline constexpr std::string_view kClaimScript = R"lua(
 local now=redis.call('TIME')
 redis.call('SET',KEYS[1],ARGV[1],'EX',930)
 redis.call('ZADD',KEYS[2],now[1]*1000+math.floor(now[2]/1000)+930000,KEYS[1])
-redis.call('XADD',KEYS[3],'MAXLEN','~',100000,'*','schema_version','2','topic','edge','ids',ARGV[2])
+redis.call('PUBLISH',KEYS[3],ARGV[2])
 return 1
 )lua";
 inline constexpr std::string_view kRefreshScript = R"lua(
@@ -44,13 +44,13 @@ inline constexpr std::string_view kReleaseScript = R"lua(
 if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end
 redis.call('DEL',KEYS[1])
 redis.call('ZREM',KEYS[2],KEYS[1])
-redis.call('XADD',KEYS[3],'MAXLEN','~',100000,'*','schema_version','2','topic','edge','ids',ARGV[2])
+redis.call('PUBLISH',KEYS[3],ARGV[2])
 return 1
 )lua";
 // Expiration is a state transition too, even when the owning API process died.
 // Every instance may run this; the atomic ZREM claims each due session, so one
 // edge change listing all expired node ids is published once.
-// KEYS: kDeadlines, kChanges. ARGV: session key prefix.
+// KEYS: kDeadlines, edge topic channel. ARGV: session key prefix.
 inline constexpr std::string_view kExpireScript = R"lua(
 local time=redis.call('TIME')
 local now=time[1]*1000+math.floor(time[2]/1000)
@@ -69,14 +69,15 @@ for _,key in ipairs(due) do
  end
 end
 if #expired > 0 then
- redis.call('XADD',KEYS[2],'MAXLEN','~',100000,'*','schema_version','2','topic','edge','ids',table.concat(expired,','))
+ redis.call('PUBLISH',KEYS[2],table.concat(expired,','))
 end
 return #expired
 )lua";
 template <typename Redis>
 ruvia::task<void> expireSessions(const Redis& redis) {
     const auto prefix = service::message::edge::sessionKey({});
-    const std::string_view keys[]{kDeadlines, service::message::live::kChanges};
+    const auto channel = service::message::live::channel(service::message::live::topic::kEdge);
+    const std::string_view keys[]{kDeadlines, channel};
     const std::string_view args[]{prefix};
     const auto reply = co_await redis.eval(kExpireScript, keys, args);
     if (reply.kind() != ruvia::redis_value::kind_type::integer)
@@ -108,7 +109,8 @@ ruvia::task<bool> mutate(const Redis& redis, std::string_view script,
     std::size_t workerIndex, std::string_view instance) {
     const auto sessionKey=service::message::edge::sessionKey(nodeId);
     const auto expected=value(epoch,protocolVersion,workerIndex,instance);
-    const std::string_view keys[]{sessionKey,kDeadlines,service::message::live::kChanges};
+    const auto channel = service::message::live::channel(service::message::live::topic::kEdge);
+    const std::string_view keys[]{sessionKey,kDeadlines,channel};
     const std::string_view args[]{expected,nodeId};
     const auto reply=co_await redis.eval(script,keys,args);
     if(reply.kind()!=ruvia::redis_value::kind_type::integer)

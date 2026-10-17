@@ -182,22 +182,114 @@ try {
 
     const source = await Bun.file('service/features/telemetry/telemetry.service.h').text();
     const lua = source.match(/kFanoutScript = R"lua\(([\s\S]*?)\)lua"/)![1];
-    // KEYS: history, latest, alerts, delivery, shared wake, receipt; ARGV: wake capacity, wake task, then <count> <fields...> per entry.
-    const keys = Array.from({ length: 6 }, (_, i) => `test:fanout:${event}:${i}`);
-    const fanout = () => redis.send('EVAL', [lua, '6', ...keys, '100000', 'telemetry-alerts', String(fields.length), ...fields]);
+    // KEYS: five actual streams, their five input channels, then one receipt per entry.
+    const streams = Array.from({ length: 5 }, (_, i) => `test:fanout:${event}:${i}`);
+    const channels = streams.map(stream => `iot:consumer:input:${stream}`);
+    const keys = [...streams, ...channels, `test:fanout:${event}:receipt`];
+    const subscriber = new Bun.RedisClient(redisUrl);
+    const notifications: { channel: string; entry: string }[] = [];
+    const barriers = new Map<string, () => void>();
+    const subscribe = async (channel: string) => {
+        await subscriber.subscribe(channel, (entry, receivedChannel) => {
+            const barrier = barriers.get(entry);
+            if (barrier) {
+                barriers.delete(entry);
+                barrier();
+            } else {
+                notifications.push({ channel: receivedChannel, entry });
+            }
+        });
+    };
+    const received = async () => {
+        const marker = `barrier:${id()}`;
+        const ready = new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('input notification barrier timed out')), 5000);
+            barriers.set(marker, () => { clearTimeout(timer); resolve(); });
+        });
+        await redis.send('PUBLISH', [channels[0], marker]);
+        await ready;
+        return [...notifications];
+    };
+    const appended = async (stream: string, channel: string) => {
+        const rows = await redis.send('XRANGE', [stream, '-', '+']) as [string, string[]][];
+        return rows.map(([entry]) => ({ channel, entry }));
+    };
+    const fanout = (selectedFields = fields) => redis.send('EVAL', [
+        lua, String(keys.length), ...keys, '100000', 'telemetry-alerts',
+        String(selectedFields.length), ...selectedFields,
+    ]);
+    const derivedKeys = [
+        `test:derived:${event}:state`, `test:derived:${event}:samples`,
+        `test:derived:${event}:wake`, `test:derived:${event}:samples-channel`,
+        `test:derived:${event}:wake-channel`, `test:derived:${event}:receipt`,
+    ];
+    const latestDevice = id();
+    const latestRuntime = `iot:v2:runtime:device:${latestDevice}`;
+    const latestHash = `iot:v2:device:${latestDevice}:latest`;
+    const latestKeys = [
+        `test:latest:${event}:deadlines`, `test:latest:${event}:wake`,
+        `test:latest:${event}:wake-channel`,
+    ];
     try {
+        for (const channel of channels) await subscribe(channel);
         await redis.send('SET', [keys[2], 'wrong-type']);
         await assert.rejects(fanout());
-        assert.equal(await redis.send('EXISTS', [keys[0], keys[1], keys[3], keys[4], keys[5]]), 0);
+        assert.equal(await redis.send('EXISTS', [keys[0], keys[1], keys[3], keys[4], keys[10]]), 0);
+        assert.deepEqual(await received(), [], 'failed append must not notify');
         await redis.send('DEL', [keys[2]]);
         assert.equal(await fanout(), 1);
         assert.equal(await fanout(), 0);
-        for (const key of keys.slice(0, 4)) assert.equal(await redis.send('XLEN', [key]), 1);
-        assert.equal(await redis.send('XLEN', [keys[4]]), 1);
+        const initial = await Promise.all(streams.map((stream, index) => appended(stream, channels[index])));
+        assert(initial.every(entries => entries.length === 1));
+        assert.deepEqual(await received(), initial.flat(), 'one input notification per actual append, none for duplicate');
+        const replay = [...fields];
+        replay[replay.indexOf('raw_packet_ids') + 1] = JSON.stringify([id()]);
+        assert.equal(await fanout(replay), 0);
+        const history = await appended(streams[0], channels[0]);
+        assert.equal(history.length, 2);
+        assert.deepEqual(await received(), [...initial.flat(), history[1]], 'raw frame replay wakes only history');
+        for (const stream of streams.slice(1)) assert.equal(await redis.send('XLEN', [stream]), 1);
+
+        const derivedSource = await Bun.file('service/features/telemetry/derived/derived.service.h').text();
+        const derivedLua = derivedSource.match(/kStateTransitionScript = R"lua\(([\s\S]*?)\)lua"/)![1];
+        for (const channel of derivedKeys.slice(3, 5)) await subscribe(channel);
+        const transition = (before: string, after: string, publish: string) =>
+            redis.send('EVAL', [derivedLua, String(derivedKeys.length), ...derivedKeys, before, after, publish, 'message_id', event]);
+        const beforeDerived = await received();
+        assert.equal(await transition('conflict', 'next', '1'), 0);
+        assert.deepEqual(await received(), beforeDerived, 'failed CAS does not notify');
+        assert.equal(await transition('', 'next', '1'), 1);
+        assert.equal(await transition('', 'next', '1'), 2);
+        const derivedAppends = [
+            ...await appended(derivedKeys[1], derivedKeys[3]),
+            ...await appended(derivedKeys[2], derivedKeys[4]),
+        ];
+        assert.equal(derivedAppends.length, 2);
+        assert.deepEqual(await received(), [...beforeDerived, ...derivedAppends], 'derived receipt retry does not notify');
+        await redis.send('DEL', [derivedKeys[5]]);
+        assert.equal(await transition('next', 'silent', '0'), 1);
+        assert.equal(await redis.send('GET', [derivedKeys[0]]), 'silent');
+        const beforeLatest = await received();
+        assert.deepEqual(beforeLatest, [...beforeDerived, ...derivedAppends], 'state-only transition does not notify');
+
+        const latestSource = await Bun.file('service/features/telemetry/latest/latest.service.h').text();
+        const latestLua = latestSource.match(/kUpdateLatestScript = R"lua\(([\s\S]*?)\)lua"/)![1];
+        await subscribe(latestKeys[2]);
+        await redis.send('HSET', [latestRuntime, 'device_id', latestDevice]);
+        const updateLatest = () => redis.send('EVAL', [
+            latestLua, String(latestKeys.length), ...latestKeys, latestDevice, '1', 'Modbus',
+            now, now, 'collector', '60000', '{"values":{}}',
+        ]);
+        assert.equal(await updateLatest(), 1);
+        assert.equal(await updateLatest(), 1);
+        const latestAppends = await appended(latestKeys[1], latestKeys[2]);
+        assert.equal(latestAppends.length, 1);
+        assert.deepEqual(await received(), [...beforeLatest, ...latestAppends], 'freshness signals only an actual wake append');
     } finally {
-        await redis.send('DEL', keys);
+        subscriber.close();
+        await redis.send('DEL', [...keys, ...derivedKeys, ...latestKeys, latestRuntime, latestHash]);
     }
-    console.log('PASS fanout validation fails before writes and retry emits one copy per consumer');
+    console.log('PASS durable fanout, replay, derived dedupe/CAS and freshness publish actual entry IDs atomically');
 } finally {
     unlock?.();
     if (blocking) await blocking;

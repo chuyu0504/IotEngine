@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <optional>
 #include <stdexcept>
@@ -16,6 +17,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <openssl/rand.h>
 
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
@@ -35,14 +38,61 @@
 #include "service/features/edge/serial_debug/serial_debug.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.service.h"
-#include "service/features/live/live.service.h"
+#include "service/utils/redis.h"
 #include "service/utils/number.h"
 #include "service/utils/uuid.h"
 
 namespace service::edge::gateway {
 
+inline constexpr std::string_view kSaveLogResultScript = R"lua(
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+if ARGV[2] == '1' then
+  redis.call('SET', KEYS[2], ARGV[1])
+  redis.call('PUBLISH', KEYS[3], ARGV[3])
+end
+return redis.call('PUBLISH', KEYS[1], '')
+)lua";
+
+inline constexpr std::string_view kSaveLogLevelResultScript = R"lua(
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+return redis.call('PUBLISH', KEYS[1], '')
+)lua";
+
 class GatewayService final {
   public:
+    static std::uint64_t newSessionEpoch() {
+        std::uint64_t value{};
+        if (RAND_bytes(reinterpret_cast<unsigned char*>(&value), static_cast<int>(sizeof(value))) != 1) {
+            throw std::runtime_error("edge session epoch generation failed");
+        }
+        return value == 0 ? 1 : value;
+    }
+
+    // The driver owns this scope on the accepting Worker. This resource only
+    // registers its business delivery target; it owns no socket or running task.
+    class ConnectionRegistration final {
+      public:
+        ConnectionRegistration(
+            ruvia::context& context,
+            const ConnectionIdentity& identity,
+            std::function<void()> wake,
+            std::function<void(std::string_view)> failure
+        ) : dispatcher_(context.worker_state<SessionDispatcher>()),
+            nodeId_(identity.nodeId), epoch_(identity.epoch) {
+            dispatcher_.registerSession(std::string(nodeId_), epoch_, std::move(wake), std::move(failure));
+        }
+
+        ConnectionRegistration(const ConnectionRegistration&) = delete;
+        ConnectionRegistration& operator=(const ConnectionRegistration&) = delete;
+
+        ~ConnectionRegistration() { dispatcher_.unregisterSession(nodeId_, epoch_); }
+
+      private:
+        SessionDispatcher& dispatcher_;
+        std::string_view nodeId_;
+        std::uint64_t epoch_;
+    };
+
     // The hello is durably handed to this Worker's projector before enrollment
     // is consulted, including for nodes that are still pending approval.
     static ruvia::task<std::optional<Enrollment>> acceptHello(
@@ -285,16 +335,14 @@ class GatewayService final {
             co_return;
         }
         const auto id = service::common::uuidText(result.request_id());
-        ruvia::redis_set_options options;
-        options.expiration_ =
-            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = service::message::edge::logResultKey(id);
-        co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publishDirected(c.redis(), key);
-        if (result.success()) {
-            const auto snapshotKey = service::message::edge::logSnapshotKey(nodeId);
-            co_await c.redis().set(snapshotKey, record.protobufBytes);
-            co_await service::live::publish(c.redis(), service::message::live::topic::kEdgeLogs, std::array{ std::string(nodeId) });
+        const auto snapshot = service::message::edge::logSnapshotKey(nodeId);
+        const auto channel = service::message::live::channel(service::message::live::topic::kEdgeLogs);
+        const std::string_view keys[]{ key, snapshot, channel };
+        const std::string_view args[]{ record.protobufBytes, result.success() ? "1" : "0", nodeId };
+        const auto saved = co_await c.redis().eval(kSaveLogResultScript, keys, args);
+        if (saved.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("persist edge log result", saved);
         }
     }
 
@@ -307,12 +355,13 @@ class GatewayService final {
             co_return;
         }
         const auto id = service::common::uuidText(result.request_id());
-        ruvia::redis_set_options options;
-        options.expiration_ =
-            ruvia::redis_set_expiration::expires_after(std::chrono::seconds(60));
         const auto key = service::message::edge::logLevelResultKey(id);
-        co_await c.redis().set(key, record.protobufBytes, std::move(options));
-        co_await service::live::publishDirected(c.redis(), key);
+        const std::string_view keys[]{ key };
+        const std::string_view args[]{ record.protobufBytes };
+        const auto saved = co_await c.redis().eval(kSaveLogLevelResultScript, keys, args);
+        if (saved.kind() != ruvia::redis_value::kind_type::integer) {
+            service::utils::redis::throwValue("persist edge log level result", saved);
+        }
     }
 
     template <typename Context>

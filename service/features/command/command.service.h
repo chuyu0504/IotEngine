@@ -68,7 +68,8 @@ ruvia::task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queu
             arguments.emplace_back("1"); arguments.push_back(dispatch.listPayload);
         }
     }
-    const std::string_view keyViews[]{queueKey};
+    const auto inputChannel = kind == PendingQueueKind::Stream ? message::consumer::inputChannel(queueKey) : std::string{};
+    const std::string_view keyViews[]{queueKey, inputChannel};
     std::vector<std::string_view> argumentViews(arguments.begin(),arguments.end());
     const auto reply = co_await redis.eval(persistence::kPendingBatchDispatchScript, keyViews, argumentViews);
     if (reply.kind() == ruvia::redis_value::kind_type::integer && reply.integer() == 0)

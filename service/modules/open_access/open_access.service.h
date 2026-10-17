@@ -600,6 +600,7 @@ class AccessService final {
         session.id = projected->id;
         session.name = projected->name;
         session.scopes = projected->scopes;
+        session.expiresAtMs = projected->expiresAtMs;
         if (!requiredScope.empty() && !session.allows(requiredScope)) {
             service::common::fail(19011, "AccessKey 未开通所需权限", 403);
         }

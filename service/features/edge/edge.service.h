@@ -899,6 +899,8 @@ inline ruvia::db_query appendSl651ElementsQuery(std::string_view nodeId) {
 // lease lifecycle and recovery of dead Streams.
 namespace service::edge::projector_stream {
 
+// KEYS[1]=lease, KEYS[2]=data stream, KEYS[3]=registry, KEYS[4]=task wake stream,
+// KEYS[5]=data input channel, KEYS[6]=task wake input channel.
 inline constexpr std::string_view kFencedPublishScript = R"lua(
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 -- Data entries may not be trimmed before the projector persists them.  A full
@@ -909,7 +911,9 @@ local arguments = {'*'}
 for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
 local id = redis.call('XADD', KEYS[2], unpack(arguments))
 redis.call('SADD', KEYS[3], KEYS[2])
-redis.call('XADD', KEYS[4], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
+local wake = redis.call('XADD', KEYS[4], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
+redis.call('PUBLISH', KEYS[5], id)
+redis.call('PUBLISH', KEYS[6], wake)
 return id
 )lua";
 
@@ -927,7 +931,9 @@ ruvia::task<bool> publishFenced(const Redis& redis, std::size_t workerIndex, std
     const auto wakeCapacity = std::to_string(service::message::kWorkerWakeCapacity);
     const auto task = service::message::workerStreamTaskName(service::message::WorkerStreamTask::EdgeProjector);
     const auto token = service::message::edge::projector_stream::ownerToken(workerIndex, instance);
-    const std::string_view keys[]{lease, streamName, registry, wake};
+    const auto inputChannel = service::message::consumer::inputChannel(streamName);
+    const auto wakeChannel = service::message::consumer::inputChannel(wake);
+    const std::string_view keys[]{lease, streamName, registry, wake, inputChannel, wakeChannel};
     std::vector<std::string_view> arguments{token, kMaximumLength, wakeCapacity, task};
     arguments.insert(arguments.end(), fields.begin(), fields.end());
     const auto reply = co_await redis.eval(kFencedPublishScript, keys,

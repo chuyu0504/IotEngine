@@ -93,9 +93,13 @@ try {
     // production publication script emits; consumers do not poll the stream.
     const wakeStream = `iot:service:${ownerMatch[1]}:work-available`;
     async function appendProjection(fields: string[]) {
-        const entry = await redis.send('XADD', ['iot:gb28181:projection', '*', ...fields]) as string;
-        await redis.send('XADD', [wakeStream, 'MAXLEN', '~', '1000', '*', 'task', 'gb28181-projector']);
-        return entry;
+        return await redis.send('EVAL', [
+            `local id=redis.call('XADD',KEYS[1],'*',unpack(ARGV));
+             local wake=redis.call('XADD',KEYS[2],'MAXLEN','~','1000','*','task','gb28181-projector');
+             redis.call('PUBLISH',KEYS[3],id); redis.call('PUBLISH',KEYS[4],wake); return id`,
+            '4', 'iot:gb28181:projection', wakeStream,
+            'iot:consumer:input:iot:gb28181:projection', `iot:consumer:input:${wakeStream}`, ...fields,
+        ]) as string;
     }
     console.log('PASS REGISTER 200 follows DB commit and preserves preexisting metadata');
 
@@ -126,6 +130,69 @@ try {
     await deviceSubscription.close();
     assert.equal((await fetch(`${apiBase}/v1/gb28181/health`)).status,401);
     console.log('PASS HTTP rename routes to connection owner and returns after persistence; SSE change is visible');
+
+    // Keep a real control operation pending while dropping this operation's
+    // nested RPC/control subscriptions, without disturbing other live clients.
+    const pubsubClients = async () => {
+        const listing = await redis.send('CLIENT', ['LIST', 'TYPE', 'pubsub']) as string;
+        return new Set(listing.trim().split('\n').filter(Boolean).map(line => {
+            const id = /(?:^| )id=(\d+)(?: |$)/.exec(line)?.[1];
+            assert(id, `Pub/Sub client is missing its ID: ${line}`);
+            return id;
+        }));
+    };
+    const previousSubscribers = await pubsubClients();
+    const receiptLockReady = Promise.withResolvers<void>();
+    const releaseReceiptLock = Promise.withResolvers<void>();
+    const receiptBlocker = db.begin(async transaction => {
+        await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${device},28181))`;
+        receiptLockReady.resolve();
+        await releaseReceiptLock.promise;
+    });
+    await receiptLockReady.promise;
+    const receiptRename = request('PUT', `/v1/gb28181/devices/${device}/name`, { name: 'Recovered receipt name' });
+    // Observe rejection immediately; assertions below still await the original.
+    void receiptRename.catch(() => undefined);
+    let receiptResultKey = '';
+    let receiptReplyTopic = '';
+    try {
+        const ownerControl = `iot:gb28181:control:worker:${ownerMatch[1]}:${ownerMatch[2]}`;
+        const controlFields = await until(async () => {
+            const entries = await redis.send('XRANGE', [ownerControl, '-', '+']) as Array<[string, string[]]>;
+            return entries.find(([, fields]) => fields.some(field => field.includes('Recovered receipt name')))?.[1];
+        }, 'pending rename control must remain durable while its projection is blocked');
+        const field = (name: string) => {
+            const index = controlFields.indexOf(name);
+            assert(index >= 0 && index + 1 < controlFields.length, `missing control field ${name}`);
+            return controlFields[index + 1];
+        };
+        const replyTopic = field('reply_stream');
+        receiptReplyTopic = replyTopic;
+        receiptResultKey = field('result_key');
+        const subscriberCount = async () => Number((await redis.send('PUBSUB', ['NUMSUB', replyTopic]) as unknown[])[1]);
+        assert.equal(await subscriberCount(), 1, 'the caller confirms its own subscription before publishing control');
+        assert.equal(await redis.get(receiptResultKey), null, 'the blocked control cannot return an early result');
+        const subscribers = [...await pubsubClients()].filter(id => !previousSubscribers.has(id));
+        assert.equal(subscribers.length, 2, 'the HTTP RPC and GB control waiters each own an independent subscription');
+        for (const id of subscribers) {
+            assert.equal(Number(await redis.send('CLIENT', ['KILL', 'ID', id])), 1);
+        }
+        await until(async () => await subscriberCount() === 1 ? true : undefined, 'control caller must recreate its lost reply subscription', 5000);
+        const recoveredSubscribers = await pubsubClients();
+        assert(subscribers.every(id => !recoveredSubscribers.has(id)), 'disconnected subscriptions are not reused');
+        const pendingControls = await redis.send('XRANGE', [ownerControl, '-', '+']) as Array<[string, string[]]>;
+        assert.equal(pendingControls.filter(([, fields]) => fields.some(value => value.includes('Recovered receipt name'))).length, 1,
+            'recovering a reply subscription must not publish the device command again');
+    } finally {
+        releaseReceiptLock.resolve();
+        await receiptBlocker;
+    }
+    await receiptRename;
+    assert.equal((await db`SELECT custom_name FROM gb28181_device WHERE id=${device}`)[0]?.custom_name, 'Recovered receipt name');
+    assert.match((await redis.get(receiptResultKey))!, /^ok\n/, 'successful control retains its authoritative durable result');
+    assert.equal(Number(await redis.send('EXISTS', [receiptReplyTopic])), 0, 'the reply topic is not a duplicate data stream');
+    assert.equal(await redis.get(ownerKey), owner, 'subscription recovery must not change connection ownership');
+    console.log('PASS real GB control caller recreates its dedicated reply subscription and returns the committed result');
     const preview = await request('POST',`/v1/gb28181/devices/${device}/channels/${device}/preview/start`);
     assert(preview.sent && preview.session_id && preview.stream_id);
     assert(preview.lease_timeout_seconds > 0);
@@ -175,10 +242,17 @@ try {
     const wrongStream = controls.find(key => key !== `iot:gb28181:control:worker:${ownerMatch[1]}:${ownerMatch[2]}`);
     assert(wrongStream);
     const requestId = randomUUID();
-    await redis.send('XADD',[wrongStream,'*','request_id',requestId,'owner_key',ownerKey,'owner_token',owner!,'operation','rename_device','payload',JSON.stringify({device_id:device,name:'Wrong Worker'}),'deadline_ms',String(Date.now()+15000),'reply_stream',`iot:gb28181:reply:${requestId}`]);
+    await redis.send('EVAL', [
+        `local id=redis.call('XADD',KEYS[1],'*',unpack(ARGV));
+         redis.call('PUBLISH',KEYS[2],id); return id`,
+        '2', wrongStream, `iot:consumer:input:${wrongStream}`,
+        'request_id',requestId,'owner_key',ownerKey,'owner_token',owner!,'operation','rename_device',
+        'payload',JSON.stringify({device_id:device,name:'Wrong Worker'}),'deadline_ms',String(Date.now()+15000),
+        'reply_stream',`iot:gb28181:reply:${requestId}`,
+    ]);
     const result = await until(async () => (await redis.get(`iot:gb28181:result:${requestId}`)) ?? undefined, 'wrong Collector must reject command');
     assert.match(result, /^error\n.*409/);
-    assert.equal((await db`SELECT custom_name FROM gb28181_device WHERE id=${device}`)[0]?.custom_name, 'Committed worker name');
+    assert.equal((await db`SELECT custom_name FROM gb28181_device WHERE id=${device}`)[0]?.custom_name, 'Recovered receipt name');
     console.log('PASS another Collector rejects the original connection token');
 
     let unlock: (() => void) | undefined;
@@ -247,9 +321,10 @@ try {
         'schema_version','1','event_type','gb28181.device','change','device_name',
         'device_id',device,'name',device,'custom_name','Expired receipt stale replay',
         'online','1','last_seen_at',new Date().toISOString(),'channel_count','0'];
-    const replay = await redis.send('EVAL', [publishLua,'3','iot:gb28181:projection',
-        `iot:gb28181:projection:sent:${projectionId}`,wakeStream,originalOrder,originalOrder,
-        'gb28181-projector','1000',...replayFields]) as string[];
+    const replay = await redis.send('EVAL', [publishLua,'5','iot:gb28181:projection',
+        `iot:gb28181:projection:sent:${projectionId}`,wakeStream,
+        'iot:consumer:input:iot:gb28181:projection',`iot:consumer:input:${wakeStream}`,
+        originalOrder,originalOrder,'gb28181-projector','1000',...replayFields]) as string[];
     assert.equal(replay[0], originalOrder);
     assert.notEqual(replay[1], originalOrder);
     assert.equal(await until(async () => (await redis.get(receiptKey)) ?? undefined,
@@ -273,8 +348,9 @@ try {
     const probeProjection = randomUUID();
     try {
         const publish = (order = '', current = '') => redis.send('EVAL',
-            [publishLua,'3',probeStream,probeSent,probeWake,order,current,'gb28181-projector','1000',
-                'projection_id',probeProjection]) as Promise<string[]>;
+            [publishLua,'5',probeStream,probeSent,probeWake,
+                `iot:consumer:input:${probeStream}`,`iot:consumer:input:${probeWake}`,
+                order,current,'gb28181-projector','1000','projection_id',probeProjection]) as Promise<string[]>;
         const first = await publish();
         // Lost first response: retry with no local IDs must recover the marker.
         assert.deepEqual(await publish(), first);

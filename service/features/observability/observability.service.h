@@ -19,24 +19,41 @@ class RuntimeDiagnostics final {
         workerIndex_ = std::to_string(index);
     }
     [[nodiscard]] std::string_view workerIndex() const noexcept { return workerIndex_; }
+    [[nodiscard]] std::uint64_t revision() const {
+        std::lock_guard lock(mutex_);
+        return revision_;
+    }
     void setComponentStatus(std::string name, ComponentState state, std::string detail = {}) {
         std::lock_guard lock(mutex_);
+        const auto previous = components_.find(name);
+        if (previous != components_.end() && previous->second.state == state && previous->second.detail == detail) {
+            return;
+        }
+        ++revision_;
         components_.insert_or_assign(
             std::move(name), ComponentStatus{state, std::move(detail), nowMilliseconds()});
     }
 
     void incrementCounter(std::string_view name, std::uint64_t amount = 1) {
         std::lock_guard lock(mutex_);
+        if (amount == 0) return;
+        ++revision_;
         counters_[std::string(name)] += amount;
     }
 
     void setGauge(std::string_view name, std::int64_t value) {
         std::lock_guard lock(mutex_);
+        const auto previous = gauges_.find(name);
+        if (previous != gauges_.end() && previous->second == value) return;
+        ++revision_;
         gauges_.insert_or_assign(std::string(name), value);
     }
 
     void setCounter(std::string_view name, std::uint64_t value) {
         std::lock_guard lock(mutex_);
+        const auto previous = counters_.find(name);
+        if (previous != counters_.end() && previous->second == value) return;
+        ++revision_;
         counters_.insert_or_assign(std::string(name), value);
     }
 
@@ -44,9 +61,11 @@ class RuntimeDiagnostics final {
         std::lock_guard lock(mutex_);
         const auto current = alerts_.find(name);
         if (current != alerts_.end() && current->second.active == active) {
+            if (current->second.detail != detail) ++revision_;
             current->second.detail = std::move(detail);
             return false;
         }
+        ++revision_;
         alerts_.insert_or_assign(
             std::move(name), AlertStatus{active, std::move(detail), nowMilliseconds()});
         return true;
@@ -135,6 +154,7 @@ class RuntimeDiagnostics final {
 
   private:
     std::string workerIndex_;
+    std::uint64_t revision_ = 0;
     static std::int64_t nowMilliseconds() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::system_clock::now().time_since_epoch())

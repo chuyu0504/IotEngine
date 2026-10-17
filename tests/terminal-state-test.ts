@@ -19,14 +19,12 @@ const output = lua(terminalService, 'kSaveTerminalDataScript');
 const frame = lua(terminalService, 'kSaveTerminalFrameScript');
 const enqueueInput = lua(terminalService, 'kEnqueueInputScript');
 const openTerminal = lua(terminalService, 'kOpenTerminalScript');
+const browserInput = lua(terminalService, 'kEnqueueBrowserInputScript');
 const release = lua(terminalService, 'kReleaseTerminalSessionScript');
 const serialEvent = lua(serialService, 'kSaveSerialEventScript');
-// service::message::live: broadcast stream, directed stream capacity and lifetime.
-const changes = 'iot:live:changes';
-const capacity = '10000';
-const streamLifetime = '600000';
 let server: ReturnType<typeof Bun.spawn> | undefined;
 let redis: InstanceType<typeof Bun.RedisClient>;
+let redisAddress: string;
 
 beforeAll(async () => {
     const executable = Bun.which('redis-server');
@@ -52,7 +50,8 @@ beforeAll(async () => {
         { stdout: 'ignore', stderr: 'pipe' }
     );
     for (let attempt = 0; attempt < 50; attempt++) {
-        redis = new Bun.RedisClient(`redis://127.0.0.1:${address.port}`, { autoReconnect: false });
+        redisAddress = `redis://127.0.0.1:${address.port}`;
+        redis = new Bun.RedisClient(redisAddress, { autoReconnect: false });
         try {
             await redis.send('PING', []);
             return;
@@ -70,13 +69,11 @@ afterAll(async () => {
     if (server) await server.exited;
 });
 
-// One terminal: node session, owner, output, input ACK, output sequence, its
-// directed topics and their routes, and the browser worker's stream.
+// Session data is reliable independently of the directed Pub/Sub receivers.
 interface Terminal {
     node: string; owner: string; out: string; ack: string; sequence: string;
     ready: string; remoteClosed: string;
-    eventTopic: string; ackTopic: string; eventRoute: string; ackRoute: string;
-    worker: string;
+    eventTopic: string; ackTopic: string;
 }
 function terminal(): Terminal {
     const prefix = `test:terminal:${crypto.randomUUID()}`;
@@ -86,39 +83,49 @@ function terminal(): Terminal {
     return {
         node, owner, out, ack, sequence, eventTopic, ackTopic,
         ready: `${prefix}:ready`, remoteClosed: `${prefix}:remote-closed`,
-        eventRoute: `iot:live:route:${eventTopic}`, ackRoute: `iot:live:route:${ackTopic}`,
-        worker: `iot:live:worker:${crypto.randomUUID()}:0`,
     };
 }
 const evalLua = (script: string, keys: string[], args: string[]) =>
     redis.send('EVAL', [script, String(keys.length), ...keys, ...args]);
 const saveAck = (t: Terminal, owner: string, sequence: number, ttl = '2') =>
-    evalLua(inputAck, [t.owner, t.ack, t.ackRoute], [owner, String(sequence), ttl, t.ackTopic, capacity, streamLifetime]);
+    evalLua(inputAck, [t.owner, t.ack], [owner, String(sequence), ttl, t.ackTopic]);
 const saveOutput = (t: Terminal, owner: string, data: string, sequence: number, ttl = '2') =>
-    evalLua(output, [t.owner, t.out, t.sequence, t.eventRoute], [owner, data, String(sequence), ttl, t.eventTopic, capacity, streamLifetime]);
+    evalLua(output, [t.owner, t.out, t.sequence], [owner, data, String(sequence), ttl, t.eventTopic]);
 const saveFrame = (t: Terminal, owner: string, data: string, kind: 'ready' | 'close' | 'data') =>
-    evalLua(frame, [t.owner, t.out, t.ready, t.remoteClosed, t.eventRoute, t.ackRoute], [owner, data, '120', kind, t.eventTopic, t.ackTopic, capacity, streamLifetime]);
+    evalLua(frame, [t.owner, t.out, t.ready, t.remoteClosed], [owner, data, '120', kind, t.eventTopic, t.ackTopic]);
 const fail = (t: Terminal, owner: string, data: string) =>
-    evalLua(failTerminal, [t.owner, t.out, t.ack, t.sequence, t.eventRoute, t.ackRoute], [owner, data, t.eventTopic, t.ackTopic, capacity, streamLifetime]);
+    evalLua(failTerminal, [t.owner, t.out, t.ack, t.sequence], [owner, data, t.eventTopic, t.ackTopic]);
 const keepalive = (t: Terminal, owner: string, ttl: string) =>
     evalLua(refresh, [t.node, t.owner, t.out, t.ack, t.sequence], [owner, ttl]);
-async function route(t: Terminal) {
-    await redis.send('SET', [t.eventRoute, t.worker, 'EX', '120']);
-    await redis.send('SET', [t.ackRoute, t.worker, 'EX', '120']);
-}
 async function seed(t: Terminal) {
     await redis.send('SET', [t.node, 'epoch', 'EX', '30']);
     await redis.send('SET', [t.owner, 'epoch', 'EX', '2']);
     expect(await saveAck(t, 'epoch', 1)).toBe(1);
     expect(await saveOutput(t, 'epoch', 'first', 1)).toBe(1);
 }
-async function topics(stream: string) {
-    const entries = (await redis.send('XRANGE', [stream, '-', '+'])) as [string, string[]][];
-    return entries.map(([, fields]) => {
-        expect(fields.length).toBe(2);
-        expect(fields[0]).toBe('topic');
-        return fields[1];
-    });
+async function notifications(channels: string[]) {
+    const client = new Bun.RedisClient(redisAddress, { autoReconnect: false });
+    const received: { topic: string; payload: string }[] = [];
+    let signal: (() => void) | undefined;
+    for (const topic of channels) {
+        await client.subscribe(topic, (payload, channel) => {
+            received.push({ topic: channel, payload });
+            signal?.();
+        });
+    }
+    return {
+        received,
+        close: () => client.close(),
+        async wait(count: number) {
+            if (received.length >= count) return;
+            await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('Directed notification not received')), 3000);
+                signal = () => {
+                    if (received.length >= count) { clearTimeout(timer); resolve(); }
+                };
+            });
+        },
+    };
 }
 
 test('terminal input overflow preserves the accepted prefix and its original expiry', async () => {
@@ -148,37 +155,69 @@ test('terminal open registers ownership once for the current node session', asyn
     expect(await evalLua(openTerminal, [reopened.node, reopened.owner, `${reopened.node}:binding`, closed], ['epoch', 'browser'])).toBe(0);
 });
 
-test('terminal frames reach only the routed browser worker stream', async () => {
+
+test('browser output ACK removes only its retained frame atomically with downstream enqueue', async () => {
     const t = terminal();
-    await route(t);
-    await redis.send('SET', [t.node, 'epoch']);
-    await redis.send('SET', [t.owner, 'epoch']);
-    expect(await saveFrame(t, 'epoch', 'ready', 'ready')).toBe(1);
-    expect(await saveOutput(t, 'epoch', 'data', 1)).toBe(1);
-    expect(await saveOutput(t, 'epoch', 'data', 1)).toBe(2);
-    expect(await saveAck(t, 'epoch', 1)).toBe(1);
-    expect(await saveFrame(t, 'epoch', 'closed', 'close')).toBe(1);
-    expect(await topics(t.worker)).toEqual([t.eventTopic, t.eventTopic, t.ackTopic, t.ackTopic, t.eventTopic]);
-    expect(Number(await redis.send('PTTL', [t.worker]))).toBeGreaterThan(590000);
-    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data', 'closed']);
-    expect(await redis.send('GET', [t.ready])).toBe('1');
-    expect(await redis.send('GET', [t.remoteClosed])).toBe('1');
-    expect(await redis.send('EXISTS', [changes])).toBe(0);
+    const browser = `${t.node}:browser`, closed = `${t.node}:closed`, queue = `${t.node}:input`;
+    const inputSequence = `${t.node}:input-sequence`, outputAck = `${t.node}:output-ack`;
+    const keys = [t.node, t.owner, browser, closed, queue, inputSequence, t.ack, outputAck, t.sequence, t.ready, t.out];
+    await redis.send('MSET', [t.node, 'epoch', t.owner, 'epoch', browser, 'browser', t.sequence, '2', t.ready, '1']);
+    await redis.send('RPUSH', [t.out, 'ready', 'data-1', 'data-2']);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-2', 'ack', '2', 'data-2'])).toBe(0);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-1', 'ack', '1', 'missing'])).toBe(0);
+    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data-1', 'data-2']);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-1', 'ack', '1', 'data-1'])).toBe(1);
+    expect(await redis.send('GET', [outputAck])).toBe('1');
+    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data-2']);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-1', 'ack', '1', ''])).toBe(1);
+    expect(await redis.send('LRANGE', [queue, '0', '-1'])).toEqual(['ack-1']);
+    await redis.send('RPUSH', [queue, ...Array<string>(4095).fill('blocked')]);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-2', 'ack', '2', 'data-2'])).toBe(0);
+    expect(await redis.send('GET', [outputAck])).toBe('1');
+    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data-2']);
+    await redis.send('DEL', [queue]);
+    await redis.send('SET', [t.node, 'replacement']);
+    expect(await evalLua(browserInput, keys, ['epoch', 'browser', 'ack-2', 'ack', '2', 'data-2'])).toBe(0);
+    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data-2']);
 });
 
-test('terminal frames without a browser route are stored but notify nobody', async () => {
+test('terminal frames atomically persist and wake each direct topic subscriber', async () => {
+    const t = terminal();
+    const observer = await notifications([t.eventTopic, t.ackTopic]);
+    const second = await notifications([t.eventTopic]);
+    try {
+        await redis.send('SET', [t.owner, 'epoch']);
+        expect(await saveFrame(t, 'epoch', 'ready', 'ready')).toBe(1);
+        expect(await saveOutput(t, 'epoch', 'data', 1)).toBe(1);
+        expect(await saveOutput(t, 'epoch', 'data', 1)).toBe(2);
+        expect(await saveAck(t, 'epoch', 1)).toBe(1);
+        expect(await saveFrame(t, 'epoch', 'closed', 'close')).toBe(1);
+        await observer.wait(5);
+        await second.wait(3);
+        expect(observer.received).toEqual([t.eventTopic, t.eventTopic, t.ackTopic, t.ackTopic, t.eventTopic].map(topic => ({ topic, payload: '' })));
+        expect(second.received.map(event => event.topic)).toEqual([t.eventTopic, t.eventTopic, t.eventTopic]);
+        expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data', 'closed']);
+        expect(await redis.send('GET', [t.ready])).toBe('1');
+        expect(await redis.send('GET', [t.remoteClosed])).toBe('1');
+    } finally { observer.close(); second.close(); }
+});
+
+test('terminal frames survive subscriber loss and replay before the next live wake', async () => {
     const t = terminal();
     await redis.send('SET', [t.owner, 'epoch']);
     expect(await saveFrame(t, 'epoch', 'ready', 'ready')).toBe(1);
-    expect(await saveOutput(t, 'epoch', 'data', 1)).toBe(1);
-    expect(await saveAck(t, 'epoch', 1)).toBe(1);
-    expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'data']);
-    expect(await redis.send('EXISTS', [t.worker, changes])).toBe(0);
-    // A replaced owner neither stores nor notifies.
-    await route(t);
-    expect(await saveOutput(t, 'other', 'stale', 2)).toBe(0);
-    expect(await saveAck(t, 'other', 2)).toBe(0);
-    expect(await redis.send('EXISTS', [t.worker])).toBe(0);
+    expect(await saveOutput(t, 'epoch', 'first', 1)).toBe(1);
+    const observer = await notifications([t.eventTopic, t.ackTopic]);
+    try {
+        expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'first']);
+        expect(await saveOutput(t, 'other', 'stale', 2)).toBe(0);
+        expect(await saveAck(t, 'other', 1)).toBe(0);
+        expect(await saveOutput(t, 'epoch', 'second', 2)).toBe(1);
+        await observer.wait(1);
+        expect(observer.received).toEqual([{ topic: t.eventTopic, payload: '' }]);
+        expect(await redis.send('GET', [t.sequence])).toBe('2');
+        expect(await redis.send('LRANGE', [t.out, '0', '-1'])).toEqual(['ready', 'first', 'second']);
+    } finally { observer.close(); }
 });
 
 test('idle keepalive preserves ACK and output sequence beyond their original expiry', async () => {
@@ -228,18 +267,19 @@ test('terminal failure preserves node and other terminals and notifies its brows
     const broken = terminal(), other = terminal();
     await seed(broken);
     await seed(other);
-    await route(broken);
-    expect(await fail(broken, 'wrong-owner', 'close')).toBe(0);
-    expect(await fail(broken, 'epoch', 'close')).toBe(1);
-    expect(await redis.send('GET', [broken.node])).toBe('epoch');
-    expect(await redis.send('GET', [other.owner])).toBe('epoch');
-    expect(await redis.send('GET', [other.ack])).toBe('1');
-    expect(await redis.send('LRANGE', [broken.out, '0', '-1'])).toEqual(['close']);
-    expect(await redis.send('EXISTS', [broken.owner, broken.ack, broken.sequence])).toBe(0);
-    expect(await fail(broken, 'epoch', 'close')).toBe(0);
-    // Output and input waiters both wake once; nothing is broadcast.
-    expect(await topics(broken.worker)).toEqual([broken.eventTopic, broken.ackTopic]);
-    expect(await redis.send('EXISTS', [changes])).toBe(0);
+    const observer = await notifications([broken.eventTopic, broken.ackTopic]);
+    try {
+        expect(await fail(broken, 'wrong-owner', 'close')).toBe(0);
+        expect(await fail(broken, 'epoch', 'close')).toBe(1);
+        expect(await redis.send('GET', [broken.node])).toBe('epoch');
+        expect(await redis.send('GET', [other.owner])).toBe('epoch');
+        expect(await redis.send('GET', [other.ack])).toBe('1');
+        expect(await redis.send('LRANGE', [broken.out, '0', '-1'])).toEqual(['close']);
+        expect(await redis.send('EXISTS', [broken.owner, broken.ack, broken.sequence])).toBe(0);
+        expect(await fail(broken, 'epoch', 'close')).toBe(0);
+        await observer.wait(2);
+        expect(observer.received).toEqual([broken.eventTopic, broken.ackTopic].map(topic => ({ topic, payload: '' })));
+    } finally { observer.close(); }
 });
 
 test('terminal release deletes state only for its own node session', async () => {
@@ -251,22 +291,22 @@ test('terminal release deletes state only for its own node session', async () =>
     expect(await redis.send('EXISTS', [t.owner, t.out, t.ack, t.sequence])).toBe(0);
 });
 
-test('serial events are stored for the owning session and reach only the routed worker', async () => {
+test('serial output persists without subscribers and wakes only the session topic', async () => {
     const prefix = `test:serial:${crypto.randomUUID()}`;
     const [owner, out, node] = ['owner', 'out', 'node'].map((part) => `${prefix}:${part}`);
     const topic = `edge-serial:${crypto.randomUUID()}:${crypto.randomUUID()}`;
-    const routeKey = `iot:live:route:${topic}`, worker = `iot:live:worker:${crypto.randomUUID()}:1`;
     const save = (session: string, event: string) =>
-        evalLua(serialEvent, [owner, out, node, routeKey], [session, event, topic, capacity, streamLifetime]);
+        evalLua(serialEvent, [owner, out, node], [session, event, topic]);
     await redis.send('SET', [owner, 'epoch']);
     await redis.send('SET', [node, 'epoch']);
-    expect(await save('epoch', 'unrouted')).toBe(1);
-    expect(await redis.send('EXISTS', [worker, changes])).toBe(0);
-    await redis.send('SET', [routeKey, worker, 'EX', '60']);
-    expect(await save('epoch', 'routed')).toBe(1);
-    expect(await save('stale', 'ignored')).toBe(0);
-    expect(await redis.send('LRANGE', [out, '0', '-1'])).toEqual(['unrouted', 'routed']);
-    expect(await topics(worker)).toEqual([topic]);
-    expect(Number(await redis.send('PTTL', [worker]))).toBeGreaterThan(590000);
-    expect(await redis.send('EXISTS', [changes])).toBe(0);
+    expect(await save('epoch', 'offline')).toBe(1);
+    const observer = await notifications([topic, `${topic}:other`]);
+    try {
+        expect(await redis.send('LRANGE', [out, '0', '-1'])).toEqual(['offline']);
+        expect(await save('epoch', 'online')).toBe(1);
+        expect(await save('stale', 'ignored')).toBe(0);
+        await observer.wait(1);
+        expect(await redis.send('LRANGE', [out, '0', '-1'])).toEqual(['offline', 'online']);
+        expect(observer.received).toEqual([{ topic, payload: '' }]);
+    } finally { observer.close(); }
 });

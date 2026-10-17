@@ -43,11 +43,15 @@ namespace service::utils::redis {
 
 inline constexpr std::string_view kEnsureGroupScript = R"lua(
 local result = redis.pcall('XGROUP', 'CREATE', KEYS[1], ARGV[1], '0', 'MKSTREAM')
+local created = 1
 if type(result) == 'table' and result.err then
-  if string.sub(result.err, 1, 9) == 'BUSYGROUP' then return 0 end
-  return redis.error_reply(result.err)
+  if string.sub(result.err, 1, 9) ~= 'BUSYGROUP' then return redis.error_reply(result.err) end
+  created = 0
 end
-return 1
+if ARGV[2] ~= '' and redis.call('EXPIRE', KEYS[1], ARGV[2]) ~= 1 then
+  return redis.error_reply('consumer stream expiry was not applied')
+end
+return created
 )lua";
 
 inline constexpr std::string_view kEnsurePresentGroupScript = R"lua(
@@ -61,9 +65,14 @@ return 1
 )lua";
 
 template <typename Redis>
-ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group) {
+ruvia::task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group,
+                             std::optional<std::chrono::seconds> streamTtl = std::nullopt) {
+    if (streamTtl && streamTtl->count() <= 0) {
+        throw std::invalid_argument("consumer stream expiry must be positive");
+    }
+    const auto ttl = streamTtl ? std::to_string(streamTtl->count()) : std::string{};
     const std::string_view keys[]{ stream };
-    const std::string_view arguments[]{ group };
+    const std::string_view arguments[]{ group, ttl };
     const auto reply = co_await redis.eval(kEnsureGroupScript, keys, arguments);
     if (reply.kind() != ruvia::redis_value::kind_type::integer) {
         throwValue("XGROUP CREATE", reply);
@@ -462,7 +471,8 @@ ruvia::task<std::vector<StreamBatch>> consumeGroup(
     ruvia::channel_receiver<std::uint8_t>& notifications, ruvia::stop_token stop,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt,
     std::size_t count = 256, std::chrono::milliseconds minIdle = std::chrono::minutes(1),
-    bool newOnly = false
+    bool newOnly = false,
+    std::optional<std::chrono::seconds> streamTtl = std::nullopt
 ) {
     const auto businessDeadline = timeout
         ? std::optional(std::chrono::steady_clock::now() + *timeout) : std::nullopt;
@@ -538,7 +548,7 @@ ruvia::task<std::vector<StreamBatch>> consumeGroup(
         if (restoreGroups) {
             try {
                 for (const auto& stream : streams) {
-                    co_await ensureGroup(redis, stream, group);
+                    co_await ensureGroup(redis, stream, group, streamTtl);
                 }
             } catch (const std::exception& error) {
                 std::cerr << "Redis consumer group recovery failed after: " << firstFailure << "; recovery: " << error.what() << '\n';

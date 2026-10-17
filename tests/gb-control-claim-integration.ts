@@ -16,19 +16,47 @@ const claim = async (token: string, deadline: string) =>
     Number(await redis.send('EVAL', [lua, '3', ...keys, token, deadline]));
 const publishLua = script('kPublishControlCommandScript');
 const stream = `${prefix}:commands`;
+const inputChannel = `iot:consumer:input:${stream}`;
+const inputSubscriber = new Bun.RedisClient(redisUrl);
+const inputNotices: string[] = [];
+const inputBarrierChannel = `${prefix}:input-barrier`;
+let inputBarrier: (() => void) | undefined;
+await inputSubscriber.subscribe(inputChannel, (payload) => inputNotices.push(payload));
+await inputSubscriber.subscribe(inputBarrierChannel, () => inputBarrier?.());
 const publish = async (token: string) => Number(await redis.send('EVAL', [
-    publishLua, '2', stream, keys[0], token,
+    publishLua, '3', stream, keys[0], inputChannel, token,
     'request_id', 'command-1', 'operation', 'test-operation', 'payload', '{"value":1}',
 ]));
 const replyLua = script('kPublishReplyAndAcknowledgeScript');
 const reply = `${prefix}:reply`;
 const result = `${prefix}:result`;
-const route = `iot:live:route:${reply}`;
-const waiter = `${prefix}:waiter`;
-const publishReply = async (entryId: string) => Number(await redis.send('EVAL', [
-    replyLua, '5', reply, stream, result, keys[1], route,
-    'command-1', 'test-operation', 'ok', '{"done":true}', 'group', entryId, 'ok\n{"done":true}', '600', '600', '600', '', '10000', '600000',
+const deadlineKey = `iot:consumer:pending:group:${stream}`;
+const deadlineChannel = `iot:consumer:deadline:group:${stream}`;
+const deadlineSubscriber = new Bun.RedisClient(redisUrl);
+const deadlineNotices: string[] = [];
+let subscriber = new Bun.RedisClient(redisUrl);
+const unrelated = new Bun.RedisClient(redisUrl);
+const unrelatedNotices: string[] = [];
+let receive: ((notice: { payload: string; channel: string }) => void) | undefined;
+const subscribe = async () => {
+    await subscriber.subscribe(reply, (payload, channel) => receive?.({ payload, channel }));
+};
+const publishReply = async (entryId: string, payload = '{"done":true}', claimOwner = 'owner') => Number(await redis.send('EVAL', [
+    replyLua, '6', reply, stream, result, keys[1], deadlineKey, deadlineChannel,
+    'group', entryId, `ok\n${payload}`, '600', '600', claimOwner,
 ]));
+async function notified(action: () => Promise<unknown>) {
+    const notice = Promise.withResolvers<{ payload: string; channel: string }>();
+    receive = notice.resolve;
+    const timer = setTimeout(() => notice.reject(new Error('GB28181 reply Pub/Sub notification timed out')), 3000);
+    try {
+        await action();
+        return await notice.promise;
+    } finally {
+        clearTimeout(timer);
+        receive = undefined;
+    }
+}
 
 try {
     const time = await redis.send('TIME', []) as string[];
@@ -53,42 +81,98 @@ try {
     assert.equal(await redis.send('GET', [keys[1]]), 'owner');
     assert.equal(await publish('owner'), 0);
     assert.equal(Number(await redis.send('EXISTS', [stream])), 0);
+    const firstInput = Promise.withResolvers<void>();
+    inputBarrier = firstInput.resolve;
+    await redis.send('PUBLISH', [inputBarrierChannel, '']);
+    await firstInput.promise;
+    assert.deepEqual(inputNotices, [], 'rejected owner must not emit an input notification');
     assert.equal(await publish('replacement'), 1);
     assert.equal(Number(await redis.send('XLEN', [stream])), 1);
     const entries = await redis.send('XRANGE', [stream, '-', '+']) as unknown as [string, string[]][];
     assert.deepEqual(entries[0][1], [
         'request_id', 'command-1', 'operation', 'test-operation', 'payload', '{"value":1}',
     ]);
+    const publishedInput = Promise.withResolvers<void>();
+    inputBarrier = publishedInput.resolve;
+    await redis.send('PUBLISH', [inputBarrierChannel, '']);
+    await publishedInput.promise;
+    assert.deepEqual(inputNotices, [entries[0][0]], 'new control entries must publish their durable ID');
     const streamTtl = Number(await redis.send('TTL', [stream]));
     assert(streamTtl > 0 && streamTtl <= 600);
     await redis.send('DEL', [keys[0]]);
     assert.equal(await publish('replacement'), 0);
     assert.equal(Number(await redis.send('XLEN', [stream])), 1);
+    const rejectedInput = Promise.withResolvers<void>();
+    inputBarrier = rejectedInput.resolve;
+    await redis.send('PUBLISH', [inputBarrierChannel, '']);
+    await rejectedInput.promise;
+    assert.deepEqual(inputNotices, [entries[0][0]], 'expired owner emitted a duplicate wake');
     console.log('PASS GB28181 control claim owner fencing, cancellation, deadline and duplicate exclusion');
     console.log('PASS GB28181 control publication owner fencing, payload and stream expiry');
 
-    // The reply wakes only the Service Worker that routed the reply stream.
+    // A subscriber is optional for durable completion; no route/worker stream
+    // is needed, and notification loss must not erase the persisted result.
     await redis.send('XGROUP', ['CREATE', stream, 'group', '0']);
     const claimNext = async () => {
         const [[entryId]] = await redis.send('XRANGE', [stream, '-', '+']) as unknown as [string, string[]][];
         await redis.send('XREADGROUP', ['GROUP', 'group', 'collector', 'COUNT', '1', 'STREAMS', stream, '>']);
+        await redis.send('ZADD', [deadlineKey, String(Date.now() + 60000), entryId]);
         return entryId;
     };
+    const pendingCount = async () => Number((await redis.send('XPENDING', [stream, 'group']) as unknown[])[0]);
     const entryId = await claimNext();
+    assert.equal(await pendingCount(), 1);
+    await deadlineSubscriber.subscribe(deadlineChannel, payload => deadlineNotices.push(payload));
     assert.equal(await publishReply(entryId), 1);
+    assert.equal(await pendingCount(), 0);
+    await deadlineSubscriber.ping();
+    assert.deepEqual(deadlineNotices, [''], 'ACK notifies the consumer after removing its pending deadline');
+    assert.equal(Number(await redis.send('ZCARD', [deadlineKey])), 0);
     assert.equal(Number(await redis.send('XLEN', [stream])), 0, 'reply acknowledges and deletes the control entry');
-    assert.equal(Number(await redis.send('EXISTS', [waiter])), 0, 'an unrouted reply notifies no worker');
-    const replies = await redis.send('XRANGE', [reply, '-', '+']) as unknown as [string, string[]][];
-    assert.deepEqual(replies.map(([, fields]) => fields), [['request_id', 'command-1', 'operation', 'test-operation', 'status', 'ok', 'payload', '{"done":true}']]);
-    await redis.send('SET', [route, waiter, 'EX', '20']);
-    await redis.send('XADD', [stream, '*', 'request_id', 'command-2']);
-    assert.equal(await publishReply(await claimNext()), 1);
-    const notifications = await redis.send('XRANGE', [waiter, '-', '+']) as unknown as [string, string[]][];
-    assert.deepEqual(notifications.map(([, fields]) => fields), [['topic', reply]]);
-    const waiterTtl = Number(await redis.send('PTTL', [waiter]));
-    assert(waiterTtl > 0 && waiterTtl <= 600000, 'directed stream expires with its worker');
-    console.log('PASS GB28181 reply publication notifies only the routed Service Worker stream');
+    assert.equal(await redis.send('GET', [result]), 'ok\n{"done":true}');
+    assert.equal(await redis.send('GET', [keys[1]]), null, 'completion releases only its execution claim');
+    assert.equal(Number(await redis.send('EXISTS', [reply])), 0, 'the reply topic has no duplicate result stream');
+    const resultTtl = Number(await redis.send('TTL', [result]));
+    assert(resultTtl > 0 && resultTtl <= 600);
+
+    await subscribe();
+    await unrelated.subscribe(`${reply}:other`, payload => unrelatedNotices.push(payload));
+    await redis.send('SET', [keys[1], 'replacement']);
+    await redis.send('XADD', [stream, '*', 'request_id', 'command-1']);
+    const duplicateId = await claimNext();
+    const notice = await notified(() => publishReply(duplicateId, '{"duplicate":true}'));
+    assert.deepEqual(notice, { payload: '', channel: reply }, 'empty notifications publish directly on the reply topic');
+    assert.equal(await pendingCount(), 0, 'notification observes an already-acknowledged command');
+    assert.equal(await redis.send('GET', [result]), 'ok\n{"done":true}', 'duplicate completion keeps the original durable result');
+    assert.equal(await redis.send('GET', [keys[1]]), 'replacement', 'a stale completion cannot release another owner claim');
+    assert.equal(Number(await redis.send('XLEN', [stream])), 0);
+    assert.deepEqual(unrelatedNotices, []);
+
+    // Lose the subscription while completion commits, then recreate and confirm
+    // before reading the authoritative persisted result.
+    await subscriber.unsubscribe(reply);
+    subscriber.close();
+    await redis.send('DEL', [result]);
+    await redis.send('XADD', [stream, '*', 'request_id', 'command-1']);
+    assert.equal(await publishReply(await claimNext(), '{"recovered":true}', 'replacement'), 1);
+    assert.equal(Number(await redis.send('EXISTS', [reply])), 0);
+    subscriber = new Bun.RedisClient(redisUrl);
+    await subscribe();
+    assert.equal(await redis.send('GET', [result]), 'ok\n{"recovered":true}');
+    assert.equal(await pendingCount(), 0);
+    assert.equal(await redis.send('GET', [keys[1]]), null);
+    // Repeating an ACK still publishes a hint without changing durable state.
+    assert.deepEqual(await notified(() => publishReply(entryId, '{"late":true}')), { payload: '', channel: reply });
+    assert.equal(await redis.send('GET', [result]), 'ok\n{"recovered":true}');
+    await deadlineSubscriber.ping();
+    assert.deepEqual(deadlineNotices, ['', '', ''], 'an already-removed deadline does not publish another deadline notification');
+    assert.equal(Number(await redis.send('ZCARD', [deadlineKey])), 0);
+    console.log('PASS GB28181 directed Pub/Sub receipts, durable recovery, atomic ACK and idempotent result/claim fencing');
 } finally {
-    await redis.send('DEL', [...keys, stream, reply, result, route, waiter]);
+    subscriber.close();
+    inputSubscriber.close();
+    unrelated.close();
+    deadlineSubscriber.close();
+    await redis.send('DEL', [...keys, stream, reply, result, deadlineKey]);
     redis.close();
 }

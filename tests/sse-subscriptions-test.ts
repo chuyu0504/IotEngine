@@ -4,7 +4,7 @@ import { expect, spyOn, test } from 'bun:test';
 import { queryUrl } from '../web/lib/http';
 import { type LiveSession, LiveSubscriptions } from '../web/lib/live_subscriptions';
 import { SseTransport } from '../web/lib/sse_transport';
-import { consumeServerSentEvents, ServerSentEventIdleError } from '../web/lib/sse';
+import { consumeServerSentEvents } from '../web/lib/sse';
 import { getList as getLinks, getDebugPackets } from '../web/pages/link/link.api';
 import { useAuthStore } from '../web/store/auth_store';
 
@@ -35,6 +35,7 @@ function connection() {
             writer.enqueue(new TextEncoder().encode('alive\n\n'));
         },
         close() { writer.close(); },
+        error() { writer.error(new TypeError('upstream connection lost')); },
         cancelled: () => cancelled,
     };
 }
@@ -692,17 +693,60 @@ test('video status reads use HTTP while device changes keep one SSE', async () =
     }
 });
 
-test('a stream silent beyond the idle limit ends and is cancelled, keepalives keep it open', async () => {
-    const wire = connection();
-    const events: string[] = [];
-    const consumed = consumeServerSentEvents(wire.response.body!, event => events.push(event.event), undefined, 80);
-    for (let index = 0; index < 4; index++) {
-        await Bun.sleep(40);
-        wire.keepalive();
+test('a silent SSE has no idle timer and stays open until explicitly aborted', async () => {
+    const wire = connection(), controller = new AbortController();
+    const timer = spyOn(globalThis, 'setTimeout');
+    let ended = false;
+    const consumed = consumeServerSentEvents(wire.response.body!, () => {}, controller.signal)
+        .finally(() => { ended = true; });
+    try {
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(timer).not.toHaveBeenCalled();
+        expect(ended).toBe(false);
+        expect(wire.cancelled()).toBe(false);
+    } finally {
+        timer.mockRestore();
+        controller.abort();
+        await consumed;
     }
-    wire.send('snapshot', { code: 0, data: 1 });
-    expect(await Promise.race([consumed.then(() => 'ended', () => 'failed'), Bun.sleep(40).then(() => 'open')])).toBe('open');
-    await expect(consumed).rejects.toBeInstanceOf(ServerSentEventIdleError);
-    expect(events).toEqual(['snapshot']);
     expect(wire.cancelled()).toBe(true);
 });
+
+for (const termination of ['close', 'error'] as const) {
+    test(`upstream ${termination} reconnects once and delivers each recovery snapshot once`, async () => {
+        const wires = [connection(), connection()];
+        let calls = 0;
+        const attempts: number[] = [];
+        const subscriptions = sseRegistry({
+            session: () => ({ token: 'token', userId: 'user' }), refresh: async () => false,
+            fetch: (async () => wires[calls++].response) as typeof fetch,
+            retryDelay: async attempt => { attempts.push(attempt); },
+        });
+        const values: unknown[][] = [[], []], errors: Error[] = [];
+        const stream = subscriptions.create('/v1/device/events', 'snapshot');
+        const releases = values.map(received => stream.subscribe({
+            next: value => received.push(value), error: error => errors.push(error),
+        }));
+        try {
+            await tick();
+            wires[0].send('snapshot', { code: 0, data: ['initial'] });
+            await tick();
+            wires[0][termination]();
+            await tick();
+            expect(calls).toBe(2);
+            expect(attempts).toEqual([1]);
+            wires[1].send('snapshot', { code: 0, data: ['recovered'] });
+            wires[1].send('snapshot', { code: 0, data: ['later'] });
+            await tick();
+            expect(values[0]).toEqual([['initial'], ['recovered'], ['later']]);
+            expect(values[1]).toEqual(values[0]);
+            expect(errors).toEqual([]);
+            expect(calls).toBe(2);
+        } finally {
+            releases.forEach(release => release());
+            await tick();
+        }
+        expect(wires[1].cancelled()).toBe(true);
+    });
+}

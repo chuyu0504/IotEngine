@@ -46,22 +46,30 @@ ruvia::task<std::string> field(const ruvia::redis_handle& redis,
     co_return std::string(reply.string());
 }
 
-// Topic and ids of the newest live change entry (schema version 2 required).
-ruvia::task<std::pair<std::string, std::string>> lastChange(const ruvia::redis_handle& redis) {
-    const auto reply = co_await command(redis, {"XREVRANGE", service::message::live::kChanges, "+", "-", "COUNT", "1"});
-    require(reply.kind() == ruvia::redis_value::kind_type::array && reply.array().size() == 1,
-            "live change stream is empty");
-    const auto fields = reply.array()[0].array()[1].array();
-    std::string version, topic, ids;
-    for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
-        const auto name = fields[index].string();
-        const auto value = std::string(fields[index + 1].string());
-        if (name == service::message::live::kSchemaVersionField) version = value;
-        if (name == service::message::live::kTopicField) topic = value;
-        if (name == service::message::live::kIdsField) ids = value;
-    }
-    require(version == service::message::live::kSchemaVersion, "live change lacks schema version 2");
-    co_return std::pair{topic, ids};
+ruvia::task<void> subscribe(ruvia::redis_subscription& subscription, std::string_view channel) {
+    const std::string_view channels[]{channel};
+    co_await subscription.subscribe(channels);
+    const auto confirmation = co_await subscription.read();
+    require(confirmation && confirmation->kind() == ruvia::redis_pubsub_event_kind::subscribed &&
+                confirmation->channel() == channel && confirmation->subscription_count() == 1,
+            "device state subscription was not confirmed before the transition");
+}
+
+ruvia::task<void> expectMessage(ruvia::redis_subscription& subscription,
+                              std::string_view channel, std::string_view ids) {
+    const auto event = co_await subscription.read();
+    require(event && event->kind() == ruvia::redis_pubsub_event_kind::message &&
+                event->channel() == channel && event->payload() == ids,
+            "device state notification channel or affected ids differ");
+}
+
+// Redis orders the marker after all preceding transitions on the same channel.
+ruvia::task<void> expectQuiet(const ruvia::redis_handle& redis,
+                             ruvia::redis_subscription& subscription,
+                             std::string_view channel) {
+    constexpr std::string_view marker = "test:transition-complete";
+    require(co_await redis.publish(channel, marker) == 1, "dedicated state subscriber is missing");
+    co_await expectMessage(subscription, channel, marker);
 }
 
 ruvia::task<std::pair<std::string, std::string>> readConnection(
@@ -155,7 +163,10 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     const auto runtime = service::message::telemetry::runtimeKey(device);
     const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
-    const auto instance = kInstanceId;
+    constexpr auto instance = kInstanceId;
+    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceState);
+    auto subscription = redis.subscription();
+    co_await subscribe(subscription, channel);
     (void)co_await command(redis, {"SET", owner, instance, "PX", "60000"});
     (void)co_await command(redis, {"HSET", runtime, "worker_id", "7", "instance_id", "retired-instance",
         "connection_id", "retired-connection", "link_id", link, "last_report_at_ms", "1700000000456",
@@ -166,6 +177,7 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     action.deviceCode = "ROUTE-TEST";
     action.connectionId = "connection-a";
     const auto previous = co_await CollectorStateService::bindRoute(redis, action, 11, 3, "worker-a", std::string(link), kInstanceId);
+    co_await expectMessage(subscription, channel, device);
     require(previous.connectionId == "retired-connection" && previous.workerId == "7" &&
                 previous.instanceId == "retired-instance", "binding lost the previous route owner");
     require((co_await readConnection(redis, device)).first == "connection-a", "bound connection is not visible");
@@ -182,7 +194,7 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     require(integer(co_await command(redis, {"PTTL", route})) > 10000,
             "successful renewal did not restore the route TTL");
     (void)co_await CollectorStateService::bindRoute(redis, action, 12, 3, "worker-b", std::string(link), kInstanceId);
-    const auto events = integer(co_await command(redis, {"XLEN", service::message::live::kChanges}));
+    co_await expectQuiet(redis, subscription, channel);
     for (const auto& [epoch, workerIndex, incarnation] : {
             std::tuple<std::uint64_t, std::size_t, std::string_view>{11, 3, "worker-b"},
             {12, 4, "worker-b"}, {12, 3, "worker-a"}}) {
@@ -200,7 +212,7 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
         service::message::collector::kLinkOwnerPrefix, device};
     require(integer(co_await redis.eval(service::collector::CollectorDeviceRouteRecord::renewScript,
                                        keys, arguments)) == 0, "foreign process renewed a live route");
-    const std::string_view eraseKeys[]{route, runtime, service::message::live::kChanges,
+    const std::string_view eraseKeys[]{route, runtime, channel,
         service::message::collector::kConnectionDeadlinesKey};
     const std::string_view eraseArguments[]{"retired-instance", "3", "worker-b", "connection-a", "12",
         "late_disconnect", "1700000001000", device};
@@ -212,9 +224,9 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     catch (const std::runtime_error&) { staleBindRejected = true; }
     require((co_await field(redis, route, "session_epoch")) == "12" &&
                 (co_await field(redis, route, "worker_instance_id")) == "worker-b" &&
-                staleBindRejected &&
-                integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events,
-            "late bind or cleanup replaced the new epoch or published a false disconnection");
+                staleBindRejected,
+            "late bind or cleanup replaced the new epoch");
+    co_await expectQuiet(redis, subscription, channel);
     (void)co_await command(redis, {"SET", owner, "replacement-process", "PX", "60000"});
     require(!(co_await CollectorStateService::renewRoute(redis, device, "connection-a", 12, 3, "worker-b", kInstanceId)),
             "lost link owner continued to renew the route");
@@ -226,17 +238,15 @@ ruvia::task<void> verifyRouteIdentity(const ruvia::redis_handle& redis) {
     (void)co_await command(redis, {"SET", owner, instance, "PX", "60000"});
     co_await CollectorStateService::markDeviceOffline(redis, device, "connection-a", 12, 3,
                                                      "worker-b", "connection_closed", kInstanceId);
+    co_await expectMessage(subscription, channel, device);
     require(integer(co_await command(redis, {"EXISTS", route})) == 0 &&
                 (co_await readConnection(redis, device)).first.empty(), "disconnect did not erase its owned route");
     require((co_await command(redis, {"ZSCORE", service::message::collector::kConnectionDeadlinesKey, device})).kind() ==
                 ruvia::redis_value::kind_type::null, "disconnect left a scheduled connection deadline");
-    const auto disconnectedEvents = integer(co_await command(redis, {"XLEN", service::message::live::kChanges}));
+    co_await expectQuiet(redis, subscription, channel);
     co_await CollectorStateService::markDeviceOffline(redis, device, "connection-a", 12, 3,
                                                      "worker-b", "duplicate_disconnect", kInstanceId);
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == disconnectedEvents,
-            "duplicate disconnect published a duplicate business event");
-    require(co_await lastChange(redis) == std::pair<std::string, std::string>{"device.state", std::string(device)},
-            "disconnect did not publish a device.state change for the device");
+    co_await expectQuiet(redis, subscription, channel);
     require(!(co_await CollectorStateService::renewRoute(redis, device, "connection-a", 12, 3, "worker-b", kInstanceId)),
             "disconnected connection was revived by renewal");
     require((co_await field(redis, runtime, "last_report_at_ms")) == "1700000000456" &&
@@ -251,6 +261,9 @@ ruvia::task<void> verifyLegacyCleanup(const ruvia::redis_handle& redis) {
     const auto runtime = service::message::telemetry::runtimeKey(device);
     const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
+    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceState);
+    auto subscription = redis.subscription();
+    co_await subscribe(subscription, channel);
     service::collector::RuntimeSnapshot snapshot;
     service::collector::DeviceDefinition definition;
     definition.id = device;
@@ -264,13 +277,16 @@ ruvia::task<void> verifyLegacyCleanup(const ruvia::redis_handle& redis) {
     co_await CollectorStateService::eraseLegacyRoutes(redis, snapshot, kInstanceId);
     require((co_await field(redis, runtime, "connection_id")) == "legacy",
             "another healthy process had its legacy identity erased");
+    co_await expectQuiet(redis, subscription, channel);
     (void)co_await command(redis, {"SET", owner, kInstanceId, "PX", "60000"});
     (void)co_await command(redis, {"HSET", runtime, "link_id", "different-link"});
     co_await CollectorStateService::eraseLegacyRoutes(redis, snapshot, kInstanceId);
     require((co_await field(redis, runtime, "connection_id")) == "legacy",
             "legacy cleanup erased a route assigned to a different link");
+    co_await expectQuiet(redis, subscription, channel);
     (void)co_await command(redis, {"HSET", runtime, "link_id", link});
     co_await CollectorStateService::eraseLegacyRoutes(redis, snapshot, kInstanceId);
+    co_await expectMessage(subscription, channel, device);
     for (const auto identity : {"instance_id", "worker_id", "worker_instance_id", "connection_id", "session_epoch", "link_id"})
         require((co_await field(redis, runtime, identity)).empty(), "retired legacy identity remained permanent");
     require((co_await field(redis, runtime, "last_report_at_ms")) == "1700000000789" &&
@@ -278,10 +294,9 @@ ruvia::task<void> verifyLegacyCleanup(const ruvia::redis_handle& redis) {
                 (co_await field(redis, runtime, "state")) == "online" &&
                 (co_await field(redis, latest, "temperature")) == "{\"value\":21}",
             "legacy cleanup removed retained telemetry");
-    const auto events = integer(co_await command(redis, {"XLEN", service::message::live::kChanges}));
+    co_await expectQuiet(redis, subscription, channel);
     co_await CollectorStateService::eraseLegacyRoutes(redis, snapshot, kInstanceId);
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events,
-            "repeated legacy cleanup published a duplicate business event");
+    co_await expectQuiet(redis, subscription, channel);
 }
 
 ruvia::task<void> expireOnWorker(ruvia::event_loop loop, std::uint16_t port) {
@@ -318,6 +333,9 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     const auto runtime = service::message::telemetry::runtimeKey(device);
     const auto latest = service::message::telemetry::latestKey(device);
     const auto owner = service::message::collector::linkOwnerKey(link);
+    const auto channel = service::message::live::channel(service::message::live::topic::kDeviceState);
+    auto subscription = redis.subscription();
+    co_await subscribe(subscription, channel);
     const auto workerKey = service::collector::CollectorWorkerRecord::key(index, kInstanceId);
     const auto linkKey = service::collector::CollectorLinkRecord::key(link, index, kInstanceId);
     (void)co_await command(redis, {"SET", owner, kInstanceId, "PX", "60000"});
@@ -327,6 +345,7 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     action.deviceId = device;
     action.connectionId = "natural-expiry-connection";
     (void)co_await CollectorStateService::bindRoute(redis, action, 1, index, "diagnostic-worker", std::string(link), kInstanceId);
+    co_await expectMessage(subscription, channel, device);
     service::message::StreamMessage event{"1-0", {{"link_id", std::string(link)},
         {"worker_instance_id", "diagnostic-worker"}, {"state", "connected"},
         {"remote_address", "127.0.0.1:1234"}}};
@@ -359,7 +378,7 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     require(integer(co_await command(redis, {"EXISTS", workerKey, linkKey})) == 2,
             "late worker cleanup erased another incarnation's diagnostics");
     const auto linkUpdatedAt = co_await field(redis, linkKey, "updated_at_ms");
-    const auto linkEvents = integer(co_await command(redis, {"XLEN", service::message::live::kChanges}));
+    co_await expectQuiet(redis, subscription, channel);
     (void)co_await command(redis, {"PEXPIRE", linkKey, "500"});
     service::message::StreamMessage foreignEvent{"2-0", {{"link_id", std::string(link)},
         {"worker_instance_id", "old-diagnostic-worker"}, {"state", "incorrect-state"},
@@ -387,14 +406,12 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
                 (co_await field(redis, linkKey, "worker_instance_id")) == "diagnostic-worker" &&
                 (co_await field(redis, linkKey, "updated_at_ms")) != linkUpdatedAt,
             "quiet link did not rebuild an absent snapshot from its actual worker state");
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == linkEvents,
-            "link snapshot renewal or recovery published a duplicate business event");
+    co_await expectQuiet(redis, subscription, channel);
     (void)co_await command(redis, {"ZADD", service::message::collector::kConnectionDeadlinesKey, "0", device});
-    const auto events = integer(co_await command(redis, {"XLEN", service::message::live::kChanges}));
     co_await service::telemetry::latest::expireConnections(redis);
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events &&
-                (co_await readConnection(redis, device)).first == "natural-expiry-connection",
-            "an old deadline published a false disconnect for a renewed route");
+    co_await expectQuiet(redis, subscription, channel);
+    require((co_await readConnection(redis, device)).first == "natural-expiry-connection",
+            "an old deadline disconnected a renewed route");
     require((co_await service::telemetry::latest::nextDeadline(redis)).has_value(),
             "connection expiry was not scheduled in the freshness actor");
     std::cout << "waiting for the actual 15 second Redis lease expiry\n";
@@ -403,13 +420,10 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     require(integer(co_await command(redis, {"EXISTS", route, workerKey, linkKey})) == 0,
             "abnormal worker exit retained a route or diagnostic snapshot beyond its lease");
     expireFromTwoWorkers(port);
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events + 1,
-            "two workers failed to publish exactly one real connection expiry event");
-    require(co_await lastChange(redis) == std::pair<std::string, std::string>{"device.state", std::string(device)},
-            "connection expiry did not publish the expired device id");
+    co_await expectMessage(subscription, channel, device);
+    co_await expectQuiet(redis, subscription, channel);
     co_await service::telemetry::latest::expireConnections(redis);
-    require(integer(co_await command(redis, {"XLEN", service::message::live::kChanges})) == events + 1,
-            "repeated expiry published duplicate disconnect events");
+    co_await expectQuiet(redis, subscription, channel);
     require((co_await readConnection(redis, device)).first.empty() &&
                 (co_await field(redis, runtime, "last_report_at_ms")) == "1700000000999" &&
                 (co_await field(redis, latest, "level")) == "{\"value\":73}" &&
@@ -417,6 +431,7 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
                 integer(co_await command(redis, {"PTTL", latest})) == -1,
             "natural connection expiry removed permanent telemetry");
     (void)co_await CollectorStateService::bindRoute(redis, action, 2, index, "diagnostic-worker", std::string(link), kInstanceId);
+    co_await expectMessage(subscription, channel, device);
     co_await service::telemetry::latest::eraseDevice(redis, device);
     require(integer(co_await command(redis, {"EXISTS", route, runtime, latest})) == 0 &&
                 (co_await command(redis, {"ZSCORE", service::message::collector::kConnectionDeadlinesKey, device})).kind() ==
@@ -426,6 +441,7 @@ ruvia::task<void> verifyExpiryAndSnapshots(const ruvia::redis_handle& redis,
     co_await CollectorStateService::eraseWorker(redis, index, "diagnostic-worker", kInstanceId);
     require(integer(co_await command(redis, {"EXISTS", workerKey, linkKey})) == 0,
             "normal worker stop retained its own diagnostics");
+    co_await expectQuiet(redis, subscription, channel);
 }
 
 ruvia::task<void> verifyConsumerRecovery(const ruvia::redis_handle& redis,
@@ -434,6 +450,8 @@ ruvia::task<void> verifyConsumerRecovery(const ruvia::redis_handle& redis,
     const std::vector<std::string> streams{ "consumer-recovery-test" };
     constexpr std::string_view group = "consumer-test-group";
     co_await ensureGroup(redis, streams.front(), group);
+    require(integer(co_await redis.command("PTTL", streams.front())) == -1,
+            "persistent consumer group unexpectedly acquired stream expiry");
     ruvia::stop_source stop;
     co_await withConsumerNotifications(redis, worker, streams, group, stop.token(),
         [&](ruvia::channel_receiver<std::uint8_t>& notifications) -> ruvia::task<void> {
@@ -508,7 +526,7 @@ ruvia::task<void> verifyConsumerRecovery(const ruvia::redis_handle& redis,
     bool peerRecovery = false;
     const auto claimStarted = std::chrono::steady_clock::now();
     const auto recovered = co_await consumeGroup(redis, streams, group, "surviving-peer", peerRecovery,
-        notifications, stop.token(), std::nullopt, 1, std::chrono::milliseconds(80));
+        notifications, stop.token(), std::chrono::seconds(2), 1, std::chrono::milliseconds(80));
     require(recovered.size() == 1 &&
                 recovered.front().messages.front().id == abandoned.front().messages.front().id &&
                 std::chrono::steady_clock::now() - claimStarted < std::chrono::seconds(2),
@@ -517,8 +535,8 @@ ruvia::task<void> verifyConsumerRecovery(const ruvia::redis_handle& redis,
     require(integer(co_await redis.command("ZCARD", service::message::consumer::deadlineKey(streams.front(), group))) == 0,
             "acknowledging a recovered entry left a pending deadline");
 
-    // Eight independent consumers must not occupy the four blocking command
-    // slots. Their healthy Pub/Sub readers stay open while local deadlines fire.
+    // Eight independent consumers must not occupy the bounded blocking command
+    // pool. Their healthy Pub/Sub readers stay open while local deadlines fire.
     std::vector<bool> completed(8, false);
     auto idlePeer = [&](std::size_t index) -> ruvia::task<void> {
         ruvia::stop_source peerStop;
@@ -543,6 +561,63 @@ ruvia::task<void> verifyConsumerRecovery(const ruvia::redis_handle& redis,
     }
     require(std::chrono::steady_clock::now() - peersStarted < std::chrono::seconds(2),
             "idle consumers serialized behind blocked Redis connections");
+
+    const std::vector<std::string> expiringStreams{ "consumer-expiry-repair-test" };
+    constexpr auto streamTtl = std::chrono::seconds(60);
+    co_await ensureGroup(redis, expiringStreams.front(), group, streamTtl);
+    const auto initialTtl = integer(co_await redis.command("PTTL", expiringStreams.front()));
+    require(initialTtl > 0 && initialTtl <= 60000,
+            "initial consumer group creation did not atomically set stream expiry");
+    (void)co_await redis.persist(expiringStreams.front());
+    co_await ensureGroup(redis, expiringStreams.front(), group, streamTtl);
+    require(integer(co_await redis.command("PTTL", expiringStreams.front())) > 0,
+            "existing consumer group renewal did not restore stream expiry");
+    co_await withConsumerNotifications(redis, worker, expiringStreams, group, stop.token(),
+        [&](ruvia::channel_receiver<std::uint8_t>& expiryNotifications) -> ruvia::task<void> {
+            (void)co_await redis.del(expiringStreams.front());
+            bool repair = true;
+            const auto empty = co_await consumeGroup(redis, expiringStreams, group, "expiring-owner",
+                repair, expiryNotifications, stop.token(), std::chrono::milliseconds(0), 32,
+                std::chrono::minutes(1), false, streamTtl);
+            require(empty.empty(), "repaired empty stream returned unexpected work");
+            const auto ttl = integer(co_await redis.command("PTTL", expiringStreams.front()));
+            require(ttl > 0 && ttl <= 60000,
+                    "missing-group repair recreated an immortal consumer stream");
+        });
+
+    const std::vector<std::string> backlogStreams{ "consumer-large-pending-test" };
+    co_await ensureGroup(redis, backlogStreams.front(), group);
+    constexpr std::string_view kSeedLargePendingScript = R"lua(
+for index = 1, 300 do redis.call('XADD', KEYS[1], '*', 'value', tostring(index)) end
+return 300
+)lua";
+    const std::string_view backlogKeys[]{ backlogStreams.front() };
+    (void)co_await redis.eval(kSeedLargePendingScript, backlogKeys);
+    const auto legacy = co_await readGroupMany(redis, backlogStreams, group, "dead-legacy-owner", ">", 300);
+    require(legacy.size() == 1 && legacy.front().messages.size() == 300,
+            "legacy owner did not acquire the multi-page pending backlog");
+    co_await withConsumerNotifications(redis, worker, backlogStreams, group, stop.token(),
+        [&](ruvia::channel_receiver<std::uint8_t>& backlogNotifications) -> ruvia::task<void> {
+            bool bootstrap = true;
+            std::size_t recoveredCount = 0;
+            while (recoveredCount < 300) {
+                const auto pending = co_await consumeGroup(redis, backlogStreams, group, "backlog-peer",
+                    bootstrap, backlogNotifications, stop.token(), std::chrono::seconds(2), 32, std::chrono::milliseconds(0));
+                require(!pending.empty(), "pending tail was stranded without a later input wake");
+                if (recoveredCount == 0) {
+                    require(integer(co_await redis.command("ZCARD",
+                                service::message::consumer::deadlineKey(backlogStreams.front(), group))) == 300,
+                            "pending bootstrap registered only the first claim batch or XPENDING page");
+                }
+                for (const auto& batch : pending) {
+                    recoveredCount += batch.messages.size();
+                    co_await acknowledgeAndDeleteMany(redis, batch.stream, group, batch.messages);
+                }
+            }
+            const auto pendingSummary = co_await redis.command("XPENDING", backlogStreams.front(), group);
+            require(recoveredCount == 300 && pendingSummary.array()[0].integer() == 0,
+                    "multi-page pending recovery duplicated or abandoned entries");
+        });
 
     ruvia::task_scope cancellation(worker);
     auto cancelRead = [&]() -> ruvia::task<void> {

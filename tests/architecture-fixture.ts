@@ -27,7 +27,13 @@ export async function publishFixtureEvent(redis: Bun.RedisClient, stream: string
     if (!wakes.length) throw new Error('Start disposable API workers before publishing fixture input');
     return redis.send('EVAL', [
         `local id=redis.call('XADD',KEYS[1],'*',unpack(ARGV,2));
-         for i=2,#KEYS do redis.call('XADD',KEYS[i],'*','task',ARGV[1]) end;
+         redis.call('PUBLISH',KEYS[2],id);
+         for i=3,#KEYS,2 do
+           local wake=redis.call('XADD',KEYS[i],'*','task',ARGV[1]);
+           redis.call('PUBLISH',KEYS[i+1],wake);
+         end;
          return id`,
-        String(wakes.length + 1), stream, ...wakes, task, ...fields]);
+        String((wakes.length + 1) * 2),
+        ...[stream, ...wakes].flatMap((key) => [key, `iot:consumer:input:${key}`]),
+        task, ...fields]);
 }

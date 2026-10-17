@@ -88,8 +88,12 @@ ctest --test-dir build --build-config Release --output-on-failure
 Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
 
-当前固定 Ruvia `3a10c4b993ae5307d65387fe5ae5cfe3bb8e0c5d`，直接使用经 SHA-256 校验的上游归档，不应用本地 Ruvia 补丁。
-该版本包含 HTTP/1 消息边界、请求与响应生命周期、取消注册、Redis 重连及 SQL 表限定符作用域的修复。
+当前固定 Ruvia `658b6e169339c9981c40e79851878760a886f2be`，直接使用经 SHA-256 校验的上游归档（`a6ffa689d8d9f79bdfb7d7f9024eb574d05171fc3c5b3d9b36111d9178a76765`），不应用本地 Ruvia 补丁。
+该版本包含 HTTP/1 消息边界、请求与响应生命周期、取消注册、Redis 重连、SQL 表限定符作用域及公开 Redis Pub/Sub API 的修复和支持。每条实时连接和在途 RPC 独占订阅连接，不占普通命令池；订阅确认后才读取快照或发出请求，Pub/Sub 只通知，可靠结果仍从持久化结果键及序号/ACK 恢复。
+业务变更分别发布到 `iot:live:topic:<topic>`；SSE 的权限缓存只属于当前连接，收到 auth 或丢失订阅时失效，恢复后只发送一次完整快照。终端 protocol 5+ 的输出一直保留到浏览器序号 ACK，取消订阅后仍能重放未确认帧；旧固件无序号协议保持原交互方式。开发代理在 SSE 上游 close/error 时结束下游，浏览器仅在真实断流时有界退避重连，不再使用 45 秒空闲 watchdog。
+`iot:live:changes` 只保留 runtime-config 的持久中继，不用于页面或定向回执。遥测、命令、配置及设备接入的持久消费流与业务截止时间 wake 流保留；每次实际 `XADD` 在同一 Lua 内发布 `iot:consumer:input:<stream>`，消费前先确认输入/截止时间订阅。PEL 可见性期限写入独立有序集合，ACK 同时移除对应期限并通知，消费者按最近期限唤醒，不固定周期扫描 PEL。
+连接预算须包含普通池、后台持久消费者，以及每条 SSE/WebSocket 和每个在途 RPC 的独立订阅连接，并用部署实例的 `CONFIG GET maxclients` 核定容量；订阅不占阻塞命令池。升级已有构建目录时先取消旧源码覆盖：`CC=/usr/bin/gcc-14 CXX=/usr/bin/g++-14 cmake -S . -B build -UFETCHCONTENT_SOURCE_DIR_RUVIA`，依赖必须从上述新 pin 下载。
+运维快照仅在实际指标/健康状态变化时写入，空闲期只续健康租约；租约缺失或过期仍判定 Worker 不就绪。Outbox 聚合查询不再每 5 秒执行，最老待处理事件的 age 由读取端按持久时间戳计算，告警阈值按真实截止时间触发。回执保留清理按最早到期时间认领。空闲验收须区分业务查询与基础设施健康续租命令，不能把后者报告为零 Redis 命令。
 查询参数按需建立多值索引，PostgreSQL 参数复用已拥有的文本存储，Redis 类型化结果接管返回值存储；这些内部调整无需改动现有业务调用。
 上游已移除 `db_expressions`；系统管理、协议与链路模块统一使用公开 `db_query` 持有表达式，
 保持参数绑定、事务及表达式存储生命周期，不增加兼容包装。
@@ -131,8 +135,11 @@ UUID 的时间戳和 74-bit 序列由每个 Worker 的 `common::UuidV7State` 值
 各 runtime 自己持有取消源和完成句柄，复用的启动、停止函数不持有运行状态。
 Collector 与 GB28181 在同一 Collector event loop 上分别装配，先停止两者业务，
 再等待该 loop 的 Redis `shutdown()`、销毁借用对象，最后停止并 join 线程。
-设备协议端点位于 `gateway.transport.h`，保留唯一 Ruvia 路由宏和固件线协议；
-接入、业务持久化、后台清理分别归 transport、service、runtime。
+设备协议端点位于 `gateway.transport.h`，保留唯一 Ruvia 路由宏和固件线协议。
+transport 只持有本连接的 WebSocket 读写适配，不直接包含或调用 service/runtime；
+`server.cpp` 为每个 Worker 注册当前连接的 `ConnectionDriver`，
+runtime 在原 Worker 持有连接生命周期并经 protocol 解码、交所属 service 执行业务。
+业务持久化和后台清理分别归 service、runtime，不建立跨 Worker 回调或预设插件入口。
 
 持久 Stream 消费将领取和 pending 可见期限登记放在同一 Lua 中，确认时原子清除期限。
 消费者自己的独立 Pub/Sub 连接只传递输入与期限变化通知，先确认订阅再读取持久状态，

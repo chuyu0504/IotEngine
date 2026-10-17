@@ -47,6 +47,10 @@ function imei() {
     const base='99'+String(Math.floor(Math.random()*1e12)).padStart(12,'0');let sum=0;
     for(let i=0;i<14;i++){let n=Number(base[i])*(i%2?2:1);if(n>9)n-=9;sum+=n;}return base+String((10-sum%10)%10);
 }
+async function pubsubClients() {
+    const clients = String(await redis.send('CLIENT', ['LIST', 'TYPE', 'PUBSUB']));
+    return new Set(clients.trim().split('\n').filter(Boolean).map(line => line.split(' ').find(field => field.startsWith('id='))!.slice(3)));
+}
 type TerminalEvent = { kind: string; content?: string; sequence?: number; reason?: string };
 try {
     await until(async () => (await fetch(apiBase + '/internal/health/ready')).status === 200, 'workers not ready');
@@ -77,11 +81,8 @@ try {
             });
             socket.send(envelope(26,field(4,1)));
             await until(async()=>(await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->>'terminal'='true'`).length>0,'terminal capability missing');
-            const changesBefore = (await redis.send('XREVRANGE', ['iot:live:changes', '+', '-', 'COUNT', '1']) as [string, string[]][])[0]?.[0] ?? '0-0';
             const opened=await channel.request<{id:string}>('edge.terminal.open',{id:node,columns:100,rows:30});
             const session={id:node,sessionId:opened.id};
-            const routes=[`iot:live:route:edge-terminal:${node}:${opened.id}`,`iot:live:route:edge-terminal:${node}:${opened.id}:input-ack`];
-            for(const route of routes)assert.match(String(await redis.send('GET',[route])),/^iot:live:worker:/,'terminal frames are not routed to the browser worker');
             await until(async()=>commands.some(c=>c.tag===70),'terminal open not delivered');
             const open=commands.find(c=>c.tag===70)!.fields;
             assert.equal(open.get(3),100n);assert.equal(open.get(4),30n);
@@ -89,11 +90,14 @@ try {
             if(version===3)assert.equal((open.get(2) as Buffer).toString(),opened.id,'legacy open ticket missing');
             const events:TerminalEvent[]=[];
             let subscriptionFailure:unknown;
+            const existingSubscribers = await pubsubClients();
             release=channel.subscribe<{events:TerminalEvent[]}>('edge.terminal.events.subscribe',session,{
                 next: data=>events.push(...data.events),error:error=>{subscriptionFailure=error;},
             });
             if(version>=5)socket.send(envelope(76,field(1,bytes(opened.id))));
             await until(async()=>events.some(e=>e.kind==='ready'),'ready not pushed');
+            const outputSubscribers = [...await pubsubClients()].filter(id => !existingSubscribers.has(id));
+            assert.equal(outputSubscribers.length, 1, 'terminal output must own one dedicated subscription');
             const intruder=new EdgeDebugConnection(()=>new WebSocket(apiBase.replace('http:','ws:')+'/v1/edge/debug'));
             intruder.configureSessionRestore(async()=>{await intruder.request('edge.debug.authenticate',{token},{anonymous:true});});
             try { await rejected(intruder.request('edge.terminal.write',{...session,content:'AA=='}),17018); }
@@ -124,6 +128,7 @@ try {
                 await until(async()=>commands.some(c=>c.tag===77&&c.fields.get(2)===1n),'output acknowledgement missing');
             }
             // Legacy frames intentionally have identical bytes and sequence zero.
+            assert.equal(await redis.send('CLIENT', ['KILL', 'ID', outputSubscribers[0]]), 1);
             emit(version>=5?2:0);
             await until(async()=>events.filter(e=>e.kind==='data').length===2,'identical legacy output was deduplicated');
             if(version>=5)await channel.request('edge.terminal.output.ack',{...session,sequence:2});
@@ -135,9 +140,6 @@ try {
             await channel.request('edge.terminal.close',session);
             await channel.request('edge.terminal.close',session);
             await until(async()=>commands.some(c=>c.tag===73&&(c.fields.get(1) as Buffer).equals(bytes(opened.id))),'explicit close not delivered');
-            assert.equal(await redis.send('EXISTS',routes),0,'closed terminal kept its directed routes');
-            const broadcast=await redis.send('XRANGE',['iot:live:changes',`(${changesBefore}`,'+']) as [string,string[]][];
-            assert(!broadcast.some(([,fields])=>fields.some(field=>field.startsWith('edge-terminal:'))),'terminal frames reached the broadcast change stream');
             await rejected(channel.request('edge.terminal.write',{...session,content:'AA=='}),17018);
             const backlog=await channel.request<{id:string}>('edge.terminal.open',{id:node,columns:80,rows:24});
             if(version>=5)socket.send(envelope(76,field(1,bytes(backlog.id))));
@@ -153,6 +155,29 @@ try {
             assert.equal(subscriptionFailure,undefined);
             release();release=undefined;
             await channel.request('edge.terminal.close',{id:node,sessionId:backlog.id});
+            if (version >= 5) {
+                const replay = await channel.request<{id:string}>('edge.terminal.open', {id:node,columns:80,rows:24});
+                const replaySession = {id:node,sessionId:replay.id};
+                socket.send(envelope(76, field(1, bytes(replay.id))));
+                socket.send(envelope(71, Buffer.concat([field(1, bytes(replay.id)), field(2, Buffer.from('retained')), field(3, 1)])));
+                const delivered: TerminalEvent[] = [];
+                release = channel.subscribe<{events:TerminalEvent[]}>('edge.terminal.events.subscribe', replaySession, {
+                    next:data=>delivered.push(...data.events), error:error=>{subscriptionFailure=error;},
+                });
+                await until(async()=>delivered.some(event=>event.kind==='data'), 'retained terminal data not delivered');
+                release(); release = undefined;
+                await channel.request('edge.terminal.keepalive', replaySession);
+                assert.equal(Number(await redis.send('LLEN', [`iot:edge:terminal:out:${node}:${replay.id}`])), 2, 'unacknowledged output was consumed');
+                delivered.length = 0;
+                release = channel.subscribe<{events:TerminalEvent[]}>('edge.terminal.events.subscribe', replaySession, {
+                    next:data=>delivered.push(...data.events), error:error=>{subscriptionFailure=error;},
+                });
+                await until(async()=>delivered.some(event=>event.kind==='data'&&event.sequence===1), 'unacknowledged output did not replay');
+                await channel.request('edge.terminal.output.ack', {...replaySession,sequence:1});
+                assert.equal(Number(await redis.send('LLEN', [`iot:edge:terminal:out:${node}:${replay.id}`])), 1, 'browser ACK did not release retained output');
+                release(); release = undefined;
+                await channel.request('edge.terminal.close', replaySession);
+            }
             const disconnected=await channel.request<{id:string}>('edge.terminal.open',{id:node,columns:80,rows:24});
             channel.reset();
             await until(async()=>commands.some(c=>c.tag===73&&(c.fields.get(1) as Buffer).equals(bytes(disconnected.id))),'disconnect did not close terminal');
