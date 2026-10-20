@@ -126,9 +126,11 @@ jobs:
       - name: Set up Bun with mise
         uses: jdx/mise-action@v5.2.0
         with:
-          install_args: bun@${{ env.BUN_VERSION }}
+          install: false
           cache: false
 
+      - name: Install Bun globally
+        run: mise use --global bun@${{ env.BUN_VERSION }}
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
@@ -192,12 +194,6 @@ jobs:
           toolchain-release: ${{ needs.resolve_toolchain.outputs.release }}
           toolchain-sha256: ${{ needs.resolve_toolchain.outputs.sha256 }}
           compiler-cache: server
-
-      - name: Set up Bun with mise
-        uses: jdx/mise-action@v5.2.0
-        with:
-          install_args: bun@${{ env.BUN_VERSION }}
-          cache: false
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile

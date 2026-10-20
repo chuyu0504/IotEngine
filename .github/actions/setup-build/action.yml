@@ -66,6 +66,7 @@ runs:
           ninja@latest \
           ccache@latest \
           upx@latest \
+          bun@${{ env.BUN_VERSION }} \
           "github:cross-tools/clang-cross[asset_pattern=x86_64-unknown-linux-musl.tar.xz,strip_components=0,bin_path=x86_64-unknown-linux-musl/bin,checksum=sha256:$TOOLCHAIN_SHA256]@$TOOLCHAIN_RELEASE"
         root="$(mise where github:cross-tools/clang-cross)/x86_64-unknown-linux-musl"
         {
