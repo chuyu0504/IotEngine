@@ -20,7 +20,9 @@
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#if __has_include(<linux/wireguard.h>)
 #include <linux/wireguard.h>
+#endif
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -115,6 +117,7 @@ enum : std::uint16_t {
 inline constexpr std::uint32_t kWgPeerRemove = 1U << 0;
 inline constexpr std::uint32_t kWgPeerReplaceAllowedIps = 1U << 1;
 
+#if __has_include(<linux/wireguard.h>)
 static_assert(static_cast<int>(kWgCmdGetDevice) == static_cast<int>(WG_CMD_GET_DEVICE));
 static_assert(static_cast<int>(kWgCmdSetDevice) == static_cast<int>(WG_CMD_SET_DEVICE));
 static_assert(static_cast<int>(kWgDeviceIfname) == static_cast<int>(WGDEVICE_A_IFNAME));
@@ -130,6 +133,7 @@ static_assert(static_cast<int>(kWgAllowedIpAddress) == static_cast<int>(WGALLOWE
 static_assert(static_cast<int>(kWgAllowedIpPrefix) == static_cast<int>(WGALLOWEDIP_A_CIDR_MASK));
 static_assert(kWgPeerRemove == WGPEER_F_REMOVE_ME);
 static_assert(kWgPeerReplaceAllowedIps == WGPEER_F_REPLACE_ALLOWEDIPS);
+#endif
 
 inline constexpr std::uint16_t kNested = NLA_F_NESTED;
 
