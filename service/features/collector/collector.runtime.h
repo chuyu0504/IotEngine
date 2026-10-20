@@ -127,6 +127,7 @@ class CollectorWorker final {
         replaceLoadedSnapshot(std::move(snapshot));
         co_await CollectorStateService::publishWorker(redis_, identity_.index, workerInstanceId_, loadedConfigVersion_, identity_.instanceId);
         nextStateRefresh_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        nextConfigRecovery_ = std::chrono::steady_clock::now() + kConfigRecoveryWindow;
         scheduleTick(std::chrono::milliseconds(0));
     }
 
@@ -484,9 +485,13 @@ class CollectorWorker final {
         const auto group = configGroup();
         const auto messages = co_await readAvailable(stream, group, configRecovering_, 16);
         const auto now = std::chrono::steady_clock::now();
-        const bool changed = (!messages.empty() || needsConfigSnapshot_ ||
+        const bool recoverConfig = now >= nextConfigRecovery_;
+        if (!messages.empty() || needsConfigSnapshot_ || recoverConfig) {
+            nextConfigRecovery_ = now + kConfigRecoveryWindow;
+        }
+        const bool changed = (!messages.empty() || needsConfigSnapshot_ || recoverConfig ||
                               (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_))
-            ? co_await refreshConfigState(!messages.empty() || needsConfigSnapshot_)
+            ? co_await refreshConfigState(!messages.empty() || needsConfigSnapshot_ || recoverConfig)
             : false;
         if (now >= nextStateRefresh_) {
             co_await renewWorkerState();
@@ -1203,9 +1208,10 @@ class CollectorWorker final {
                 linkEventStream()
             };
             while (!stopping_) {
-                const auto deadline = nextOwnershipRefresh_
-                    ? (std::min)(*nextOwnershipRefresh_, nextStateRefresh_)
-                    : nextStateRefresh_;
+                auto deadline = (std::min)(nextStateRefresh_, nextConfigRecovery_);
+                if (nextOwnershipRefresh_) {
+                    deadline = (std::min)(deadline, *nextOwnershipRefresh_);
+                }
                 const auto until = (std::max)(std::chrono::milliseconds(1),
                                               std::chrono::duration_cast<std::chrono::milliseconds>(
                                                   deadline - std::chrono::steady_clock::now()
@@ -1226,6 +1232,10 @@ class CollectorWorker final {
                     const auto now = std::chrono::steady_clock::now();
                     if (nextOwnershipRefresh_ && now >= *nextOwnershipRefresh_) {
                         (void)co_await refreshConfigState(false);
+                    }
+                    if (now >= nextConfigRecovery_) {
+                        nextConfigRecovery_ = now + kConfigRecoveryWindow;
+                        (void)co_await refreshConfigState(true);
                     }
                     if (now >= nextStateRefresh_) {
                         co_await renewWorkerState();
@@ -1551,6 +1561,7 @@ class CollectorWorker final {
     // Redis retains ownership for 15 seconds. Stop local I/O before that bound,
     // even when a slow Redis command delays renewal on this worker.
     static constexpr auto kTargetLeaseValidity = std::chrono::seconds(12);
+    static constexpr auto kConfigRecoveryWindow = std::chrono::seconds(60);
     static constexpr auto kFailureDelay = std::chrono::milliseconds(250);
     static constexpr std::size_t kCommandConsumeBatch = 16;
     static constexpr std::size_t kEgressStreamCapacity = 10000;
@@ -1588,6 +1599,7 @@ class CollectorWorker final {
     std::string desiredConfigVersion_;
     std::optional<std::chrono::steady_clock::time_point> nextOwnershipRefresh_;
     std::chrono::steady_clock::time_point nextStateRefresh_{};
+    std::chrono::steady_clock::time_point nextConfigRecovery_{};
     std::map<std::string, ownership::LinkLease, std::less<>> linkLeases_;
     RuntimeSnapshot desiredSnapshot_;
     RuntimeSnapshot loadedSnapshot_;

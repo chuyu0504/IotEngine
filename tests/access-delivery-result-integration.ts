@@ -67,6 +67,7 @@ try {
     console.log('PASS durable access delivery result input notifications and completion deduplication');
 } finally {
     await redis.send('DEL', [stream, progress, wake]);
+    await subscriber.unsubscribe().catch(() => {});
     subscriber.close();
     redis.close();
 }

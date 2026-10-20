@@ -119,6 +119,7 @@ try {
     console.log('PASS GB28181 due owner claim, reschedule and fenced completion');
 } finally {
     await redis.send('DEL', [key, otherKey, `${ownerPrefix}session`, `${ownerPrefix}camera-3`, deadlines, wake]);
+    await subscriber.unsubscribe().catch(() => {});
     redis.close();
     subscriber.close();
 }

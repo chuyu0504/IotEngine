@@ -436,19 +436,19 @@ class GatewayService final {
         ruvia::db_query claim(context.pool());
         using Binary = ruvia::db_binary_operator;
         const auto deadlineMs = claim.cast(
-            claim.call("floor", { claim.binary(claim.extract(ruvia::db_date_part::epoch, claim.column(columnName<Attempt, "deadline">(), "a")), Binary::multiply, claim.value(1000)) }),
+            claim.call("floor", { claim.binary(claim.extract(ruvia::db_date_part::epoch, claim.column(Attempt::column_name<"deadline">(), "a")), Binary::multiply, claim.value(1000)) }),
             ruvia::db_data_type::big_int
         );
         claim.update(Attempt::table_name(), "a")
-            .set(columnName<Attempt, "sent_at">(), claim.call("now"))
+            .set(Attempt::column_name<"sent_at">(), claim.call("now"))
             .update_from(Operation::table_name(), "o")
-            .and_where(claim.binary(claim.column(columnName<Attempt, "operation_id">(), "a"), Binary::equal, claim.cast(claim.value(operationId), ruvia::db_data_type::uuid)))
-            .and_where(claim.binary(claim.column(columnName<Operation, "id">(), "o"), Binary::equal, claim.column(columnName<Attempt, "operation_id">(), "a")))
-            .and_where(claim.binary(claim.column(columnName<Attempt, "node_id">(), "a"), Binary::equal, claim.value(nodeId)))
-            .and_where(claim.unary(ruvia::db_unary_operator::is_null, claim.column(columnName<Attempt, "sent_at">(), "a")))
-            .and_where(claim.binary(claim.column(columnName<Attempt, "deadline">(), "a"), Binary::greater, claim.call("now")))
-            .and_where(claim.binary(claim.column(columnName<Operation, "status">(), "o"), Binary::in, claim.list({ claim.value("DISPATCHING"), claim.value("AWAITING_RESULT") })))
-            .returning({ claim.cast(claim.column(columnName<Attempt, "operation_id">(), "a"), ruvia::db_data_type::text), deadlineMs });
+            .and_where(claim.binary(claim.column(Attempt::column_name<"operation_id">(), "a"), Binary::equal, claim.cast(claim.value(operationId), ruvia::db_data_type::uuid)))
+            .and_where(claim.binary(claim.column(Operation::column_name<"id">(), "o"), Binary::equal, claim.column(Attempt::column_name<"operation_id">(), "a")))
+            .and_where(claim.binary(claim.column(Attempt::column_name<"node_id">(), "a"), Binary::equal, claim.value(nodeId)))
+            .and_where(claim.unary(ruvia::db_unary_operator::is_null, claim.column(Attempt::column_name<"sent_at">(), "a")))
+            .and_where(claim.binary(claim.column(Attempt::column_name<"deadline">(), "a"), Binary::greater, claim.call("now")))
+            .and_where(claim.binary(claim.column(Operation::column_name<"status">(), "o"), Binary::in, claim.list({ claim.value("DISPATCHING"), claim.value("AWAITING_RESULT") })))
+            .returning({ claim.cast(claim.column(Attempt::column_name<"operation_id">(), "a"), ruvia::db_data_type::text), deadlineMs });
         const auto claimed = co_await context.db().query(claim);
         if (claimed.empty()) {
             co_return std::nullopt;
@@ -493,12 +493,12 @@ class GatewayService final {
         using Task = service::edge::persistence::EdgeTaskEntity;
         using Binary = ruvia::db_binary_operator;
         ruvia::db_query firmware(context.pool());
-        firmware.select({ firmware.column(columnName<Firmware, "storage_path">(), "firmware"), firmware.column(columnName<Firmware, "size_bytes">(), "firmware") })
+        firmware.select({ firmware.column(Firmware::column_name<"storage_path">(), "firmware"), firmware.column(Firmware::column_name<"size_bytes">(), "firmware") })
             .from(Task::table_name(), "task")
-            .join(ruvia::db_join_type::inner, Firmware::table_name(), firmware.binary(firmware.cast(firmware.column(columnName<Firmware, "id">(), "firmware"), ruvia::db_data_type::text), Binary::equal, firmware.binary(firmware.column(columnName<Task, "request">(), "task"), Binary::json_get_text, firmware.value("firmware_id"))), "firmware")
-            .and_where(firmware.binary(firmware.column(columnName<Task, "id">(), "task"), Binary::equal, firmware.cast(firmware.value(requestId), ruvia::db_data_type::uuid)))
-            .and_where(firmware.binary(firmware.column(columnName<Task, "node_id">(), "task"), Binary::equal, firmware.cast(firmware.value(nodeId), ruvia::db_data_type::uuid)))
-            .and_where(firmware.binary(firmware.column(columnName<Task, "task_type">(), "task"), Binary::equal, firmware.value("firmware")))
+            .join(ruvia::db_join_type::inner, Firmware::table_name(), firmware.binary(firmware.cast(firmware.column(Firmware::column_name<"id">(), "firmware"), ruvia::db_data_type::text), Binary::equal, firmware.binary(firmware.column(Task::column_name<"request">(), "task"), Binary::json_get_text, firmware.value("firmware_id"))), "firmware")
+            .and_where(firmware.binary(firmware.column(Task::column_name<"id">(), "task"), Binary::equal, firmware.cast(firmware.value(requestId), ruvia::db_data_type::uuid)))
+            .and_where(firmware.binary(firmware.column(Task::column_name<"node_id">(), "task"), Binary::equal, firmware.cast(firmware.value(nodeId), ruvia::db_data_type::uuid)))
+            .and_where(firmware.binary(firmware.column(Task::column_name<"task_type">(), "task"), Binary::equal, firmware.value("firmware")))
             .limit(1);
         const auto rows = co_await context.db().query(firmware);
         if (rows.empty()) {
@@ -558,14 +558,6 @@ class GatewayService final {
             service::common::isUuid(path.stem().string());
     }
 
-    // Same transaction lock as modules/edge_node firmware upload; try-lock so that
-    // exactly one Worker or process performs a due cleanup.
-    static ruvia::db_query firmwareCleanupClaimQuery() {
-        ruvia::db_query lock;
-        lock.select(lock.call("pg_try_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kFirmwareStorageClass), ruvia::db_data_type::integer), lock.cast(lock.value(service::message::lock::kFirmwareStorageObject), ruvia::db_data_type::integer) }));
-        return lock;
-    }
-
     // Records older than the retention with no firmware task that is still running
     // or finished within the retention. Columns: id::text, storage_path.
     static ruvia::db_query expiredFirmwareQuery() {
@@ -575,13 +567,13 @@ class GatewayService final {
         using Type = ruvia::db_data_type;
         ruvia::db_query active;
         const auto cutoff = active.binary(active.call("now"), Op::subtract, active.cast(active.value(kRetentionInterval), Type::interval));
-        active.select(active.value(1)).from(Task::table_name(), "task").where(active.binary(active.column(columnName<Task, "task_type">(), "task"), Op::equal, active.value("firmware"))).and_where(active.binary(active.binary(active.column(columnName<Task, "request">(), "task"), Op::json_get_text, active.value("firmware_id")), Op::equal, active.cast(active.column(columnName<Firmware, "id">(), "firmware"), Type::text))).and_where(active.binary(active.binary(active.column(columnName<Task, "status">(), "task"), Op::not_in, active.list({ active.value("succeeded"), active.value("failed") })), Op::or_value, active.binary(active.coalesce({ active.column(columnName<Task, "completed_at">(), "task"), active.column(columnName<Task, "updated_at">(), "task"), active.column(columnName<Task, "created_at">(), "task") }), Op::greater_equal, cutoff)));
+        active.select(active.value(1)).from(Task::table_name(), "task").where(active.binary(active.column(Task::column_name<"task_type">(), "task"), Op::equal, active.value("firmware"))).and_where(active.binary(active.binary(active.column(Task::column_name<"request">(), "task"), Op::json_get_text, active.value("firmware_id")), Op::equal, active.cast(active.column(Firmware::column_name<"id">(), "firmware"), Type::text))).and_where(active.binary(active.binary(active.column(Task::column_name<"status">(), "task"), Op::not_in, active.list({ active.value("succeeded"), active.value("failed") })), Op::or_value, active.binary(active.coalesce({ active.column(Task::column_name<"completed_at">(), "task"), active.column(Task::column_name<"updated_at">(), "task"), active.column(Task::column_name<"created_at">(), "task") }), Op::greater_equal, cutoff)));
         ruvia::db_query candidates;
-        candidates.select({ candidates.cast(candidates.column(columnName<Firmware, "id">(), "firmware"), Type::text), candidates.column(columnName<Firmware, "storage_path">(), "firmware") })
+        candidates.select({ candidates.cast(candidates.column(Firmware::column_name<"id">(), "firmware"), Type::text), candidates.column(Firmware::column_name<"storage_path">(), "firmware") })
             .from(Firmware::table_name(), "firmware")
-            .where(candidates.binary(candidates.column(columnName<Firmware, "created_at">(), "firmware"), Op::less, candidates.binary(candidates.call("now"), Op::subtract, candidates.cast(candidates.value(kRetentionInterval), Type::interval))))
+            .where(candidates.binary(candidates.column(Firmware::column_name<"created_at">(), "firmware"), Op::less, candidates.binary(candidates.call("now"), Op::subtract, candidates.cast(candidates.value(kRetentionInterval), Type::interval))))
             .and_where(candidates.unary(ruvia::db_unary_operator::not_value, candidates.exists(active)))
-            .order_by(candidates.column(columnName<Firmware, "created_at">(), "firmware"));
+            .order_by(candidates.column(Firmware::column_name<"created_at">(), "firmware"));
         return candidates;
     }
 
@@ -589,14 +581,14 @@ class GatewayService final {
         using Firmware = service::edge::persistence::EdgeFirmwareEntity;
         ruvia::db_query removal;
         removal.delete_from(service::edge::persistence::EdgeFirmwareEntity::table_name())
-            .where(removal.binary(removal.column(columnName<Firmware, "id">()), ruvia::db_binary_operator::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid)));
+            .where(removal.binary(removal.column(Firmware::column_name<"id">()), ruvia::db_binary_operator::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid)));
         return removal;
     }
 
     static ruvia::db_query firmwareReferencesQuery() {
         using Firmware = service::edge::persistence::EdgeFirmwareEntity;
         ruvia::db_query references;
-        references.select(references.column(columnName<Firmware, "storage_path">())).from(Firmware::table_name());
+        references.select(references.column(Firmware::column_name<"storage_path">())).from(Firmware::table_name());
         return references;
     }
 
@@ -611,12 +603,12 @@ class GatewayService final {
         using Type = ruvia::db_data_type;
         ruvia::db_query schedule;
         const auto activeTasks = schedule.filter(
-            schedule.aggregate("count", { schedule.column(columnName<Task, "id">(), "task") }),
-            schedule.binary(schedule.column(columnName<Task, "status">(), "task"), Op::not_in, schedule.list({ schedule.value("succeeded"), schedule.value("failed") }))
+            schedule.aggregate("count", { schedule.column(Task::column_name<"id">(), "task") }),
+            schedule.binary(schedule.column(Task::column_name<"status">(), "task"), Op::not_in, schedule.list({ schedule.value("succeeded"), schedule.value("failed") }))
         );
-        const auto lastUse = schedule.aggregate("max", { schedule.coalesce({ schedule.column(columnName<Task, "completed_at">(), "task"), schedule.column(columnName<Task, "updated_at">(), "task"), schedule.column(columnName<Task, "created_at">(), "task") }) });
+        const auto lastUse = schedule.aggregate("max", { schedule.coalesce({ schedule.column(Task::column_name<"completed_at">(), "task"), schedule.column(Task::column_name<"updated_at">(), "task"), schedule.column(Task::column_name<"created_at">(), "task") }) });
         const auto collectableAt = schedule.binary(
-            schedule.greatest({ schedule.column(columnName<Firmware, "created_at">(), "firmware"), lastUse }),
+            schedule.greatest({ schedule.column(Firmware::column_name<"created_at">(), "firmware"), lastUse }),
             Op::add,
             schedule.cast(schedule.value(kRetentionInterval), Type::interval)
         );
@@ -624,10 +616,10 @@ class GatewayService final {
             schedule.call("ceil", { schedule.binary(schedule.extract(ruvia::db_date_part::epoch, schedule.binary(collectableAt, Op::subtract, schedule.call("now"))), Op::multiply, schedule.value(std::int64_t{ 1000 })) }),
             Type::big_int
         );
-        schedule.select({ schedule.column(columnName<Firmware, "storage_path">(), "firmware"), activeTasks, delayMilliseconds })
+        schedule.select({ schedule.column(Firmware::column_name<"storage_path">(), "firmware"), activeTasks, delayMilliseconds })
             .from(Firmware::table_name(), "firmware")
-            .join(ruvia::db_join_type::left, Task::table_name(), schedule.binary(schedule.binary(schedule.column(columnName<Task, "task_type">(), "task"), Op::equal, schedule.value("firmware")), Op::and_value, schedule.binary(schedule.binary(schedule.column(columnName<Task, "request">(), "task"), Op::json_get_text, schedule.value("firmware_id")), Op::equal, schedule.cast(schedule.column(columnName<Firmware, "id">(), "firmware"), Type::text))), "task")
-            .group_by({ schedule.column(columnName<Firmware, "id">(), "firmware"), schedule.column(columnName<Firmware, "storage_path">(), "firmware"), schedule.column(columnName<Firmware, "created_at">(), "firmware") });
+            .join(ruvia::db_join_type::left, Task::table_name(), schedule.binary(schedule.binary(schedule.column(Task::column_name<"task_type">(), "task"), Op::equal, schedule.value("firmware")), Op::and_value, schedule.binary(schedule.binary(schedule.column(Task::column_name<"request">(), "task"), Op::json_get_text, schedule.value("firmware_id")), Op::equal, schedule.cast(schedule.column(Firmware::column_name<"id">(), "firmware"), Type::text))), "task")
+            .group_by({ schedule.column(Firmware::column_name<"id">(), "firmware"), schedule.column(Firmware::column_name<"storage_path">(), "firmware"), schedule.column(Firmware::column_name<"created_at">(), "firmware") });
         return schedule;
     }
 
@@ -791,16 +783,12 @@ class GatewayService final {
 
     static constexpr std::string_view kRetentionInterval{ "1 hour" };
 
-    template <typename Entity, ruvia::fixed_string Name>
-    static std::string_view columnName() {
-        return std::tuple_element_t<Entity::template column_index<Name>(), typename Entity::columns_type>::name.view();
-    }
-
     template <typename Transaction>
     static ruvia::task<bool> claimFirmwareCleanup(Transaction& transaction) {
-        const auto claim = firmwareCleanupClaimQuery();
-        const auto rows = co_await transaction.query(claim);
-        co_return !rows.empty() && rows.front()[0].value().value_or(std::string_view{}) == "t";
+        co_return co_await transaction.try_advisory_lock(
+            service::message::lock::kFirmwareStorageClass,
+            service::message::lock::kFirmwareStorageObject
+        );
     }
 
     // Stored paths are resolved like the upload path that wrote them; an

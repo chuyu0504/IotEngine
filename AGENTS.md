@@ -200,6 +200,6 @@ EdgeNode 固件兼容：
 
 - 本地构建只用根 `build/`，CI 使用 `build/ci/`。如实区分已验证、未覆盖和失败项；验收同时检查实体遗漏、无用声明、职责混放、跨层引用、依赖环、生成产物及无用文件。
 - 测试验证真实行为与 HTTP/SSE 契约，不以源码文本匹配代替行为测试。
-- 工具链以 `.github/workflows/build.yml` 为准，缓存区分平台、架构、编译器与依赖输入。CI 支持 Linux（GCC 13）与 Windows（MSVC、`x64-windows-static`）；发布须双平台构建与测试通过且制品来自同一提交，单平台例外须用户明确接受并记录未覆盖平台。
+- 工具链以 `.github/workflows/build.yml` 为准，缓存区分平台、架构、编译器与依赖输入。CI 支持 Linux（`mise` 管理的 `cross-tools/clang-cross` LLVM musl 工具链、`x64-linux-musl`、`ccache`）与 Windows（MSVC、`x64-windows-static`）；发布须双平台构建与测试通过且制品来自同一提交，单平台例外须用户明确接受并记录未覆盖平台。
 - Ruvia 固定完整提交 SHA，升级时全项目同步迁移公开 API，不引用 `detail`、不加过渡宏或兼容包装；公开 API 无法表达的需求先列明契约与能力缺口再定方案。第三方依赖统一由根 `vcpkg.json` 清单模式管理（Linux、Windows 与本地共用，overlay 放 `ports/vcpkg/`），vcpkg 未收录的 Ruvia、ZLMediaKit、nanopb、faac 等由 CMake `FetchContent` 固定完整提交或归档 SHA256。
 - 可执行文件与同级 `web/` 同版本交付，静态资源与固件由后端从 `web/` 托管。凭据不写入提交、制品、日志或文档。

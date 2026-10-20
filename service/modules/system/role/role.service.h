@@ -48,7 +48,7 @@ class RoleService {
         );
         auto query = roleSelect(c);
         query.where(countOptions.where_)
-            .order_by(entities::RoleEntity::column<"id">().name(), ruvia::db_order_direction::desc)
+            .order_by(entities::RoleEntity::column_name<"id">(), ruvia::db_order_direction::desc)
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.get_many();
@@ -135,25 +135,25 @@ class RoleService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append(entities::RoleEntity::column<"name">().name(), body.get<"name">()->view());
+            append(entities::RoleEntity::column_name<"name">(), body.get<"name">()->view());
         }
         if (body.get<"code">()) {
-            append(entities::RoleEntity::column<"code">().name(), body.get<"code">()->view());
+            append(entities::RoleEntity::column_name<"code">(), body.get<"code">()->view());
         }
         if (body.get<"description">()) {
-            append(entities::RoleEntity::column<"description">().name(), body.get<"description">()->view());
+            append(entities::RoleEntity::column_name<"description">(), body.get<"description">()->view());
         }
         if (body.get<"status">()) {
-            append(entities::RoleEntity::column<"status">().name(), body.get<"status">()->view());
+            append(entities::RoleEntity::column_name<"status">(), body.get<"status">()->view());
         }
         if (body.get<"permissions">()) {
-            changes.push_back({ std::string(entities::RoleEntity::column<"permissions">().name()), query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::db_data_type::jsonb) });
+            changes.push_back({ std::string(entities::RoleEntity::column_name<"permissions">()), query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::db_data_type::jsonb) });
             changed = true;
         }
         if (!changed) {
             co_return;
         }
-        changes.push_back({ std::string(entities::RoleEntity::column<"updated_at">().name()), query.call("now") });
+        changes.push_back({ std::string(entities::RoleEntity::column_name<"updated_at">()), query.call("now") });
         (void)co_await c.db().template get_repository<entities::RoleEntity>().update(entities::RoleEntity::column<"id">() == id, changes);
     }
 
@@ -178,8 +178,8 @@ class RoleService {
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
         }
         const ruvia::db_assignment deletionChanges[]{
-            { std::string(entities::RoleEntity::column<"deleted_at">().name()), expressions.call("now") },
-            { std::string(entities::RoleEntity::column<"updated_at">().name()), expressions.call("now") }
+            { std::string(entities::RoleEntity::column_name<"deleted_at">()), expressions.call("now") },
+            { std::string(entities::RoleEntity::column_name<"updated_at">()), expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::RoleEntity>().update(
             entities::RoleEntity::column<"id">() == id,
@@ -212,7 +212,7 @@ class RoleService {
         constexpr char kPermissionColumn[] = "permission";
         auto query = c.db().template get_repository<entities::RoleEntity>().create_query_builder("role");
         query.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "values") } })
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", {}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { entities::RoleEntity::column<"permissions">().expression(expressions, "role") }), "values", ruvia::db_expression{}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
             .where(entities::RoleEntity::column<"id">() == id)
             .order_by(expressions.column(kPermissionColumn, "values"));
         const auto rows = co_await query.template get_many<entities::RolePermission>();

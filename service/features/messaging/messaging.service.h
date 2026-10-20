@@ -146,10 +146,10 @@ pending(ruvia::web_worker_context& context, std::string_view consumer, const std
     for (const auto& id : eventIds) {
         ids.push_back(receipts.cast(receipts.value(id), ruvia::db_data_type::uuid));
     }
-    receipts.select(receipts.cast(receipts.column(std::tuple_element_t<service::messaging::persistence::OutboxConsumerReceiptEntity::column_index<"event_id">(), service::messaging::persistence::OutboxConsumerReceiptEntity::columns_type>::name.view()), ruvia::db_data_type::text))
+    receipts.select(receipts.cast(receipts.column(service::messaging::persistence::OutboxConsumerReceiptEntity::column_name<"event_id">()), ruvia::db_data_type::text))
         .from(service::messaging::persistence::OutboxConsumerReceiptEntity::table_name())
-        .and_where(receipts.binary(receipts.column(std::tuple_element_t<service::messaging::persistence::OutboxConsumerReceiptEntity::column_index<"consumer_name">(), service::messaging::persistence::OutboxConsumerReceiptEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, receipts.value(consumer)))
-        .and_where(receipts.binary(receipts.column(std::tuple_element_t<service::messaging::persistence::OutboxConsumerReceiptEntity::column_index<"event_id">(), service::messaging::persistence::OutboxConsumerReceiptEntity::columns_type>::name.view()), ruvia::db_binary_operator::in, receipts.list(ids)));
+        .and_where(receipts.binary(receipts.column(service::messaging::persistence::OutboxConsumerReceiptEntity::column_name<"consumer_name">()), ruvia::db_binary_operator::equal, receipts.value(consumer)))
+        .and_where(receipts.binary(receipts.column(service::messaging::persistence::OutboxConsumerReceiptEntity::column_name<"event_id">()), ruvia::db_binary_operator::in, receipts.list(ids)));
     const auto rows = co_await context.db().query(receipts);
     for (const auto& row : rows) {
         result.erase(std::string(row[0].value().value_or(std::string_view{})));
@@ -205,14 +205,14 @@ class OutboxService {
         // retry, or for eligible rows currently locked by another dispatcher.
         ruvia::db_query available(context.pool());
         const auto delayMs = available.binary(
-            available.extract(ruvia::db_date_part::epoch, available.binary(available.aggregate("min", { available.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"available_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()) }), ruvia::db_binary_operator::subtract, available.call("clock_timestamp"))),
+            available.extract(ruvia::db_date_part::epoch, available.binary(available.aggregate("min", { available.column(service::messaging::persistence::OutboxEventEntity::column_name<"available_at">()) }), ruvia::db_binary_operator::subtract, available.call("clock_timestamp"))),
             ruvia::db_binary_operator::multiply,
             available.value(1000)
         );
         available.select(available.cast(available.cast(available.call("ceil", { delayMs }), ruvia::db_data_type::big_int), ruvia::db_data_type::text))
             .from(service::messaging::persistence::OutboxEventEntity::table_name())
-            .and_where(available.unary(ruvia::db_unary_operator::is_null, available.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"published_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())))
-            .and_where(available.unary(ruvia::db_unary_operator::is_null, available.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())));
+            .and_where(available.unary(ruvia::db_unary_operator::is_null, available.column(service::messaging::persistence::OutboxEventEntity::column_name<"published_at">())))
+            .and_where(available.unary(ruvia::db_unary_operator::is_null, available.column(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">())));
         const auto rows = co_await context.db().query(available);
         if (rows.empty() || !rows.front()[0].value()) {
             co_return std::nullopt;
@@ -225,22 +225,22 @@ class OutboxService {
         const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         auto transaction = co_await context.db().begin_transaction();
         ruvia::db_query pending(context.pool());
-        const auto occurredAtMs = pending.call("floor", { pending.binary(pending.extract(ruvia::db_date_part::epoch, pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"occurred_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())), ruvia::db_binary_operator::multiply, pending.value(1000)) });
-        pending.select(pending.cast(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"id">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_data_type::text))
-            .add_select(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"event_type">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
-            .add_select(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"aggregate_type">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
-            .add_select(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"aggregate_id">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
-            .add_select(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"action">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
-            .add_select(pending.cast(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"schema_version">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_data_type::text))
+        const auto occurredAtMs = pending.call("floor", { pending.binary(pending.extract(ruvia::db_date_part::epoch, pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"occurred_at">())), ruvia::db_binary_operator::multiply, pending.value(1000)) });
+        pending.select(pending.cast(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"id">()), ruvia::db_data_type::text))
+            .add_select(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"event_type">()))
+            .add_select(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"aggregate_type">()))
+            .add_select(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"aggregate_id">()))
+            .add_select(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"action">()))
+            .add_select(pending.cast(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"schema_version">()), ruvia::db_data_type::text))
             .add_select(pending.cast(pending.cast(occurredAtMs, ruvia::db_data_type::big_int), ruvia::db_data_type::text))
-            .add_select(pending.coalesce({ pending.binary(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"payload">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::json_get_text, pending.value("device_code")), pending.value("") }))
-            .add_select(pending.cast(pending.coalesce({ pending.binary(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"payload">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::json_get, pending.value("data")), pending.cast(pending.value("{}"), ruvia::db_data_type::jsonb) }), ruvia::db_data_type::text))
+            .add_select(pending.coalesce({ pending.binary(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"payload">()), ruvia::db_binary_operator::json_get_text, pending.value("device_code")), pending.value("") }))
+            .add_select(pending.cast(pending.coalesce({ pending.binary(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"payload">()), ruvia::db_binary_operator::json_get, pending.value("data")), pending.cast(pending.value("{}"), ruvia::db_data_type::jsonb) }), ruvia::db_data_type::text))
             .from(service::messaging::persistence::OutboxEventEntity::table_name())
-            .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"published_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())))
-            .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())))
-            .and_where(pending.binary(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"available_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::less_equal, pending.call("now")))
-            .add_order_by(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"occurred_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
-            .add_order_by(pending.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"id">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))
+            .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"published_at">())))
+            .and_where(pending.unary(ruvia::db_unary_operator::is_null, pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">())))
+            .and_where(pending.binary(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"available_at">()), ruvia::db_binary_operator::less_equal, pending.call("now")))
+            .add_order_by(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"occurred_at">()))
+            .add_order_by(pending.column(service::messaging::persistence::OutboxEventEntity::column_name<"id">()))
             .lock({ .mode_ = ruvia::db_row_lock::update, .skip_locked_ = true })
             .limit(100);
         const auto rows = co_await transaction.query(pending);
@@ -310,22 +310,22 @@ class OutboxService {
                     publishError.resize(2000);
                 }
                 ruvia::db_query retry(context.pool());
-                const auto attempts = retry.binary(retry.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"attempts">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::add, retry.value(1));
-                const auto seconds = retry.least({ retry.value(300), retry.cast(retry.call("int8shl", { retry.cast(retry.value(1), ruvia::db_data_type::big_int), retry.least({ retry.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"attempts">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), retry.value(8) }) }), ruvia::db_data_type::integer) });
+                const auto attempts = retry.binary(retry.column(service::messaging::persistence::OutboxEventEntity::column_name<"attempts">()), ruvia::db_binary_operator::add, retry.value(1));
+                const auto seconds = retry.least({ retry.value(300), retry.cast(retry.call("int8shl", { retry.cast(retry.value(1), ruvia::db_data_type::big_int), retry.least({ retry.column(service::messaging::persistence::OutboxEventEntity::column_name<"attempts">()), retry.value(8) }) }), ruvia::db_data_type::integer) });
                 const std::vector<ruvia::db_named_argument> intervalArgs{ { "secs", seconds } };
                 retry.update(service::messaging::persistence::OutboxEventEntity::table_name())
-                    .set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"attempts">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), attempts)
-                    .set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"last_error">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), retry.value(publishError))
-                    .set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"available_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), retry.binary(retry.call("now"), ruvia::db_binary_operator::add, retry.call("make_interval", {}, intervalArgs)))
-                    .set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), retry.case_when({ { retry.binary(attempts, ruvia::db_binary_operator::greater_equal, retry.value(20)), retry.call("now") } }, retry.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())))
-                    .and_where(retry.binary(retry.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"id">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, retry.cast(retry.value(event.id), ruvia::db_data_type::uuid)));
+                    .set(service::messaging::persistence::OutboxEventEntity::column_name<"attempts">(), attempts)
+                    .set(service::messaging::persistence::OutboxEventEntity::column_name<"last_error">(), retry.value(publishError))
+                    .set(service::messaging::persistence::OutboxEventEntity::column_name<"available_at">(), retry.binary(retry.call("now"), ruvia::db_binary_operator::add, retry.call("make_interval", {}, intervalArgs)))
+                    .set(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">(), retry.case_when({ { retry.binary(attempts, ruvia::db_binary_operator::greater_equal, retry.value(20)), retry.call("now") } }, retry.column(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">())))
+                    .and_where(retry.binary(retry.column(service::messaging::persistence::OutboxEventEntity::column_name<"id">()), ruvia::db_binary_operator::equal, retry.cast(retry.value(event.id), ruvia::db_data_type::uuid)));
                 (void)co_await transaction.execute(retry);
                 co_await transaction.commit();
                 observability_.incrementCounter("iot_engine_outbox_publish_retries_total");
                 co_return true;
             }
             ruvia::db_query published(context.pool());
-            published.update(service::messaging::persistence::OutboxEventEntity::table_name()).set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"published_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), published.call("now")).set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"attempts">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), published.binary(published.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"attempts">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::add, published.value(1))).set(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"last_error">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view(), published.null_value()).and_where(published.binary(published.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"id">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()), ruvia::db_binary_operator::equal, published.cast(published.value(event.id), ruvia::db_data_type::uuid)));
+            published.update(service::messaging::persistence::OutboxEventEntity::table_name()).set(service::messaging::persistence::OutboxEventEntity::column_name<"published_at">(), published.call("now")).set(service::messaging::persistence::OutboxEventEntity::column_name<"attempts">(), published.binary(published.column(service::messaging::persistence::OutboxEventEntity::column_name<"attempts">()), ruvia::db_binary_operator::add, published.value(1))).set(service::messaging::persistence::OutboxEventEntity::column_name<"last_error">(), published.null_value()).and_where(published.binary(published.column(service::messaging::persistence::OutboxEventEntity::column_name<"id">()), ruvia::db_binary_operator::equal, published.cast(published.value(event.id), ruvia::db_data_type::uuid)));
             (void)co_await transaction.execute(published);
         }
         co_await transaction.commit();
@@ -337,15 +337,15 @@ class OutboxService {
     ruvia::task<void> collectMetrics(ruvia::web_worker_context& context) {
         const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
         ruvia::db_query metrics(context.pool());
-        const auto pending = metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()));
+        const auto pending = metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">()));
         const auto count = metrics.aggregate("count", { metrics.star() });
-        const auto oldest = metrics.filter(metrics.aggregate("min", { metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"occurred_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()) }), pending);
+        const auto oldest = metrics.filter(metrics.aggregate("min", { metrics.column(service::messaging::persistence::OutboxEventEntity::column_name<"occurred_at">()) }), pending);
         const auto ageMs = metrics.call("floor", { metrics.binary(metrics.extract(ruvia::db_date_part::epoch, metrics.binary(metrics.call("now"), ruvia::db_binary_operator::subtract, oldest)), ruvia::db_binary_operator::multiply, metrics.value(1000)) });
         metrics.select(metrics.cast(metrics.filter(count, pending), ruvia::db_data_type::text))
             .add_select(metrics.cast(metrics.cast(metrics.coalesce({ ageMs, metrics.value(0) }), ruvia::db_data_type::big_int), ruvia::db_data_type::text))
-            .add_select(metrics.cast(metrics.filter(count, metrics.unary(ruvia::db_unary_operator::is_not_null, metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"dead_lettered_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view()))), ruvia::db_data_type::text))
+            .add_select(metrics.cast(metrics.filter(count, metrics.unary(ruvia::db_unary_operator::is_not_null, metrics.column(service::messaging::persistence::OutboxEventEntity::column_name<"dead_lettered_at">()))), ruvia::db_data_type::text))
             .from(service::messaging::persistence::OutboxEventEntity::table_name())
-            .and_where(metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(std::tuple_element_t<service::messaging::persistence::OutboxEventEntity::column_index<"published_at">(), service::messaging::persistence::OutboxEventEntity::columns_type>::name.view())));
+            .and_where(metrics.unary(ruvia::db_unary_operator::is_null, metrics.column(service::messaging::persistence::OutboxEventEntity::column_name<"published_at">())));
         metrics.add_select(metrics.cast(metrics.cast(metrics.coalesce({ metrics.binary(metrics.extract(ruvia::db_date_part::epoch, oldest), ruvia::db_binary_operator::multiply, metrics.value(1000)), metrics.value(0) }), ruvia::db_data_type::big_int), ruvia::db_data_type::text));
         const auto rows = co_await context.db().query(metrics);
         if (!rows.empty()) {
@@ -452,15 +452,12 @@ class OutboxService {
 
     ruvia::task<Clock::time_point> cleanupReceipts(ruvia::web_worker_context& context) {
         auto transaction = co_await context.db().begin_transaction();
-        ruvia::db_query ownership(context.pool());
-        ownership.select(ownership.call("pg_try_advisory_xact_lock", { ownership.cast(ownership.value(service::message::lock::kOutboxReceiptCleanup), ruvia::db_data_type::big_int) }));
-        const auto claimed = co_await transaction.query(ownership);
-        if (claimed.empty() || claimed.front()[0].value().value_or("") != "t") {
+        if (!co_await transaction.try_advisory_lock(service::message::lock::kOutboxReceiptCleanup)) {
             co_await transaction.commit();
             co_return Clock::now() + std::chrono::milliseconds(100);
         }
         using Receipt = service::messaging::persistence::OutboxConsumerReceiptEntity;
-        constexpr auto processedAt = std::tuple_element_t<Receipt::column_index<"processed_at">(), Receipt::columns_type>::name.view();
+        constexpr auto processedAt = Receipt::column_name<"processed_at">();
         ruvia::db_query expired(context.pool());
         const std::vector<ruvia::db_named_argument> intervalArgs{
             { "days", expired.cast(expired.value(policy_.receiptRetentionDays), ruvia::db_data_type::integer) }

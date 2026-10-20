@@ -9,8 +9,8 @@ Ruvia、FAAC（`faac-1.31.1`）、nanopb 使用固定提交并带 SHA-256 校验
 
 ## 工具链
 
-- CMake 3.28 或更新版本、Git、Bun 1.3.14，以及已 bootstrap 的 vcpkg，`VCPKG_ROOT` 指向其根目录。
-- Linux：Ubuntu 24.04、GCC 13（`gcc-13` / `g++-13`）、Ninja、NASM、pkg-config、Bison、Flex、Make、curl、zip、unzip、tar；与固定版本 Ruvia 的 Linux CI 工具链一致。
+- CMake 3.28 或更新版本、Git、Bun 1.4.3，以及已 bootstrap 的 vcpkg，`VCPKG_ROOT` 指向其根目录。
+- Linux：Ubuntu 24.04、由 `mise` 管理的 `cross-tools/clang-cross` LLVM musl 工具链（`x86_64-unknown-linux-musl-clang` / `clang++`、`lld`、`x64-linux-musl` triplet）、`ccache`、Ninja、NASM、pkg-config、Bison、Flex、Make、curl、zip、unzip、tar、xz-utils；与 FlexEdge 的 Linux CI 工具链一致。
 - Windows：MSVC C++ 工具链和 Windows SDK；vcpkg 自行获取 NASM、MSYS2 等端口构建工具。
 
 具体工具安装步骤与 CI 保持一致，见 `.github/workflows/build.yml`。
@@ -19,7 +19,7 @@ GCC 13 在协程的 `co_await` 表达式中处理含 `std::string` 等非平凡�
 Redis 参数、消息字段及 ORM 更新字段先保存到具名局部容器，再传入异步调用，保证其生命周期覆盖挂起与恢复。
 请求模型的默认值规则保存为具名 `inline constexpr` 元数据，通过 `decltype` 供模型使用，避免匿名闭包引发链接属性告警；不修改 Ruvia 源码或降低编译检查。
 
-本机使用 mise 管理工具时，可通过 `mise exec bun@1.3.14 -- <命令>` 为配置、构建和测试临时选择 CI 同版本的 Bun；
+本机使用 mise 管理工具时，可通过 `mise exec bun@1.4.3 -- <命令>` 为配置、构建和测试临时选择 CI 同版本的 Bun；
 其他工具同样按上述工具链准备，不需要修改全局 mise 配置。CMake 首次配置须在该环境中运行，避免缓存其他版本的可执行文件路径。
 
 ## 配置、构建与测试
@@ -33,7 +33,16 @@ bun install --frozen-lockfile
 Linux：
 
 ```sh
-CC=gcc-13 CXX=g++-13 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$PWD/ports/cmake/llvm.cmake" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-musl \
+  -DVCPKG_HOST_TRIPLET=x64-linux-musl \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/ports/cmake/triplets" \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
@@ -85,24 +94,23 @@ ctest --test-dir build --build-config Release --output-on-failure
 ```
 
 根 `CMakeLists.txt` 未显式指定 `CMAKE_TOOLCHAIN_FILE` 时从 `VCPKG_ROOT` 选择 vcpkg 工具链；
-Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
-首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包。
+Linux 默认使用 `x64-linux-musl` triplet 与 `ports/cmake/llvm.cmake` 链式加载工具链，Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
+首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包，启用 `ccache` 可缓存编译单元。
 
-当前固定 Ruvia `658b6e169339c9981c40e79851878760a886f2be`，直接使用经 SHA-256 校验的上游归档（`a6ffa689d8d9f79bdfb7d7f9024eb574d05171fc3c5b3d9b36111d9178a76765`），不应用本地 Ruvia 补丁。
+当前固定 Ruvia `3cc97b8b063ff466a98164438ceedf41ad3c3864`，直接使用经 SHA-256 校验的上游归档（`7b7ac4fd62a734faf5f20d52b643c30daa42dc5f9ebe4e9ec383469336281238`），不应用本地 Ruvia 补丁。
 该版本包含 HTTP/1 消息边界、请求与响应生命周期、取消注册、Redis 重连、SQL 表限定符作用域及公开 Redis Pub/Sub API 的修复和支持。每条实时连接和在途 RPC 独占订阅连接，不占普通命令池；订阅确认后才读取快照或发出请求，Pub/Sub 只通知，可靠结果仍从持久化结果键及序号/ACK 恢复。
 业务变更分别发布到 `iot:db:<database>:live:topic:<topic>`；共享频道由实际 `REDIS_DATABASE` 显式派生，DB0 也不使用裸频道。同一数据库的多进程共享通知，不同数据库互不唤醒；Redis `SELECT` 本身不隔离 Pub/Sub。SSE 的权限缓存只属于当前连接，收到 auth 或丢失订阅时失效，恢复后只发送一次完整快照。终端 protocol 5+ 的输出一直保留到浏览器序号 ACK，取消订阅后仍能重放未确认帧；旧固件无序号协议保持原交互方式。开发代理在 SSE 上游 close/error 时结束下游，浏览器仅在真实断流时有界退避重连，不再使用 45 秒空闲 watchdog。
 重订阅全部确认后、连接重新就绪前再次清空权限缓存并推进 generation，防止断线期间在途查询重填旧授权。第三方 SSE 在首帧提交前的认证、范围及查询错误保留原 HTTP 状态和 JSON；已建连后的撤权才使用 SSE error 并结束连接。终端刷新令牌不会丢弃待渲染帧：已接收但未渲染的重放不提前 ACK，已渲染帧重放会重发可确认序号，原 ACK 或重放 ACK 首次成功只推进一次渲染队列。
 `iot:live:changes` 只保留 runtime-config 的持久中继，不用于页面或定向回执。遥测、命令、配置及设备接入的持久消费流与业务截止时间 wake 流保留；每次实际 `XADD` 在同一 Lua 内发布 `iot:db:<database>:consumer:input:<stream>`，消费前先确认输入/截止时间订阅。PEL 可见性期限写入独立有序集合，ACK 同时移除对应期限并通知 `iot:db:<database>:consumer:deadline:<group>:<stream>`，消费者按最近期限唤醒，不固定周期扫描 PEL。开放接入事件与 Webhook wake 同时持久化、同时通知，幂等重放不重复入队或通知。持久键、Stream、结果与专属 UUID 频道不变。
 共享频道命名为一次性切换，不保留裸频道旁路。升级与回滚都须先停止使用同一 Redis 数据库的全部旧版本 IotEngine 进程，再统一启动目标版本，不允许新旧版本滚动混跑；保留持久流，由启动恢复流程处理未确认任务。
 RPC 请求流只属于接入请求的 Service Worker。启动时先通过共享 `kEnsureGroupScript` 原子创建消费组并设置 24 小时 TTL，再开放监视任务与消费者就绪；缺组恢复沿同一入口携带 TTL，不留下 `MKSTREAM` 后未设置过期的窗口。每分钟只续基础设施租约，续租失败在一秒后重试，不执行周期性业务查询。`rpc-startup-lease-integration` 使用独立 MANAGED fixture，在首次就绪时立即检查各 Worker 请求流 TTL，验证缺组重建后的真实 RPC 回执，并在首分钟内 `SIGKILL` 后检查残留租约；测试仅缩短已有的有界 TTL 来验证无人清理时的过期，不修改产品租约配置。
-连接预算须包含普通池、后台持久消费者，以及每条 SSE/WebSocket 和每个在途 RPC 的独立订阅连接，并用部署实例的 `CONFIG GET maxclients` 核定容量；订阅不占阻塞命令池。升级已有构建目录时先取消旧源码覆盖：`CC=/usr/bin/gcc-14 CXX=/usr/bin/g++-14 cmake -S . -B build -UFETCHCONTENT_SOURCE_DIR_RUVIA`，依赖必须从上述新 pin 下载。
+连接预算须包含普通池、后台持久消费者，以及每条 SSE/WebSocket 和每个在途 RPC 的独立订阅连接，并用部署实例的 `CONFIG GET maxclients` 核定容量；订阅不占阻塞命令池。升级已有构建目录时先取消旧源码覆盖：`cmake -S . -B build -UFETCHCONTENT_SOURCE_DIR_RUVIA`，依赖必须从上述新 pin 下载。
 运维快照仅在实际指标/健康状态变化时写入，空闲期只续健康租约；租约缺失或过期仍判定 Worker 不就绪。Outbox 聚合查询不再每 5 秒执行，最老待处理事件的 age 由读取端按持久时间戳计算，告警阈值按真实截止时间触发。回执保留清理按最早到期时间认领。空闲验收须区分业务查询与基础设施健康续租命令，不能把后者报告为零 Redis 命令。
 查询参数按需建立多值索引，PostgreSQL 参数复用已拥有的文本存储，Redis 类型化结果接管返回值存储；这些内部调整无需改动现有业务调用。
 上游已移除 `db_expressions`；系统管理、协议与链路模块统一使用公开 `db_query` 持有表达式，
 保持参数绑定、事务及表达式存储生命周期，不增加兼容包装。
-SQL 与 Redis 字段名通过实体公开的 `column_index<...>()`、`columns_type` 和列描述的 `name.view()` 读取，
-替代已移除的 `column_name()`，仍由实体检查字段归属，数据库列名及 Redis Lua 参数键不变。
-直接读取列描述可避免在协程表达式中使用字段引用类型触发 MSVC 内部编译错误。
+SQL 实体列名统一通过实体公开的 `consteval column_name<"字段">()` 读取，Redis 实体列名通过 `column_index<...>()`、`columns_type` 和列描述的 `name.view()` 读取；事务级 advisory lock 统一使用公开 `db_transaction::advisory_lock` 与 `try_advisory_lock` API。
+直接使用 `column_name<...>()` 可保持实体编译期字段归属校验，同时避免在协程表达式中构造临时字段引用对象触发 MSVC 内部编译错误。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；
 `firmware-download` 回归测试覆盖路径生命周期、中文文件名、完整下载、HEAD 和 Range。
 

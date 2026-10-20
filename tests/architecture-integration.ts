@@ -166,6 +166,7 @@ try {
     // Arm a future deadline once, then perform only reads. Expiry must wake the
     // result worker without another database mutation or result notification.
     await db`UPDATE command_attempt SET deadline=clock_timestamp()+INTERVAL '2 seconds' WHERE operation_id=${commandId}`;
+    await publishFixtureEvent(redis, 'iot:v3:command-result', ['message_id', id()], 'command-result');
     await Bun.sleep(500);
     assert.equal(await commandStatus(), 'AWAITING_RESULT');
     await until(
@@ -254,6 +255,7 @@ try {
         assert.equal(rows.length, 2, 'capacity rejection preserves both accepted commands');
         assert.deepEqual(await receivedInputs(), rows.map(([entry]) => entry), 'each accepted Stream command publishes its entry ID; rejection publishes nothing');
     } finally {
+        await capacitySubscriber.unsubscribe().catch(() => {});
         capacitySubscriber.close();
         await redis.send('DEL', [capacityQueue]);
     }

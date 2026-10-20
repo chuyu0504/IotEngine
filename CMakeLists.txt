@@ -18,6 +18,20 @@ endif()
 if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-static CACHE STRING "vcpkg target triplet")
 endif()
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+        set(VCPKG_TARGET_TRIPLET x64-linux-musl CACHE STRING "vcpkg target triplet")
+    endif()
+    if(NOT DEFINED VCPKG_HOST_TRIPLET)
+        set(VCPKG_HOST_TRIPLET x64-linux-musl CACHE STRING "vcpkg host triplet")
+    endif()
+    if(NOT DEFINED VCPKG_CHAINLOAD_TOOLCHAIN_FILE AND VCPKG_TARGET_TRIPLET STREQUAL "x64-linux-musl")
+        set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/llvm.cmake"
+            CACHE FILEPATH "LLVM musl chainload toolchain")
+    endif()
+    list(PREPEND VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/triplets")
+    list(REMOVE_DUPLICATES VCPKG_OVERLAY_TRIPLETS)
+endif()
 list(PREPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/ports/vcpkg")
 list(REMOVE_DUPLICATES VCPKG_OVERLAY_PORTS)
 list(APPEND VCPKG_INSTALL_OPTIONS --no-print-usage)
@@ -37,6 +51,7 @@ project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -56,8 +71,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 # Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    URL https://github.com/hyird/Ruvia/archive/658b6e169339c9981c40e79851878760a886f2be.tar.gz
-    URL_HASH SHA256=a6ffa689d8d9f79bdfb7d7f9024eb574d05171fc3c5b3d9b36111d9178a76765)
+    URL https://github.com/hyird/Ruvia/archive/3cc97b8b063ff466a98164438ceedf41ad3c3864.tar.gz
+    URL_HASH SHA256=7b7ac4fd62a734faf5f20d52b643c30daa42dc5f9ebe4e9ec383469336281238)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -391,7 +406,7 @@ iot_engine_add_test(telemetry-contract
 
 iot_engine_add_test(vpn-cidr
     SOURCES tests/vpn-cidr-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
@@ -463,7 +478,7 @@ iot_engine_add_test(worker-isolation LARGE
 
 iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp
-    LIBRARIES ruvia::web
+    LIBRARIES ruvia::web spdlog::spdlog
     DEFINITIONS IOT_ENGINE_TESTING)
 
 iot_engine_add_test(access-service LARGE

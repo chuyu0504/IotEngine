@@ -79,6 +79,7 @@ try {
     console.log('PASS session ownership, renewal, disconnect and entity-level expiry changes');
 } finally {
     await redis.send('DEL', keys);
+    await subscriber.unsubscribe().catch(() => {});
     subscriber.close();
     redis.close();
 }

@@ -52,7 +52,7 @@ class UserService {
         );
         auto query = userSelect(c);
         query.where(options.where_)
-            .order_by(entities::UserEntity::column<"id">().name(), ruvia::db_order_direction::desc)
+            .order_by(entities::UserEntity::column_name<"id">(), ruvia::db_order_direction::desc)
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::UserDetails>();
@@ -182,27 +182,27 @@ class UserService {
             changed = true;
         };
         if (body.get<"nickname">()) {
-            append(entities::UserEntity::column<"nickname">().name(), body.get<"nickname">()->view());
+            append(entities::UserEntity::column_name<"nickname">(), body.get<"nickname">()->view());
         }
         if (body.get<"phone">()) {
-            append(entities::UserEntity::column<"phone">().name(), body.get<"phone">()->view());
+            append(entities::UserEntity::column_name<"phone">(), body.get<"phone">()->view());
         }
         if (body.get<"email">()) {
-            append(entities::UserEntity::column<"email">().name(), body.get<"email">()->view());
+            append(entities::UserEntity::column_name<"email">(), body.get<"email">()->view());
         }
         if (body.get<"status">()) {
-            append(entities::UserEntity::column<"status">().name(), body.get<"status">()->view());
+            append(entities::UserEntity::column_name<"status">(), body.get<"status">()->view());
         }
         if (body.get<"password">()) {
-            append(entities::UserEntity::column<"password_hash">().name(), service::utils::hashPassword(body.get<"password">()->view()));
+            append(entities::UserEntity::column_name<"password_hash">(), service::utils::hashPassword(body.get<"password">()->view()));
         }
         if (body.get<"departmentId">()) {
-            changes.push_back({ std::string(entities::UserEntity::column<"department_id">().name()), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
+            changes.push_back({ std::string(entities::UserEntity::column_name<"department_id">()), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
             changed = true;
         }
         auto tx = co_await c.db().begin_transaction();
         if (changed) {
-            changes.push_back({ std::string(entities::UserEntity::column<"updated_at">().name()), query.call("now") });
+            changes.push_back({ std::string(entities::UserEntity::column_name<"updated_at">()), query.call("now") });
             (void)co_await tx.template get_repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
         }
         if (body.get<"roleIds">()) {
@@ -270,7 +270,7 @@ class UserService {
             .template join<entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
             .where(expressions.binary(entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
             .and_where(service::role::entities::RoleEntity::column<"deleted_at">().is_null())
-            .order_by(service::role::entities::RoleEntity::column<"id">().name());
+            .order_by(service::role::entities::RoleEntity::column_name<"id">());
         const auto rows = co_await query.get_many();
         ruvia::boxed_array<service::role::RoleOptionDto> roles(
             ruvia::model_options{ .resource_ = c.arena() }

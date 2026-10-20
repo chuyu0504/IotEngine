@@ -230,31 +230,33 @@ class AccessController final {
         topics.emplace_back(service::message::live::topic::kAuth);
         topics.emplace_back(service::message::live::topic::kAccess);
         co_await service::middleware::withLiveSubscription(context, std::move(topics), [&](service::middleware::LiveSubscription& subscription) -> ruvia::task<void> {
-            context.header("X-Accel-Buffering", "no");
-            context.header("Cache-Control", "no-store");
-            auto stream = context.stream_sse();
+            std::optional<ruvia::sse_writer> stream;
             std::uint64_t revision = 0;
             const auto expires = std::chrono::steady_clock::now() + (coalesceDelay.count() > 0 ? 1min : 5min);
             auto heartbeat = std::chrono::steady_clock::now() + 15s;
             bool refresh = true;
             std::int64_t expiresAtMs = 0;
-            while (!stream.aborted() && !context.get_stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
+            while ((!stream || !stream->aborted()) && !context.get_stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
                 if (expiresAtMs > 0 && expiresAtMs <= service::message::utcNowMilliseconds()) {
+                    if (!stream) {
+                        context.header("X-Accel-Buffering", "no");
+                        context.header("Cache-Control", "no-store");
+                        stream.emplace(context.stream_sse());
+                    }
                     const auto error = service::middleware::modelJson(service::common::error(context, 19010, "AccessKey 已过期"));
-                    co_await stream.write({ .data_ = error, .event_ = "error" });
+                    co_await stream->write({ .data_ = error, .event_ = "error" });
                     co_return;
                 }
                 const auto changes = subscription.take();
                 refresh = refresh || changes.recovered;
                 if (!subscription.ready()) {
                     refresh = true;
-                } else if (refresh || changes.find(service::message::live::topic::kAuth) ||
-                           changes.find(service::message::live::topic::kAccess) || relevant(changes)) {
+                } else if (refresh || changes.find(service::message::live::topic::kAuth) || changes.find(service::message::live::topic::kAccess) || relevant(changes)) {
                     bool reauthorize = refresh || changes.find(service::message::live::topic::kAuth) ||
                         changes.find(service::message::live::topic::kAccess);
                     if (revision != 0 && coalesceDelay.count() > 0) {
                         (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.get_stop_token());
-                        if (stream.aborted() || context.get_stop_token().stop_requested()) {
+                        if ((stream && stream->aborted()) || context.get_stop_token().stop_requested()) {
                             co_return;
                         }
                         // Everything received before this full query is
@@ -299,12 +301,17 @@ class AccessController final {
                         refresh = true;
                         continue;
                     }
+                    if (!stream) {
+                        context.header("X-Accel-Buffering", "no");
+                        context.header("Cache-Control", "no-store");
+                        stream.emplace(context.stream_sse());
+                    }
                     if (!error.empty()) {
-                        co_await stream.write({ .data_ = error, .event_ = "error" });
+                        co_await stream->write({ .data_ = error, .event_ = "error" });
                         co_return;
                     }
                     const auto id = std::to_string(++revision);
-                    co_await stream.write({ .data_ = next, .event_ = "snapshot", .id_ = id, .retry_ = revision == 1 ? std::optional<std::chrono::milliseconds>(1s) : std::nullopt });
+                    co_await stream->write({ .data_ = next, .event_ = "snapshot", .id_ = id, .retry_ = revision == 1 ? std::optional<std::chrono::milliseconds>(1s) : std::nullopt });
                     refresh = false;
                     heartbeat = std::chrono::steady_clock::now() + 15s;
                 }

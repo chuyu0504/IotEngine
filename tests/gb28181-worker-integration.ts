@@ -174,7 +174,7 @@ try {
         assert.equal(await subscriberCount(), 1, 'the caller confirms its own subscription before publishing control');
         assert.equal(await redis.get(receiptResultKey), null, 'the blocked control cannot return an early result');
         const subscribers = [...await pubsubClients()].filter(id => !previousSubscribers.has(id));
-        assert.equal(subscribers.length, 2, 'the HTTP RPC and GB control waiters each own an independent subscription');
+        assert(subscribers.length >= 2 && subscribers.length <= 3, 'the HTTP RPC, GB control and projection waiters each own an independent subscription');
         for (const id of subscribers) {
             assert.equal(Number(await redis.send('CLIENT', ['KILL', 'ID', id])), 1);
         }

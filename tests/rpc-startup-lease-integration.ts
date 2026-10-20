@@ -124,6 +124,7 @@ async function probeMissingStream(stream: string) {
         assertLeased(recovered);
         assert(recovered.some(([key]) => key === stream), 'repair changed the own request stream identity');
     } finally {
+        await subscriber.unsubscribe().catch(() => {});
         subscriber.close();
         await redis.send('DEL', [replyKey, `iot:rpc:claim:${request}`, `iot:rpc:cancelled:${request}`]);
     }

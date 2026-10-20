@@ -287,6 +287,7 @@ try {
         assert.equal(latestAppends.length, 1);
         assert.deepEqual(await received(), [...beforeLatest, ...latestAppends], 'freshness signals only an actual wake append');
     } finally {
+        await subscriber.unsubscribe().catch(() => {});
         subscriber.close();
         await redis.send('DEL', [...keys, ...derivedKeys, ...latestKeys, latestRuntime, latestHash]);
     }

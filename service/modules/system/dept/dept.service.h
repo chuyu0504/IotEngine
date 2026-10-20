@@ -53,8 +53,8 @@ class DeptService {
         );
         auto query = departmentSelect(c);
         query.where(options.where_)
-            .order_by(entities::DeptEntity::column<"sort_order">().name())
-            .add_order_by(entities::DeptEntity::column<"id">().name())
+            .order_by(entities::DeptEntity::column_name<"sort_order">())
+            .add_order_by(entities::DeptEntity::column_name<"id">())
             .take(pageSize)
             .skip((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::DepartmentDetails>();
@@ -153,27 +153,27 @@ class DeptService {
             changed = true;
         };
         if (body.get<"name">()) {
-            append(entities::DeptEntity::column<"name">().name(), query.value(body.get<"name">()->view()));
+            append(entities::DeptEntity::column_name<"name">(), query.value(body.get<"name">()->view()));
         }
         if (body.get<"code">()) {
-            append(entities::DeptEntity::column<"code">().name(), query.null_if(query.value(body.get<"code">()->view()), query.value("")));
+            append(entities::DeptEntity::column_name<"code">(), query.null_if(query.value(body.get<"code">()->view()), query.value("")));
         }
         if (body.get<"parentId">()) {
-            append(entities::DeptEntity::column<"parent_id">().name(), query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column_name<"parent_id">(), query.cast(query.null_if(query.value(parentId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"leaderId">()) {
-            append(entities::DeptEntity::column<"leader_id">().name(), query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
+            append(entities::DeptEntity::column_name<"leader_id">(), query.cast(query.null_if(query.value(leaderId), query.value("")), ruvia::db_data_type::uuid));
         }
         if (body.get<"sortOrder">()) {
-            append(entities::DeptEntity::column<"sort_order">().name(), query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
+            append(entities::DeptEntity::column_name<"sort_order">(), query.value(static_cast<std::int64_t>(*body.get<"sortOrder">())));
         }
         if (body.get<"status">()) {
-            append(entities::DeptEntity::column<"status">().name(), query.value(body.get<"status">()->view()));
+            append(entities::DeptEntity::column_name<"status">(), query.value(body.get<"status">()->view()));
         }
         if (!changed) {
             co_return;
         }
-        changes.push_back({ std::string(entities::DeptEntity::column<"updated_at">().name()), query.call("now") });
+        changes.push_back({ std::string(entities::DeptEntity::column_name<"updated_at">()), query.call("now") });
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(entities::DeptEntity::column<"id">() == id, changes);
     }
 
@@ -192,8 +192,8 @@ class DeptService {
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { std::string(entities::DeptEntity::column<"deleted_at">().name()), expressions.call("now") },
-            { std::string(entities::DeptEntity::column<"updated_at">().name()), expressions.call("now") }
+            { std::string(entities::DeptEntity::column_name<"deleted_at">()), expressions.call("now") },
+            { std::string(entities::DeptEntity::column_name<"updated_at">()), expressions.call("now") }
         };
         (void)co_await c.db().template get_repository<entities::DeptEntity>().update(
             entities::DeptEntity::column<"id">() == id,

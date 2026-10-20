@@ -324,7 +324,7 @@ class AuthService {
         );
 
         auto roleQuery = enabledRoles(c, userId);
-        roleQuery.select({ { "id" }, { "name" }, { "code" } }).order_by(service::role::entities::RoleEntity::column<"id">().name());
+        roleQuery.select({ { "id" }, { "name" }, { "code" } }).order_by(service::role::entities::RoleEntity::column_name<"id">());
         const auto roles = co_await roleQuery.get_many();
         auto& roleItems = user.ensure<"roles">();
         for (const auto& row : roles) {
@@ -339,7 +339,7 @@ class AuthService {
         auto permissionQuery = enabledRoles(c, userId);
         permissionQuery.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "p") } })
             .distinct()
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", {}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", ruvia::db_expression{}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
             .order_by(expressions.column(kPermissionColumn, "p"));
         const auto permissions = co_await permissionQuery.template get_many<service::role::entities::RolePermission>();
         auto& permissionItems = user.ensure<"permissions">();

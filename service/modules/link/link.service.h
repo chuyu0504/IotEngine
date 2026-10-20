@@ -214,7 +214,7 @@ class LinkService {
             co_return links;
         }
         applyFilters(query, keyword, mode, protocol, status);
-        query.and_where(query.binary(query.column(entities::LinkEntity::column<"id">().name()), ruvia::db_binary_operator::in, *values));
+        query.and_where(query.binary(query.column(entities::LinkEntity::column_name<"id">()), ruvia::db_binary_operator::in, *values));
         const auto rows = co_await c.db().query(query);
         for (const auto& row : rows) {
             auto& item = links.emplace(ruvia::model_options{ .resource_ = c.arena() });
@@ -233,10 +233,10 @@ class LinkService {
         if (!values) {
             co_return result;
         }
-        query.select(query.cast(query.column(service::device::entities::DeviceEntity::column<"link_id">().name()), ruvia::db_data_type::text))
+        query.select(query.cast(query.column(service::device::entities::DeviceEntity::column_name<"link_id">()), ruvia::db_data_type::text))
             .distinct()
             .from(service::device::entities::DeviceEntity::table_name())
-            .where(query.binary(query.column(service::device::entities::DeviceEntity::column<"id">().name()), ruvia::db_binary_operator::in, *values));
+            .where(query.binary(query.column(service::device::entities::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::in, *values));
         const auto rows = co_await c.db().query(query);
         for (const auto& row : rows) {
             if (const auto id = row[0].value()) {
@@ -490,8 +490,8 @@ return result
         const bool changed = (currentRows.front()[0].value().value_or("") == "t") != enabled;
         ruvia::db_query query(c.pool());
         query.update(entities::LinkEntity::table_name())
-            .set(entities::LinkEntity::column<"debug_enabled">().name(), query.value(enabled))
-            .set(entities::LinkEntity::column<"updated_at">().name(), query.call("now"))
+            .set(entities::LinkEntity::column_name<"debug_enabled">(), query.value(enabled))
+            .set(entities::LinkEntity::column_name<"updated_at">(), query.call("now"))
             .where((entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"deleted_at">().is_null()).expression(query))
             .and_where(query.binary(entities::LinkEntity::column<"debug_enabled">().expression(query), ruvia::db_binary_operator::is_distinct_from, query.value(enabled)))
             .returning({ entities::LinkEntity::column<"id">().expression(query) });
@@ -536,7 +536,7 @@ return result
             co_return;
         }
         ruvia::db_query lookup(c.pool());
-        lookup.select({ entities::LinkEntity::column<"debug_enabled">().expression(lookup), entities::LinkEntity::column<"created_by">().expression(lookup), db::emptyText(lookup, entities::LinkEntity::column<"edge_node_id">().name()) })
+        lookup.select({ entities::LinkEntity::column<"debug_enabled">().expression(lookup), entities::LinkEntity::column<"created_by">().expression(lookup), db::emptyText(lookup, entities::LinkEntity::column_name<"edge_node_id">()) })
             .from(entities::LinkEntity::table_name())
             .where((entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"deleted_at">().is_null()).expression(lookup));
         const auto rows = co_await c.db().query(lookup);
@@ -558,8 +558,8 @@ return result
         }
         ruvia::db_query query(c.pool());
         query.update(entities::LinkEntity::table_name())
-            .set(entities::LinkEntity::column<"debug_enabled">().name(), query.value(false))
-            .set(entities::LinkEntity::column<"updated_at">().name(), query.call("now"))
+            .set(entities::LinkEntity::column_name<"debug_enabled">(), query.value(false))
+            .set(entities::LinkEntity::column_name<"updated_at">(), query.call("now"))
             .where((entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"deleted_at">().is_null()).expression(query))
             .and_where(query.binary(entities::LinkEntity::column<"debug_enabled">().expression(query), ruvia::db_binary_operator::equal, query.value(true)))
             .returning({ entities::LinkEntity::column<"id">().expression(query) });
@@ -613,10 +613,10 @@ return result
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query query(c.pool());
         query.update(entities::LinkEntity::table_name())
-            .set(entities::LinkEntity::column<"name">().name(), query.value(name))
-            .set(entities::LinkEntity::column<"endpoint">().name(), query.cast(query.value(endpointJson), ruvia::db_data_type::jsonb))
-            .set(entities::LinkEntity::column<"status">().name(), query.value(status))
-            .set(entities::LinkEntity::column<"updated_at">().name(), query.call("now"))
+            .set(entities::LinkEntity::column_name<"name">(), query.value(name))
+            .set(entities::LinkEntity::column_name<"endpoint">(), query.cast(query.value(endpointJson), ruvia::db_data_type::jsonb))
+            .set(entities::LinkEntity::column_name<"status">(), query.value(status))
+            .set(entities::LinkEntity::column_name<"updated_at">(), query.call("now"))
             .where((entities::LinkEntity::column<"id">() == id &&
                     entities::LinkEntity::column<"deleted_at">().is_null() &&
                     entities::LinkEntity::column<"execution">() == "collector")
@@ -657,8 +657,8 @@ return result
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { std::string(entities::LinkEntity::column<"deleted_at">().name()), expressions.call("now") },
-            { std::string(entities::LinkEntity::column<"updated_at">().name()), expressions.call("now") }
+            { std::string(entities::LinkEntity::column_name<"deleted_at">()), expressions.call("now") },
+            { std::string(entities::LinkEntity::column_name<"updated_at">()), expressions.call("now") }
         };
         (void)co_await transaction.template get_repository<entities::LinkEntity>().update(
             entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"deleted_at">().is_null(),
@@ -792,11 +792,11 @@ return result
                 }
             }
             ruvia::db_query update(c.pool());
-            update.update(entities::LinkEntity::table_name()).set(entities::LinkEntity::column<"status">().name(), update.value("enabled")).where((entities::LinkEntity::column<"id">() == id).expression(update));
+            update.update(entities::LinkEntity::table_name()).set(entities::LinkEntity::column_name<"status">(), update.value("enabled")).where((entities::LinkEntity::column<"id">() == id).expression(update));
             if (!same) {
-                update.set(entities::LinkEntity::column<"protocol">().name(), update.value(protocol))
-                    .set(entities::LinkEntity::column<"endpoint">().name(), update.cast(update.value(endpointJson), ruvia::db_data_type::jsonb))
-                    .set(entities::LinkEntity::column<"updated_at">().name(), update.call("now"));
+                update.set(entities::LinkEntity::column_name<"protocol">(), update.value(protocol))
+                    .set(entities::LinkEntity::column_name<"endpoint">(), update.cast(update.value(endpointJson), ruvia::db_data_type::jsonb))
+                    .set(entities::LinkEntity::column_name<"updated_at">(), update.call("now"));
             } else {
                 update.and_where((entities::LinkEntity::column<"status">() != "enabled").expression(update));
             }
@@ -810,7 +810,7 @@ return result
         }
         const auto endpointName = name.substr(0, nameEnd) + " [" + id + "]";
         ruvia::db_query query(c.pool());
-        query.insert_into(entities::LinkEntity::table_name(), { entities::LinkEntity::column<"id">().name(), entities::LinkEntity::column<"name">().name(), entities::LinkEntity::column<"protocol">().name(), entities::LinkEntity::column<"endpoint">().name(), entities::LinkEntity::column<"status">().name(), entities::LinkEntity::column<"created_by">().name(), entities::LinkEntity::column<"execution">().name(), entities::LinkEntity::column<"edge_node_id">().name() })
+        query.insert_into(entities::LinkEntity::table_name(), { entities::LinkEntity::column_name<"id">(), entities::LinkEntity::column_name<"name">(), entities::LinkEntity::column_name<"protocol">(), entities::LinkEntity::column_name<"endpoint">(), entities::LinkEntity::column_name<"status">(), entities::LinkEntity::column_name<"created_by">(), entities::LinkEntity::column_name<"execution">(), entities::LinkEntity::column_name<"edge_node_id">() })
             .values({ db::uuid(query, id), query.value(endpointName), query.value(protocol), query.cast(query.value(endpointJson), ruvia::db_data_type::jsonb), query.value("enabled"), db::uuid(query, c.userId), query.value("edge"), db::uuid(query, nodeId) });
         (void)co_await tx.execute(query);
         co_return id;
@@ -821,7 +821,7 @@ return result
         ruvia::db_query attached(c.pool());
         attached.select(attached.value(1)).from(service::device::entities::DeviceEntity::table_name()).where((service::device::entities::DeviceEntity::column<"link_id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().is_null()).expression(attached));
         ruvia::db_query disable(c.pool());
-        disable.update(entities::LinkEntity::table_name()).set(entities::LinkEntity::column<"status">().name(), disable.value("disabled")).where((entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"execution">() == "edge" && entities::LinkEntity::column<"status">() != "disabled").expression(disable)).and_where(disable.unary(ruvia::db_unary_operator::not_value, disable.exists(attached)));
+        disable.update(entities::LinkEntity::table_name()).set(entities::LinkEntity::column_name<"status">(), disable.value("disabled")).where((entities::LinkEntity::column<"id">() == id && entities::LinkEntity::column<"execution">() == "edge" && entities::LinkEntity::column<"status">() != "disabled").expression(disable)).and_where(disable.unary(ruvia::db_unary_operator::not_value, disable.exists(attached)));
         (void)co_await tx.execute(disable);
     }
 
@@ -1059,7 +1059,7 @@ return result
             { query.null_if(db::jsonText(query, endpoint, "port"), query.value("")),
               query.value("0") }
         );
-        query.select({ db::text(query, entities::LinkEntity::column<"id">().expression(query)), displayName(query), entities::LinkEntity::column<"protocol">().expression(query), db::jsonText(query, endpoint, "mode"), query.coalesce({ db::jsonText(query, endpoint, "ip"), query.value("") }), endpointPort, entities::LinkEntity::column<"status">().expression(query), db::text(query, entities::LinkEntity::column<"created_by">().expression(query)), query.call("iot_utc_timestamp", { entities::LinkEntity::column<"created_at">().expression(query) }), query.call("iot_utc_timestamp", { entities::LinkEntity::column<"updated_at">().expression(query) }), entities::LinkEntity::column<"execution">().expression(query), db::emptyText(query, entities::LinkEntity::column<"edge_node_id">().name()), entities::LinkEntity::column<"debug_enabled">().expression(query) })
+        query.select({ db::text(query, entities::LinkEntity::column<"id">().expression(query)), displayName(query), entities::LinkEntity::column<"protocol">().expression(query), db::jsonText(query, endpoint, "mode"), query.coalesce({ db::jsonText(query, endpoint, "ip"), query.value("") }), endpointPort, entities::LinkEntity::column<"status">().expression(query), db::text(query, entities::LinkEntity::column<"created_by">().expression(query)), query.call("iot_utc_timestamp", { entities::LinkEntity::column<"created_at">().expression(query) }), query.call("iot_utc_timestamp", { entities::LinkEntity::column<"updated_at">().expression(query) }), entities::LinkEntity::column<"execution">().expression(query), db::emptyText(query, entities::LinkEntity::column_name<"edge_node_id">()), entities::LinkEntity::column<"debug_enabled">().expression(query) })
             .from(entities::LinkEntity::table_name());
         return query;
     }

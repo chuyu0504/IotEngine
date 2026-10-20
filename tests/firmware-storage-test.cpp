@@ -94,11 +94,11 @@ FakeRow row(std::initializer_list<std::string> values) {
 }
 
 struct FakeState {
-    std::string claimSql = compileSql(GatewayService::firmwareCleanupClaimQuery());
     std::string expiredSql = compileSql(GatewayService::expiredFirmwareQuery());
     std::string referencesSql = compileSql(GatewayService::firmwareReferencesQuery());
     std::string scheduleSql = compileSql(GatewayService::firmwareCleanupScheduleQuery());
     bool claimGranted = true;
+    std::vector<std::pair<std::int32_t, std::int32_t>> claimLocks;
     FakeResult expired;
     FakeResult references;
     FakeResult schedule;
@@ -110,9 +110,6 @@ struct FakeState {
 
     FakeResult answer(const ruvia::db_query& query) const {
         const auto sql = compileSql(query);
-        if (sql == claimSql) {
-            return FakeResult{ { row({ claimGranted ? "t" : "f" }) } };
-        }
         if (sql == expiredSql) {
             return expired;
         }
@@ -128,6 +125,11 @@ struct FakeState {
 
 struct FakeTransaction {
     std::shared_ptr<FakeState> state;
+
+    ruvia::task<bool> try_advisory_lock(std::int32_t classId, std::int32_t objectId) {
+        state->claimLocks.emplace_back(classId, objectId);
+        co_return state->claimGranted;
+    }
 
     ruvia::task<FakeResult> query(const ruvia::db_query& query) { co_return state->answer(query); }
 
@@ -229,9 +231,6 @@ void testOwnedFileNames() {
 }
 
 void testCleanupQueries() {
-    const auto claim = lowered(compileSql(GatewayService::firmwareCleanupClaimQuery()));
-    require(claim.find("pg_try_advisory_xact_lock") != std::string::npos, "cleanup claim must not block on the storage lock");
-    require(claim.find(std::to_string(service::message::lock::kFirmwareStorageClass)) != std::string::npos && claim.find(std::to_string(service::message::lock::kFirmwareStorageObject)) != std::string::npos, "cleanup claim does not use the firmware storage lock identity");
     const auto expired = lowered(compileSql(GatewayService::expiredFirmwareQuery()));
     require(expired.find("not") != std::string::npos && expired.find("exists") != std::string::npos, "expired firmware ignores referencing tasks");
     require(expired.find("1 hour") != std::string::npos && expired.find("'succeeded'") != std::string::npos && expired.find("'failed'") != std::string::npos, "expired firmware retention or terminal task states changed");
@@ -254,6 +253,10 @@ void testLostClaimDoesNothing() {
     context.state->expired.rows.push_back(row({ id, path.string() }));
     const auto result = runTask(GatewayService::cleanupFirmwares(context, directory.path()));
     require(!result.claimed && result.removedRecords == 0 && result.removedFiles == 0, "cleanup ran without the claim");
+    require(
+        context.state->claimLocks == std::vector<std::pair<std::int32_t, std::int32_t>>{ { service::message::lock::kFirmwareStorageClass, service::message::lock::kFirmwareStorageObject } },
+        "cleanup claim does not use the firmware storage lock identity"
+    );
     require(context.state->removals.empty() && context.state->commits == 0 && context.state->transactions == 1, "lost claim still touched the database");
     require(std::filesystem::exists(path), "lost claim removed a firmware file");
 }

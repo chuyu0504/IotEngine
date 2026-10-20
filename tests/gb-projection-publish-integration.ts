@@ -133,6 +133,7 @@ try {
     console.log('PASS GB28181 durable projection receipt, atomic acknowledgement and direct Pub/Sub delivery');
 } finally {
     await redis.send('DEL', [stream, marker, wake, receipt, receipts, deadlines]);
+    await subscriber.unsubscribe().catch(() => {});
     subscriber.close();
     redis.close();
 }

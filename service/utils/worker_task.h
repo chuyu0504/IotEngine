@@ -19,8 +19,10 @@ class WorkerReady final {
     explicit WorkerReady(std::promise<void>& promise) : promise_(promise) {}
 
     void set_value() {
-        promise_.set_value();
-        signalled_ = true;
+        if (!signalled_) {
+            promise_.set_value();
+            signalled_ = true;
+        }
     }
 
     [[nodiscard]] bool signalled() const noexcept { return signalled_; }

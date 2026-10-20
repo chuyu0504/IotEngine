@@ -123,7 +123,6 @@ struct ServiceWorkerComponents {
     // Serves the "vpn" RPC component; its background scheduling runs only when VPN_HUB_ENABLED.
     std::shared_ptr<service::vpn::VpnHubService> vpnHubService;
     std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
-    bool vpnHubBackground{};
     std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
     std::shared_ptr<service::alert::AlertRuntime> alerts;
     std::shared_ptr<service::messaging::outbox::OutboxRuntime> outboxRuntime;
@@ -355,11 +354,11 @@ ApplicationComponents createComponents(
         workerComponents.edgeProjection = std::make_shared<service::edge::projection::ProjectionRuntime>(
             *workerComponents.observability
         );
-        workerComponents.vpnHubBackground = vpn.enabled;
         workerComponents.vpnHubService = std::make_shared<service::vpn::VpnHubService>(
             vpn.hub,
             components.edge.platformId,
-            components.instanceId
+            components.instanceId,
+            vpn.enabled
         );
         workerComponents.vpnHubRuntime = std::make_shared<service::vpn::VpnHubRuntime>(
             *workerComponents.vpnHubService
@@ -451,9 +450,7 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& components, ruvia::
     lifecycle.addRuntime("edge-projector", components.edgeProjection, worker);
     lifecycle.addRuntime("firmware-cleanup", components.firmwareCleanup, worker);
     lifecycle.addRuntime("alerts", components.alerts, worker);
-    if (components.vpnHubBackground) {
-        lifecycle.addRuntime("vpn", components.vpnHubRuntime, worker);
-    }
+    lifecycle.addRuntime("vpn", components.vpnHubRuntime, worker);
     lifecycle.addRuntime("config-reconciler", components.configReconciler, worker);
     lifecycle.addRuntime("control", components.rpcConsumer, worker);
     if (components.gbProjection) {

@@ -6,7 +6,6 @@
 #include <utility>
 
 #include <ruvia/core/task.h>
-#include <ruvia/web/db/db_query.h>
 
 namespace service::utils {
 
@@ -16,9 +15,7 @@ namespace service::utils {
 template <typename Context, typename Operation>
 ruvia::task<void> initializeOnce(Context& context, std::int64_t lockId, std::string completionKey, Operation operation) {
     auto claim = co_await context.db("startup").begin_transaction();
-    ruvia::db_query lock;
-    lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(lockId), ruvia::db_data_type::big_int) }));
-    (void)co_await claim.query(lock);
+    co_await claim.advisory_lock(lockId);
     const auto redis = context.redis();
     if (!co_await redis.exists(completionKey)) {
         co_await operation(context);

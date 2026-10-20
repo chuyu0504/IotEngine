@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import { databaseUrl, redisUrl, apiBase } from './architecture-fixture';
 // Only the disposable architecture fixture, never a deployed database.
 import assert from 'node:assert/strict';
@@ -5,14 +6,14 @@ import assert from 'node:assert/strict';
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
 const ids: string[] = [];
-const liveStream = 'iot:live:changes';
-const savedLiveStream = `iot:test:outbox:live:${crypto.randomUUID()}`;
+const sessionStream = 'iot:channel:open-access:session-change';
+const savedSessionStream = `iot:test:outbox:session:${crypto.randomUUID()}`;
 let liveStreamPaused = false;
-async function restoreLiveStream() {
+async function restoreSessionStream() {
     if (!liveStreamPaused) return;
     await redis.send('EVAL', [
         "redis.call('DEL', KEYS[1]); if redis.call('EXISTS', KEYS[2]) == 1 then redis.call('RENAME', KEYS[2], KEYS[1]) end; return 1",
-        '2', liveStream, savedLiveStream,
+        '2', sessionStream, savedSessionStream,
     ]);
     liveStreamPaused = false;
 }
@@ -81,19 +82,25 @@ try {
 
     // Schema 2 query changes carry entity ids into the live change; schema 1
     // rows (table names in aggregate_id) publish the whole topic.
-    const liveChange = async (topic: string) => {
-        const entries = await redis.send('XREVRANGE', [liveStream, '+', '-', 'COUNT', '200']) as unknown as [string, string[]][];
-        const fields = entries.map(([, values]) => values).find((values) => values[values.indexOf('topic') + 1] === topic);
-        return fields && { version: fields[fields.indexOf('schema_version') + 1], ids: fields[fields.indexOf('ids') + 1] };
-    };
     const entityTopic = `test-${crypto.randomUUID()}`, legacyTopic = `test-${crypto.randomUUID()}`;
     const entityId = crypto.randomUUID(), legacyId = crypto.randomUUID();
     ids.push(entityId, legacyId);
-    await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
-        VALUES(${entityId},'query.changed',${entityTopic},'a,b','test',2),(${legacyId},'query.changed',${legacyTopic},'device','test',1)`;
-    await until(async () => (await published(entityId)) && (await published(legacyId)), 'query changes were not dispatched');
-    assert.deepEqual(await liveChange(entityTopic), { version: '2', ids: 'a,b' });
-    assert.deepEqual(await liveChange(legacyTopic), { version: '2', ids: '' });
+    const liveSubscriber = new Bun.RedisClient(redisUrl);
+    const receivedTopics: Record<string, string> = {};
+    try {
+        const entityChannel = sharedChannel(redisUrl, `live:topic:${entityTopic}`);
+        const legacyChannel = sharedChannel(redisUrl, `live:topic:${legacyTopic}`);
+        await liveSubscriber.subscribe(entityChannel, (payload) => { receivedTopics[entityTopic] = payload; });
+        await liveSubscriber.subscribe(legacyChannel, (payload) => { receivedTopics[legacyTopic] = payload; });
+        await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+            VALUES(${entityId},'query.changed',${entityTopic},'a,b','test',2),(${legacyId},'query.changed',${legacyTopic},'device','test',1)`;
+        await until(async () => (await published(entityId)) && (await published(legacyId)) && entityTopic in receivedTopics && legacyTopic in receivedTopics, 'query changes were not dispatched');
+        assert.equal(receivedTopics[entityTopic], 'a,b');
+        assert.equal(receivedTopics[legacyTopic], '');
+    } finally {
+        await liveSubscriber.unsubscribe().catch(() => {});
+        liveSubscriber.close();
+    }
     console.log('PASS outbox query changes publish entity ids');
 
     const future = await insert(2);
@@ -130,10 +137,13 @@ try {
     // exercise the actual failure update, backoff and terminal attempt boundary.
     await redis.send('EVAL', [
         "if redis.call('EXISTS', KEYS[1]) == 1 then redis.call('RENAME', KEYS[1], KEYS[2]) end; redis.call('SET', KEYS[1], 'outbox-test'); return 1",
-        '2', liveStream, savedLiveStream,
+        '2', sessionStream, savedSessionStream,
     ]);
     liveStreamPaused = true;
-    const retryId = await insert();
+    const retryId = crypto.randomUUID();
+    ids.push(retryId);
+    await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+        VALUES(${retryId},'config.changed','access_key',${retryId},'test',1)`;
     await until(async () => {
         const rows = await db`SELECT attempts, last_error, published_at,
             extract(epoch FROM (available_at - occurred_at))::float8 AS delay
@@ -148,7 +158,7 @@ try {
     const exhaustedId = crypto.randomUUID();
     ids.push(exhaustedId);
     await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,attempts)
-        VALUES(${exhaustedId},'query.changed','auth',${exhaustedId},'test',1,19)`;
+        VALUES(${exhaustedId},'config.changed','access_key',${exhaustedId},'test',1,19)`;
     await until(async () => {
         const rows = await db`SELECT attempts, published_at, dead_lettered_at,
             extract(epoch FROM (available_at - dead_lettered_at))::float8 AS delay
@@ -159,7 +169,7 @@ try {
         assert.equal(rows[0].delay, 256);
         return true;
     }, 'twentieth failed attempt was not dead-lettered');
-    await restoreLiveStream();
+    await restoreSessionStream();
     await until(() => published(retryId), 'recovered destination did not publish the retried event');
     const retried = await db`SELECT attempts, last_error FROM outbox_event WHERE id=${retryId}`;
     assert(retried[0].attempts >= 2);
@@ -167,7 +177,7 @@ try {
     assert.equal(await published(exhaustedId), false);
     console.log('PASS publish retry, exponential backoff, recovery and dead-letter boundary');
 } finally {
-    await restoreLiveStream();
+    await restoreSessionStream();
     if (ids.length) await db`DELETE FROM outbox_event WHERE id IN ${db(ids)}`;
     await db.close();
     redis.close();

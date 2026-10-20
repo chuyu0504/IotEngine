@@ -313,6 +313,7 @@ try {
         `iot:v3:edge:projector:${suffix}:missing`,
     ]);
     await redis.send('SREM', [registry, oldStream, activeStream]);
+    await subscriber.unsubscribe().catch(() => {});
     subscriber.close();
     redis.close();
 }

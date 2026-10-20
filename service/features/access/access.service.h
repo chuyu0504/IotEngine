@@ -27,6 +27,7 @@
 #include "service/features/access/access.entity.h"
 #include "service/features/access/access.types.h"
 #include "service/features/configuration/configuration.entity.h"
+#include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/utils/json.h"
@@ -43,12 +44,7 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
     // Serialize the database snapshot and Redis pointer swap across service instances.
     // The lock is held only by cold-path configuration projection, never by API reads.
     auto transaction = co_await context.db().begin_transaction();
-    ruvia::db_query advisoryLock(context.pool());
-    advisoryLock.select(advisoryLock.call(
-        "pg_advisory_xact_lock",
-        { advisoryLock.cast(advisoryLock.value(service::message::lock::kAccessSessionProjection), ruvia::db_data_type::big_int) }
-    ));
-    (void)co_await transaction.query(advisoryLock);
+    co_await transaction.advisory_lock(service::message::lock::kAccessSessionProjection);
     if (onlyIfMissing) {
         const std::vector<std::string> activeArguments{ "GET", std::string(service::message::access::session::kActiveVersionKey) };
         const auto active = co_await context.redis().command(std::vector<std::string_view>(activeArguments.begin(), activeArguments.end()));
@@ -118,6 +114,7 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
         service::utils::redis::throwValue("activate access-session projection", reply);
     }
     co_await transaction.commit();
+    co_await service::live::publish(context.redis(), context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::message::live::topic::kAccess);
 }
 
 template <typename Context>
@@ -337,18 +334,18 @@ ruvia::task<void> persistTargetResults(
     );
     updated
         .update(Entity::table_name(), "webhook")
-        .set(Entity::template column<"last_triggered_at">().name(), updated.greatest({ updated.coalesce({ Entity::template column<"last_triggered_at">().expression(updated, "webhook"), epoch }), latestTimestamp }))
-        .set(Entity::template column<"last_success_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_success_ms", "summary")), Entity::template column<"last_success_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_success_at">().expression(updated, "webhook"), epoch }), successTimestamp })))
-        .set(Entity::template column<"last_failure_at">().name(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_failure_ms", "summary")), Entity::template column<"last_failure_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_failure_at">().expression(updated, "webhook"), epoch }), failureTimestamp })))
-        .set(Entity::template column<"last_error">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("message", "latest"), updated.value("")) } }, Entity::template column<"last_error">().expression(updated, "webhook")))
-        .set(Entity::template column<"updated_at">().name(), updated.call("now"))
+        .set(Entity::template column_name<"last_triggered_at">(), updated.greatest({ updated.coalesce({ Entity::template column<"last_triggered_at">().expression(updated, "webhook"), epoch }), latestTimestamp }))
+        .set(Entity::template column_name<"last_success_at">(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_success_ms", "summary")), Entity::template column<"last_success_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_success_at">().expression(updated, "webhook"), epoch }), successTimestamp })))
+        .set(Entity::template column_name<"last_failure_at">(), updated.case_when({ { updated.unary(ruvia::db_unary_operator::is_null, updated.column("last_failure_ms", "summary")), Entity::template column<"last_failure_at">().expression(updated, "webhook") } }, updated.greatest({ updated.coalesce({ Entity::template column<"last_failure_at">().expression(updated, "webhook"), epoch }), failureTimestamp })))
+        .set(Entity::template column_name<"last_error">(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("message", "latest"), updated.value("")) } }, Entity::template column<"last_error">().expression(updated, "webhook")))
+        .set(Entity::template column_name<"updated_at">(), updated.call("now"))
         .update_from("summary", "summary")
         .join(ruvia::db_join_type::inner, "latest", updated.binary(updated.column("target_id", "latest"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")), "latest")
         .where(updated.binary(Entity::template column<"id">().expression(updated, "webhook"), ruvia::db_binary_operator::equal, updated.column("target_id", "summary")))
         .and_where(updated.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(updated, "webhook")))
         .returning({ Entity::template column<"id">().expression(updated, "webhook") });
     if constexpr (!mqtt) {
-        updated.set(Entity::template column<"last_http_status">().name(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("http_status", "latest"), updated.value(std::int64_t{ 0 })) } }, Entity::template column<"last_http_status">().expression(updated, "webhook")));
+        updated.set(Entity::template column_name<"last_http_status">(), updated.case_when({ { latestIsNewer, updated.null_if(updated.column("http_status", "latest"), updated.value(std::int64_t{ 0 })) } }, Entity::template column<"last_http_status">().expression(updated, "webhook")));
     }
 
     ruvia::db_query logRows(context.pool());
@@ -362,9 +359,9 @@ ruvia::task<void> persistTargetResults(
         .with("latest", latest)
         .with("summary", summary)
         .with("updated", updated)
-        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"webhook_id">().name(), Log::column<"mqtt_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"event_type">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"device_code">().name(), Log::column<"message">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
+        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"webhook_id">(), Log::column_name<"mqtt_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"event_type">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"device_code">(), Log::column_name<"message">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() })
         .insert_from(logRows)
-        .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
+        .on_conflict({ .columns_ = { std::string(Log::column_name<"id">()) }, .do_nothing_ = true });
     (void)co_await context.db().execute(write);
 }
 
@@ -419,8 +416,8 @@ inline ruvia::task<void> persistAudits(
     );
     usageUpdated
         .update(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
-        .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_at">().name(), latestTimestamp)
-        .set(service::access::persistence::OpenAccessKeyEntity::column<"last_used_ip">().name(), usageUpdated.null_if(usageUpdated.column("request_ip", "latest"), usageUpdated.value("")))
+        .set(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_at">(), latestTimestamp)
+        .set(service::access::persistence::OpenAccessKeyEntity::column_name<"last_used_ip">(), usageUpdated.null_if(usageUpdated.column("request_ip", "latest"), usageUpdated.value("")))
         .update_from("latest_usage", "latest")
         .where(usageUpdated.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(usageUpdated, "key"), ruvia::db_binary_operator::equal, usageUpdated.column("access_key_id", "latest")))
         .and_where(usageUpdated.binary(
@@ -450,9 +447,9 @@ inline ruvia::task<void> persistAudits(
         .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "action", "http_method", "target", "request_ip", "http_status", "device_id", "request_payload", "response_payload", "used_at_ms" } })
         .with("latest_usage", latestUsage, { .materialization_ = ruvia::db_materialization::materialized })
         .with("usage_updated", usageUpdated)
-        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column<"id">().name(), Log::column<"access_key_id">().name(), Log::column<"direction">().name(), Log::column<"action">().name(), Log::column<"status">().name(), Log::column<"http_method">().name(), Log::column<"target">().name(), Log::column<"request_ip">().name(), Log::column<"http_status">().name(), Log::column<"device_id">().name(), Log::column<"request_payload">().name(), Log::column<"response_payload">().name() })
+        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"request_ip">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() })
         .insert_from(logRows)
-        .on_conflict({ .columns_ = { std::string(Log::column<"id">().name()) }, .do_nothing_ = true });
+        .on_conflict({ .columns_ = { std::string(Log::column_name<"id">()) }, .do_nothing_ = true });
     (void)co_await context.db().execute(write);
 }
 
@@ -588,8 +585,7 @@ class DeliveryService final {
             data = co_await realtimeData(context, delivery.deviceId, catalog);
         } else if (delivery.eventType == "device.image.reported") {
             data = imageEventData(device, rawData, delivery.occurredAt);
-        } else if (delivery.eventType == "device.command.accepted" ||
-                   delivery.eventType == "device.command.updated") {
+        } else if (delivery.eventType == "device.command.accepted" || delivery.eventType == "device.command.updated") {
             const auto payload = ruvia::json_value::parse(rawData);
             data = payload && payload->is_object()
                 ? commandEventData(device, *payload)

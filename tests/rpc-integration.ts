@@ -400,6 +400,7 @@ async function callPrepareRpc(stream: string) {
         assert.equal(prepared.commands[0].deviceId, device);
         return prepared;
     } finally {
+        await subscriber.unsubscribe().catch(() => {});
         subscriber.close();
         await redis.send('DEL', [
             replyKey,
@@ -857,6 +858,7 @@ try {
         );
         console.log('PASS committed outbox change publishes its entity id and reaches both SSE subscriptions');
     } finally {
+        await liveSubscriber.unsubscribe().catch(() => {});
         liveSubscriber.close();
     }
     await Promise.all(liveStreams.map((stream) => stream.close()));

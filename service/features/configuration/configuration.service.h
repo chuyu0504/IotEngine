@@ -352,13 +352,13 @@ ruvia::task<service::collector::RuntimeSnapshot> loadRuntimeSnapshot(Database& d
     using Type = ruvia::db_data_type;
     ruvia::db_query linkQuery;
     const auto endpointText = [&](std::string_view key) {
-        return linkQuery.binary(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Op::json_get_text, linkQuery.value(key));
+        return linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">()), Op::json_get_text, linkQuery.value(key));
     };
-    linkQuery.select({ linkQuery.cast(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Type::text), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"name">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), endpointText("mode"), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"protocol">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }), linkQuery.coalesce({ linkQuery.null_if(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"status">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"debug_enabled">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()) })
+    linkQuery.select({ linkQuery.cast(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()), Type::text), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"name">()), endpointText("mode"), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"protocol">()), linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }), linkQuery.coalesce({ linkQuery.null_if(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"status">()), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"debug_enabled">()) })
         .from(service::configuration::persistence::LinkEntity::table_name())
-        .and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view())))
-        .and_where(linkQuery.binary(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()), Op::equal, linkQuery.value("collector")))
-        .add_order_by(linkQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view()));
+        .and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">())))
+        .and_where(linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">()), Op::equal, linkQuery.value("collector")))
+        .add_order_by(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()));
     const auto links = co_await db.query(linkQuery);
     for (const auto& row : links) {
         service::collector::LinkDefinition link;
@@ -382,13 +382,13 @@ ruvia::task<service::collector::RuntimeSnapshot> loadRuntimeSnapshot(Database& d
     const auto targetText = [&](std::string_view key) {
         return targetQuery.binary(targetQuery.column("target"), Op::json_get_text, targetQuery.value(key));
     };
-    targetQuery.select({ targetQuery.cast(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Type::text), targetText("id"), targetText("name"), targetText("ip"), targetQuery.coalesce({ targetQuery.null_if(targetText("port"), targetQuery.value("")), targetQuery.value("0") }), targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }), targetQuery.coalesce({ targetText("mqtt"), targetQuery.value("{}") }) })
+    targetQuery.select({ targetQuery.cast(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Type::text), targetText("id"), targetText("name"), targetText("ip"), targetQuery.coalesce({ targetQuery.null_if(targetText("port"), targetQuery.value("")), targetQuery.value("0") }), targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }), targetQuery.coalesce({ targetText("mqtt"), targetQuery.value("{}") }) })
         .from(service::configuration::persistence::LinkEntity::table_name(), "l")
-        .join_function(ruvia::db_join_type::cross, targetQuery.call("jsonb_array_elements", { targetQuery.coalesce({ targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::json_get, targetQuery.value("targets")), targetQuery.cast(targetQuery.value("[]"), Type::jsonb) }) }), {}, "target", { .lateral_ = true })
-        .and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"deleted_at">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l")))
-        .and_where(targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"execution">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::equal, targetQuery.value("collector")))
-        .and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"endpoint">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"), Op::json_get_text, targetQuery.value("mode")), Op::equal, targetQuery.value("TCP Client")))
-        .add_order_by(targetQuery.column(std::tuple_element_t<service::configuration::persistence::LinkEntity::column_index<"id">(), service::configuration::persistence::LinkEntity::columns_type>::name.view(), "l"));
+        .join_function(ruvia::db_join_type::cross, targetQuery.call("jsonb_array_elements", { targetQuery.coalesce({ targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get, targetQuery.value("targets")), targetQuery.cast(targetQuery.value("[]"), Type::jsonb) }) }), {}, "target", { .lateral_ = true })
+        .and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">(), "l")))
+        .and_where(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, targetQuery.value("collector")))
+        .and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get_text, targetQuery.value("mode")), Op::equal, targetQuery.value("TCP Client")))
+        .add_order_by(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"));
     const auto targets = co_await db.query(targetQuery);
     for (const auto& row : targets) {
         const auto linkId = cell(row, 0);
@@ -451,9 +451,7 @@ class ConfigurationService final {
         // Every Service Worker shares this transaction-scoped lock. The snapshot is loaded only
         // after earlier projections finish, so a slower request can never overwrite a newer DB
         // state.
-        ruvia::db_query lock;
-        lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
-        (void)co_await transaction.query(lock);
+        co_await transaction.advisory_lock(service::message::lock::kConfigurationProjection);
         auto snapshot =
             co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
@@ -471,9 +469,7 @@ class ConfigurationService final {
     template <typename Context>
     static ruvia::task<std::optional<std::int64_t>> retireSnapshots(Context& context) {
         auto transaction = co_await context.db().begin_transaction();
-        ruvia::db_query lock;
-        lock.select(lock.call("pg_advisory_xact_lock", { lock.cast(lock.value(service::message::lock::kConfigurationProjection), ruvia::db_data_type::big_int) }));
-        (void)co_await transaction.query(lock);
+        co_await transaction.advisory_lock(service::message::lock::kConfigurationProjection);
         const auto redis = context.redis();
         const auto active = co_await redis.get(service::message::projection::kRuntimeActiveVersionKey);
         if (!active) {

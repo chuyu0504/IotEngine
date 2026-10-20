@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { access, readdir, unlink, utimes, writeFile } from 'node:fs/promises';
@@ -161,8 +162,12 @@ try {
     } while (cursor !== '0');
     assert(streams.length > 0, 'No Worker RPC request stream');
     const requests = streams.map(() => crypto.randomUUID());
-    await Promise.all(streams.map((stream, index) => redis.send('XADD', [stream, '*', 'version', '1', 'id', requests[index], 'component', 'edge-firmware',
-        'operation', 'schedule-cleanup', 'payload', '', 'deadline', String(Date.now() + 120000)])));
+    await Promise.all(streams.map((stream, index) => redis.send('EVAL', [
+        "local id=redis.call('XADD',KEYS[1],'*',unpack(ARGV)); redis.call('PUBLISH',KEYS[2],id); return id",
+        '2', stream, sharedChannel(redisUrl, `consumer:input:${stream}`),
+        'version', '1', 'id', requests[index], 'component', 'edge-firmware',
+        'operation', 'schedule-cleanup', 'payload', '', 'deadline', String(Date.now() + 120000),
+    ])));
     await until(async () => (await Promise.all(requests.map(id => redis.send('GET', [`iot:rpc:reply:${id}`])))).some(reply => reply === 'OK\n'), 'Firmware cleanup schedule RPC not acknowledged');
     await until(async () => !(await exists(stored[0].storage_path)) && !(await exists(orphan)), 'Expired firmware cleanup did not run');
     assert.equal((await db`SELECT 1 FROM edge_firmware WHERE id=${stored[0].id}`).length, 0);

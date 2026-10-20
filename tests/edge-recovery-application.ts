@@ -1,3 +1,4 @@
+import { sharedChannel } from './redis_channel.fixture';
 import assert from 'node:assert/strict';
 import { apiBase as base, redisUrl } from './architecture-fixture';
 
@@ -10,6 +11,7 @@ const instance = `edge-fixture-${suffix}`;
 const worker = '0';
 const group = 'iot-engine:edge-projector';
 const registry = 'iot:v3:edge:projector:streams';
+const recoveryDeadlines = 'iot:v3:edge:projector:deadlines';
 const stream = `iot:v3:edge:projector:${instance}:${worker}`;
 const lease = `iot:v3:edge:projector:lease:${instance}:${worker}`;
 let scanBlocked = false;
@@ -39,20 +41,27 @@ try {
     const readyBeforeText = await readyBefore.text();
     assert.equal(readyBefore.status, 200, readyBeforeText);
 
-    // keysMatching() uses SCAN.  Deny only SCAN on this disposable Redis
-    // instance long enough to cross the projector discovery interval, then
-    // restore it and prove every original worker lease and readiness survived.
+    // Dead-stream recovery is deadline-driven through ZRANGEBYSCORE on the
+    // recovery deadline ZSET, not periodic SCAN sweeps. Deny ZRANGEBYSCORE
+    // across a lease renewal/discovery window, then restore it and prove every
+    // original worker lease and readiness survived.
     await redis.send('ACL', ['LOG', 'RESET']);
-    await redis.send('ACL', ['SETUSER', 'default', '-scan']);
+    await redis.send('ACL', ['SETUSER', 'default', '-zrangebyscore']);
     scanBlocked = true;
-    await Bun.sleep(7500);
+    await redis.send('ZADD', [recoveryDeadlines, '0', stream]);
+    for (const { key } of liveLeases) {
+        const streamName = key.replace(':lease:', ':');
+        await redis.send('PUBLISH', [sharedChannel(redisUrl, `consumer:input:${streamName}`), '0-0']);
+    }
+    await Bun.sleep(1000);
     const aclLog = await redis.send('ACL', ['LOG']);
     assert(
-        JSON.stringify(aclLog).toLowerCase().includes('scan'),
-        'Edge Projector did not issue a denied SCAN during the fault window'
+        JSON.stringify(aclLog).toLowerCase().includes('zrangebyscore'),
+        'Edge Projector did not issue a denied ZRANGEBYSCORE during the fault window'
     );
-    await redis.send('ACL', ['SETUSER', 'default', '+scan']);
+    await redis.send('ACL', ['SETUSER', 'default', '+zrangebyscore']);
     scanBlocked = false;
+    await redis.send('ZREM', [recoveryDeadlines, stream]);
 
     for (const { key, token } of liveLeases) {
         assert.equal(Number(await redis.send('EXISTS', [key])), 1, `projector lease disappeared: ${key}`);
@@ -83,6 +92,11 @@ try {
 
     // Only expose the dead owner after its pending entry is fully prepared.
     await redis.send('DEL', [lease]);
+    await redis.send('ZADD', [recoveryDeadlines, '0', stream]);
+    for (const { key } of liveLeases) {
+        const streamName = key.replace(':lease:', ':');
+        await redis.send('PUBLISH', [sharedChannel(redisUrl, `consumer:input:${streamName}`), '0-0']);
+    }
 
     const startedAt = Date.now();
     await until(
@@ -108,12 +122,13 @@ try {
 } finally {
     try {
         if (scanBlocked) {
-            await redis.send('ACL', ['SETUSER', 'default', '+scan']);
+            await redis.send('ACL', ['SETUSER', 'default', '+zrangebyscore']);
             scanBlocked = false;
         }
     } finally {
         await redis.send('DEL', [stream, lease]);
         await redis.send('SREM', [registry, stream]);
+        await redis.send('ZREM', [recoveryDeadlines, stream]);
         redis.close();
     }
 }

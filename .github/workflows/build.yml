@@ -12,14 +12,23 @@ permissions:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BUILD_TYPE: Release
-  BUN_VERSION: 1.3.14
-  UPX_VERSION: 5.1.1
-  UPX_LINUX_SHA256: 1ff660454227861e00772f743f66b900072116b9dc24f6ee28b97cce88a7828a
+  BUN_VERSION: 1.4.3
+  UPX_WINDOWS_VERSION: 5.1.1
   UPX_WINDOWS_SHA256: fa5380bca4c2718547aaa0134bc0d8a7fa27e102f0ac6371573d60d1c21d64de
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
+  VCPKG_FORCE_SYSTEM_BINARIES: '1'
+  VCPKG_TARGET_TRIPLET: x64-linux-musl
+  VCPKG_HOST_TRIPLET: x64-linux-musl
+  VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/ports/cmake/triplets
+  CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPILERCHECK: content
+  CCACHE_SLOPPINESS: pch_defines,time_macros
 
 jobs:
   vcpkg_revision:
@@ -36,6 +45,30 @@ jobs:
           commit=$(git ls-remote https://github.com/microsoft/vcpkg.git HEAD | cut -f1)
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  resolve_toolchain:
+    name: Resolve latest LLVM musl toolchain
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.resolve.outputs.release }}
+      sha256: ${{ steps.resolve.outputs.sha256 }}
+    steps:
+      - name: Resolve latest release and official checksum
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh api repos/cross-tools/clang-cross/releases/latest)"
+          release="$(jq -er '.tag_name' <<< "$release_json")"
+          [[ "$release" =~ ^[A-Za-z0-9._-]+$ ]]
+          asset=x86_64-unknown-linux-musl.tar.xz
+          jq -e --arg name "$asset" '.assets | any(.name == $name)' <<< "$release_json" > /dev/null
+          jq -e --arg name "$asset.sha256" '.assets | any(.name == $name)' <<< "$release_json" > /dev/null
+          checksum="$(curl -fsSL "https://github.com/cross-tools/clang-cross/releases/download/$release/$asset.sha256")"
+          read -r sha256 _ <<< "$checksum"
+          [[ "$sha256" =~ ^[[:xdigit:]]{64}$ ]]
+          printf 'release=%s\nsha256=%s\n' "$release" "${sha256,,}" >> "$GITHUB_OUTPUT"
 
   windows_client:
     name: Windows client installer
@@ -90,10 +123,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Set up Bun with mise
+        uses: jdx/mise-action@v5.2.0
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          install_args: bun@${{ env.BUN_VERSION }}
+          cache: false
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -117,15 +151,11 @@ jobs:
           bun test "${tests[@]}"
 
   ubuntu_build:
-    name: Ubuntu build
-    needs: vcpkg_revision
+    name: Musl server build
+    needs: [vcpkg_revision, resolve_toolchain]
     runs-on: ubuntu-24.04
     env:
-      CC: gcc-13
-      CXX: g++-13
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_COMMIT: ${{ needs.vcpkg_revision.outputs.commit }}
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg
     # Disposable servers for `ctest -L integration` (docs/build.md).
     services:
       postgres:
@@ -155,42 +185,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install toolchain
-        id: toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build nasm curl zip unzip tar xz-utils pkg-config bison flex make redis-server
-          "$CC" --version
-          "$CXX" --version
-          printf '#include <expected>\nint main() { std::expected<int, int> value{42}; return *value == 42 ? 0 : 1; }\n' > /tmp/iot-cxx23.cpp
-          "$CXX" -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
-          /tmp/iot-cxx23
-          echo "compiler=gcc-$("$CXX" -dumpfullversion)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup musl build
+        id: setup
+        uses: ./.github/actions/setup-build
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          toolchain-release: ${{ needs.resolve_toolchain.outputs.release }}
+          toolchain-sha256: ${{ needs.resolve_toolchain.outputs.sha256 }}
+          compiler-cache: server
+
+      - name: Set up Bun with mise
+        uses: jdx/mise-action@v5.2.0
+        with:
+          install_args: bun@${{ env.BUN_VERSION }}
+          cache: false
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
-
-      - name: Bootstrap vcpkg ${{ env.VCPKG_COMMIT }}
-        run: |
-          git init --quiet "$VCPKG_ROOT"
-          git -C "$VCPKG_ROOT" fetch --quiet --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_COMMIT"
-          git -C "$VCPKG_ROOT" checkout --quiet --detach FETCH_HEAD
-          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
-          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
-      - name: Restore vcpkg binary cache
-        id: restore-vcpkg-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ steps.toolchain.outputs.compiler }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
-          restore-keys: |
-            vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ steps.toolchain.outputs.compiler }}-
 
       - name: Configure
         id: configure
@@ -199,7 +209,15 @@ jobs:
           before=$(find "$VCPKG_DEFAULT_BINARY_CACHE" -type f | wc -l)
           cmake -S . -B build/ci -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/ports/cmake/llvm.cmake" \
+            -DVCPKG_TARGET_TRIPLET="$VCPKG_TARGET_TRIPLET" \
+            -DVCPKG_HOST_TRIPLET="$VCPKG_HOST_TRIPLET" \
+            -DVCPKG_OVERLAY_TRIPLETS="$VCPKG_OVERLAY_TRIPLETS" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           after=$(find "$VCPKG_DEFAULT_BINARY_CACHE" -type f | wc -l)
           echo "new-binaries=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
@@ -216,14 +234,24 @@ jobs:
           retention-days: 7
 
       - name: Save vcpkg binary cache
-        if: github.ref == 'refs/heads/main' && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' && steps.configure.outputs.new-binaries == 'true'
+        if: ${{ !cancelled() && steps.setup.outputs.vcpkg-cache-hit != 'true' && steps.configure.outputs.new-binaries == 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
+          key: ${{ steps.setup.outputs.vcpkg-cache-key }}
 
       - name: Build
-        run: cmake --build build/ci --config "$BUILD_TYPE" --parallel "$(nproc)"
+        run: |
+          ccache --zero-stats
+          cmake --build build/ci --config "$BUILD_TYPE" --parallel "$(nproc)"
+          ccache --show-stats
+
+      - name: Save compiler cache
+        if: ${{ !cancelled() && steps.setup.outputs.compiler-cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.setup.outputs.compiler-cache-key }}
 
       - name: Test
         # Hosted runners do not reliably deliver the IPv6 UDP loopback packet
@@ -256,17 +284,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Install UPX
-        run: |
-          set -euo pipefail
-          archive="build/upx-${UPX_VERSION}-amd64_linux.tar.xz"
-          curl --fail --location --show-error --silent \
-            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" \
-            --output "$archive"
-          echo "${UPX_LINUX_SHA256}  ${archive}" | sha256sum --check -
-          tar -xJf "$archive" -C build
-          echo "UPX_BIN=${GITHUB_WORKSPACE}/build/upx-${UPX_VERSION}-amd64_linux/upx" >> "$GITHUB_ENV"
-
       - name: Package artifact
         run: |
           set -euo pipefail
@@ -277,8 +294,8 @@ jobs:
           printf 'source=%s\nvcpkg=%s\n' "$GITHUB_SHA" "$VCPKG_COMMIT" > build/artifact/build-info.txt
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact \
             -P ports/cmake/stage-third-party-notices.cmake
-          "$UPX_BIN" --best --lzma build/artifact/iot-engine
-          "$UPX_BIN" --test build/artifact/iot-engine
+          upx --best --lzma build/artifact/iot-engine
+          upx --test build/artifact/iot-engine
 
       - name: Archive Linux build output
         run: tar -C build/artifact -czf build/linux-build.tar.gz .
@@ -389,16 +406,16 @@ jobs:
       - name: Install UPX
         shell: pwsh
         run: |
-          $archive = "build/upx-$env:UPX_VERSION-win64.zip"
+          $archive = "build/upx-$env:UPX_WINDOWS_VERSION-win64.zip"
           Invoke-WebRequest `
-            -Uri "https://github.com/upx/upx/releases/download/v$env:UPX_VERSION/upx-$env:UPX_VERSION-win64.zip" `
+            -Uri "https://github.com/upx/upx/releases/download/v$env:UPX_WINDOWS_VERSION/upx-$env:UPX_WINDOWS_VERSION-win64.zip" `
             -OutFile $archive
           $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           if ($actualSha256 -ne $env:UPX_WINDOWS_SHA256) {
               throw "UPX archive SHA-256 mismatch: $actualSha256"
           }
           Expand-Archive -Path $archive -DestinationPath build
-          "UPX_BIN=$env:GITHUB_WORKSPACE\build\upx-$env:UPX_VERSION-win64\upx.exe" |
+          "UPX_BIN=$env:GITHUB_WORKSPACE\build\upx-$env:UPX_WINDOWS_VERSION-win64\upx.exe" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Stage artifact

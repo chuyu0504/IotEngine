@@ -1012,9 +1012,9 @@ class ProtocolService {
 
         auto query = protocolSelect(c.pool());
         if (protocol && !protocol->empty()) {
-            query.and_where(query.binary(query.column(entities::ProtocolConfigEntity::column<"protocol">().name()), ruvia::db_binary_operator::equal, query.value(*protocol)));
+            query.and_where(query.binary(query.column(entities::ProtocolConfigEntity::column_name<"protocol">()), ruvia::db_binary_operator::equal, query.value(*protocol)));
         }
-        query.order_by(query.column(entities::ProtocolConfigEntity::column<"id">().name()), ruvia::db_order_direction::desc)
+        query.order_by(query.column(entities::ProtocolConfigEntity::column_name<"id">()), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>((page - 1) * pageSize));
         const auto rows = co_await c.db().query(query);
@@ -1048,7 +1048,7 @@ class ProtocolService {
             entities::ProtocolConfigEntity::column<"protocol">() == protocol;
         const auto total = co_await c.db().template get_repository<entities::ProtocolConfigEntity>().count(options);
         options.where_ = std::move(options.where_) && entities::ProtocolConfigEntity::column<"enabled">() == true;
-        options.order_ = { { std::string(entities::ProtocolConfigEntity::column<"name">().name()) } };
+        options.order_ = { { std::string(entities::ProtocolConfigEntity::column_name<"name">()) } };
         options.take_ = static_cast<std::uint64_t>(pageSize);
         options.skip_ = static_cast<std::uint64_t>((page - 1) * pageSize);
         const auto rows = co_await c.db().template get_repository<entities::ProtocolConfigEntity>().find(options);
@@ -1183,19 +1183,19 @@ class ProtocolService {
         const auto& config = body.get<"config">();
         const auto& enabled = body.get<"enabled">();
         ruvia::db_query expressions(c.pool());
-        std::vector<ruvia::db_assignment> changes{ { std::string(entities::ProtocolConfigEntity::column<"updated_at">().name()), expressions.call("now") } };
+        std::vector<ruvia::db_assignment> changes{ { std::string(entities::ProtocolConfigEntity::column_name<"updated_at">()), expressions.call("now") } };
         if (name) {
-            changes.push_back({ std::string(entities::ProtocolConfigEntity::column<"name">().name()), expressions.value(name->view()) });
+            changes.push_back({ std::string(entities::ProtocolConfigEntity::column_name<"name">()), expressions.value(name->view()) });
         }
         if (enabled) {
-            changes.push_back({ std::string(entities::ProtocolConfigEntity::column<"enabled">().name()), expressions.value(enabled->value_) });
+            changes.push_back({ std::string(entities::ProtocolConfigEntity::column_name<"enabled">()), expressions.value(enabled->value_) });
         }
         if (config) {
-            const auto column = entities::ProtocolConfigEntity::column<"config">().name();
+            const auto column = entities::ProtocolConfigEntity::column_name<"config">();
             changes.push_back({ std::string(column), expressions.binary(expressions.column(column), ruvia::db_binary_operator::json_concat, expressions.cast(expressions.value(config->view()), ruvia::db_data_type::jsonb)) });
         }
         if (body.is_present<"remark">()) {
-            changes.push_back({ std::string(entities::ProtocolConfigEntity::column<"remark">().name()), remark && !remark->view().empty() ? expressions.value(remark->view()) : expressions.null_value() });
+            changes.push_back({ std::string(entities::ProtocolConfigEntity::column_name<"remark">()), remark && !remark->view().empty() ? expressions.value(remark->view()) : expressions.null_value() });
         }
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().update(
             service::common::database::activeId<entities::ProtocolConfigEntity>(id),
@@ -1310,8 +1310,8 @@ class ProtocolService {
         (void)validateDerivedPoints(*parsed);
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment configurationChanges[]{
-            { std::string(entities::ProtocolConfigEntity::column<"config">().name()), expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
-            { std::string(entities::ProtocolConfigEntity::column<"updated_at">().name()), expressions.call("now") }
+            { std::string(entities::ProtocolConfigEntity::column_name<"config">()), expressions.cast(expressions.value(merged), ruvia::db_data_type::jsonb) },
+            { std::string(entities::ProtocolConfigEntity::column_name<"updated_at">()), expressions.call("now") }
         };
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().update(
             service::common::database::activeId<entities::ProtocolConfigEntity>(id),
@@ -1351,8 +1351,8 @@ class ProtocolService {
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { std::string(entities::ProtocolConfigEntity::column<"deleted_at">().name()), expressions.call("now") },
-            { std::string(entities::ProtocolConfigEntity::column<"updated_at">().name()), expressions.call("now") }
+            { std::string(entities::ProtocolConfigEntity::column_name<"deleted_at">()), expressions.call("now") },
+            { std::string(entities::ProtocolConfigEntity::column_name<"updated_at">()), expressions.call("now") }
         };
         (void)co_await transaction.template get_repository<entities::ProtocolConfigEntity>().update(
             service::common::database::activeId<entities::ProtocolConfigEntity>(id),
@@ -1367,7 +1367,7 @@ class ProtocolService {
     static ruvia::task<std::string> detailData(Context& c, std::string_view id) {
         auto query = protocolSelect(c.pool());
         query.where(entities::ProtocolConfigEntity::column<"deleted_at">().is_null().expression(query))
-            .and_where(query.binary(query.column(entities::ProtocolConfigEntity::column<"id">().name()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
+            .and_where(query.binary(query.column(entities::ProtocolConfigEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {
@@ -1379,15 +1379,15 @@ class ProtocolService {
     static ruvia::db_query edgeNodeReferences(std::pmr::memory_resource* resource, std::string_view configId) {
         ruvia::db_query query(resource);
         const auto edgeNodeId =
-            query.cast(query.column(service::link::entities::LinkEntity::column<"edge_node_id">().name(), "l"), ruvia::db_data_type::text);
+            query.cast(query.column(service::link::entities::LinkEntity::column_name<"edge_node_id">(), "l"), ruvia::db_data_type::text);
         query.select(edgeNodeId)
             .from(service::device::entities::DeviceEntity::table_name(), "d")
-            .join(ruvia::db_join_type::inner, service::link::entities::LinkEntity::table_name(), query.binary(query.column(service::link::entities::LinkEntity::column<"id">().name(), "l"), ruvia::db_binary_operator::equal, query.column(service::device::entities::DeviceEntity::column<"link_id">().name(), "d")), "l")
-            .where(query.binary(query.column(service::device::entities::DeviceEntity::column<"protocol_config_id">().name(), "d"), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceEntity::column<"deleted_at">().name(), "d")))
-            .and_where(query.binary(query.column(service::link::entities::LinkEntity::column<"execution">().name(), "l"), ruvia::db_binary_operator::equal, query.value("edge")))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::link::entities::LinkEntity::column<"deleted_at">().name(), "l")))
-            .and_where(query.unary(ruvia::db_unary_operator::is_not_null, query.column(service::link::entities::LinkEntity::column<"edge_node_id">().name(), "l")))
+            .join(ruvia::db_join_type::inner, service::link::entities::LinkEntity::table_name(), query.binary(query.column(service::link::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, query.column(service::device::entities::DeviceEntity::column_name<"link_id">(), "d")), "l")
+            .where(query.binary(query.column(service::device::entities::DeviceEntity::column_name<"protocol_config_id">(), "d"), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::device::entities::DeviceEntity::column_name<"deleted_at">(), "d")))
+            .and_where(query.binary(query.column(service::link::entities::LinkEntity::column_name<"execution">(), "l"), ruvia::db_binary_operator::equal, query.value("edge")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::link::entities::LinkEntity::column_name<"deleted_at">(), "l")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_not_null, query.column(service::link::entities::LinkEntity::column_name<"edge_node_id">(), "l")))
             .distinct()
             .order_by(edgeNodeId);
         return query;
@@ -1436,7 +1436,7 @@ class ProtocolService {
     static ruvia::db_query protocolSelect(std::pmr::memory_resource* resource) {
         ruvia::db_query query(resource);
         using Config = entities::ProtocolConfigEntity;
-        query.select({ query.cast(query.column(Config::column<"id">().name()), ruvia::db_data_type::text), query.column(Config::column<"protocol">().name()), query.column(Config::column<"name">().name()), query.column(Config::column<"enabled">().name()), query.column(Config::column<"config">().name()), service::common::database::emptyText(query, Config::column<"remark">().name()), query.cast(query.call("iot_utc_timestamp", { query.column(Config::column<"created_at">().name()) }), ruvia::db_data_type::text), query.cast(query.call("iot_utc_timestamp", { query.column(Config::column<"updated_at">().name()) }), ruvia::db_data_type::text) })
+        query.select({ query.cast(query.column(Config::column_name<"id">()), ruvia::db_data_type::text), query.column(Config::column_name<"protocol">()), query.column(Config::column_name<"name">()), query.column(Config::column_name<"enabled">()), query.column(Config::column_name<"config">()), service::common::database::emptyText(query, Config::column_name<"remark">()), query.cast(query.call("iot_utc_timestamp", { query.column(Config::column_name<"created_at">()) }), ruvia::db_data_type::text), query.cast(query.call("iot_utc_timestamp", { query.column(Config::column_name<"updated_at">()) }), ruvia::db_data_type::text) })
             .from(entities::ProtocolConfigEntity::table_name())
             .where(entities::ProtocolConfigEntity::column<"deleted_at">().is_null().expression(query));
         return query;
@@ -1479,11 +1479,11 @@ class ProtocolService {
         ruvia::db_query query(c.pool());
         query.select(query.cast(query.value(1), ruvia::db_data_type::integer))
             .from(service::user::entities::UserRoleEntity::table_name(), "ur")
-            .join(ruvia::db_join_type::inner, service::role::entities::RoleEntity::table_name(), query.binary(query.column(service::user::entities::UserRoleEntity::column<"role_id">().name(), "ur"), ruvia::db_binary_operator::equal, query.column(service::role::entities::RoleEntity::column<"id">().name(), "r")), "r")
-            .where(query.binary(query.column(service::user::entities::UserRoleEntity::column<"user_id">().name(), "ur"), ruvia::db_binary_operator::equal, query.value(c.userId)))
-            .and_where(query.binary(query.column(service::role::entities::RoleEntity::column<"code">().name(), "r"), ruvia::db_binary_operator::equal, query.value("superadmin")))
-            .and_where(query.binary(query.column(service::role::entities::RoleEntity::column<"status">().name(), "r"), ruvia::db_binary_operator::equal, query.value("enabled")))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::role::entities::RoleEntity::column<"deleted_at">().name(), "r")))
+            .join(ruvia::db_join_type::inner, service::role::entities::RoleEntity::table_name(), query.binary(query.column(service::user::entities::UserRoleEntity::column_name<"role_id">(), "ur"), ruvia::db_binary_operator::equal, query.column(service::role::entities::RoleEntity::column_name<"id">(), "r")), "r")
+            .where(query.binary(query.column(service::user::entities::UserRoleEntity::column_name<"user_id">(), "ur"), ruvia::db_binary_operator::equal, query.value(c.userId)))
+            .and_where(query.binary(query.column(service::role::entities::RoleEntity::column_name<"code">(), "r"), ruvia::db_binary_operator::equal, query.value("superadmin")))
+            .and_where(query.binary(query.column(service::role::entities::RoleEntity::column_name<"status">(), "r"), ruvia::db_binary_operator::equal, query.value("enabled")))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::role::entities::RoleEntity::column_name<"deleted_at">(), "r")))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty()) {

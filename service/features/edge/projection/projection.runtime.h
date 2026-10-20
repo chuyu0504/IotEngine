@@ -250,16 +250,21 @@ class ProjectionRuntime final {
                 continue;
             }
             bool projectionFailed = false;
+            bool drainedAny = false;
             try {
                 for (const auto& batch : *batches) {
                     if (!co_await projectBatch(context, reads, batch)) {
                         break;
                     }
+                    drainedAny = true;
                 }
             } catch (const std::exception& error) {
                 reads.recovering = true;
                 std::cerr << "edge projection failed: " << error.what() << '\n';
                 projectionFailed = true;
+            }
+            if (drainedAny && !reads.dead.empty()) {
+                (void)co_await eraseDrainedStreams(context, reads);
             }
             if (projectionFailed && !leaseLost_.load()) {
                 co_await pause(context);
@@ -272,7 +277,12 @@ class ProjectionRuntime final {
     read(ruvia::web_worker_context& context, ReadSet& reads, const std::string& consumer, ruvia::channel_receiver<std::uint8_t>& notifications) {
         std::optional<std::vector<service::utils::redis::StreamBatch>> batches;
         try {
-            const auto delay = std::max(std::chrono::milliseconds(1), std::chrono::duration_cast<std::chrono::milliseconds>(reads.nextDiscovery - std::chrono::steady_clock::now()));
+            std::optional<std::chrono::milliseconds> delay;
+            if (reads.dead.empty()) {
+                delay = std::max(std::chrono::milliseconds(1), std::chrono::duration_cast<std::chrono::milliseconds>(reads.nextDiscovery - std::chrono::steady_clock::now()));
+            } else {
+                delay = std::chrono::milliseconds(0);
+            }
             batches = co_await service::utils::redis::consumeGroup(
                 context.redis(),
                 context.template worker_state<std::optional<service::common::WorkerIdentity>>().value().channels,

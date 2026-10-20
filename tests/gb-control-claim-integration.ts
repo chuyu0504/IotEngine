@@ -170,6 +170,10 @@ try {
     assert.equal(Number(await redis.send('ZCARD', [deadlineKey])), 0);
     console.log('PASS GB28181 directed Pub/Sub receipts, durable recovery, atomic ACK and idempotent result/claim fencing');
 } finally {
+    await subscriber.unsubscribe().catch(() => {});
+    await inputSubscriber.unsubscribe().catch(() => {});
+    await unrelated.unsubscribe().catch(() => {});
+    await deadlineSubscriber.unsubscribe().catch(() => {});
     subscriber.close();
     inputSubscriber.close();
     unrelated.close();

@@ -81,7 +81,7 @@ async function verifySubscriptionRaceAndRecovery() {
     let clientId = '';
     try {
         await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by)
-            VALUES(${raceId},${marker},'Modbus','{"transport":"tcp","mode":"TCP Client","targets":[]}'::jsonb,'disabled','collector',${admin})`;
+            VALUES(${raceId},${marker},'Modbus','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":59887,"targets":[]}'::jsonb,'disabled','collector',${admin})`;
         await db.begin(async transaction => {
             // Block the initial business query without blocking Redis. The SSE
             // must already own a subscribed connection while its query waits.

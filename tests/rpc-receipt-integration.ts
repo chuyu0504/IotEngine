@@ -87,6 +87,8 @@ try {
     console.log('PASS RPC durable reply, expiry, Pub/Sub wakeup, acknowledgement and lost-notification fallback');
 } finally {
     await redis.send('DEL', [input, reply, missedReply, deadlines]);
+    await subscriber.unsubscribe().catch(() => {});
+    await lateSubscriber.unsubscribe().catch(() => {});
     subscriber.close();
     lateSubscriber.close();
     redis.close();
