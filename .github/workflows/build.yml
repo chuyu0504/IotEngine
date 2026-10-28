@@ -353,7 +353,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-windows-static-${{ steps.toolchain.outputs.compiler }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-windows-static-${{ steps.toolchain.outputs.compiler }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'ports/cmake/triplets/**') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ runner.arch }}-x64-windows-static-${{ steps.toolchain.outputs.compiler }}-
 

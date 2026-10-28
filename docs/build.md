@@ -9,6 +9,7 @@ Ruvia、FAAC（`faac-1.31.1`）、nanopb 使用固定提交并带 SHA-256 校验
 
 ## 工具链
 
+- 项目使用 C++20；两个平台的 triplet 将 Protobuf 与 Abseil 同样配置为 C++20，保持运行库和使用方的语言模式一致。
 - CMake 3.28 或更新版本、Git、Bun 1.4.3，以及已 bootstrap 的 vcpkg，`VCPKG_ROOT` 指向其根目录。
 - Linux：Ubuntu 24.04、由 `mise` 管理的 `cross-tools/clang-cross` LLVM musl 工具链（`x86_64-unknown-linux-musl-clang` / `clang++`、`lld`、`x64-linux-musl` triplet）、`ccache`、Ninja、NASM、pkg-config、Bison、Flex、Make、curl、zip、unzip、tar、xz-utils；与 FlexEdge 的 Linux CI 工具链一致。
 - Windows：MSVC C++ 工具链和 Windows SDK；vcpkg 自行获取 NASM、MSYS2 等端口构建工具。

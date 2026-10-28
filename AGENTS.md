@@ -20,13 +20,13 @@
 
 - 名称表达对象、职责和动作，不重复上下文；避免含糊缩写及 `handle`、`process`、`doWork` 等泛称，`Manager`、`Helper`、`Processor`、`Data` 不得混合无关职责。行业术语、框架约定及第三方源码保持原样。
 - 目录用小写 `snake_case`，文件用职责前缀（如 `device.service.h`、`device.api.ts`）；禁用 `service.h`、`runtime.h` 等裸名、混合大小写和连字符。
-- C++23 以 `clang-format 21` 与根 `.clang-format` 格式化：类型 `PascalCase`，函数与变量 `camelCase`，常量 `kPascalCase`，数据成员尾下划线 `_`，命名空间 `service::<component>`。前端由 Biome 格式化与检查。
+- C++20 以 `clang-format 21` 与根 `.clang-format` 格式化：类型 `PascalCase`，函数与变量 `camelCase`，常量 `kPascalCase`，数据成员尾下划线 `_`，命名空间 `service::<component>`。前端由 Biome 格式化与检查。
 - `#include` 使用仓库根相对路径 `service/...`，全部位于文件头；一个文件只承载一个职责单元，不在文件中段追加另一组 include 与实现。
 - 优先类内方法，仅保留必要的 `inline`，模板不重复标注。
 
 ## 分层与目录
 
-技术栈：后端 C++23 + Ruvia，媒体面 ZLMediaKit（C SDK `mk_api`），前端 React 19 + Ant Design + Tailwind CSS 4 + Bun，数据库 PostgreSQL/TimescaleDB，消息与协调 Redis。
+技术栈：后端 C++20 + Ruvia，媒体面 ZLMediaKit（C SDK `mk_api`），前端 React 19 + Ant Design + Tailwind CSS 4 + Bun，数据库 PostgreSQL/TimescaleDB，消息与协调 Redis。
 
 ```text
 service/
@@ -182,7 +182,7 @@ EdgeNode 固件兼容：
 
 ## README 内容规范
 
-- `README.md` 只作项目使用与部署入口：系统定位、核心组成（`service` 后端、`web` 管理端、`clients/windows` 客户端、EdgeNode 接入）、环境与依赖前置条件（C++23、vcpkg、Bun、PostgreSQL/TimescaleDB、Redis）、构建与启动最短路径、`.env.example` 关键配置引导及 `docs/` 专项文档导航；不是接口手册、数据库字典或完整功能清单。
+- `README.md` 只作项目使用与部署入口：系统定位、核心组成（`service` 后端、`web` 管理端、`clients/windows` 客户端、EdgeNode 接入）、环境与依赖前置条件（C++20、vcpkg、Bun、PostgreSQL/TimescaleDB、Redis）、构建与启动最短路径、`.env.example` 关键配置引导及 `docs/` 专项文档导航；不是接口手册、数据库字典或完整功能清单。
 - 快速开始提供可直接执行的最短命令路径，明确区分 Linux（POSIX shell）与 Windows（PowerShell / MSVC）环境及必要前置条件，不混用不同环境语法。构建细节、工业协议、MQTT、VPN 等专项说明放入 `docs/` 对应文档并由 `README.md` 链接，不在 `README.md` 中重复展开。
 - 只描述当前已实现且可验证的行为；不收录规划特性、未经验证的兼容性或性能结论，也不写入内部架构与工程规范（归 `AGENTS.md`）、模块文件清单、变更流水、排障过程、调优记录或逐项 bug 修复说明，严禁包含任何真实凭据或内部环境地址。
 - 编译选项、脚本命令、环境变量、默认值、端口、target 与路径以 `CMakeLists.txt`、`vcpkg.json`、`package.json`、`.env.example` 和 `.github/workflows/build.yml` 为准，同一事实只列一处。修改后先判断是否影响环境准备、构建启动、部署交付或顶层组件入口；仅影响这些入口信息时才同步更新 `README.md` 并核对命令与相对链接，不得以“同步文档”为由向 `README.md` 追加细节。

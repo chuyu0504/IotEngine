@@ -1942,8 +1942,8 @@ return result
         }
         const std::string nodeId(nodes.front()[0].value().value_or(""));
         const auto capability = ruvia::json_value::parse(nodes.front()[1].value().value_or("{}"));
-        const auto ioCapability = capability.get<ruvia::json_value>("externalIo");
-        if (!ioCapability || !static_cast<bool>(ioCapability->get<ruvia::bool_value>("supported").value_or(ruvia::bool_value{ false }))) {
+        const auto ioCapability = capability.template get<ruvia::json_value>("externalIo");
+        if (!ioCapability || !static_cast<bool>(ioCapability->template get<ruvia::bool_value>("supported").value_or(ruvia::bool_value{ false }))) {
             service::common::fail(18002, "该边缘节点固件未声明外部 IO 能力，请先升级固件", 400);
         }
         ruvia::db_query modelsQuery(c.pool());

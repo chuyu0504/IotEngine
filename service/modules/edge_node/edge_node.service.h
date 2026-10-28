@@ -573,7 +573,9 @@ class EdgeService {
             service::common::fail(17003, "地址只能填写域名或 IP，不能包含空白、URL 或控制字符", 400);
         }
         std::string wire;
-        config.SerializeToString(&wire);
+        if (!config.SerializeToString(&wire)) {
+            service::common::fail(17005, "透传配置编码失败", 500);
+        }
         std::string encoded;
         constexpr char digits[] = "0123456789abcdef";
         for (unsigned char byte : wire) {

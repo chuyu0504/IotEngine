@@ -7,6 +7,10 @@ set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${CMAKE_CURRENT_LIST_DIR}/../llvm.cmake")
 set(VCPKG_ENV_PASSTHROUGH IOT_ENGINE_MUSL_ROOT)
 # Meson uses shared-linker settings for executable probes; override those probes directly.
 set(VCPKG_MESON_CONFIGURE_OPTIONS "-Dc_link_args=-static" "-Dcpp_link_args=-static")
+if(PORT STREQUAL "protobuf" OR PORT STREQUAL "abseil")
+    # Build the runtime and its C++ dependency in the application's language mode.
+    list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DCMAKE_CXX_STANDARD=20")
+endif()
 if(PORT STREQUAL "brotli")
     # Encoder allocation failures must return to the request, never exit the process.
     list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DCMAKE_C_FLAGS=-DBROTLI_ENCODER_CLEANUP_ON_OOM")
