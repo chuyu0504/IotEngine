@@ -86,14 +86,12 @@ class Service final {
             service::common::fail(10004, "串口操作已取消", 503);
         }
         const auto input = ruvia::from_json<service::message::serial_debug::Request>(payload, { .resource_ = c.pool() });
-        if (!input) {
-            service::common::fail(17021, "串口请求格式无效", 400);
-        }
-        const auto user = std::string(input->get<"userId">().view()), connection = std::string(input->get<"connectionId">().view()), node = std::string(input->get<"nodeId">().view());
+
+        const auto user = std::string(input.get<"userId">().view()), connection = std::string(input.get<"connectionId">().view()), node = std::string(input.get<"nodeId">().view());
         if (!service::common::isUuid(user) || !service::common::isUuid(connection) || !service::common::isUuid(node)) {
             service::common::fail(17021, "串口会话身份无效", 400);
         }
-        const auto id = std::string(input->get<"sessionId">().view());
+        const auto id = std::string(input.get<"sessionId">().view());
         if (!service::common::isUuid(id)) {
             service::common::fail(17021, "串口会话无效", 400);
         }
@@ -103,7 +101,7 @@ class Service final {
             if (!current) {
                 service::common::fail(17019, "节点当前离线", 409);
             }
-            const auto& path = input->get<"path">();
+            const auto& path = input.get<"path">();
             auto ticket = SerialTargetRecord::decode(node + "\n" + std::string(*current) + "\n" + (path ? std::string(path->view()) : std::string{}));
             if (!ticket || !co_await registerSession(c, *ticket, id)) {
                 service::common::fail(17021, "节点不支持串口调试或已重新连接", 409);
@@ -136,7 +134,7 @@ class Service final {
         }
         const auto& ticket = binding->ticket;
         if (operation == "serial-events") {
-            const auto& after = input->get<"after">();
+            const auto& after = input.get<"after">();
             if (!after || after->value_ < 0) {
                 service::common::fail(17021, "串口事件游标无效", 400);
             }
@@ -149,14 +147,14 @@ class Service final {
             auto cursor = after->value_;
             for (const auto& item : items) {
                 auto event = ruvia::from_json<service::message::serial_debug::Event>(item, { .resource_ = c.pool() });
-                if (!event || event->get<"sequence">().value_ <= cursor) {
+                if (event.get<"sequence">().value_ <= cursor) {
                     continue;
                 }
-                const auto sequence = event->get<"sequence">().value_;
+                const auto sequence = event.get<"sequence">().value_;
                 if (sequence != cursor + 1) {
                     service::common::fail(17021, "串口接收缓冲区已溢出，请重新打开调试", 409);
                 }
-                events.emplace(std::move(*event));
+                events.emplace_back(std::move(event));
                 cursor = sequence;
             }
             service::message::serial_debug::EventsReply reply(ruvia::model_options{ .resource_ = c.pool() });
@@ -187,7 +185,7 @@ class Service final {
         if (operation != "serial-command") {
             service::common::fail(17021, "未知串口操作", 400);
         }
-        const auto& command = input->get<"command">();
+        const auto& command = input.get<"command">();
         auto request = command ? decodeRequest(command->view(), ticket.path, 1) : std::nullopt;
         if (!request) {
             service::common::fail(17021, "串口指令或参数无效", 400);

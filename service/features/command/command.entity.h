@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
-#include <ruvia/web/db/db_predicate.h>
+#include <ruvia/web/db/db_query.h>
 
 namespace service::command::persistence {
 

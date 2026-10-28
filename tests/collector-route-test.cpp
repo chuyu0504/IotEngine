@@ -14,7 +14,7 @@
 #include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
-#include <ruvia/web/redis/redis_client.h>
+#include <ruvia/web/redis/redis.h>
 
 #include "service/features/collector/collector.service.h"
 #include "service/features/live/live.service.h"

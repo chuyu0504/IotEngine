@@ -13,7 +13,7 @@
 
 #include <ruvia/web/app.h>
 #include <ruvia/web/db/db.h>
-#include <ruvia/web/db/db_migration.h>
+#include <ruvia/web/db/db_schema.h>
 #include <ruvia/web/error.h>
 #include <ruvia/web/redis/redis.h>
 
@@ -397,7 +397,7 @@ void configureWeb(ruvia::application& app, const std::filesystem::path& runtime)
     config.root_ = webRoot;
     config.static_options_.index_file_ = "index.html";
     config.static_options_.cache_control_ = "no-cache";
-    config.static_options_.file_types_.kind_ = ruvia::static_file_type_policy::kind_type::all;
+    config.static_options_.file_types_.kind_ = ruvia::static_file_type_policy::kind::all;
     app.document_root(std::move(config));
 }
 
@@ -584,7 +584,14 @@ void configureServer(
         .alias_ = "startup",
         .config_ = components.database,
     });
-    app.use_worker_state<ruvia::web_worker_handle>()
+    for (const auto alias : { "acquisition-fence", "edge-configuration-read", "edge-history", "telemetry-alert", "vpn-address-allocation" }) {
+        app.database(ruvia::db_registration_config{
+            .alias_ = alias,
+            .config_ = components.database,
+        });
+    }
+    app.use<service::middleware::ValidationErrorCodeMiddleware<service::common::kValidationErrorCode>>()
+        .use_worker_state<ruvia::web_worker_handle>()
         .use_worker_state<std::optional<service::common::WorkerIdentity>>()
         .use_worker_state<service::common::UuidV7State>()
         .use_worker_state<service::edge::config::PlatformIdentity>(
@@ -617,13 +624,13 @@ void configureServer(
         .redis(ruvia::redis_registration_config{
             .config_ = std::move(components.serviceRedis),
         })
-        .get_http_client({ .alias_ = "link-public-ip", .config_ = {
-                                                           .scheme_ = ruvia::http_scheme::http,
-                                                           .host_ = "ip.sb",
-                                                           .port_ = 80,
-                                                           .max_response_bytes_ = 64U * 1024U,
-                                                           .user_agent_ = "curl/8.0",
-                                                       } })
+        .http_client({ .alias_ = "link-public-ip", .config_ = {
+                                                       .scheme_ = ruvia::http_scheme::http,
+                                                       .host_ = "ip.sb",
+                                                       .port_ = 80,
+                                                       .max_response_bytes_ = 64U * 1024U,
+                                                       .user_agent_ = "curl/8.0",
+                                                   } })
         .on_start(std::move(applicationStart))
         .on_stop([applicationLifecycle, observability] {
             // Keep runtime diagnostics alive until every component has stopped.
@@ -670,14 +677,14 @@ int main(int argc, char* argv[]) {
             // port-zero configuration uses the actual bound SDK listener port.
             service::gb28181::media::sdkSupervisor().configure(gb28181.media);
             service::gb28181::media::sdkSupervisor().start();
-            app.get_http_client({ .alias_ = "gb-media", .config_ = {
-                                                            .scheme_ = ruvia::http_scheme::http,
-                                                            .host_ = "127.0.0.1",
-                                                            .port_ = service::gb28181::media::sdkSupervisor().ports().http,
-                                                            .connection_count_ = 64,
-                                                            .request_timeout_ = std::nullopt,
-                                                            .max_response_bytes_ = 2U * 1024U * 1024U,
-                                                        } });
+            app.http_client({ .alias_ = "gb-media", .config_ = {
+                                                        .scheme_ = ruvia::http_scheme::http,
+                                                        .host_ = "127.0.0.1",
+                                                        .port_ = service::gb28181::media::sdkSupervisor().ports().http,
+                                                        .connection_count_ = 64,
+                                                        .request_timeout_ = std::nullopt,
+                                                        .max_response_bytes_ = 2U * 1024U * 1024U,
+                                                    } });
         }
         const auto budget = service::config::WorkerBudget::resolve(
             process,

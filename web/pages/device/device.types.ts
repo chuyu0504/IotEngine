@@ -1,5 +1,6 @@
 import type { Link } from '../link/link.types';
 import type {
+    DerivedPoint,
     DeviceParameterDefinition,
     Protocol,
     StoragePolicy,
@@ -110,7 +111,12 @@ export interface DeviceOption {
     access_level?: DeviceAccessLevel;
 }
 /** 创建设备 DTO */
+export interface DeviceExternalIo {
+    protocolConfigId: string;
+    derivedPoints?: DerivedPoint[];
+}
 export interface CreateDeviceDto {
+    externalIo?: DeviceExternalIo | null;
     edge_connection?: Link.SaveDto;
     name: string;
     device_code: string;
@@ -139,6 +145,7 @@ export interface CreateDeviceDto {
 }
 /** 更新设备 DTO */
 export interface UpdateDeviceDto {
+    externalIo?: DeviceExternalIo | null;
     edge_connection?: Link.SaveDto;
     name?: string;
     device_code?: string;
@@ -167,6 +174,7 @@ export interface UpdateDeviceDto {
 }
 /** 设备静态数据（不包含实时数据） */
 export interface DeviceStaticData extends EdgeConnection {
+    externalIo?: DeviceExternalIo | null;
     /** MQTT 卡片展示的上报点位及可见派生值 UUID。 */
     cardPointIds?: string[];
     parameterDefinitions?: DeviceParameterDefinition[];

@@ -1216,10 +1216,8 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::sto
         payload.empty() ? std::string_view{ "{}" } : payload,
         { .resource_ = &resource }
     );
-    if (!request) {
-        throw std::invalid_argument("GB28181 RPC request body is invalid");
-    }
-    const auto& input = *request;
+
+    const auto& input = request;
 
     if (operation == control_protocol::kCatalogOperation) {
         const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");

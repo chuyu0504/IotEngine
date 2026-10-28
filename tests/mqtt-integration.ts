@@ -172,6 +172,22 @@ async function until(check: () => Promise<boolean>, reason: string) {
     throw Error(reason);
 }
 
+async function reconnectFixtureSubscribers() {
+    const database = new URL(redisUrl).pathname.slice(1) || '0';
+    const listing = String(await redis.send('CLIENT', ['LIST', 'TYPE', 'PUBSUB']));
+    let disconnected = 0;
+    for (const line of listing.trim().split('\n')) {
+        const client = Object.fromEntries(line.trim().split(' ').map(field => {
+            const separator = field.indexOf('=');
+            return [field.slice(0, separator), field.slice(separator + 1)];
+        }));
+        if (client.db === database && Number(client.sub) > 0) {
+            disconnected += Number(await redis.send('CLIENT', ['KILL', 'ID', client.id]));
+        }
+    }
+    assert(disconnected > 0, 'fixture notification subscribers were not connected');
+}
+
 try {
     const config = {
         storagePolicy: 'report',
@@ -364,13 +380,14 @@ try {
     await until(async () => (await status(expired.command_ids[0])).status === 'UNKNOWN', 'missing result did not become unconfirmed');
     await Bun.sleep(1100);
     assert.equal(commands, beforeTimeout, 'control was automatically replayed');
-    // Model a delayed collector result whose separate wake notification was lost.
+    // A lost notification is recovered by draining durable entries on reconnect.
     await redis.send('XADD', ['iot:v3:command-result', '*',
         'command_id', expired.command_ids[0], 'device_id', devices[0], 'device_code', 'D001',
         'success', '1', 'result_state', 'SUCCEEDED', 'message_id', crypto.randomUUID(),
         'reason', 'fixture_delayed_result']);
+    await reconnectFixtureSubscribers();
     await until(async () => (await status(expired.command_ids[0])).status === 'SUCCEEDED',
-        'result with a missing wake notification was not consumed');
+        'result with a missing wake notification was not consumed after reconnect');
     await ok('PUT', `/v1/protocol/configs/${model}`, {config:{pointVisibility:{[point]:false}}});
     await until(async () => JSON.stringify((await card()).cardPointIds) === JSON.stringify([enabledPoint, derived]),
         'explicitly hidden report point remained on the card');

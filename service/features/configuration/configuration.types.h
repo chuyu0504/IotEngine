@@ -38,6 +38,25 @@ struct FunctionDefinition {
     std::string direction;
 };
 
+struct ExternalIoPoint {
+    std::string id;
+    std::string channel;
+    std::string kind;
+    std::string name;
+    std::string unit;
+    bool visible = true;
+};
+
+struct DerivedConfiguration {
+    std::string config;
+    std::vector<std::string> sources;
+    std::string snapshotDigest;
+
+    std::vector<std::string_view> sourceViews() const {
+        return { sources.begin(), sources.end() };
+    }
+};
+
 struct DeviceModel {
     service::collector::DeviceDefinition device;
     EndpointDefinition endpoint;
@@ -47,6 +66,11 @@ struct DeviceModel {
     std::vector<service::message::realtime::Point> points;
     std::vector<service::common::DerivedPoint> derivedPoints;
     std::vector<FunctionDefinition> functions;
+    std::string externalIoModelId;
+    std::string externalIoConfig;
+    std::string deviceDerivedConfig;
+    DerivedConfiguration calculation;
+    std::vector<ExternalIoPoint> externalIo;
 };
 
 } // namespace service::configuration

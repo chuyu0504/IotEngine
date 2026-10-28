@@ -1,6 +1,6 @@
 #pragma once
-
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -49,18 +49,18 @@ class DeptService {
                                    : entities::DeptEntity::column<"parent_id">() == *parentId);
         }
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().template get_repository<entities::DeptEntity>().count(options)
+            co_await c.db().template repository<entities::DeptEntity>().count(options)
         );
         auto query = departmentSelect(c);
         query.where(options.where_)
             .order_by(entities::DeptEntity::column_name<"sort_order">())
             .add_order_by(entities::DeptEntity::column_name<"id">())
-            .take(pageSize)
-            .skip((page - 1) * pageSize);
+            .limit(pageSize)
+            .offset((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::DepartmentDetails>();
         ruvia::boxed_array<DeptItemDto> departments(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = departments.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = departments.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             fill(item, row);
         }
         DeptPageDataDto result(ruvia::model_options{ .resource_ = c.arena() });
@@ -76,11 +76,13 @@ class DeptService {
     ruvia::task<ruvia::boxed_array<DeptOptionDto>> options(Context& c) {
         ruvia::db_find_options options;
         options.where_ = entities::DeptEntity::column<"deleted_at">().is_null();
-        options.order_ = { { "sort_order" }, { "id" } };
-        const auto rows = co_await c.db().template get_repository<entities::DeptEntity>().find(options);
+
+        const std::array<ruvia::db_find_order, 2> findOrder1{ { { "sort_order" }, { "id" } } };
+        options.order_ = findOrder1;
+        const auto rows = co_await c.db().template repository<entities::DeptEntity>().find(options);
         ruvia::boxed_array<DeptOptionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.set<"id">(row.template get<"id">())
                 .template set<"name">(row.template get<"name">())
                 .template set<"parentId">(row.template is_null<"parent_id">() ? std::string_view{} : std::string_view(row.template get<"parent_id">()));
@@ -123,14 +125,14 @@ class DeptService {
         }
         department.set<"sort_order">(sortOrder);
         department.set<"status">(status);
-        (void)co_await c.db().template get_repository<entities::DeptEntity>().insert(department);
+        (void)co_await c.db().template repository<entities::DeptEntity>().insert(department);
     }
 
     template <typename Context>
     ruvia::task<void> update(Context& c, std::string_view id, const UpdateDeptBody& body) {
         ruvia::db_find_options existing;
         existing.where_ = db::activeId<entities::DeptEntity>(id);
-        if (!co_await c.db().template get_repository<entities::DeptEntity>().exists(existing)) {
+        if (!co_await c.db().template repository<entities::DeptEntity>().exists(existing)) {
             service::common::fail(14001, "部门不存在", 404);
         }
 
@@ -149,7 +151,7 @@ class DeptService {
         std::vector<ruvia::db_assignment> changes;
         bool changed = false;
         auto append = [&](std::string_view column, ruvia::db_expression value) {
-            changes.push_back({ std::string(column), value });
+            changes.push_back({ column, value });
             changed = true;
         };
         if (body.get<"name">()) {
@@ -173,29 +175,29 @@ class DeptService {
         if (!changed) {
             co_return;
         }
-        changes.push_back({ std::string(entities::DeptEntity::column_name<"updated_at">()), query.call("now") });
-        (void)co_await c.db().template get_repository<entities::DeptEntity>().update(entities::DeptEntity::column<"id">() == id, changes);
+        changes.push_back({ entities::DeptEntity::column_name<"updated_at">(), query.call("now") });
+        (void)co_await c.db().template repository<entities::DeptEntity>().update(entities::DeptEntity::column<"id">() == id, changes);
     }
 
     template <typename Context>
     ruvia::task<void> remove(Context& c, std::string_view id) {
         ruvia::db_find_options existing;
         existing.where_ = db::activeId<entities::DeptEntity>(id);
-        if (!co_await c.db().template get_repository<entities::DeptEntity>().exists(existing)) {
+        if (!co_await c.db().template repository<entities::DeptEntity>().exists(existing)) {
             service::common::fail(14001, "部门不存在", 404);
         }
         ruvia::db_find_options children;
         children.where_ =
             entities::DeptEntity::column<"parent_id">() == id && entities::DeptEntity::column<"deleted_at">().is_null();
-        if (co_await c.db().template get_repository<entities::DeptEntity>().exists(children)) {
+        if (co_await c.db().template repository<entities::DeptEntity>().exists(children)) {
             service::common::fail(14005, "部门存在子部门，不能删除", 409);
         }
         ruvia::db_query expressions(c.pool());
         const ruvia::db_assignment deletionChanges[]{
-            { std::string(entities::DeptEntity::column_name<"deleted_at">()), expressions.call("now") },
-            { std::string(entities::DeptEntity::column_name<"updated_at">()), expressions.call("now") }
+            { entities::DeptEntity::column_name<"deleted_at">(), expressions.call("now") },
+            { entities::DeptEntity::column_name<"updated_at">(), expressions.call("now") }
         };
-        (void)co_await c.db().template get_repository<entities::DeptEntity>().update(
+        (void)co_await c.db().template repository<entities::DeptEntity>().update(
             entities::DeptEntity::column<"id">() == id,
             deletionChanges
         );
@@ -207,16 +209,16 @@ class DeptService {
     departmentDescendant(Context& c, std::string_view currentId, std::string_view parentId) {
         using namespace ruvia;
         db_query expressions(c.pool());
-        auto departments = c.db().template get_repository<entities::DeptEntity>();
-        auto seed = departments.create_query_builder("seed");
+        auto departments = c.db().template repository<entities::DeptEntity>();
+        auto seed = departments.query_builder("seed");
         seed.select({ { "id" } })
             .where(entities::DeptEntity::column<"parent_id">() == currentId && entities::DeptEntity::column<"deleted_at">().is_null());
-        auto recursive = departments.create_query_builder("d");
+        auto recursive = departments.query_builder("d");
         recursive.select({ { "id" } })
             .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(entities::DeptEntity::column<"parent_id">().expression(expressions, "d"), db_binary_operator::equal, entities::DeptEntity::column<"id">().expression(expressions, "x")))
             .where(entities::DeptEntity::column<"deleted_at">().is_null());
         seed.combine(db_set_operation::union_all, recursive);
-        auto query = departments.create_query_builder("candidate");
+        auto query = departments.query_builder("candidate");
         query.with("descendants", seed, { .recursive_ = true })
             .join_cte(db_join_type::inner, "descendants", "x", expressions.binary(entities::DeptEntity::column<"id">().expression(expressions, "candidate"), db_binary_operator::equal, entities::DeptEntity::column<"id">().expression(expressions, "x")))
             .where(entities::DeptEntity::column<"id">() == parentId);
@@ -228,7 +230,7 @@ class DeptService {
         using namespace ruvia;
         using entities::DeptEntity;
         db_query expressions(c.pool());
-        auto query = c.db().template get_repository<DeptEntity>().create_query_builder("d");
+        auto query = c.db().template repository<DeptEntity>().query_builder("d");
         query.select({ { "id", expressions.cast(DeptEntity::column<"id">().expression(expressions, "d"), db_data_type::text) }, { "name", DeptEntity::column<"name">().expression(expressions, "d") }, { "code", expressions.coalesce({ expressions.cast(DeptEntity::column<"code">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"parent_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "parent_name", expressions.coalesce({ expressions.cast(DeptEntity::column<"name">().expression(expressions, "parent"), db_data_type::text), expressions.value("") }) }, { "leader_id", expressions.coalesce({ expressions.cast(DeptEntity::column<"leader_id">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "leader_name", expressions.coalesce({ service::user::entities::UserEntity::column<"nickname">().expression(expressions, "u"), service::user::entities::UserEntity::column<"username">().expression(expressions, "u"), expressions.value("") }) }, { "sort_order", DeptEntity::column<"sort_order">().expression(expressions, "d") }, { "status", DeptEntity::column<"status">().expression(expressions, "d") }, { "created_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"created_at">().expression(expressions, "d") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { DeptEntity::column<"updated_at">().expression(expressions, "d") }) } });
         query.template join<DeptEntity>(db_join_type::left, "parent", expressions.binary(DeptEntity::column<"id">().expression(expressions, "parent"), db_binary_operator::equal, DeptEntity::column<"parent_id">().expression(expressions, "d")))
             .template join<service::user::entities::UserEntity>(db_join_type::left, "u", expressions.binary(expressions.binary(service::user::entities::UserEntity::column<"id">().expression(expressions, "u"), db_binary_operator::equal, DeptEntity::column<"leader_id">().expression(expressions, "d")), db_binary_operator::and_value, expressions.unary(db_unary_operator::is_null, service::user::entities::UserEntity::column<"deleted_at">().expression(expressions, "u"))));
@@ -257,7 +259,7 @@ class DeptService {
         if (!parentId.empty()) {
             ruvia::db_find_options parent;
             parent.where_ = db::activeId<entities::DeptEntity>(parentId);
-            if (!co_await c.db().template get_repository<entities::DeptEntity>().exists(parent)) {
+            if (!co_await c.db().template repository<entities::DeptEntity>().exists(parent)) {
                 service::common::fail(14003, "上级部门不存在", 400);
             }
             if (currentId) {
@@ -271,7 +273,7 @@ class DeptService {
             ruvia::db_find_options leader;
             leader.where_ = db::activeId<service::user::entities::UserEntity>(leaderId) &&
                 service::user::entities::UserEntity::column<"status">() == "enabled";
-            if (!co_await c.db().template get_repository<service::user::entities::UserEntity>().exists(leader)) {
+            if (!co_await c.db().template repository<service::user::entities::UserEntity>().exists(leader)) {
                 service::common::fail(14004, "负责人不存在或已禁用", 400);
             }
         }
@@ -287,7 +289,7 @@ class DeptService {
         if (excludedId) {
             options.where_ = std::move(options.where_) && entities::DeptEntity::column<"id">() != *excludedId;
         }
-        if (co_await c.db().template get_repository<entities::DeptEntity>().exists(options)) {
+        if (co_await c.db().template repository<entities::DeptEntity>().exists(options)) {
             service::common::fail(14002, "部门编码已存在", 409);
         }
     }

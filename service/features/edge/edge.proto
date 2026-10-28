@@ -25,6 +25,7 @@ enum Protocol {
   PROTOCOL_MC = 4;
   PROTOCOL_FINS = 5;
   PROTOCOL_DLT645 = 6;
+  PROTOCOL_EXTERNAL_IO = 7;
 }
 
 enum ConfigItemKind {
@@ -39,6 +40,14 @@ enum ConfigItemKind {
   CONFIG_ITEM_INDUSTRIAL_POINT = 8;
   CONFIG_ITEM_DTU = 9;
   CONFIG_ITEM_DERIVED_POINT = 10;
+  CONFIG_ITEM_EXTERNAL_IO = 11;
+}
+
+enum ExternalIoKind {
+  EXTERNAL_IO_UNSPECIFIED = 0;
+  EXTERNAL_IO_DI = 1;
+  EXTERNAL_IO_DO = 2;
+  EXTERNAL_IO_AI = 3;
 }
 
 enum ValueKind {
@@ -134,6 +143,8 @@ enum PlatformConfigOperation {
 message Empty {}
 
 message Hello {
+  // Advertised only when this node can access the local IO service.
+  bool supports_external_io = 39;
   // Enables paired raw business requests/responses; field absent in deployed firmware.
   bool supports_raw_telemetry = 38;
   reserved 7;
@@ -180,6 +191,8 @@ message Hello {
 }
 
 message HelloAck {
+  // Both ends must opt in before IO configuration, commands or samples.
+  bool external_io = 9;
   // Negotiated only with a node advertising supports_raw_telemetry.
   bool raw_telemetry = 8;
   bytes assigned_node_id = 1 [(nanopb).max_size = 16];
@@ -238,6 +251,8 @@ message VpnCapabilities {
 }
 
 message CapabilityReport {
+  bool supports_external_io = 12;
+  repeated ExternalIoChannel external_io_channels = 11 [(nanopb).max_count = 15];
   repeated Protocol supported_protocols = 7 [(nanopb).max_count = 6];
   repeated InterfaceCapability interfaces = 1 [(nanopb).max_count = 16];
   repeated SerialCapability serial_ports = 2 [(nanopb).max_count = 8];
@@ -248,6 +263,13 @@ message CapabilityReport {
   bool supports_serial_debug = 8;
   bool supports_dtu = 9;
   bool supports_derived_points = 10;
+}
+
+message ExternalIoChannel {
+  string channel = 1 [(nanopb).max_length = 16];
+  ExternalIoKind kind = 2;
+  bool available = 3;
+  bool controllable = 4;
 }
 
 // Per-platform conntrack IP-byte deltas, including TCP/IP headers and retransmits.
@@ -566,6 +588,17 @@ message DerivedPointConfig {
   bool hidden = 13;
 }
 
+message ExternalIoPointConfig {
+  bool hidden = 8;
+  bytes device_id = 1 [(nanopb).max_size = 16];
+  bytes model_id = 2 [(nanopb).max_size = 16];
+  string point_id = 3 [(nanopb).max_length = 36];
+  string channel = 4 [(nanopb).max_length = 16];
+  ExternalIoKind kind = 5;
+  string name = 6 [(nanopb).max_length = 100];
+  string unit = 7 [(nanopb).max_length = 32];
+}
+
 message ConfigItem {
   uint64 revision = 1;
   uint32 index = 2;
@@ -582,6 +615,7 @@ message ConfigItem {
     IndustrialPointConfig industrial_point = 17;
     DtuConfig dtu = 18;
     DerivedPointConfig derived_point = 19;
+    ExternalIoPointConfig external_io = 20;
   }
 }
 
@@ -633,6 +667,9 @@ message TelemetryValue {
 }
 
 message TelemetryRecord {
+  // SHA-256 of the exact applied configuration snapshot used for this sample.
+  // Absent in existing firmware; such records keep their legacy parsing path.
+  bytes configuration_sha256 = 21 [(nanopb).max_size = 32];
   // Paired with raw_payloads (responses), including an empty request for unsolicited reports.
   // Presence selects platform parsing; values must be absent. Handshakes/debug are excluded.
   repeated bytes raw_requests = 20 [(nanopb).type = FT_POINTER];
@@ -708,6 +745,8 @@ message CommandValue {
 }
 
 message CommandRequest {
+  // Explicit source discriminator; valid only after external_io negotiation.
+  bool external_io = 9;
   bytes command_id = 1 [(nanopb).max_size = 16];
   bytes device_id = 2 [(nanopb).max_size = 16];
   repeated CommandValue values = 3 [(nanopb).max_count = 8];

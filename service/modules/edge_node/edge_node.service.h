@@ -46,9 +46,10 @@
 #include <ruvia/core/timer.h>
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/db/db_repository.h>
 #include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/redis/redis_types.h>
-#include <ruvia/web/request_validation.h>
+#include <ruvia/web/validation.h>
 #include <ruvia/web/websocket.h>
 
 #include "service/common/database.h"
@@ -106,14 +107,12 @@ ruvia::task<EventResult> invokeEvent(void* handlers, EventContext& context) {
     if (context.stop.stop_requested()) {
         throw EventError(10002, "操作已取消");
     }
-    auto body = ruvia::from_json<Body>(context.request.data, { .resource_ = context.arena() });
-    if (!body) {
+    std::optional<Body> body;
+    try {
+        body = ruvia::from_json<Body>(context.request.data, { .resource_ = context.arena() });
+    } catch (const std::invalid_argument&) {
         throw EventError(10001, "事件参数格式无效");
     }
-    ruvia::validator validation({ .resource_ = context.arena() });
-    ruvia::json_body<Body> validator;
-    validator.validate(*body, validation);
-    validation.throw_if_invalid();
     co_return co_await (static_cast<Handlers*>(handlers)->*Handler)(context, *body);
 }
 
@@ -469,20 +468,17 @@ class EdgeService {
     template <typename Context>
     ruvia::task<std::string> dtuChannels(Context& c, std::string_view nodeId) {
         ruvia::db_query node(c.pool());
-        node.select(booleanText(node, db::jsonText(node, node.column(entities::EdgeNodeEntity::column_name<"capability">()), "dtu")))
-            .from(entities::EdgeNodeEntity::table_name())
-            .where(node.binary(node.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
-        const auto nodes = co_await c.db().query(node);
+        auto nodeBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+        nodeBuilder.select({ { "capability", booleanText(node, db::jsonText(node, node.column(entities::EdgeNodeEntity::column_name<"capability">()), "dtu")) } }).where(node.binary(node.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, node.cast(node.value(nodeId), Type::uuid)));
+        const auto nodes = co_await nodeBuilder.get_raw_many();
         if (nodes.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
         std::string result = nodes.front()[0].template as<bool>().value_or(false) ? "{\"supported\":true,\"channels\":[" : "{\"supported\":false,\"channels\":[";
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeDtuEntity::column_name<"config">()), query.column(entities::EdgeDtuEntity::column_name<"status">()) })
-            .from(entities::EdgeDtuEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .order_by(query.column(entities::EdgeDtuEntity::column_name<"channel_id">()));
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeDtuEntity>().query_builder();
+        queryBuilder.select({ { "config", query.column(entities::EdgeDtuEntity::column_name<"config">()) }, { "status", query.column(entities::EdgeDtuEntity::column_name<"status">()) } }).where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).order_by(query.column(entities::EdgeDtuEntity::column_name<"channel_id">()));
+        const auto rows = co_await queryBuilder.get_raw_many();
         bool first = true;
         for (const auto& row : rows) {
             if (!first) {
@@ -586,11 +582,13 @@ class EdgeService {
         }
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query lock(c.pool());
-        lock.select(lock.column(entities::EdgeNodeEntity::column_name<"id">())).from(entities::EdgeNodeEntity::table_name()).where(lock.binary(lock.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).lock({ .mode_ = ruvia::db_row_lock::update });
-        (void)co_await transaction.query(lock);
+        auto lockBuilder = transaction.template repository<entities::EdgeNodeEntity>().query_builder();
+        lockBuilder.select({ { "id", lock.column(entities::EdgeNodeEntity::column_name<"id">()) } }).where(lock.binary(lock.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, lock.cast(lock.value(nodeId), Type::uuid))).set_lock({ .mode_ = ruvia::db_row_lock::update });
+        (void)co_await lockBuilder.get_raw_many();
         ruvia::db_query existing(c.pool());
-        existing.select({ existing.column(entities::EdgeDtuEntity::column_name<"channel_id">()), existing.column(entities::EdgeDtuEntity::column_name<"wire_hex">()) }).from(entities::EdgeDtuEntity::table_name()).where(existing.binary(existing.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
-        const auto rows = co_await transaction.query(existing);
+        auto existingBuilder = transaction.template repository<entities::EdgeDtuEntity>().query_builder();
+        existingBuilder.select({ { "channel_id", existing.column(entities::EdgeDtuEntity::column_name<"channel_id">()) }, { "wire_hex", existing.column(entities::EdgeDtuEntity::column_name<"wire_hex">()) } }).where(existing.binary(existing.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, existing.cast(existing.value(nodeId), Type::uuid)));
+        const auto rows = co_await existingBuilder.get_raw_many();
         bool found = false;
         for (const auto& row : rows) {
             if (row[0].value().value_or("") == channelId) {
@@ -621,15 +619,22 @@ class EdgeService {
             service::common::fail(17003, "每个节点最多 8 个透传通道", 409);
         }
         ruvia::db_query save(c.pool());
-        save.insert_into(entities::EdgeDtuEntity::table_name(), { entities::EdgeDtuEntity::column_name<"node_id">(), entities::EdgeDtuEntity::column_name<"channel_id">(), entities::EdgeDtuEntity::column_name<"config">(), entities::EdgeDtuEntity::column_name<"wire_hex">() })
-            .values({ save.cast(save.value(nodeId), Type::uuid), save.cast(save.value(channelId), Type::uuid), save.cast(save.value(json), Type::jsonb), save.value(encoded) });
-        ruvia::db_conflict_options conflict;
-        conflict.columns_ = { std::string(entities::EdgeDtuEntity::column_name<"node_id">()), std::string(entities::EdgeDtuEntity::column_name<"channel_id">()) };
-        conflict.update_ = { { std::string(entities::EdgeDtuEntity::column_name<"config">()), save.excluded(entities::EdgeDtuEntity::column_name<"config">()) },
-                             { std::string(entities::EdgeDtuEntity::column_name<"wire_hex">()), save.excluded(entities::EdgeDtuEntity::column_name<"wire_hex">()) },
-                             { std::string(entities::EdgeDtuEntity::column_name<"status">()), save.cast(save.value("{}"), Type::jsonb) } };
-        save.on_conflict(conflict);
-        (void)co_await transaction.execute(save);
+        const std::array<std::string_view, 4> saveColumns{ entities::EdgeDtuEntity::column_name<"node_id">(), entities::EdgeDtuEntity::column_name<"channel_id">(), entities::EdgeDtuEntity::column_name<"config">(), entities::EdgeDtuEntity::column_name<"wire_hex">() };
+        auto saveBuilder = transaction.template repository<entities::EdgeDtuEntity>().insert_builder();
+        ruvia::db_values_builder saveValues(saveColumns);
+        saveValues.row({ save.cast(save.value(nodeId), Type::uuid), save.cast(save.value(channelId), Type::uuid), save.cast(save.value(json), Type::jsonb), save.value(encoded) });
+        ruvia::db_upsert_options conflict;
+
+        const std::array<ruvia::borrowed_text, 2> conflictColumns1{ { entities::EdgeDtuEntity::column_name<"node_id">(), entities::EdgeDtuEntity::column_name<"channel_id">() } };
+        conflict.conflict_paths_ = conflictColumns1;
+
+        const std::array<ruvia::db_assignment, 3> conflictUpdates2{ { { entities::EdgeDtuEntity::column_name<"config">(), save.excluded(entities::EdgeDtuEntity::column_name<"config">()) }, { entities::EdgeDtuEntity::column_name<"wire_hex">(), save.excluded(entities::EdgeDtuEntity::column_name<"wire_hex">()) }, { entities::EdgeDtuEntity::column_name<"status">(), save.cast(save.value("{}"), Type::jsonb) } } };
+        conflict.update_expressions_ = conflictUpdates2;
+
+        const std::array<ruvia::borrowed_text, 3> updatedColumns3{ { entities::EdgeDtuEntity::column_name<"config">(), entities::EdgeDtuEntity::column_name<"wire_hex">(), entities::EdgeDtuEntity::column_name<"status">() } };
+        conflict.update_columns_ = updatedColumns3;
+        saveBuilder.insert_from(saveColumns, saveValues.query()).on_conflict(conflict);
+        (void)co_await saveBuilder.execute();
         co_await transaction.commit();
         try {
             (void)co_await queueSnapshot(c, nodeId, c.userId);
@@ -641,8 +646,9 @@ class EdgeService {
     template <typename Context>
     ruvia::task<void> deleteDtuChannel(Context& c, std::string_view nodeId, std::string_view channelId) {
         ruvia::db_query query(c.pool());
-        query.delete_from(entities::EdgeDtuEntity::table_name()).where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).and_where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"channel_id">()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
-        (void)co_await c.db().execute(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeDtuEntity>().delete_builder();
+        queryBuilder.where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).and_where(query.binary(query.column(entities::EdgeDtuEntity::column_name<"channel_id">()), Op::equal, query.cast(query.value(channelId), Type::uuid)));
+        (void)co_await queryBuilder.execute();
         try {
             (void)co_await queueSnapshot(c, nodeId, c.userId);
         } catch (...) {
@@ -672,21 +678,23 @@ class EdgeService {
 
     template <typename Context>
     ruvia::task<ruvia::boxed_array<EdgeNodeDto>> inventory(Context& c) {
-        auto query = nodeSelect(c.pool());
-        query.order_by(query.column(entities::EdgeNodeEntity::column_name<"created_at">(), "node"), ruvia::db_order_direction::desc)
-            .add_order_by(query.column(entities::EdgeNodeEntity::column_name<"id">(), "node"));
+        ruvia::db_query queryExpressions;
+        auto query = nodeSelect(c.db(), c.pool());
+        query.order_by(queryExpressions.column(entities::EdgeNodeEntity::column_name<"created_at">(), "node"), ruvia::db_order_direction::desc)
+            .add_order_by(queryExpressions.column(entities::EdgeNodeEntity::column_name<"id">(), "node"));
         co_return co_await nodeRows(c, query);
     }
 
     // Inventory rows of `ids` that still exist (same row shape as inventory()).
     template <typename Context>
     ruvia::task<ruvia::boxed_array<EdgeNodeDto>> inventory(Context& c, const service::message::live::ChangeSet::Ids& ids) {
-        auto query = nodeSelect(c.pool());
-        const auto values = uuidList(query, ids);
+        ruvia::db_query queryExpressions;
+        auto query = nodeSelect(c.db(), c.pool());
+        const auto values = uuidList(queryExpressions, ids);
         if (values.empty()) {
             co_return ruvia::boxed_array<EdgeNodeDto>(ruvia::model_options{ .resource_ = c.arena() });
         }
-        query.where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), Op::in, query.list(values)));
+        query.where(queryExpressions.binary(queryExpressions.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), Op::in, queryExpressions.list(values)));
         co_return co_await nodeRows(c, query);
     }
 
@@ -711,10 +719,9 @@ class EdgeService {
             ruvia::db_query query(c.pool());
             const auto groups = uuidList(query, **ids);
             if (!groups.empty()) {
-                query.select(query.cast(query.column(entities::EdgeNodeEntity::column_name<"id">()), Type::text))
-                    .from(entities::EdgeNodeEntity::table_name())
-                    .where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"group_id">()), Op::in, query.list(groups)));
-                for (const auto& row : co_await c.db().query(query)) {
+                auto queryBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+                queryBuilder.select({ { "id", query.cast(query.column(entities::EdgeNodeEntity::column_name<"id">()), Type::text) } }).where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"group_id">()), Op::in, query.list(groups)));
+                for (const auto& row : co_await queryBuilder.get_raw_many()) {
                     result.emplace(row[0].value().value_or(std::string_view{}));
                 }
             }
@@ -741,11 +748,9 @@ class EdgeService {
             co_return result;
         }
         const auto node = query.column(service::vpn::entities::VpnPeerEntity::column_name<"edge_node_id">());
-        query.select(query.cast(node, Type::text))
-            .from(service::vpn::entities::VpnPeerEntity::table_name())
-            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column_name<"network_id">()), Op::in, query.list(values)))
-            .and_where(query.unary(Unary::is_not_null, node));
-        for (const auto& row : co_await c.db().query(query)) {
+        auto queryBuilder = c.db().template repository<service::vpn::entities::VpnPeerEntity>().query_builder();
+        queryBuilder.select({ { "value0", query.cast(node, Type::text) } }).where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column_name<"network_id">()), Op::in, query.list(values))).and_where(query.unary(Unary::is_not_null, node));
+        for (const auto& row : co_await queryBuilder.get_raw_many()) {
             result.emplace(row[0].value().value_or(std::string_view{}));
         }
         co_return result;
@@ -756,10 +761,9 @@ class EdgeService {
     ruvia::task<service::message::live::ChangeSet::Ids> nodeNetworks(Context& c, std::string_view nodeId) {
         service::message::live::ChangeSet::Ids result;
         ruvia::db_query query(c.pool());
-        query.select(query.cast(query.column(service::vpn::entities::VpnPeerEntity::column_name<"network_id">()), Type::text))
-            .from(service::vpn::entities::VpnPeerEntity::table_name())
-            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column_name<"edge_node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
-        for (const auto& row : co_await c.db().query(query)) {
+        auto queryBuilder = c.db().template repository<service::vpn::entities::VpnPeerEntity>().query_builder();
+        queryBuilder.select({ { "network_id", query.cast(query.column(service::vpn::entities::VpnPeerEntity::column_name<"network_id">()), Type::text) } }).where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::column_name<"edge_node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)));
+        for (const auto& row : co_await queryBuilder.get_raw_many()) {
             result.emplace(row[0].value().value_or(std::string_view{}));
         }
         co_return result;
@@ -781,24 +785,24 @@ class EdgeService {
             service::common::fail(17003, "分页范围无效", 400);
         }
         ruvia::db_query count(c.pool());
-        count.select(count.aggregate("count", { count.star() }))
-            .from(entities::EdgeNodeEntity::table_name(), "node")
-            .join(ruvia::db_join_type::left, entities::EdgeNodeGroupEntity::table_name(), count.binary(count.column(entities::EdgeNodeEntity::column_name<"group_id">(), "node"), ruvia::db_binary_operator::equal, count.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item")), "group_item");
-        applyNodeFilters(count, keyword, status, groupId);
-        const auto countRows = co_await c.db().query(count);
+        auto countBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder("node");
+        countBuilder.select({ { "value0", count.aggregate("count", { count.star() }) } }).template join<entities::EdgeNodeGroupEntity>(ruvia::db_join_type::left, "group_item", count.binary(count.column(entities::EdgeNodeEntity::column_name<"group_id">(), "node"), ruvia::db_binary_operator::equal, count.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item")));
+        applyNodeFilters(countBuilder, count, keyword, status, groupId);
+        const auto countRows = co_await countBuilder.get_raw_many();
         const auto total = countRows.empty()
             ? std::int64_t{ 0 }
             : countRows.front()[0].template as<std::int64_t>().value_or(0);
 
-        ruvia::db_query query = nodeSelect(c.pool());
-        applyNodeFilters(query, keyword, status, groupId);
-        query.order_by(query.column(entities::EdgeNodeEntity::column_name<"created_at">(), "node"), ruvia::db_order_direction::desc)
+        ruvia::db_query queryExpressions;
+        auto query = nodeSelect(c.db(), c.pool());
+        applyNodeFilters(query, queryExpressions, keyword, status, groupId);
+        query.order_by(queryExpressions.column(entities::EdgeNodeEntity::column_name<"created_at">(), "node"), ruvia::db_order_direction::desc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>((page - 1) * pageSize));
-        const auto rows = co_await c.db().query(query);
+        const auto rows = co_await query.get_raw_many();
         ruvia::boxed_array<EdgeNodeDto> nodes(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& node = nodes.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& node = nodes.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             co_await fillNode(c, node, row);
         }
         EdgePageDto result(ruvia::model_options{ .resource_ = c.arena() });
@@ -819,19 +823,14 @@ class EdgeService {
         const auto status = query.column(entities::EdgeNodeGroupEntity::column_name<"status">(), "group_item");
         const auto sortOrder = query.column(entities::EdgeNodeGroupEntity::column_name<"sort_order">(), "group_item");
         const auto remark = query.column(entities::EdgeNodeGroupEntity::column_name<"remark">(), "group_item");
-        query.select({ query.cast(groupId, ruvia::db_data_type::text), name, query.coalesce({ query.cast(parentId, ruvia::db_data_type::text), query.cast(query.value(""), ruvia::db_data_type::text) }), status, sortOrder, query.coalesce({ remark, query.cast(query.value(""), ruvia::db_data_type::text) }), query.aggregate("count", { query.column(entities::EdgeNodeEntity::column_name<"id">(), "node") }) })
-            .from(entities::EdgeNodeGroupEntity::table_name(), "group_item")
-            .join(ruvia::db_join_type::left, entities::EdgeNodeEntity::table_name(), query.binary(query.column(entities::EdgeNodeEntity::column_name<"group_id">(), "node"), ruvia::db_binary_operator::equal, groupId), "node")
-            .where(query.unary(ruvia::db_unary_operator::is_null, query.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), "group_item")))
-            .group_by({ groupId, name, parentId, status, sortOrder, remark })
-            .order_by(sortOrder)
-            .add_order_by(groupId);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder("group_item");
+        queryBuilder.select({ { "value0", query.cast(groupId, ruvia::db_data_type::text) }, { "value1", name }, { "value2", query.coalesce({ query.cast(parentId, ruvia::db_data_type::text), query.cast(query.value(""), ruvia::db_data_type::text) }) }, { "value3", status }, { "value4", sortOrder }, { "value5", query.coalesce({ remark, query.cast(query.value(""), ruvia::db_data_type::text) }) }, { "id", query.aggregate("count", { query.column(entities::EdgeNodeEntity::column_name<"id">(), "node") }) } }).template join<entities::EdgeNodeEntity>(ruvia::db_join_type::left, "node", query.binary(query.column(entities::EdgeNodeEntity::column_name<"group_id">(), "node"), ruvia::db_binary_operator::equal, groupId)).where(query.unary(ruvia::db_unary_operator::is_null, query.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), "group_item"))).group_by({ groupId, name, parentId, status, sortOrder, remark }).order_by(sortOrder).add_order_by(groupId);
+        const auto rows = co_await queryBuilder.get_raw_many();
         ruvia::boxed_array<EdgeGroupDto> result(
             ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}));
             item.template set<"name">(row[1].value().value_or(std::string_view{}));
             item.template set<"parentId">(row[2].value().value_or(std::string_view{}));
@@ -851,12 +850,9 @@ class EdgeService {
             : std::string{};
         co_await validateGroupParent(c, parentId, {});
         ruvia::db_query duplicate(c.pool());
-        duplicate.select(duplicate.cast(duplicate.value(1), ruvia::db_data_type::integer))
-            .from(entities::EdgeNodeGroupEntity::table_name())
-            .where(duplicate.binary(duplicate.column(entities::EdgeNodeGroupEntity::column_name<"name">()), ruvia::db_binary_operator::equal, duplicate.value(name)))
-            .and_where(duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-            .limit(1);
-        const auto duplicateRows = co_await c.db().query(duplicate);
+        auto duplicateBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+        duplicateBuilder.select({ { "value0", duplicate.cast(duplicate.value(1), ruvia::db_data_type::integer) } }).where(duplicate.binary(duplicate.column(entities::EdgeNodeGroupEntity::column_name<"name">()), ruvia::db_binary_operator::equal, duplicate.value(name))).and_where(duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+        const auto duplicateRows = co_await duplicateBuilder.get_raw_many();
         if (!duplicateRows.empty()) {
             service::common::fail(17002, "边缘节点分组名称已存在", 409);
         }
@@ -871,20 +867,20 @@ class EdgeService {
             : std::string{};
         const auto groupId = service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>());
         ruvia::db_query query(c.pool());
-        query.insert_into(entities::EdgeNodeGroupEntity::table_name(), { entities::EdgeNodeGroupEntity::column_name<"id">(), entities::EdgeNodeGroupEntity::column_name<"name">(), entities::EdgeNodeGroupEntity::column_name<"parent_id">(), entities::EdgeNodeGroupEntity::column_name<"status">(), entities::EdgeNodeGroupEntity::column_name<"sort_order">(), entities::EdgeNodeGroupEntity::column_name<"remark">(), entities::EdgeNodeGroupEntity::column_name<"created_by">() })
-            .values({ query.cast(query.value(groupId), ruvia::db_data_type::uuid), query.value(name), db::nullableUuid(query, parentId), query.cast(query.value(status), { .custom_name_ = "status_enum" }), query.cast(query.value(sortOrder), ruvia::db_data_type::integer), nullableText(query, remark), query.cast(query.value(c.userId), ruvia::db_data_type::uuid) });
-        (void)co_await c.db().execute(query);
+        const std::array<std::string_view, 7> queryColumns{ entities::EdgeNodeGroupEntity::column_name<"id">(), entities::EdgeNodeGroupEntity::column_name<"name">(), entities::EdgeNodeGroupEntity::column_name<"parent_id">(), entities::EdgeNodeGroupEntity::column_name<"status">(), entities::EdgeNodeGroupEntity::column_name<"sort_order">(), entities::EdgeNodeGroupEntity::column_name<"remark">(), entities::EdgeNodeGroupEntity::column_name<"created_by">() };
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().insert_builder();
+        ruvia::db_values_builder queryValues(queryColumns);
+        queryValues.row({ query.cast(query.value(groupId), ruvia::db_data_type::uuid), query.value(name), db::nullableUuid(query, parentId), query.cast(query.value(status), { .custom_name_ = "status_enum" }), query.cast(query.value(sortOrder), ruvia::db_data_type::integer), nullableText(query, remark), query.cast(query.value(c.userId), ruvia::db_data_type::uuid) });
+        queryBuilder.insert_from(queryColumns, queryValues.query());
+        (void)co_await queryBuilder.execute();
     }
 
     template <typename Context>
     ruvia::task<void> updateGroup(Context& c, std::string_view id, const EdgeGroupBody& body) {
         ruvia::db_query current(c.pool());
-        current.select(current.cast(current.value(1), ruvia::db_data_type::integer))
-            .from(entities::EdgeNodeGroupEntity::table_name())
-            .where(current.binary(current.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid)))
-            .and_where(current.unary(ruvia::db_unary_operator::is_null, current.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-            .limit(1);
-        const auto currentRows = co_await c.db().query(current);
+        auto currentBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+        currentBuilder.select({ { "value0", current.cast(current.value(1), ruvia::db_data_type::integer) } }).where(current.binary(current.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid))).and_where(current.unary(ruvia::db_unary_operator::is_null, current.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+        const auto currentRows = co_await currentBuilder.get_raw_many();
         if (currentRows.empty()) {
             service::common::fail(17001, "边缘节点分组不存在", 404);
         }
@@ -894,17 +890,9 @@ class EdgeService {
             : std::string{};
         co_await validateGroupParent(c, parentId, id);
         ruvia::db_query duplicate(c.pool());
-        duplicate.select(duplicate.cast(duplicate.value(1), ruvia::db_data_type::integer))
-            .from(entities::EdgeNodeGroupEntity::table_name())
-            .where(duplicate.binary(duplicate.column(entities::EdgeNodeGroupEntity::column_name<"name">()), ruvia::db_binary_operator::equal, duplicate.value(name)))
-            .and_where(duplicate.binary(
-                duplicate.column(entities::EdgeNodeGroupEntity::column_name<"id">()),
-                ruvia::db_binary_operator::not_equal,
-                duplicate.cast(duplicate.value(id), ruvia::db_data_type::uuid)
-            ))
-            .and_where(duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-            .limit(1);
-        const auto duplicateRows = co_await c.db().query(duplicate);
+        auto duplicateBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+        duplicateBuilder.select({ { "value0", duplicate.cast(duplicate.value(1), ruvia::db_data_type::integer) } }).where(duplicate.binary(duplicate.column(entities::EdgeNodeGroupEntity::column_name<"name">()), ruvia::db_binary_operator::equal, duplicate.value(name))).and_where(duplicate.binary(duplicate.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::not_equal, duplicate.cast(duplicate.value(id), ruvia::db_data_type::uuid))).and_where(duplicate.unary(ruvia::db_unary_operator::is_null, duplicate.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+        const auto duplicateRows = co_await duplicateBuilder.get_raw_many();
         if (!duplicateRows.empty()) {
             service::common::fail(17002, "边缘节点分组名称已存在", 409);
         }
@@ -918,27 +906,17 @@ class EdgeService {
             ? std::string(body.get<"remark">()->view())
             : std::string{};
         ruvia::db_query query(c.pool());
-        query.update(entities::EdgeNodeGroupEntity::table_name())
-            .set(entities::EdgeNodeGroupEntity::column_name<"name">(), query.value(name))
-            .set(entities::EdgeNodeGroupEntity::column_name<"parent_id">(), db::nullableUuid(query, parentId))
-            .set(entities::EdgeNodeGroupEntity::column_name<"status">(), query.cast(query.value(status), { .custom_name_ = "status_enum" }))
-            .set(entities::EdgeNodeGroupEntity::column_name<"sort_order">(), query.cast(query.value(sortOrder), ruvia::db_data_type::integer))
-            .set(entities::EdgeNodeGroupEntity::column_name<"remark">(), nullableText(query, remark))
-            .set(entities::EdgeNodeGroupEntity::column_name<"updated_at">(), query.call("now"))
-            .where(query.binary(query.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
-            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())));
-        (void)co_await c.db().execute(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().update_builder();
+        queryBuilder.set(entities::EdgeNodeGroupEntity::column_name<"name">(), query.value(name)).set(entities::EdgeNodeGroupEntity::column_name<"parent_id">(), db::nullableUuid(query, parentId)).set(entities::EdgeNodeGroupEntity::column_name<"status">(), query.cast(query.value(status), { .custom_name_ = "status_enum" })).set(entities::EdgeNodeGroupEntity::column_name<"sort_order">(), query.cast(query.value(sortOrder), ruvia::db_data_type::integer)).set(entities::EdgeNodeGroupEntity::column_name<"remark">(), nullableText(query, remark)).set(entities::EdgeNodeGroupEntity::column_name<"updated_at">(), query.call("now")).where(query.binary(query.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())));
+        (void)co_await queryBuilder.execute();
     }
 
     template <typename Context>
     ruvia::task<void> removeGroup(Context& c, std::string_view id) {
         ruvia::db_query current(c.pool());
-        current.select(current.cast(current.value(1), ruvia::db_data_type::integer))
-            .from(entities::EdgeNodeGroupEntity::table_name())
-            .where(current.binary(current.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid)))
-            .and_where(current.unary(ruvia::db_unary_operator::is_null, current.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-            .limit(1);
-        const auto currentRows = co_await c.db().query(current);
+        auto currentBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+        currentBuilder.select({ { "value0", current.cast(current.value(1), ruvia::db_data_type::integer) } }).where(current.binary(current.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, current.cast(current.value(id), ruvia::db_data_type::uuid))).and_where(current.unary(ruvia::db_unary_operator::is_null, current.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+        const auto currentRows = co_await currentBuilder.get_raw_many();
         if (currentRows.empty()) {
             service::common::fail(17001, "边缘节点分组不存在", 404);
         }
@@ -964,14 +942,9 @@ class EdgeService {
                 node.import_expression(targetId, "target", "target")
             ))
             .limit(1);
-        removal.update(entities::EdgeNodeGroupEntity::table_name(), "target")
-            .set(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), removal.call("now"))
-            .set(entities::EdgeNodeGroupEntity::column_name<"updated_at">(), removal.call("now"))
-            .where(removal.binary(targetId, ruvia::db_binary_operator::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid)))
-            .and_where(removal.unary(ruvia::db_unary_operator::is_null, removal.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), "target")))
-            .and_where(removal.unary(ruvia::db_unary_operator::not_value, removal.exists(child)))
-            .and_where(removal.unary(ruvia::db_unary_operator::not_value, removal.exists(node)));
-        const auto removed = co_await c.db().execute(removal);
+        auto removalBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().update_builder("target");
+        removalBuilder.set(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), removal.call("now")).set(entities::EdgeNodeGroupEntity::column_name<"updated_at">(), removal.call("now")).where(removal.binary(targetId, ruvia::db_binary_operator::equal, removal.cast(removal.value(id), ruvia::db_data_type::uuid))).and_where(removal.unary(ruvia::db_unary_operator::is_null, removal.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), "target"))).and_where(removal.unary(ruvia::db_unary_operator::not_value, removal.exists(child))).and_where(removal.unary(ruvia::db_unary_operator::not_value, removal.exists(node)));
+        const auto removed = co_await removalBuilder.execute();
         if (removed.affected_rows() == 0) {
             service::common::fail(17004, "请先移除子分组和边缘节点", 409);
         }
@@ -979,10 +952,11 @@ class EdgeService {
 
     template <typename Context>
     ruvia::task<EdgeNodeDto> detail(Context& c, std::string_view id) {
-        ruvia::db_query query = nodeSelect(c.pool());
-        query.where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
+        ruvia::db_query queryExpressions;
+        auto query = nodeSelect(c.db(), c.pool());
+        query.where(queryExpressions.binary(queryExpressions.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), ruvia::db_binary_operator::equal, queryExpressions.cast(queryExpressions.value(id), ruvia::db_data_type::uuid)))
             .limit(1);
-        const auto rows = co_await c.db().query(query);
+        const auto rows = co_await query.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -1009,15 +983,9 @@ class EdgeService {
         std::string_view stage = "database";
         try {
             ruvia::db_query update(c.pool());
-            update.update(entities::EdgeNodeEntity::table_name())
-                .set(entities::EdgeNodeEntity::column_name<"enrollment_status">(), update.value(status))
-                .set(entities::EdgeNodeEntity::column_name<"name">(), nullableText(update, name))
-                .set(entities::EdgeNodeEntity::column_name<"approved_by">(), update.cast(update.value(c.userId), ruvia::db_data_type::uuid))
-                .set(entities::EdgeNodeEntity::column_name<"approved_at">(), update.call("now"))
-                .set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now"))
-                .where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(id), ruvia::db_data_type::uuid)))
-                .returning({ update.column(entities::EdgeNodeEntity::column_name<"imei">()) });
-            const auto updated = co_await c.db().query(update);
+            auto updateBuilder = c.db().template repository<entities::EdgeNodeEntity>().update_builder();
+            updateBuilder.set(entities::EdgeNodeEntity::column_name<"enrollment_status">(), update.value(status)).set(entities::EdgeNodeEntity::column_name<"name">(), nullableText(update, name)).set(entities::EdgeNodeEntity::column_name<"approved_by">(), update.cast(update.value(c.userId), ruvia::db_data_type::uuid)).set(entities::EdgeNodeEntity::column_name<"approved_at">(), update.call("now")).set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now")).where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(id), ruvia::db_data_type::uuid))).returning({ { "imei", update.column(entities::EdgeNodeEntity::column_name<"imei">()) } });
+            const auto updated = co_await updateBuilder.get_raw_many();
             if (updated.empty()) {
                 service::common::fail(17001, "边缘节点不存在", 404);
             }
@@ -1053,22 +1021,20 @@ class EdgeService {
     }
 
     // 只删除仍处于待处理状态的注册申请；状态谓词与删除在同一语句内，防止并发批准后误删。
-    static ruvia::db_query pendingEnrollmentRemoval(std::pmr::memory_resource* resource, std::string_view id) {
+    template <typename Database>
+    static auto pendingEnrollmentRemoval(Database&& database, std::pmr::memory_resource* resource, std::string_view id) {
         ruvia::db_query removal(resource);
-        removal.delete_from(entities::EdgeNodeEntity::table_name())
-            .where((entities::EdgeNodeEntity::column<"id">() == id && entities::EdgeNodeEntity::column<"enrollment_status">() == "pending").expression(removal))
-            .returning({ removal.column(entities::EdgeNodeEntity::column_name<"id">()) });
-        return removal;
+        auto removalBuilder = database.template repository<entities::EdgeNodeEntity>().delete_builder();
+        removalBuilder.where((entities::EdgeNodeEntity::column<"id">() == id && entities::EdgeNodeEntity::column<"enrollment_status">() == "pending").expression(removal)).returning({ { "id", removal.column(entities::EdgeNodeEntity::column_name<"id">()) } });
+        return removalBuilder;
     }
 
     template <typename Context>
     ruvia::task<void> removeEnrollment(Context& c, std::string_view id) {
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeNodeEntity::column_name<"imei">()), query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()) })
-            .from(entities::EdgeNodeEntity::table_name())
-            .where((entities::EdgeNodeEntity::column<"id">() == id).expression(query))
-            .limit(1);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+        queryBuilder.select({ { "imei", query.column(entities::EdgeNodeEntity::column_name<"imei">()) }, { "enrollment_status", query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()) } }).where((entities::EdgeNodeEntity::column<"id">() == id).expression(query)).limit(1);
+        const auto rows = co_await queryBuilder.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -1078,10 +1044,10 @@ class EdgeService {
         }
 
         auto transaction = co_await c.db().begin_transaction();
-        const auto removal = pendingEnrollmentRemoval(c.pool(), id);
+        const auto removal = pendingEnrollmentRemoval(transaction, c.pool(), id);
         std::optional<ruvia::db_rows> removed;
         try {
-            removed.emplace(co_await transaction.query(removal));
+            removed.emplace(co_await removal.get_raw_many());
         } catch (const ruvia::db_error& error) {
             // 采集链路以 ON DELETE RESTRICT 外键引用节点（fk_link_edge_node）；节点不查询链路表，
             // 由数据库约束拒绝删除仍被引用的注册申请。
@@ -1121,11 +1087,9 @@ class EdgeService {
         const std::string name(nameValue.view());
         auto transaction = co_await c.db().begin_transaction();
         ruvia::db_query current(c.pool());
-        current.select(current.column(entities::EdgeNodeEntity::column_name<"name">()))
-            .from(entities::EdgeNodeEntity::table_name())
-            .where((entities::EdgeNodeEntity::column<"id">() == id).expression(current))
-            .lock(ruvia::db_lock_options{});
-        const auto nodes = co_await transaction.query(current);
+        auto currentBuilder = transaction.template repository<entities::EdgeNodeEntity>().query_builder();
+        currentBuilder.select({ { "name", current.column(entities::EdgeNodeEntity::column_name<"name">()) } }).where((entities::EdgeNodeEntity::column<"id">() == id).expression(current)).set_lock(ruvia::db_lock_options{});
+        const auto nodes = co_await currentBuilder.get_raw_many();
         if (nodes.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -1134,12 +1098,9 @@ class EdgeService {
             co_return;
         }
         ruvia::db_query update(c.pool());
-        update.update(entities::EdgeNodeEntity::table_name())
-            .set(entities::EdgeNodeEntity::column_name<"name">(), update.value(name))
-            .set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now"))
-            .where((entities::EdgeNodeEntity::column<"id">() == id).expression(update))
-            .returning({ update.column(entities::EdgeNodeEntity::column_name<"id">()) });
-        const auto updated = co_await transaction.query(update);
+        auto updateBuilder = transaction.template repository<entities::EdgeNodeEntity>().update_builder();
+        updateBuilder.set(entities::EdgeNodeEntity::column_name<"name">(), update.value(name)).set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now")).where((entities::EdgeNodeEntity::column<"id">() == id).expression(update)).returning({ { "id", update.column(entities::EdgeNodeEntity::column_name<"id">()) } });
+        const auto updated = co_await updateBuilder.get_raw_many();
         if (updated.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -1157,24 +1118,17 @@ class EdgeService {
         const std::string groupId(maybeGroup->view());
         if (!groupId.empty()) {
             ruvia::db_query group(c.pool());
-            group.select(group.cast(group.value(1), ruvia::db_data_type::integer))
-                .from(entities::EdgeNodeGroupEntity::table_name())
-                .where(group.binary(group.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, group.cast(group.value(groupId), ruvia::db_data_type::uuid)))
-                .and_where(group.binary(group.column(entities::EdgeNodeGroupEntity::column_name<"status">()), ruvia::db_binary_operator::equal, group.cast(group.value("enabled"), { .custom_name_ = "status_enum" })))
-                .and_where(group.unary(ruvia::db_unary_operator::is_null, group.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-                .limit(1);
-            const auto groupRows = co_await c.db().query(group);
+            auto groupBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+            groupBuilder.select({ { "value0", group.cast(group.value(1), ruvia::db_data_type::integer) } }).where(group.binary(group.column(entities::EdgeNodeGroupEntity::column_name<"id">()), ruvia::db_binary_operator::equal, group.cast(group.value(groupId), ruvia::db_data_type::uuid))).and_where(group.binary(group.column(entities::EdgeNodeGroupEntity::column_name<"status">()), ruvia::db_binary_operator::equal, group.cast(group.value("enabled"), { .custom_name_ = "status_enum" }))).and_where(group.unary(ruvia::db_unary_operator::is_null, group.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+            const auto groupRows = co_await groupBuilder.get_raw_many();
             if (groupRows.empty()) {
                 service::common::fail(17001, "边缘节点分组不存在或已停用", 404);
             }
         }
         ruvia::db_query update(c.pool());
-        update.update(entities::EdgeNodeEntity::table_name())
-            .set(entities::EdgeNodeEntity::column_name<"group_id">(), db::nullableUuid(update, groupId))
-            .set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now"))
-            .where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(id), ruvia::db_data_type::uuid)))
-            .returning({ update.column(entities::EdgeNodeEntity::column_name<"id">()) });
-        const auto updated = co_await c.db().query(update);
+        auto updateBuilder = c.db().template repository<entities::EdgeNodeEntity>().update_builder();
+        updateBuilder.set(entities::EdgeNodeEntity::column_name<"group_id">(), db::nullableUuid(update, groupId)).set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now")).where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(id), ruvia::db_data_type::uuid))).returning({ { "id", update.column(entities::EdgeNodeEntity::column_name<"id">()) } });
+        const auto updated = co_await updateBuilder.get_raw_many();
         if (updated.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -1292,12 +1246,9 @@ class EdgeService {
     ruvia::task<module_pb::FirmwareUpdateRequest> createFirmwareTask(Context& c, Transaction& transaction, std::string_view nodeId, std::string_view firmwareId, bool keepSettings) {
         const std::string firmwareIdText(firmwareId);
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeFirmwareEntity::column_name<"sha256">(), "firmware"), query.column(entities::EdgeFirmwareEntity::column_name<"size_bytes">(), "firmware"), query.column(entities::EdgeFirmwareEntity::column_name<"download_token">(), "firmware"), booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">(), "node"), "firmwareStream")) })
-            .from(entities::EdgeFirmwareEntity::table_name(), "firmware")
-            .join(ruvia::db_join_type::inner, entities::EdgeNodeEntity::table_name(), query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid)), "node")
-            .where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"id">(), "firmware"), ruvia::db_binary_operator::equal, query.cast(query.value(firmwareIdText), ruvia::db_data_type::uuid)))
-            .limit(1);
-        const auto rows = co_await transaction.query(query);
+        auto queryBuilder = transaction.template repository<entities::EdgeFirmwareEntity>().query_builder("firmware");
+        queryBuilder.select({ { "sha256", query.column(entities::EdgeFirmwareEntity::column_name<"sha256">(), "firmware") }, { "size_bytes", query.column(entities::EdgeFirmwareEntity::column_name<"size_bytes">(), "firmware") }, { "download_token", query.column(entities::EdgeFirmwareEntity::column_name<"download_token">(), "firmware") }, { "capability", booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">(), "node"), "firmwareStream")) } }).template join<entities::EdgeNodeEntity>(ruvia::db_join_type::inner, "node", query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">(), "node"), ruvia::db_binary_operator::equal, query.cast(query.value(nodeId), ruvia::db_data_type::uuid))).where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"id">(), "firmware"), ruvia::db_binary_operator::equal, query.cast(query.value(firmwareIdText), ruvia::db_data_type::uuid))).limit(1);
+        const auto rows = co_await queryBuilder.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17009, "固件不存在", 404);
         }
@@ -1335,9 +1286,12 @@ class EdgeService {
         request.set_keep_settings(keepSettings);
         const std::string json = "{\"firmware_id\":\"" + firmwareIdText + "\"}";
         ruvia::db_query task(c.pool());
-        task.insert_into(entities::EdgeTaskEntity::table_name(), { entities::EdgeTaskEntity::column_name<"id">(), entities::EdgeTaskEntity::column_name<"node_id">(), entities::EdgeTaskEntity::column_name<"task_type">(), entities::EdgeTaskEntity::column_name<"request">(), entities::EdgeTaskEntity::column_name<"created_by">() })
-            .values({ task.cast(task.value(taskId), Type::uuid), task.cast(task.value(nodeId), Type::uuid), task.value("firmware"), task.cast(task.value(json), Type::jsonb), task.cast(task.value(c.userId), Type::uuid) });
-        (void)co_await transaction.execute(task);
+        const std::array<std::string_view, 5> taskColumns{ entities::EdgeTaskEntity::column_name<"id">(), entities::EdgeTaskEntity::column_name<"node_id">(), entities::EdgeTaskEntity::column_name<"task_type">(), entities::EdgeTaskEntity::column_name<"request">(), entities::EdgeTaskEntity::column_name<"created_by">() };
+        auto taskBuilder = transaction.template repository<entities::EdgeTaskEntity>().insert_builder();
+        ruvia::db_values_builder taskValues(taskColumns);
+        taskValues.row({ task.cast(task.value(taskId), Type::uuid), task.cast(task.value(nodeId), Type::uuid), task.value("firmware"), task.cast(task.value(json), Type::jsonb), task.cast(task.value(c.userId), Type::uuid) });
+        taskBuilder.insert_from(taskColumns, taskValues.query());
+        (void)co_await taskBuilder.execute();
         co_return request;
     }
 
@@ -1353,12 +1307,9 @@ class EdgeService {
     template <typename Transaction>
     static ruvia::task<std::string> findReusableFirmware(Transaction& transaction, std::string_view hash, std::int64_t bytes) {
         ruvia::db_query query;
-        query.select({ query.cast(query.column(entities::EdgeFirmwareEntity::column_name<"id">()), Type::text), query.column(entities::EdgeFirmwareEntity::column_name<"storage_path">()) })
-            .from(entities::EdgeFirmwareEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"sha256">()), Op::equal, query.value(hash)))
-            .and_where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"size_bytes">()), Op::equal, query.value(bytes)))
-            .order_by(query.column(entities::EdgeFirmwareEntity::column_name<"created_at">()), ruvia::db_order_direction::desc);
-        const auto rows = co_await transaction.query(query);
+        auto queryBuilder = transaction.template repository<entities::EdgeFirmwareEntity>().query_builder();
+        queryBuilder.select({ { "id", query.cast(query.column(entities::EdgeFirmwareEntity::column_name<"id">()), Type::text) }, { "storage_path", query.column(entities::EdgeFirmwareEntity::column_name<"storage_path">()) } }).where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"sha256">()), Op::equal, query.value(hash))).and_where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"size_bytes">()), Op::equal, query.value(bytes))).order_by(query.column(entities::EdgeFirmwareEntity::column_name<"created_at">()), ruvia::db_order_direction::desc);
+        const auto rows = co_await queryBuilder.get_raw_many();
         for (const auto& row : rows) {
             const std::filesystem::path path(std::string(row[1].value().value_or(std::string_view{})));
             std::error_code error;
@@ -1431,7 +1382,7 @@ class EdgeService {
                 std::rethrow_exception(failure);
             }
             LOG_INFO << "edge firmware upload directory busy, recovery retry scheduled: directory=" << directory.string();
-            if (co_await ruvia::sleep_for(context.worker(), kUploadRecoveryRetry, context.get_stop_token()) != ruvia::timer_sleep_result::elapsed) {
+            if (co_await ruvia::sleep_for(context.worker(), kUploadRecoveryRetry, context.stop_token()) != ruvia::timer_sleep_result::elapsed) {
                 co_return 0;
             }
         }
@@ -1469,9 +1420,12 @@ class EdgeService {
                 const auto token = randomToken();
                 const auto storagePath = destination.string();
                 ruvia::db_query query(c.pool());
-                query.insert_into(entities::EdgeFirmwareEntity::table_name(), { entities::EdgeFirmwareEntity::column_name<"id">(), entities::EdgeFirmwareEntity::column_name<"version">(), entities::EdgeFirmwareEntity::column_name<"file_name">(), entities::EdgeFirmwareEntity::column_name<"storage_path">(), entities::EdgeFirmwareEntity::column_name<"sha256">(), entities::EdgeFirmwareEntity::column_name<"size_bytes">(), entities::EdgeFirmwareEntity::column_name<"download_token">(), entities::EdgeFirmwareEntity::column_name<"created_by">() })
-                    .values({ query.cast(query.value(storageId), Type::uuid), query.value(""), query.value(fileName), query.value(storagePath), query.value(hash), query.cast(query.value(bytes), Type::big_int), query.value(token), query.cast(query.value(c.userId), Type::uuid) });
-                (void)co_await transaction.execute(query);
+                const std::array<std::string_view, 8> queryColumns{ entities::EdgeFirmwareEntity::column_name<"id">(), entities::EdgeFirmwareEntity::column_name<"version">(), entities::EdgeFirmwareEntity::column_name<"file_name">(), entities::EdgeFirmwareEntity::column_name<"storage_path">(), entities::EdgeFirmwareEntity::column_name<"sha256">(), entities::EdgeFirmwareEntity::column_name<"size_bytes">(), entities::EdgeFirmwareEntity::column_name<"download_token">(), entities::EdgeFirmwareEntity::column_name<"created_by">() };
+                auto queryBuilder = transaction.template repository<entities::EdgeFirmwareEntity>().insert_builder();
+                ruvia::db_values_builder queryValues(queryColumns);
+                queryValues.row({ query.cast(query.value(storageId), Type::uuid), query.value(""), query.value(fileName), query.value(storagePath), query.value(hash), query.cast(query.value(bytes), Type::big_int), query.value(token), query.cast(query.value(c.userId), Type::uuid) });
+                queryBuilder.insert_from(queryColumns, queryValues.query());
+                (void)co_await queryBuilder.execute();
             }
             auto request = co_await createFirmwareTask(c, transaction, nodeId, storageId, body.get<"keepSettings">()->value_);
             co_await transaction.commit();
@@ -1496,12 +1450,9 @@ class EdgeService {
         std::string_view token
     ) {
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeFirmwareEntity::column_name<"storage_path">()), query.column(entities::EdgeFirmwareEntity::column_name<"file_name">()) })
-            .from(entities::EdgeFirmwareEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid)))
-            .and_where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"download_token">()), ruvia::db_binary_operator::equal, query.value(token)))
-            .limit(1);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeFirmwareEntity>().query_builder();
+        queryBuilder.select({ { "storage_path", query.column(entities::EdgeFirmwareEntity::column_name<"storage_path">()) }, { "file_name", query.column(entities::EdgeFirmwareEntity::column_name<"file_name">()) } }).where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"id">()), ruvia::db_binary_operator::equal, query.cast(query.value(id), ruvia::db_data_type::uuid))).and_where(query.binary(query.column(entities::EdgeFirmwareEntity::column_name<"download_token">()), ruvia::db_binary_operator::equal, query.value(token))).limit(1);
+        const auto rows = co_await queryBuilder.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17009, "固件不存在或下载凭据无效", 404);
         }
@@ -1547,19 +1498,23 @@ class EdgeService {
                 service::common::fail(17021, "串口路径无效", 400);
             }
             ruvia::db_query port(c.pool());
-            port.select(port.column(entities::EdgeNodeSerialEntity::column_name<"available">()))
-                .from(entities::EdgeNodeSerialEntity::table_name())
-                .where(port.binary(port.column(entities::EdgeNodeSerialEntity::column_name<"node_id">()), Op::equal, port.cast(port.value(session->node), Type::uuid)))
-                .and_where(port.binary(port.column(entities::EdgeNodeSerialEntity::column_name<"path">()), Op::equal, port.value(path)));
-            const auto rows = co_await c.db().query(port);
+            auto portBuilder = c.db().template repository<entities::EdgeNodeSerialEntity>().query_builder();
+            portBuilder.select({ { "available", port.column(entities::EdgeNodeSerialEntity::column_name<"available">()) } }).where(port.binary(port.column(entities::EdgeNodeSerialEntity::column_name<"node_id">()), Op::equal, port.cast(port.value(session->node), Type::uuid))).and_where(port.binary(port.column(entities::EdgeNodeSerialEntity::column_name<"path">()), Op::equal, port.value(path)));
+            const auto rows = co_await portBuilder.get_raw_many();
             if (rows.empty() || !rows.front()[0].template as<bool>().value_or(false)) {
                 service::common::fail(17021, "节点串口不存在或不可用", 409);
             }
             const auto result = co_await serialOperation(c, session->node, session->id, session->connection, "serial-open", [&path](service::message::serial_debug::Request& request) {
                 request.set<"path">(path);
             });
-            const auto parsed = ruvia::from_json<service::message::serial_debug::OpenReply>(result, { .resource_ = c.arena() });
-            if (!parsed || parsed->get<"id">().view() != session->id) {
+            const auto parsed = [&c, &result] {
+                try {
+                    return ruvia::from_json<service::message::serial_debug::OpenReply>(result, { .resource_ = c.arena() });
+                } catch (const std::invalid_argument&) {
+                    service::common::fail(17021, "串口会话响应无效", 502);
+                }
+            }();
+            if (parsed.get<"id">().view() != session->id) {
                 service::common::fail(17021, "串口会话响应无效", 502);
             }
             if (c.stop.stop_requested()) {
@@ -1577,7 +1532,7 @@ class EdgeService {
 
     ruvia::task<debug::EventResult> sendSerialCommand(debug::EventContext& c, const NodeSerialCommandInput& body) {
         const auto payload = ruvia::json_value::parse(c.request.data);
-        const auto command = payload->get<ruvia::json_value>("command");
+        const auto command = payload.get<ruvia::json_value>("command");
         if (!command || command->view().size() > 4096) {
             throw debug::EventError(10001, "串口指令过大");
         }
@@ -1600,11 +1555,17 @@ class EdgeService {
         const auto result = co_await serialOperation(c, session->node, session->id, session->connection, "serial-events", [after](service::message::serial_debug::Request& request) {
             request.set<"after">(after);
         });
-        const auto parsed = ruvia::from_json<service::message::serial_debug::EventsReply>(result, { .resource_ = c.arena() });
-        if (!parsed || parsed->get<"cursor">().value_ < cursor) {
+        const auto parsed = [&c, &result] {
+            try {
+                return ruvia::from_json<service::message::serial_debug::EventsReply>(result, { .resource_ = c.arena() });
+            } catch (const std::invalid_argument&) {
+                service::common::fail(17021, "串口事件响应无效", 502);
+            }
+        }();
+        if (parsed.get<"cursor">().value_ < cursor) {
             service::common::fail(17021, "串口事件响应无效", 502);
         }
-        cursor = parsed->get<"cursor">().value_;
+        cursor = parsed.get<"cursor">().value_;
         co_return debug::EventResult{ result, service::message::serial_debug::eventTopic(session->node, session->id), false, session->lifetime.token() };
     }
 
@@ -1631,11 +1592,9 @@ class EdgeService {
         std::exception_ptr failure;
         try {
             ruvia::db_query query(c.pool());
-            query.select({ query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()), booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">()), "terminal")) })
-                .from(entities::EdgeNodeEntity::table_name())
-                .where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(session->node), Type::uuid)))
-                .limit(1);
-            const auto nodes = co_await c.db().query(query);
+            auto queryBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+            queryBuilder.select({ { "enrollment_status", query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "capability", booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">()), "terminal")) } }).where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(session->node), Type::uuid))).limit(1);
+            const auto nodes = co_await queryBuilder.get_raw_many();
             if (nodes.empty()) {
                 service::common::fail(17001, "边缘节点不存在", 404);
             }
@@ -1649,9 +1608,15 @@ class EdgeService {
             const auto reply = co_await terminalOperation(c, session->node, session->id, session->connection, "terminal-open", [&session](service::message::terminal::Request& request) {
                 request.set<"columns">(session->columns).set<"rows">(session->rows);
             });
-            const auto parsed = ruvia::from_json<service::message::terminal::OpenReply>(reply, { .resource_ = c.arena() });
-            const auto version = parsed ? parsed->get<"protocolVersion">().value_ : 0;
-            if (c.stop.stop_requested() || !parsed || parsed->get<"id">().view() != session->id || version < 1 || version > 100) {
+            const auto parsed = [&c, &reply] {
+                try {
+                    return ruvia::from_json<service::message::terminal::OpenReply>(reply, { .resource_ = c.arena() });
+                } catch (const std::invalid_argument&) {
+                    throw debug::EventError(17018, "终端打开已取消或响应无效");
+                }
+            }();
+            const auto version = parsed.get<"protocolVersion">().value_;
+            if (c.stop.stop_requested() || parsed.get<"id">().view() != session->id || version < 1 || version > 100) {
                 throw debug::EventError(17018, "终端打开已取消或响应无效");
             }
             session->protocolVersion = static_cast<unsigned>(version);
@@ -1679,11 +1644,15 @@ class EdgeService {
         const auto reply = co_await terminalOperation(c, session->node, session->id, session->connection, "terminal-events", [&cursor](service::message::terminal::Request& request) {
             request.set<"after">(cursor.sequence).set<"ready">(cursor.ready).set<"closed">(cursor.closed);
         });
-        const auto parsed = ruvia::from_json<service::message::terminal::EventsReply>(reply, { .resource_ = c.arena() });
-        if (!parsed) {
-            throw debug::EventError(17018, "终端输出响应无效");
-        }
-        for (const auto& event : parsed->get<"events">()) {
+        const auto parsed = [&c, &reply] {
+            try {
+                return ruvia::from_json<service::message::terminal::EventsReply>(reply, { .resource_ = c.arena() });
+            } catch (const std::invalid_argument&) {
+                throw debug::EventError(17018, "终端输出响应无效");
+            }
+        }();
+
+        for (const auto& event : parsed.get<"events">()) {
             const auto kind = event.get<"kind">().view();
             if (kind == "ready") {
                 cursor.ready = true;
@@ -1693,7 +1662,7 @@ class EdgeService {
                 cursor.sequence = std::max(cursor.sequence, event.get<"sequence">()->value_);
             }
         }
-        co_return debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed->get<"more">().value_, true };
+        co_return debug::EventResult{ reply, service::message::terminal::terminalEventTopic(session->node, session->id), false, session->lifetime.token(), parsed.get<"more">().value_, true };
     }
 
     ruvia::task<debug::EventResult> writeTerminal(debug::EventContext& c, const TerminalWriteInput& body) {
@@ -1802,7 +1771,7 @@ class EdgeService {
                 if (count++ >= limit) {
                     break;
                 }
-                lines.emplace(ruvia::model_options{ .resource_ = c.arena() }).template set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms())).template set<"level">(line.level()).template set<"source">(line.source()).template set<"message">(line.message()).template set<"detail">(line.detail());
+                lines.emplace_back(ruvia::model_options{ .resource_ = c.arena() }).template set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms())).template set<"level">(line.level()).template set<"source">(line.source()).template set<"message">(line.message()).template set<"detail">(line.detail());
             }
         }
         output.template set<"lines">(std::move(lines));
@@ -1859,7 +1828,7 @@ class EdgeService {
             ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& line : result.lines()) {
-            auto& item = lines.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = lines.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms()))
                 .template set<"level">(line.level())
                 .template set<"source">(line.source())
@@ -1922,11 +1891,9 @@ class EdgeService {
             "jsonb_set",
             { withLog, levelPath, update.call("to_jsonb", { update.cast(update.value(currentLevel), ruvia::db_data_type::text) }), update.cast(update.value(true), ruvia::db_data_type::boolean) }
         );
-        update.update(entities::EdgeNodeEntity::table_name())
-            .set(entities::EdgeNodeEntity::column_name<"status">(), withLevel)
-            .set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now"))
-            .where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(nodeId), ruvia::db_data_type::uuid)));
-        (void)co_await c.db().execute(update);
+        auto updateBuilder = c.db().template repository<entities::EdgeNodeEntity>().update_builder();
+        updateBuilder.set(entities::EdgeNodeEntity::column_name<"status">(), withLevel).set(entities::EdgeNodeEntity::column_name<"updated_at">(), update.call("now")).where(update.binary(update.column(entities::EdgeNodeEntity::column_name<"id">()), ruvia::db_binary_operator::equal, update.cast(update.value(nodeId), ruvia::db_data_type::uuid)));
+        (void)co_await updateBuilder.execute();
     }
 
   private:
@@ -1942,7 +1909,7 @@ class EdgeService {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         bool requested = false;
         std::optional<std::string> result;
-        while (!c.get_stop_token().stop_requested()) {
+        while (!c.stop_token().stop_requested()) {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
             if (remaining.count() <= 0) {
                 break;
@@ -1978,7 +1945,7 @@ class EdgeService {
                 break;
             }
         }
-        if (!c.get_stop_token().stop_requested()) {
+        if (!c.stop_token().stop_requested()) {
             if (!result) {
                 if (const auto payload = co_await c.redis().get(key)) {
                     result.emplace(payload->data(), payload->size());
@@ -1999,7 +1966,7 @@ class EdgeService {
             service::common::fail(17018, "终端输入编码无效", 400);
         }
         for (std::size_t offset = 0; offset < bytes.size(); offset += 4096) {
-            if (c.get_stop_token().stop_requested()) {
+            if (c.stop_token().stop_requested()) {
                 service::common::fail(17018, "终端输入已取消", 409);
             }
             const auto part = std::string_view(bytes).substr(offset, std::min<std::size_t>(4096, bytes.size() - offset));
@@ -2023,7 +1990,7 @@ class EdgeService {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
         bool sent = false;
         for (;;) {
-            if (c.get_stop_token().stop_requested()) {
+            if (c.stop_token().stop_requested()) {
                 service::common::fail(17018, "终端输入已取消", 409);
             }
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -2065,11 +2032,15 @@ class EdgeService {
         const auto reply = co_await terminalOperation(c, session.node, session.id, session.connection, "terminal-input-status", [sequence](service::message::terminal::Request& request) {
             request.set<"sequence">(static_cast<std::int64_t>(sequence));
         });
-        const auto status = ruvia::from_json<service::message::terminal::InputStatusReply>(reply, { .resource_ = c.arena() });
-        if (!status) {
-            service::common::fail(17018, "终端确认格式无效", 502);
-        }
-        co_return status->get<"acknowledged">().value_;
+        const auto status = [&c, &reply] {
+            try {
+                return ruvia::from_json<service::message::terminal::InputStatusReply>(reply, { .resource_ = c.arena() });
+            } catch (const std::invalid_argument&) {
+                service::common::fail(17018, "终端确认格式无效", 502);
+            }
+        }();
+
+        co_return status.get<"acknowledged">().value_;
     }
 
     template <typename Body>
@@ -2114,12 +2085,12 @@ class EdgeService {
         return values;
     }
 
-    template <typename Context>
-    static ruvia::task<ruvia::boxed_array<EdgeNodeDto>> nodeRows(Context& c, const ruvia::db_query& query) {
-        const auto rows = co_await c.db().query(query);
+    template <typename Context, typename Query>
+    static ruvia::task<ruvia::boxed_array<EdgeNodeDto>> nodeRows(Context& c, const Query& query) {
+        const auto rows = co_await query.get_raw_many();
         ruvia::boxed_array<EdgeNodeDto> nodes(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& node = nodes.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& node = nodes.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             co_await fillNode(c, node, row);
         }
         co_return nodes;
@@ -2214,7 +2185,7 @@ class EdgeService {
         return result;
     }
 
-    static void applyNodeFilters(ruvia::db_query& query, const std::optional<std::string>& keyword, const std::optional<std::string>& status, const std::optional<std::string>& groupId) {
+    static void applyNodeFilters(auto& target, ruvia::db_query& query, const std::optional<std::string>& keyword, const std::optional<std::string>& status, const std::optional<std::string>& groupId) {
         std::vector<ruvia::db_expression> predicates;
         if (keyword && !keyword->empty()) {
             const auto pattern = "%" + *keyword + "%";
@@ -2260,7 +2231,7 @@ class EdgeService {
         for (std::size_t index = 1; index < predicates.size(); ++index) {
             combined = query.binary(combined, Op::and_value, predicates[index]);
         }
-        query.where(combined);
+        target.where(combined);
     }
 
     template <typename Context>
@@ -2272,12 +2243,9 @@ class EdgeService {
             service::common::fail(17003, "上级分组不能是自身", 409);
         }
         ruvia::db_query parent(c.pool());
-        parent.select(parent.cast(parent.value(1), Type::integer))
-            .from(entities::EdgeNodeGroupEntity::table_name())
-            .where(parent.binary(parent.column(entities::EdgeNodeGroupEntity::column_name<"id">()), Op::equal, parent.cast(parent.value(parentId), Type::uuid)))
-            .and_where(parent.unary(Unary::is_null, parent.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">())))
-            .limit(1);
-        const auto parentRows = co_await c.db().query(parent);
+        auto parentBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder();
+        parentBuilder.select({ { "value0", parent.cast(parent.value(1), Type::integer) } }).where(parent.binary(parent.column(entities::EdgeNodeGroupEntity::column_name<"id">()), Op::equal, parent.cast(parent.value(parentId), Type::uuid))).and_where(parent.unary(Unary::is_null, parent.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">()))).limit(1);
+        const auto parentRows = co_await parentBuilder.get_raw_many();
         if (parentRows.empty()) {
             service::common::fail(17001, "上级分组不存在", 404);
         }
@@ -2294,12 +2262,9 @@ class EdgeService {
                 .and_where(descendants.unary(Unary::is_null, descendants.column(entities::EdgeNodeGroupEntity::column_name<"deleted_at">(), "child")));
             roots.combine(ruvia::db_set_operation::union_all, descendants);
             ruvia::db_query cycle(c.pool());
-            cycle.with("descendants", roots, { .recursive_ = true })
-                .select(cycle.cast(cycle.value(1), Type::integer))
-                .from("descendants")
-                .where(cycle.binary(cycle.column(entities::EdgeNodeGroupEntity::column_name<"id">()), Op::equal, cycle.cast(cycle.value(parentId), Type::uuid)))
-                .limit(1);
-            const auto cycleRows = co_await c.db().query(cycle);
+            auto cycleBuilder = c.db().template repository<entities::EdgeNodeGroupEntity>().query_builder("descendants");
+            cycleBuilder.with("descendants", roots, { .recursive_ = true }).select({ { "value0", cycle.cast(cycle.value(1), Type::integer) } }).from_cte("descendants").where(cycle.binary(cycle.column(entities::EdgeNodeGroupEntity::column_name<"id">()), Op::equal, cycle.cast(cycle.value(parentId), Type::uuid))).limit(1);
+            const auto cycleRows = co_await cycleBuilder.get_raw_many();
             if (!cycleRows.empty()) {
                 service::common::fail(17003, "不能把分组移动到自己的子分组", 409);
             }
@@ -2314,7 +2279,8 @@ class EdgeService {
     // jsonb_array_elements_text 返回的派生列名（非实体列）。
     static constexpr std::string_view kBridgePortColumn = "value";
 
-    static ruvia::db_query nodeSelect(std::pmr::memory_resource* resource) {
+    template <typename Database>
+    static auto nodeSelect(Database&& database, std::pmr::memory_resource* resource) {
         ruvia::db_query query(resource);
         const auto nodeId = query.column(entities::EdgeNodeEntity::column_name<"id">(), "node");
         const auto status = query.column(entities::EdgeNodeEntity::column_name<"status">(), "node");
@@ -2329,8 +2295,8 @@ class EdgeService {
 
         ruvia::db_query latest(resource);
         const auto taskResult = latest.column(entities::EdgeTaskEntity::column_name<"result">(), "task");
-        latest.select({ latest.alias(latest.column(entities::EdgeTaskEntity::column_name<"status">(), "task"), entities::EdgeTaskEntity::column_name<"status">()), latest.alias(db::jsonText(latest, taskResult, "progressPercent"), kProgressPercentColumn), latest.alias(db::jsonText(latest, taskResult, "downloadedBytes"), kDownloadedBytesColumn), latest.alias(db::jsonText(latest, taskResult, "totalBytes"), kTotalBytesColumn), latest.alias(db::jsonText(latest, taskResult, "message"), kMessageColumn) })
-            .from(entities::EdgeTaskEntity::table_name(), "task")
+        auto latestBuilder = database.template repository<entities::EdgeTaskEntity>().query_builder("task");
+        latestBuilder.select({ { entities::EdgeTaskEntity::column_name<"status">(), latest.column(entities::EdgeTaskEntity::column_name<"status">(), "task") }, { kProgressPercentColumn, db::jsonText(latest, taskResult, "progressPercent") }, { kDownloadedBytesColumn, db::jsonText(latest, taskResult, "downloadedBytes") }, { kTotalBytesColumn, db::jsonText(latest, taskResult, "totalBytes") }, { kMessageColumn, db::jsonText(latest, taskResult, "message") } })
             .where(latest.binary(latest.column(entities::EdgeTaskEntity::column_name<"node_id">(), "task"), Op::equal, latest.import_expression(nodeId, "node", "node")))
             .and_where(latest.binary(latest.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task"), Op::equal, latest.cast(latest.value("firmware"), Type::text)))
             .order_by(latest.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc)
@@ -2354,11 +2320,9 @@ class EdgeService {
         const auto firmwareColumn = [&query](std::string_view name) {
             return query.column(name, "firmware");
         };
-        query.select({ query.cast(nodeId, Type::text), nodeColumn(entities::EdgeNodeEntity::column_name<"imei">()), textDefault(query, nodeColumn(entities::EdgeNodeEntity::column_name<"name">())), nodeColumn(entities::EdgeNodeEntity::column_name<"model">()), nodeColumn(entities::EdgeNodeEntity::column_name<"software_version">()), nodeColumn(entities::EdgeNodeEntity::column_name<"hostname">()), nodeColumn(entities::EdgeNodeEntity::column_name<"architecture">()), nodeColumn(entities::EdgeNodeEntity::column_name<"openwrt_release">()), nodeColumn(entities::EdgeNodeEntity::column_name<"enrollment_status">()), query.cast(query.value(false), Type::boolean), textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"last_seen_at">()) })), query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"created_at">()) }), safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0), safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0), textDefault(query, db::jsonText(query, config, "state"), "idle"), textDefault(query, db::jsonText(query, config, "message")), safeBigInt(query, db::jsonText(query, outbox, "records"), 0), safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0), textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info"), booleanText(query, db::jsonText(query, capability, "networkConfig")), safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0), booleanText(query, db::jsonText(query, capability, "firmwareUpdate")), booleanText(query, db::jsonText(query, capability, "deviceConfig")), booleanText(query, db::jsonText(query, capability, "modemControl")), booleanText(query, db::jsonText(query, capability, "terminal")), booleanText(query, db::jsonText(query, capability, "logs")), booleanText(query, db::jsonText(query, mobile, "available")), textDefault(query, db::jsonText(query, mobile, "simState"), "unknown"), textDefault(query, db::jsonText(query, mobile, "iccid")), safeBigInt(query, db::jsonText(query, signal, "csq"), 99), safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1), safeBigInt(query, db::jsonText(query, signal, "percent"), 0), booleanText(query, db::jsonText(query, mobile, "registered")), safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1), textDefault(query, db::jsonText(query, mobile, "apn")), textDefault(query, db::jsonText(query, mobile, "operator")), booleanText(query, db::jsonText(query, mobile, "connected")), textDefault(query, db::jsonText(query, mobile, "ipv4")), textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column_name<"status">())), safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0), safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0), safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0), textDefault(query, firmwareColumn(kMessageColumn)), booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")), textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")), textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")), textDefault(query, db::jsonText(query, vpnCapability, "publicKey")), textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Type::text)), textDefault(query, query.column(entities::EdgeNodeGroupEntity::column_name<"name">(), "group_item")), textDefault(query, query.subquery(vpn)), booleanText(query, db::jsonText(query, capability, "serialDebug")), db::jsonText(query, tcpTraffic, "uploadBytes"), db::jsonText(query, tcpTraffic, "downloadBytes"), db::jsonText(query, tcpTraffic, "intervalMs"), db::jsonText(query, tcpTraffic, "sampleId"), db::jsonText(query, tcpTraffic, "month"), db::jsonText(query, tcpTraffic, "monthlyUploadBytes"), db::jsonText(query, tcpTraffic, "monthlyDownloadBytes"), db::jsonText(query, tcpTraffic, "day"), db::jsonText(query, tcpTraffic, "dailyUploadBytes"), db::jsonText(query, tcpTraffic, "dailyDownloadBytes"), db::jsonText(query, vpnTraffic, "uploadBytes"), db::jsonText(query, vpnTraffic, "downloadBytes"), db::jsonText(query, vpnTraffic, "intervalMs"), db::jsonText(query, vpnTraffic, "sampleId"), db::jsonText(query, vpnTraffic, "month"), db::jsonText(query, vpnTraffic, "monthlyUploadBytes"), db::jsonText(query, vpnTraffic, "monthlyDownloadBytes"), db::jsonText(query, vpnTraffic, "day"), db::jsonText(query, vpnTraffic, "dailyUploadBytes"), db::jsonText(query, vpnTraffic, "dailyDownloadBytes") })
-            .from(entities::EdgeNodeEntity::table_name(), "node")
-            .join(ruvia::db_join_type::left, entities::EdgeNodeGroupEntity::table_name(), query.binary(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Op::equal, query.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item")), "group_item")
-            .join(ruvia::db_join_type::left, latest, query.cast(query.value(true), Type::boolean), "firmware", { .lateral_ = true });
-        return query;
+        auto queryBuilder = database.template repository<entities::EdgeNodeEntity>().query_builder("node");
+        queryBuilder.select({ { "value0", query.cast(nodeId, Type::text) }, { "imei", nodeColumn(entities::EdgeNodeEntity::column_name<"imei">()) }, { "name", textDefault(query, nodeColumn(entities::EdgeNodeEntity::column_name<"name">())) }, { "model", nodeColumn(entities::EdgeNodeEntity::column_name<"model">()) }, { "software_version", nodeColumn(entities::EdgeNodeEntity::column_name<"software_version">()) }, { "hostname", nodeColumn(entities::EdgeNodeEntity::column_name<"hostname">()) }, { "architecture", nodeColumn(entities::EdgeNodeEntity::column_name<"architecture">()) }, { "openwrt_release", nodeColumn(entities::EdgeNodeEntity::column_name<"openwrt_release">()) }, { "enrollment_status", nodeColumn(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "value9", query.cast(query.value(false), Type::boolean) }, { "last_seen_at", textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"last_seen_at">()) })) }, { "created_at", query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"created_at">()) }) }, { "value12", safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0) }, { "value13", safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0) }, { "value14", textDefault(query, db::jsonText(query, config, "state"), "idle") }, { "value15", textDefault(query, db::jsonText(query, config, "message")) }, { "value16", safeBigInt(query, db::jsonText(query, outbox, "records"), 0) }, { "value17", safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0) }, { "value18", textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info") }, { "value19", booleanText(query, db::jsonText(query, capability, "networkConfig")) }, { "value20", safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0) }, { "value21", booleanText(query, db::jsonText(query, capability, "firmwareUpdate")) }, { "value22", booleanText(query, db::jsonText(query, capability, "deviceConfig")) }, { "value23", booleanText(query, db::jsonText(query, capability, "modemControl")) }, { "value24", booleanText(query, db::jsonText(query, capability, "terminal")) }, { "value25", booleanText(query, db::jsonText(query, capability, "logs")) }, { "value26", booleanText(query, db::jsonText(query, mobile, "available")) }, { "value27", textDefault(query, db::jsonText(query, mobile, "simState"), "unknown") }, { "value28", textDefault(query, db::jsonText(query, mobile, "iccid")) }, { "value29", safeBigInt(query, db::jsonText(query, signal, "csq"), 99) }, { "value30", safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1) }, { "value31", safeBigInt(query, db::jsonText(query, signal, "percent"), 0) }, { "value32", booleanText(query, db::jsonText(query, mobile, "registered")) }, { "value33", safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1) }, { "value34", textDefault(query, db::jsonText(query, mobile, "apn")) }, { "value35", textDefault(query, db::jsonText(query, mobile, "operator")) }, { "value36", booleanText(query, db::jsonText(query, mobile, "connected")) }, { "value37", textDefault(query, db::jsonText(query, mobile, "ipv4")) }, { "status", textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column_name<"status">())) }, { "value39", safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0) }, { "value40", safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0) }, { "value41", safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0) }, { "value42", textDefault(query, firmwareColumn(kMessageColumn)) }, { "value43", booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")) }, { "value44", textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")) }, { "value45", textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")) }, { "value46", textDefault(query, db::jsonText(query, vpnCapability, "publicKey")) }, { "group_id", textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Type::text)) }, { "value48", textDefault(query, query.column(entities::EdgeNodeGroupEntity::column_name<"name">(), "group_item")) }, { "value49", textDefault(query, query.subquery(vpn)) }, { "value50", booleanText(query, db::jsonText(query, capability, "serialDebug")) }, { "value51", db::jsonText(query, tcpTraffic, "uploadBytes") }, { "value52", db::jsonText(query, tcpTraffic, "downloadBytes") }, { "value53", db::jsonText(query, tcpTraffic, "intervalMs") }, { "value54", db::jsonText(query, tcpTraffic, "sampleId") }, { "value55", db::jsonText(query, tcpTraffic, "month") }, { "value56", db::jsonText(query, tcpTraffic, "monthlyUploadBytes") }, { "value57", db::jsonText(query, tcpTraffic, "monthlyDownloadBytes") }, { "value58", db::jsonText(query, tcpTraffic, "day") }, { "value59", db::jsonText(query, tcpTraffic, "dailyUploadBytes") }, { "value60", db::jsonText(query, tcpTraffic, "dailyDownloadBytes") }, { "value61", db::jsonText(query, vpnTraffic, "uploadBytes") }, { "value62", db::jsonText(query, vpnTraffic, "downloadBytes") }, { "value63", db::jsonText(query, vpnTraffic, "intervalMs") }, { "value64", db::jsonText(query, vpnTraffic, "sampleId") }, { "value65", db::jsonText(query, vpnTraffic, "month") }, { "value66", db::jsonText(query, vpnTraffic, "monthlyUploadBytes") }, { "value67", db::jsonText(query, vpnTraffic, "monthlyDownloadBytes") }, { "value68", db::jsonText(query, vpnTraffic, "day") }, { "value69", db::jsonText(query, vpnTraffic, "dailyUploadBytes") }, { "value70", db::jsonText(query, vpnTraffic, "dailyDownloadBytes") }, { "value71", db::jsonValue(query, capability, "externalIo") } }).template join<entities::EdgeNodeGroupEntity>(ruvia::db_join_type::left, "group_item", query.binary(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Op::equal, query.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item"))).join(ruvia::db_join_type::left, latestBuilder, "firmware", query.cast(query.value(true), Type::boolean), { .lateral_ = true });
+        return queryBuilder;
     }
 
     static std::int64_t integer(std::string_view value) {
@@ -2474,6 +2438,7 @@ class EdgeService {
         vpn.template set<"agentVersion">(row[45].value().value_or(std::string_view{}));
         vpn.template set<"publicKey">(row[46].value().value_or(std::string_view{}));
         capability.template set<"vpn">(std::move(vpn));
+        capability.template set<"externalIo">(ruvia::from_json<ExternalIoCapabilityDto>(row[71].value().value_or("{}")));
 
         SignalDto signal(ruvia::model_options{ .resource_ = c.arena() });
         signal.template set<"csq">(integer(row[29].value().value_or(std::string_view{})));
@@ -2524,7 +2489,7 @@ class EdgeService {
         );
         for (const auto& cidr : split(row[49].value().value_or(std::string_view{}))) {
             if (!cidr.empty()) {
-                virtualCidrs.emplace(cidr, ruvia::model_options{ .resource_ = c.arena() });
+                virtualCidrs.emplace_back(cidr, ruvia::model_options{ .resource_ = c.arena() });
             }
         }
         node.template set<"vpnVirtualCidrs">(std::move(virtualCidrs));
@@ -2544,15 +2509,13 @@ class EdgeService {
         return result;
     }
 
-    static ruvia::db_query taskSelect(std::pmr::memory_resource* resource, std::string_view nodeId) {
+    template <typename Database>
+    static auto taskSelect(Database&& database, std::pmr::memory_resource* resource, std::string_view nodeId) {
         ruvia::db_query query(resource);
         const auto result = query.column(entities::EdgeTaskEntity::column_name<"result">(), "task");
-        query.select({ query.cast(query.column(entities::EdgeTaskEntity::column_name<"id">(), "task"), Type::text), query.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task"), query.column(entities::EdgeTaskEntity::column_name<"status">(), "task"), textDefault(query, db::jsonText(query, result, "message")), safeBigInt(query, db::jsonText(query, result, "progressPercent"), 0), safeBigInt(query, db::jsonText(query, result, "downloadedBytes"), 0), safeBigInt(query, db::jsonText(query, result, "totalBytes"), 0), query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task") }), query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"updated_at">(), "task") }) })
-            .from(entities::EdgeTaskEntity::table_name(), "task")
-            .where(query.binary(query.column(entities::EdgeTaskEntity::column_name<"node_id">(), "task"), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .order_by(query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc)
-            .limit(50);
-        return query;
+        auto queryBuilder = database.template repository<entities::EdgeTaskEntity>().query_builder("task");
+        queryBuilder.select({ { "id", query.cast(query.column(entities::EdgeTaskEntity::column_name<"id">(), "task"), Type::text) }, { "task_type", query.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task") }, { "status", query.column(entities::EdgeTaskEntity::column_name<"status">(), "task") }, { "value3", textDefault(query, db::jsonText(query, result, "message")) }, { "value4", safeBigInt(query, db::jsonText(query, result, "progressPercent"), 0) }, { "value5", safeBigInt(query, db::jsonText(query, result, "downloadedBytes"), 0) }, { "value6", safeBigInt(query, db::jsonText(query, result, "totalBytes"), 0) }, { "created_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task") }) }, { "updated_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"updated_at">(), "task") }) } }).where(query.binary(query.column(entities::EdgeTaskEntity::column_name<"node_id">(), "task"), Op::equal, query.cast(query.value(nodeId), Type::uuid))).order_by(query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc).limit(50);
+        return queryBuilder;
     }
 
     template <typename Context>
@@ -2578,24 +2541,22 @@ class EdgeService {
             { query.aggregate("string_agg", { bridgeValue, query.cast(query.value(","), Type::text) }, false, bridgeOrder),
               query.cast(query.value(""), Type::text) }
         );
-        query.select({ name, displayName, mac, up, bridge, ipv4, prefixLength, gateway, bridgePorts })
-            .from(entities::EdgeNodeInterfaceEntity::table_name(), "iface")
-            .join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements_text", { bridgePortsJson }), query.cast(query.value(true), Type::boolean), "bridge_value", { .lateral_ = true, .columns_ = { { .name_ = std::string(kBridgePortColumn) } } })
-            .where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"node_id">(), "iface"), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .group_by({ name, displayName, mac, up, bridge, ipv4, prefixLength, gateway })
-            .order_by(name);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeInterfaceEntity>().query_builder("iface");
+
+        const std::array<ruvia::db_source_column, 1> sourceColumns4{ { { .name_ = kBridgePortColumn } } };
+        queryBuilder.select({ { "value0", name }, { "value1", displayName }, { "value2", mac }, { "value3", up }, { "value4", bridge }, { "value5", ipv4 }, { "value6", prefixLength }, { "value7", gateway }, { "value8", bridgePorts } }).join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements_text", { bridgePortsJson }), "bridge_value", query.cast(query.value(true), Type::boolean), { .lateral_ = true, .columns_ = sourceColumns4 }).where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"node_id">(), "iface"), Op::equal, query.cast(query.value(id), Type::uuid))).group_by({ name, displayName, mac, up, bridge, ipv4, prefixLength, gateway }).order_by(name);
+        const auto rows = co_await queryBuilder.get_raw_many();
         ruvia::boxed_array<InterfaceDto> result(
             ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             ruvia::boxed_array<ruvia::string> ports(
                 ruvia::model_options{ .resource_ = c.arena() }
             );
             for (const auto& port : split(row[8].value().value_or(std::string_view{}))) {
                 if (!port.empty()) {
-                    ports.emplace(port, ruvia::model_options{ .resource_ = c.arena() });
+                    ports.emplace_back(port, ruvia::model_options{ .resource_ = c.arena() });
                 }
             }
             item.template set<"name">(row[0].value().value_or(std::string_view{}))
@@ -2634,22 +2595,20 @@ class EdgeService {
             { query.aggregate("string_agg", { bridgeValue, query.cast(query.value(","), Type::text) }, false, bridgeOrder),
               query.cast(query.value(""), Type::text) }
         );
-        query.select({ name, mode, device, up, bridge, ipv4, prefixLength, gateway, bridgePorts })
-            .from(entities::EdgeNodeNetworkEntity::table_name(), "network")
-            .join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements_text", { bridgePortsJson }), query.cast(query.value(true), Type::boolean), "bridge_value", { .lateral_ = true, .columns_ = { { .name_ = std::string(kBridgePortColumn) } } })
-            .where(query.binary(query.column(entities::EdgeNodeNetworkEntity::column_name<"node_id">(), "network"), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .group_by({ name, mode, device, up, bridge, ipv4, prefixLength, gateway })
-            .order_by(name);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeNetworkEntity>().query_builder("network");
+
+        const std::array<ruvia::db_source_column, 1> sourceColumns5{ { { .name_ = kBridgePortColumn } } };
+        queryBuilder.select({ { "value0", name }, { "value1", mode }, { "value2", device }, { "value3", up }, { "value4", bridge }, { "value5", ipv4 }, { "value6", prefixLength }, { "value7", gateway }, { "value8", bridgePorts } }).join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements_text", { bridgePortsJson }), "bridge_value", query.cast(query.value(true), Type::boolean), { .lateral_ = true, .columns_ = sourceColumns5 }).where(query.binary(query.column(entities::EdgeNodeNetworkEntity::column_name<"node_id">(), "network"), Op::equal, query.cast(query.value(id), Type::uuid))).group_by({ name, mode, device, up, bridge, ipv4, prefixLength, gateway }).order_by(name);
+        const auto rows = co_await queryBuilder.get_raw_many();
         ruvia::boxed_array<NetworkDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             ruvia::boxed_array<ruvia::string> ports(
                 ruvia::model_options{ .resource_ = c.arena() }
             );
             for (const auto& port : split(row[8].value().value_or(std::string_view{}))) {
                 if (!port.empty()) {
-                    ports.emplace(port, ruvia::model_options{ .resource_ = c.arena() });
+                    ports.emplace_back(port, ruvia::model_options{ .resource_ = c.arena() });
                 }
             }
             item.template set<"name">(row[0].value().value_or(std::string_view{}))
@@ -2668,14 +2627,12 @@ class EdgeService {
     template <typename Context>
     static ruvia::task<ruvia::boxed_array<SerialDto>> serialPorts(Context& c, std::string_view id) {
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeNodeSerialEntity::column_name<"path">()), query.column(entities::EdgeNodeSerialEntity::column_name<"display_name">()), query.column(entities::EdgeNodeSerialEntity::column_name<"available">()), query.column(entities::EdgeNodeSerialEntity::column_name<"rs485">()) })
-            .from(entities::EdgeNodeSerialEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeNodeSerialEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(id), Type::uuid)))
-            .order_by(query.column(entities::EdgeNodeSerialEntity::column_name<"path">()));
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeSerialEntity>().query_builder();
+        queryBuilder.select({ { "path", query.column(entities::EdgeNodeSerialEntity::column_name<"path">()) }, { "display_name", query.column(entities::EdgeNodeSerialEntity::column_name<"display_name">()) }, { "available", query.column(entities::EdgeNodeSerialEntity::column_name<"available">()) }, { "rs485", query.column(entities::EdgeNodeSerialEntity::column_name<"rs485">()) } }).where(query.binary(query.column(entities::EdgeNodeSerialEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(id), Type::uuid))).order_by(query.column(entities::EdgeNodeSerialEntity::column_name<"path">()));
+        const auto rows = co_await queryBuilder.get_raw_many();
         ruvia::boxed_array<SerialDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"path">(row[0].value().value_or(std::string_view{}))
                 .template set<"displayName">(row[1].value().value_or(std::string_view{}))
                 .template set<"available">(row[2].value().value_or(std::string_view{}) == "t")
@@ -2686,10 +2643,10 @@ class EdgeService {
 
     template <typename Context>
     static ruvia::task<ruvia::boxed_array<TaskDto>> tasks(Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(taskSelect(c.pool(), id));
+        const auto rows = co_await taskSelect(c.db(), c.pool(), id).get_raw_many();
         ruvia::boxed_array<TaskDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.template set<"id">(row[0].value().value_or(std::string_view{}))
                 .template set<"taskType">(row[1].value().value_or(std::string_view{}))
                 .template set<"status">(row[2].value().value_or(std::string_view{}))
@@ -2750,12 +2707,9 @@ class EdgeService {
     static ruvia::task<std::unordered_set<std::string>>
     manageableInterfaces(Context& c, std::string_view nodeId) {
         ruvia::db_query query(c.pool());
-        query.select(query.column(entities::EdgeNodeInterfaceEntity::column_name<"name">()))
-            .from(entities::EdgeNodeInterfaceEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .and_where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"name">()), Op::not_equal, query.cast(query.value("lo"), Type::text)))
-            .and_where(query.unary(Unary::is_false, query.column(entities::EdgeNodeInterfaceEntity::column_name<"is_bridge">())));
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeInterfaceEntity>().query_builder();
+        queryBuilder.select({ { "name", query.column(entities::EdgeNodeInterfaceEntity::column_name<"name">()) } }).where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"node_id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).and_where(query.binary(query.column(entities::EdgeNodeInterfaceEntity::column_name<"name">()), Op::not_equal, query.cast(query.value("lo"), Type::text))).and_where(query.unary(Unary::is_false, query.column(entities::EdgeNodeInterfaceEntity::column_name<"is_bridge">())));
+        const auto rows = co_await queryBuilder.get_raw_many();
         std::unordered_set<std::string> result;
         for (const auto& row : rows) {
             result.emplace(row[0].value().value_or(std::string_view{}));
@@ -2825,11 +2779,9 @@ class EdgeService {
     ) {
         ruvia::db_query query(c.pool());
         const auto capability = query.column(entities::EdgeNodeEntity::column_name<"capability">());
-        query.select({ query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()), booleanText(query, db::jsonText(query, capability, "networkConfig")), safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0) })
-            .from(entities::EdgeNodeEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .limit(1);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+        queryBuilder.select({ { "enrollment_status", query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "value1", booleanText(query, db::jsonText(query, capability, "networkConfig")) }, { "value2", safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0) } }).where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).limit(1);
+        const auto rows = co_await queryBuilder.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -2879,11 +2831,9 @@ class EdgeService {
     template <typename Context>
     static ruvia::task<void> requireNodeCapability(Context& c, std::string_view nodeId, std::string_view key, std::string_view feature) {
         ruvia::db_query query(c.pool());
-        query.select({ query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()), booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">()), key)) })
-            .from(entities::EdgeNodeEntity::table_name())
-            .where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
-            .limit(1);
-        const auto rows = co_await c.db().query(query);
+        auto queryBuilder = c.db().template repository<entities::EdgeNodeEntity>().query_builder();
+        queryBuilder.select({ { "enrollment_status", query.column(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "capability", booleanText(query, db::jsonText(query, query.column(entities::EdgeNodeEntity::column_name<"capability">()), key)) } }).where(query.binary(query.column(entities::EdgeNodeEntity::column_name<"id">()), Op::equal, query.cast(query.value(nodeId), Type::uuid))).limit(1);
+        const auto rows = co_await queryBuilder.get_raw_many();
         if (rows.empty()) {
             service::common::fail(17001, "边缘节点不存在", 404);
         }
@@ -2904,9 +2854,12 @@ class EdgeService {
             { query.cast(query.value("interfaceCount"), Type::text),
               query.cast(query.value(static_cast<std::int64_t>(interfaceCount)), Type::big_int) }
         );
-        query.insert_into(entities::EdgeTaskEntity::table_name(), { entities::EdgeTaskEntity::column_name<"id">(), entities::EdgeTaskEntity::column_name<"node_id">(), entities::EdgeTaskEntity::column_name<"task_type">(), entities::EdgeTaskEntity::column_name<"request">(), entities::EdgeTaskEntity::column_name<"created_by">() })
-            .values({ query.cast(query.value(taskId), Type::uuid), query.cast(query.value(nodeId), Type::uuid), query.value("network"), requestJson, query.cast(query.value(c.userId), Type::uuid) });
-        (void)co_await c.db().execute(query);
+        const std::array<std::string_view, 5> queryColumns{ entities::EdgeTaskEntity::column_name<"id">(), entities::EdgeTaskEntity::column_name<"node_id">(), entities::EdgeTaskEntity::column_name<"task_type">(), entities::EdgeTaskEntity::column_name<"request">(), entities::EdgeTaskEntity::column_name<"created_by">() };
+        auto queryBuilder = c.db().template repository<entities::EdgeTaskEntity>().insert_builder();
+        ruvia::db_values_builder queryValues(queryColumns);
+        queryValues.row({ query.cast(query.value(taskId), Type::uuid), query.cast(query.value(nodeId), Type::uuid), query.value("network"), requestJson, query.cast(query.value(c.userId), Type::uuid) });
+        queryBuilder.insert_from(queryColumns, queryValues.query());
+        (void)co_await queryBuilder.execute();
         co_await queueControl(c, nodeId, "queue-network", request);
     }
 };
@@ -2929,7 +2882,7 @@ inline ruvia::task<void> SerialSession::close(EventContext& c) {
 class DebugConnection final {
   public:
     DebugConnection(ruvia::context& context, const debug::EventRegistry<debug::EventContext>& registry)
-        : context_(context), socket_(context.get_websocket()), tasks_(context.worker(), { .resource_ = context.pool() }),
+        : context_(context), socket_(context.websocket()), tasks_(context.worker(), { .resource_ = context.pool() }),
           registry_(registry),
           identity_{ service::utils::nextUuid(context.worker_state<service::common::UuidV7State>()) } {}
 
@@ -2999,7 +2952,7 @@ class DebugConnection final {
         }
         if (request.event == "subscription.cancel") {
             const auto data = ruvia::json_value::parse(request.data);
-            const auto target = data ? data->get<ruvia::string>("subscriptionId") : std::nullopt;
+            const auto target = data.get<ruvia::string>("subscriptionId");
             if (!target || !service::common::isUuid(target->view())) {
                 co_await reject(request.id, 10001, "订阅编号无效");
                 co_return;
@@ -3043,7 +2996,8 @@ class DebugConnection final {
                 if (identity_.accessToken.empty()) {
                     throw debug::EventError(11004, "未登录");
                 }
-                const auto body = ruvia::from_json<TerminalSessionInput>(request.data);
+                const auto document = ruvia::json_value::parse(request.data);
+                const auto body = document.get<TerminalSessionInput>();
                 if (body) {
                     const auto prefix = request.event == "edge.terminal.events.subscribe" ? "terminal:" : "serial:";
                     const auto found = resources_.find(prefix + std::string(body->get<"sessionId">().view()));
@@ -3136,7 +3090,7 @@ class DebugConnection final {
         } catch (const debug::EventError& error) {
             code = error.code;
             message = error.what();
-        } catch (const ruvia::validation_error&) {
+        } catch (const std::invalid_argument&) {
             code = 10001;
             message = "事件参数校验失败";
         } catch (const ruvia::http_error& error) {
@@ -3163,7 +3117,8 @@ class DebugConnection final {
         if (request.event != "edge.terminal.events.subscribe" && request.event != "edge.serial.events.subscribe") {
             throw debug::EventError(10003, "未知调试订阅");
         }
-        const auto body = ruvia::from_json<TerminalSessionInput>(request.data);
+        const auto document = ruvia::json_value::parse(request.data);
+        const auto body = document.get<TerminalSessionInput>();
         if (!body || !service::common::isUuid(body->get<"id">().view()) || !service::common::isUuid(body->get<"sessionId">().view())) {
             throw debug::EventError(10001, "调试订阅参数无效");
         }

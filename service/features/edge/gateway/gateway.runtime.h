@@ -136,7 +136,8 @@ class GatewayRuntime final {
         session.sparseHeartbeat = sparseHeartbeat;
         session.statusReporting = statusReporting;
         session.supportsCommandStartBefore = supportsCommandStartBefore;
-        const auto opened = co_await gateway::GatewayService::openSession(c, connectionIdentity(session));
+        const auto identity = connectionIdentity(session);
+        const auto opened = co_await gateway::GatewayService::openSession(c, identity);
         if (opened != gateway::IngressStatus::Accepted) {
             co_await socket.close(
                 1008,
@@ -160,7 +161,7 @@ class GatewayRuntime final {
                 LOG_ERROR << "edge hello database time sample failed: " << error.what();
             }
             if (!sampleAvailable) {
-                co_await gateway::GatewayService::closeSession(c, connectionIdentity(session));
+                co_await gateway::GatewayService::closeSession(c, identity);
                 co_await socket.close(1011, "database time sample unavailable");
                 co_return;
             }
@@ -183,7 +184,7 @@ class GatewayRuntime final {
             std::weak_ptr<LiveSession> weak = live;
             gateway::GatewayService::ConnectionRegistration registration(
                 c,
-                connectionIdentity(session),
+                identity,
                 [weak] {
                     if (const auto current = weak.lock()) {
                         requestFlush(current);
@@ -214,7 +215,7 @@ class GatewayRuntime final {
                 const auto telemetry = GatewayProtocol::telemetryDecision(session, input, service::message::utcNowMilliseconds());
                 const auto accepted = co_await gateway::GatewayService::acceptIngress(
                     c,
-                    connectionIdentity(session),
+                    identity,
                     input,
                     message->payload(),
                     telemetry.publish
@@ -248,7 +249,7 @@ class GatewayRuntime final {
             }
         }
         try {
-            co_await gateway::GatewayService::closeSession(c, connectionIdentity(session));
+            co_await gateway::GatewayService::closeSession(c, identity);
         } catch (...) {
             if (!sessionFailure) {
                 sessionFailure = std::current_exception();

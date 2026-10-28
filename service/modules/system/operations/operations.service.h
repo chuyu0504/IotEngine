@@ -29,9 +29,7 @@ class OperationsService final {
         bool databaseReady = false;
         bool redisReady = false;
         try {
-            ruvia::db_query query(context.pool());
-            query.select(query.value(1));
-            const auto queryRows = co_await context.db().query(query);
+            const auto queryRows = co_await context.db().query("SELECT 1");
             databaseReady = !queryRows.empty();
             const std::vector<std::string_view> command{ "PING" };
             const auto reply = co_await context.redis().command(command);
@@ -110,11 +108,11 @@ class OperationsService final {
     static ruvia::task<std::vector<WorkerDiagnosticSnapshot>>
     loadSnapshots(ruvia::context& context, std::size_t count) {
         const auto& identity = context.worker_state<std::optional<service::common::WorkerIdentity>>().value();
-        auto snapshots = context.redis().get_repository<entities::WorkerSnapshotEntity>();
+        auto snapshots = context.redis().repository<entities::WorkerSnapshotEntity>();
         std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::redis_find_options options{
-                .where_ = entities::WorkerSnapshotEntity::field<"id">() ==
+                .where_ = entities::WorkerSnapshotEntity::column<"id">() ==
                     service::message::worker_metrics::snapshotId(index, identity.instanceId)
             };
             const auto snapshot = co_await snapshots.find_one(options);

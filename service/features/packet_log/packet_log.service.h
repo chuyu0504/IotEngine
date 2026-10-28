@@ -219,10 +219,8 @@ return changed and 1 or 0
         std::vector<std::string> parsedFields;
         if (!parsedJson.empty()) {
             const auto decoded = ruvia::json_value::parse(parsedJson);
-            if (!decoded) {
-                throw std::invalid_argument("invalid debug parsed JSON");
-            }
-            const auto values = decoded->get<ruvia::json_value>("values");
+
+            const auto values = decoded.get<ruvia::json_value>("values");
             if (!values || !values->is_object()) {
                 throw std::invalid_argument("invalid debug parsed values");
             }

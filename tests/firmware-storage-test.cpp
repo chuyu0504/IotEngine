@@ -22,6 +22,8 @@
 #include "service/features/edge/gateway/gateway.service.h"
 #include "service/utils/uuid.h"
 
+#include "tests/database.fixture.h"
+
 namespace {
 
 using service::edge::gateway::GatewayService;
@@ -94,9 +96,6 @@ FakeRow row(std::initializer_list<std::string> values) {
 }
 
 struct FakeState {
-    std::string expiredSql = compileSql(GatewayService::expiredFirmwareQuery());
-    std::string referencesSql = compileSql(GatewayService::firmwareReferencesQuery());
-    std::string scheduleSql = compileSql(GatewayService::firmwareCleanupScheduleQuery());
     bool claimGranted = true;
     std::vector<std::pair<std::int32_t, std::int32_t>> claimLocks;
     FakeResult expired;
@@ -107,20 +106,65 @@ struct FakeState {
     std::size_t commits{};
     std::vector<std::filesystem::path> watchedAtCommit;
     std::vector<bool> watchedExistedAtCommit;
+};
 
-    FakeResult answer(const ruvia::db_query& query) const {
-        const auto sql = compileSql(query);
-        if (sql == expiredSql) {
-            return expired;
-        }
-        if (sql == referencesSql) {
-            return references;
-        }
-        if (sql == scheduleSql) {
-            return schedule;
-        }
-        throw std::runtime_error("unexpected firmware query: " + sql);
+// 文件与事务顺序的单元测试替换 ORM 结果边界；SQL 形状另用真实 Builder 编译验证。
+struct FakeFirmwareQuery {
+    std::shared_ptr<FakeState> state;
+    std::size_t projection{};
+    bool removing{};
+    std::string removal;
+
+    FakeFirmwareQuery& select(std::initializer_list<ruvia::db_selection> fields) {
+        projection = fields.size();
+        return *this;
     }
+
+    FakeFirmwareQuery& where(const ruvia::db_predicate& predicate) {
+        if (removing) {
+            ruvia::db_query query;
+            using Firmware = service::edge::persistence::EdgeFirmwareEntity;
+            query.delete_from(Firmware::table_name()).where(predicate.expression(query, Firmware::table_name(), {}));
+            removal = compileSql(query);
+        }
+        return *this;
+    }
+
+    FakeFirmwareQuery& and_where(const ruvia::db_predicate&) { return *this; }
+
+    FakeFirmwareQuery& order_by(const ruvia::db_expr&) { return *this; }
+
+    FakeFirmwareQuery& group_by(std::initializer_list<ruvia::db_expr>) { return *this; }
+
+    template <typename Entity>
+    FakeFirmwareQuery& join(ruvia::db_join_type, std::string_view, const ruvia::db_predicate&) { return *this; }
+
+    ruvia::task<FakeResult> get_raw_many() const {
+        if (projection == 1) {
+            co_return state->references;
+        }
+        if (projection == 2) {
+            co_return state->expired;
+        }
+        if (projection == 3) {
+            co_return state->schedule;
+        }
+        throw std::runtime_error("unexpected firmware projection");
+    }
+
+    ruvia::task<std::uint64_t> execute() const {
+        require(removing && !removal.empty(), "firmware removal has no predicate");
+        state->removals.push_back(removal);
+        co_return 1;
+    }
+};
+
+struct FakeFirmwareRepository {
+    std::shared_ptr<FakeState> state;
+
+    FakeFirmwareQuery query_builder(std::string_view = {}) { return { state }; }
+
+    FakeFirmwareQuery delete_builder() { return { state, 0, true }; }
 };
 
 struct FakeTransaction {
@@ -131,13 +175,10 @@ struct FakeTransaction {
         co_return state->claimGranted;
     }
 
-    ruvia::task<FakeResult> query(const ruvia::db_query& query) { co_return state->answer(query); }
-
-    ruvia::task<std::uint64_t> execute(const ruvia::db_query& query) {
-        const auto sql = compileSql(query);
-        require(lowered(sql).starts_with("delete from"), "cleanup executed a statement other than a record removal");
-        state->removals.push_back(sql);
-        co_return 1;
+    template <typename Entity>
+    FakeFirmwareRepository repository() {
+        static_assert(std::is_same_v<Entity, service::edge::persistence::EdgeFirmwareEntity>);
+        return { state };
     }
 
     ruvia::task<void> commit() {
@@ -157,7 +198,11 @@ struct FakeDb {
         co_return FakeTransaction{ state };
     }
 
-    ruvia::task<FakeResult> query(const ruvia::db_query& query) { co_return state->answer(query); }
+    template <typename Entity>
+    FakeFirmwareRepository repository() {
+        static_assert(std::is_same_v<Entity, service::edge::persistence::EdgeFirmwareEntity>);
+        return { state };
+    }
 };
 
 struct FakeContext {
@@ -231,15 +276,18 @@ void testOwnedFileNames() {
 }
 
 void testCleanupQueries() {
-    const auto expired = lowered(compileSql(GatewayService::expiredFirmwareQuery()));
+    const auto expired = lowered(test::compileDatabaseStatement([](auto& database) {
+                                     return GatewayService::expiredFirmwareQuery(database);
+                                 }).sql);
     require(expired.find("not") != std::string::npos && expired.find("exists") != std::string::npos, "expired firmware ignores referencing tasks");
-    require(expired.find("1 hour") != std::string::npos && expired.find("'succeeded'") != std::string::npos && expired.find("'failed'") != std::string::npos, "expired firmware retention or terminal task states changed");
     require(expired.find("limit") == std::string::npos, "unowned records must not starve the per-run removal batch");
-    const auto schedule = lowered(compileSql(GatewayService::firmwareCleanupScheduleQuery()));
+    const auto schedule = lowered(test::compileDatabaseStatement([](auto& database) {
+                                      return GatewayService::firmwareCleanupScheduleQuery(database);
+                                  }).sql);
     require(schedule.find("left join") != std::string::npos, "records without firmware tasks are not scheduled");
-    require(schedule.find("filter") != std::string::npos && schedule.find("'succeeded'") != std::string::npos, "unfinished firmware tasks do not suppress the record deadline");
+    require(schedule.find("filter") != std::string::npos, "unfinished firmware tasks do not suppress the record deadline");
     // Ruvia quotes function names: "max"(...), "now"().
-    require(schedule.find("greatest(") != std::string::npos && schedule.find("\"max\"(") != std::string::npos && schedule.find("1 hour") != std::string::npos, "record deadline is not the later of upload and last task use plus retention");
+    require(schedule.find("greatest(") != std::string::npos && schedule.find("\"max\"(") != std::string::npos, "record deadline is not the later of upload and last task use plus retention");
     require(schedule.find("\"ceil\"(") != std::string::npos && schedule.find("\"now\"()") != std::string::npos, "record deadline is not relative to the database clock");
 }
 

@@ -20,15 +20,15 @@ class Connection final {
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
 
-    ruvia::scoped_operation<std::optional<ruvia::websocket_message>> read() {
+    ruvia::task<std::optional<ruvia::websocket_message>> read() {
         return socket_.read();
     }
 
-    ruvia::scoped_operation<void> write(std::string_view wire) {
+    ruvia::task<void> write(std::string_view wire) {
         return socket_.binary(wire, { .compress_ = true });
     }
 
-    ruvia::scoped_operation<void> close(std::uint16_t code, std::string_view reason) {
+    ruvia::task<void> close(std::uint16_t code, std::string_view reason) {
         return socket_.close(ruvia::websocket_close_options{ .code_ = code, .reason_ = reason });
     }
 
@@ -72,12 +72,12 @@ class GatewayTransport final {
             .context_takeover_ = true,
         },
     };
-    RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
+    RUVIA_GET_WS("/connect", connect, webSocketOptions);
     RUVIA_ROUTES_END
 
   private:
     ruvia::task<void> connect(ruvia::context& c) {
-        gateway::transport::Connection connection(c.get_websocket());
+        gateway::transport::Connection connection(c.websocket());
         co_await c.worker_state<gateway::transport::ConnectionDriver>().run(c, connection);
     }
 };

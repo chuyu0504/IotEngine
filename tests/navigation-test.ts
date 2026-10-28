@@ -18,6 +18,7 @@ const expectedPermissions: Record<string, string> = {
     '/iot/fins': 'iot:protocol:query',
     '/iot/mqtt': 'iot:protocol:query',
     '/iot/mc': 'iot:protocol:query',
+    '/iot/external-io': 'iot:protocol:query',
     '/device': 'iot:device:query',
     '/iot/alert': 'iot:alert:query',
     '/iot/gb28181': 'iot:gb28181:query',

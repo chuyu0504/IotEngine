@@ -13,7 +13,7 @@
 #include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
-#include <ruvia/web/redis/redis_subscription.h>
+#include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/features/vpn/vpn.service.h"

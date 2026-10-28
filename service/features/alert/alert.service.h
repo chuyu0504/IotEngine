@@ -20,6 +20,7 @@
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/db/db_repository.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
@@ -30,6 +31,7 @@
 #include "service/features/access/access.service.h"
 #include "service/features/alert/alert.entity.h"
 #include "service/features/configuration/configuration.entity.h"
+#include "service/features/configuration/configuration.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/telemetry.protocol.h"
 #include "service/utils/number.h"
@@ -291,7 +293,8 @@ ruvia::task<Activity> activity(
 
 namespace detail {
 
-inline ruvia::db_query refreshQuery() {
+template <typename Database>
+inline auto refreshQuery(Database&& database) {
     using Op = ruvia::db_binary_operator;
     using Type = ruvia::db_data_type;
     ruvia::db_query duration;
@@ -299,11 +302,13 @@ inline ruvia::db_query refreshQuery() {
     duration.select(duration.alias(duration.least({ duration.greatest({ duration.cast(text, Type::big_int), duration.value(1) }), duration.value(86400) }), "duration_seconds"))
         .and_where(duration.binary(text, Op::regex, duration.value("^[0-9]{1,10}$")));
     ruvia::db_query query;
+    auto queryBuilder = database.template repository<service::alert::persistence::AlertRuleEntity>().query_builder("rule");
     const auto deviceId = query.cast(query.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule"), Type::text);
     const auto ruleId = query.cast(query.column(service::alert::persistence::AlertRuleEntity::column_name<"id">(), "rule"), Type::text);
     const auto durationText = query.case_when({ { query.unary(ruvia::db_unary_operator::is_null, query.column("value", "condition")), query.null_value() } }, query.cast(query.coalesce({ query.column("duration_seconds", "offline_duration"), query.value(300) }), Type::text));
-    query.select({ deviceId, ruleId, durationText, query.cast(query.coalesce({ query.column(service::alert::persistence::AlertInputStateEntity::column_name<"observed_at_ms">(), "state"), query.value(0) }), Type::text), query.cast(query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Type::text) }).distinct().from(service::alert::persistence::AlertRuleEntity::table_name(), "rule").join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), query.binary(query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Op::equal, query.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule"))).join(ruvia::db_join_type::left, service::alert::persistence::AlertInputStateEntity::table_name(), query.binary(query.column(service::alert::persistence::AlertInputStateEntity::column_name<"device_id">(), "state"), Op::equal, query.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule")), "state").join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements", { query.column(service::alert::persistence::AlertRuleEntity::column_name<"conditions">(), "rule") }), query.binary(query.binary(query.column("value", "condition"), Op::json_get_text, query.value("type")), Op::equal, query.value("offline")), "condition", { .lateral_ = true, .columns_ = { { .name_ = "value" } } }).join(ruvia::db_join_type::left, duration, query.value(true), "offline_duration", { .lateral_ = true }).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::persistence::AlertRuleEntity::column_name<"deleted_at">(), "rule"))).and_where(query.binary(query.column(service::alert::persistence::AlertRuleEntity::column_name<"status">(), "rule"), Op::equal, query.value("enabled"))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "device"))).and_where(query.binary(query.column(service::configuration::persistence::DeviceEntity::column_name<"status">(), "device"), Op::equal, query.value("enabled"))).add_order_by(deviceId).add_order_by(ruleId).add_order_by(durationText);
-    return query;
+    const std::array<ruvia::db_source_column, 1> sourceColumns1{ { { .name_ = "value" } } };
+    queryBuilder.select({ { "value0", deviceId }, { "value1", ruleId }, { "value2", durationText }, { "observed_at_ms", query.cast(query.coalesce({ query.column(service::alert::persistence::AlertInputStateEntity::column_name<"observed_at_ms">(), "state"), query.value(0) }), Type::text) }, { "id", query.cast(query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Type::text) } }).distinct().template join<service::configuration::persistence::DeviceEntity>(ruvia::db_join_type::inner, "", query.binary(query.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Op::equal, query.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule"))).template join<service::alert::persistence::AlertInputStateEntity>(ruvia::db_join_type::left, "state", query.binary(query.column(service::alert::persistence::AlertInputStateEntity::column_name<"device_id">(), "state"), Op::equal, query.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule"))).join_function(ruvia::db_join_type::left, query.call("jsonb_array_elements", { query.column(service::alert::persistence::AlertRuleEntity::column_name<"conditions">(), "rule") }), "condition", query.binary(query.binary(query.column("value", "condition"), Op::json_get_text, query.value("type")), Op::equal, query.value("offline")), { .lateral_ = true, .columns_ = sourceColumns1 }).join(ruvia::db_join_type::left, duration, "offline_duration", query.value(true), { .lateral_ = true }).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::alert::persistence::AlertRuleEntity::column_name<"deleted_at">(), "rule"))).and_where(query.binary(query.column(service::alert::persistence::AlertRuleEntity::column_name<"status">(), "rule"), Op::equal, query.value("enabled"))).and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "device"))).and_where(query.binary(query.column(service::configuration::persistence::DeviceEntity::column_name<"status">(), "device"), Op::equal, query.value("enabled"))).add_order_by(query.column("value0")).add_order_by(query.column("value1")).add_order_by(query.column("value2"));
+    return queryBuilder;
 }
 
 } // namespace detail
@@ -312,9 +317,10 @@ template <typename Context>
 ruvia::task<void> refresh(Context& context) {
     // Serialize the authoritative snapshot and Redis replacement across instances.
     // Telemetry reads never take this cold-path configuration lock.
-    auto transaction = co_await context.db().begin_transaction();
+    auto transaction = co_await context.db("telemetry-alert").begin_transaction();
     co_await transaction.advisory_lock(service::message::lock::kAlertMetadataProjection);
-    const auto rows = co_await transaction.query(detail::refreshQuery());
+    const auto query = detail::refreshQuery(transaction);
+    const auto rows = co_await query.get_raw_many();
 
     struct OfflineEntry final {
         std::string durationKey;
@@ -420,6 +426,10 @@ class AlertEvaluationService final {
             messages.push_back(service::message::parsedFrom(entry));
             service::telemetry::contract::repairInvalidUtf8(messages.back());
         }
+        auto fence = co_await service::configuration::fenceAcquisition(context, messages);
+        std::erase_if(messages, [](const auto& value) {
+            return value.historyOnly;
+        });
         const auto metadataState = co_await metadata::activity(context, messages);
         if (metadataState.offlineRules) {
             co_await metadata::schedule(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, messages, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId);
@@ -436,18 +446,26 @@ class AlertEvaluationService final {
             }
         }
         co_await evaluateSamples(context, messages, previous, active);
+        if (fence) {
+            co_await fence->commit();
+        }
     }
 
     // 记录设备最新告警输入并返回本条样本的前值；乱序或重放的样本不覆盖更新的输入。
     static ruvia::task<std::string> recordInput(ruvia::web_worker_context& context, const service::message::ParsedDeviceMessage& value) {
         using State = persistence::AlertInputStateEntity;
-        Query state(context.pool());
+        ruvia::db_query state(context.pool());
         const auto newer = state.binary(state.tuple({ state.excluded(State::column_name<"observed_at_ms">()), state.excluded(State::column_name<"message_id">()) }), Op::greater, state.tuple({ State::column<"observed_at_ms">().expression(state), State::column<"message_id">().expression(state) }));
-        state.insert_into(State::table_name(), { State::column_name<"device_id">(), State::column_name<"observed_at_ms">(), State::column_name<"message_id">(), State::column_name<"data">(), State::column_name<"previous_data">() })
-            .values({ state.cast(state.value(value.deviceId), Type::uuid), state.cast(state.value(value.observedAtMs), Type::big_int), state.cast(state.value(value.messageId), Type::uuid), state.cast(state.value(value.valuesJson), Type::jsonb), state.cast(state.value("{}"), Type::jsonb) })
-            .on_conflict({ .columns_ = { std::string(State::column_name<"device_id">()) }, .update_ = { { std::string(State::column_name<"previous_data">()), state.case_when({ { newer, State::column<"data">().expression(state) } }, State::column<"previous_data">().expression(state)) }, { std::string(State::column_name<"data">()), state.case_when({ { newer, state.excluded(State::column_name<"data">()) } }, State::column<"data">().expression(state)) }, { std::string(State::column_name<"observed_at_ms">()), state.greatest({ state.excluded(State::column_name<"observed_at_ms">()), State::column<"observed_at_ms">().expression(state) }) }, { std::string(State::column_name<"message_id">()), state.case_when({ { newer, state.excluded(State::column_name<"message_id">()) } }, State::column<"message_id">().expression(state)) } } })
-            .returning({ state.cast(state.case_when({ { state.binary(state.column(State::column_name<"message_id">()), Op::equal, state.cast(state.value(value.messageId), Type::uuid)), state.column(State::column_name<"previous_data">()) } }, state.cast(state.value("{}"), Type::jsonb)), Type::text) });
-        const auto rows = co_await context.db().query(state);
+        const std::array<std::string_view, 5> stateColumns{ State::column_name<"device_id">(), State::column_name<"observed_at_ms">(), State::column_name<"message_id">(), State::column_name<"data">(), State::column_name<"previous_data">() };
+        auto stateBuilder = context.db("telemetry-alert").template repository<State>().insert_builder();
+        ruvia::db_values_builder stateValues(stateColumns);
+        stateValues.row({ state.cast(state.value(value.deviceId), Type::uuid), state.cast(state.value(value.observedAtMs), Type::big_int), state.cast(state.value(value.messageId), Type::uuid), state.cast(state.value(value.valuesJson), Type::jsonb), state.cast(state.value("{}"), Type::jsonb) });
+
+        const std::array<ruvia::borrowed_text, 1> conflictColumns2{ { State::column_name<"device_id">() } };
+        const std::array<ruvia::borrowed_text, 4> updatedColumns3{ { State::column_name<"previous_data">(), State::column_name<"data">(), State::column_name<"observed_at_ms">(), State::column_name<"message_id">() } };
+        const std::array<ruvia::db_assignment, 4> conflictUpdates4{ { { State::column_name<"previous_data">(), state.case_when({ { newer, State::column<"data">().expression(state) } }, State::column<"previous_data">().expression(state)) }, { State::column_name<"data">(), state.case_when({ { newer, state.excluded(State::column_name<"data">()) } }, State::column<"data">().expression(state)) }, { State::column_name<"observed_at_ms">(), state.greatest({ state.excluded(State::column_name<"observed_at_ms">()), State::column<"observed_at_ms">().expression(state) }) }, { State::column_name<"message_id">(), state.case_when({ { newer, state.excluded(State::column_name<"message_id">()) } }, State::column<"message_id">().expression(state)) } } };
+        stateBuilder.insert_from(stateColumns, stateValues.query()).on_conflict({ .conflict_paths_ = conflictColumns2, .update_columns_ = updatedColumns3, .update_expressions_ = conflictUpdates4 }).returning({ { "message_id", state.cast(state.case_when({ { state.binary(state.column(State::column_name<"message_id">()), Op::equal, state.cast(state.value(value.messageId), Type::uuid)), state.column(State::column_name<"previous_data">()) } }, state.cast(state.value("{}"), Type::jsonb)), Type::text) } });
+        const auto rows = co_await stateBuilder.get_raw_many();
         co_return std::string(rows.front()[0].value().value_or("{}"));
     }
 
@@ -477,7 +495,10 @@ class AlertEvaluationService final {
             co_return;
         }
 
-        const auto rules = co_await context.db().query(telemetryEvaluationQuery(relevant, relevantPrevious));
+        const auto evaluationPlan = telemetryEvaluationQuery(relevant, relevantPrevious);
+        auto evaluationBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertRuleEntity>().query_builder("evaluation");
+        evaluationBuilder.with("evaluation", evaluationPlan).from_cte("evaluation").select({ ruvia::db_selection::star("evaluation") });
+        const auto rules = co_await evaluationBuilder.get_raw_many();
         if (rules.empty()) {
             co_await drainOutbox(context);
             co_return;
@@ -519,7 +540,10 @@ class AlertEvaluationService final {
             }
         }
         if (!uniqueRules.empty()) {
-            const auto rules = co_await context.db().query(offlineEvaluationQuery(uniqueRules));
+            const auto evaluationPlan = offlineEvaluationQuery(uniqueRules);
+            auto evaluationBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertRuleEntity>().query_builder("evaluation");
+            evaluationBuilder.with("evaluation", evaluationPlan).from_cte("evaluation").select({ ruvia::db_selection::star("evaluation") });
+            const auto rules = co_await evaluationBuilder.get_raw_many();
             co_await apply(context, rules, "{}", now);
         }
         co_await metadata::removeOfflineDeadlines(context.redis(), due);
@@ -527,7 +551,7 @@ class AlertEvaluationService final {
 
 #ifdef IOT_ENGINE_TESTING
     static std::string evaluationTailForTest() {
-        Query query;
+        ruvia::db_query query;
         appendEvaluation(query);
         const auto statement = query.compile(ruvia::db_driver::postgresql, nullptr, ruvia::db_parameter_mode::literal);
         return std::string(statement.sql());
@@ -595,13 +619,13 @@ class AlertEvaluationService final {
             co_return;
         }
 
-        Query incoming(context.pool());
+        ruvia::db_query incoming(context.pool());
         for (auto index = begin; index < end; ++index) {
             const auto& evaluation = evaluations[index];
             incoming.values({ incoming.cast(incoming.value(std::string_view(evaluation.ruleId)), Type::uuid), incoming.cast(incoming.value(evaluation.matched), Type::boolean), incoming.cast(incoming.value(std::string_view(evaluation.recordId)), Type::uuid), incoming.cast(incoming.value(std::string_view(evaluation.deviceId)), Type::uuid), incoming.cast(incoming.value(std::string_view(evaluation.severity)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.message)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.data)), Type::jsonb), incoming.cast(incoming.value(std::string_view(evaluation.silence)), Type::integer), incoming.cast(incoming.value(std::string_view(evaluation.recovery)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.recoveryWait)), Type::integer), incoming.cast(incoming.value(std::string_view(evaluation.ruleName)), Type::text), incoming.cast(incoming.value(std::string_view(evaluation.deviceCode)), Type::text), incoming.cast(incoming.value(occurredAtMs), Type::big_int), incoming.cast(incoming.value(receiptId), Type::text) });
         }
 
-        Query stateRows(context.pool());
+        ruvia::db_query stateRows(context.pool());
         const auto initialRecovery = stateRows.case_when(
             { { stateRows.column("matched", "incoming"), stateRows.null_value() } },
             stateRows.call("now")
@@ -610,20 +634,24 @@ class AlertEvaluationService final {
             .select({ stateRows.column("rule_id", "incoming"), stateRows.column("matched", "incoming"), initialRecovery, stateRows.call("now"), stateRows.call("now") })
             .from("incoming", "incoming");
 
-        Query states(context.pool());
+        using RuleState = persistence::AlertRuleStateEntity;
+        ruvia::db_query states(context.pool());
+        auto statesBuilder = context.db("telemetry-alert").template repository<RuleState>().insert_builder();
+        const std::array<std::string_view, 5> statesColumns{ RuleState::column_name<"rule_id">(), RuleState::column_name<"matched">(), RuleState::column_name<"recovery_started_at">(), RuleState::column_name<"last_evaluated_at">(), RuleState::column_name<"updated_at">() };
         const auto recoveryStarted = states.case_when(
             { { states.excluded(service::alert::persistence::AlertRuleStateEntity::column_name<"matched">()), states.null_value() },
               { states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"matched">(), "alert_rule_state"), states.call("now") } },
             states.coalesce({ states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"recovery_started_at">(), "alert_rule_state"), states.call("now") })
         );
-        using RuleState = persistence::AlertRuleStateEntity;
-        states
-            .insert_into(RuleState::table_name(), { RuleState::column_name<"rule_id">(), RuleState::column_name<"matched">(), RuleState::column_name<"recovery_started_at">(), RuleState::column_name<"last_evaluated_at">(), RuleState::column_name<"updated_at">() })
-            .insert_from(stateRows)
-            .on_conflict({ .columns_ = { std::string(RuleState::column_name<"rule_id">()) }, .update_ = { { std::string(RuleState::column_name<"recovery_started_at">()), recoveryStarted }, { std::string(RuleState::column_name<"matched">()), states.excluded(RuleState::column_name<"matched">()) }, { std::string(RuleState::column_name<"last_evaluated_at">()), states.call("now") }, { std::string(RuleState::column_name<"updated_at">()), states.call("now") } } })
-            .returning({ states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"rule_id">()), states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"recovery_started_at">()) });
+        const std::array<ruvia::borrowed_text, 1> sourceColumns5{ { RuleState::column_name<"rule_id">() } };
+        const std::array<ruvia::db_assignment, 4> conflictUpdates6{ { { RuleState::column_name<"recovery_started_at">(), recoveryStarted }, { RuleState::column_name<"matched">(), states.excluded(RuleState::column_name<"matched">()) }, { RuleState::column_name<"last_evaluated_at">(), states.call("now") }, { RuleState::column_name<"updated_at">(), states.call("now") } } };
+        std::vector<ruvia::borrowed_text> statesUpdateColumns;
+        for (const auto& item : conflictUpdates6) {
+            statesUpdateColumns.emplace_back(item.column_);
+        }
+        statesBuilder.insert_from(statesColumns, stateRows).on_conflict({ .conflict_paths_ = sourceColumns5, .update_columns_ = statesUpdateColumns, .update_expressions_ = conflictUpdates6 }).returning({ { "rule_id", states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"rule_id">()) }, { "recovery_started_at", states.column(service::alert::persistence::AlertRuleStateEntity::column_name<"recovery_started_at">()) } });
 
-        Query activeRecord(context.pool());
+        ruvia::db_query activeRecord(context.pool());
         activeRecord
             .select(activeRecord.cast(activeRecord.value(std::int64_t{ 1 }), Type::integer))
             .from(service::alert::persistence::OpenAlertRecordEntity::table_name(), "record")
@@ -633,7 +661,7 @@ class AlertEvaluationService final {
                 Op::in,
                 activeRecord.list({ activeRecord.value("active"), activeRecord.value("acknowledged") })
             ));
-        Query recentRecord(context.pool());
+        ruvia::db_query recentRecord(context.pool());
         const auto silenceWindow = recentRecord.binary(
             recentRecord.column("silence_duration", "incoming"),
             Op::multiply,
@@ -649,22 +677,21 @@ class AlertEvaluationService final {
                 recentRecord.binary(recentRecord.call("now"), Op::subtract, silenceWindow)
             ));
 
-        Query createdRows(context.pool());
+        ruvia::db_query createdRows(context.pool());
         createdRows
             .select({ createdRows.column("record_id", "incoming"), createdRows.column("rule_id", "incoming"), createdRows.column("device_id", "incoming"), createdRows.column("severity", "incoming"), createdRows.cast(createdRows.value("active"), Type::text), createdRows.column("message", "incoming"), createdRows.column("detail", "incoming"), createdRows.call("now") })
             .from("incoming", "incoming")
             .and_where(createdRows.column("matched", "incoming"))
             .and_where(createdRows.unary(ruvia::db_unary_operator::not_value, createdRows.exists(activeRecord)))
             .and_where(createdRows.unary(ruvia::db_unary_operator::not_value, createdRows.exists(recentRecord)));
-        Query created(context.pool());
         using Record = persistence::OpenAlertRecordEntity;
-        created
-            .insert_into(Record::table_name(), { Record::column_name<"id">(), Record::column_name<"rule_id">(), Record::column_name<"device_id">(), Record::column_name<"severity">(), Record::column_name<"status">(), Record::column_name<"message">(), Record::column_name<"detail">(), Record::column_name<"triggered_at">() })
-            .insert_from(createdRows)
-            .on_conflict({ .do_nothing_ = true })
-            .returning({ created.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"id">()), created.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"rule_id">()) });
+        ruvia::db_query created(context.pool());
+        auto createdBuilder = context.db("telemetry-alert").template repository<Record>().insert_builder();
+        const std::array<std::string_view, 8> createdColumns{ Record::column_name<"id">(), Record::column_name<"rule_id">(), Record::column_name<"device_id">(), Record::column_name<"severity">(), Record::column_name<"status">(), Record::column_name<"message">(), Record::column_name<"detail">(), Record::column_name<"triggered_at">() };
+        createdBuilder.insert_from(createdColumns, createdRows).on_conflict({ .do_nothing_ = true }).returning({ { "id", created.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"id">()) }, { "rule_id", created.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"rule_id">()) } });
 
-        Query resolved(context.pool());
+        ruvia::db_query resolved(context.pool());
+        auto resolvedBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::OpenAlertRecordEntity>().update_builder("record");
         const auto reverseReady = resolved.binary(
             resolved.binary(resolved.column("recovery_condition", "incoming"), Op::equal, resolved.value("reverse")),
             Op::and_value,
@@ -710,34 +737,19 @@ class AlertEvaluationService final {
                 resolved.binary(resolved.call("now"), Op::subtract, autoWindow)
             )
         );
-        resolved
-            .update(service::alert::persistence::OpenAlertRecordEntity::table_name(), "record")
-            .set(service::alert::persistence::OpenAlertRecordEntity::column_name<"status">(), resolved.cast(resolved.value("resolved"), Type::text))
-            .set(service::alert::persistence::OpenAlertRecordEntity::column_name<"resolved_at">(), resolved.call("now"))
-            .set(service::alert::persistence::OpenAlertRecordEntity::column_name<"updated_at">(), resolved.call("now"))
-            .update_from("incoming", "incoming")
-            .join(ruvia::db_join_type::inner, "states", resolved.binary(resolved.column("rule_id", "states"), Op::equal, resolved.column("rule_id", "incoming")), "states")
-            .and_where(resolved.unary(ruvia::db_unary_operator::not_value, resolved.column("matched", "incoming")))
-            .and_where(resolved.binary(resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"rule_id">(), "record"), Op::equal, resolved.column("rule_id", "incoming")))
-            .and_where(resolved.binary(
-                resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"status">(), "record"),
-                Op::in,
-                resolved.list({ resolved.value("active"), resolved.value("acknowledged") })
-            ))
-            .and_where(resolved.binary(reverseReady, Op::or_value, autoReady))
-            .returning({ resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"id">(), "record"), resolved.column("rule_id", "incoming") });
+        resolvedBuilder.set(service::alert::persistence::OpenAlertRecordEntity::column_name<"status">(), resolved.cast(resolved.value("resolved"), Type::text)).set(service::alert::persistence::OpenAlertRecordEntity::column_name<"resolved_at">(), resolved.call("now")).set(service::alert::persistence::OpenAlertRecordEntity::column_name<"updated_at">(), resolved.call("now")).update_from_cte("incoming", "incoming").join_cte(ruvia::db_join_type::inner, "states", "states", resolved.binary(resolved.column("rule_id", "states"), Op::equal, resolved.column("rule_id", "incoming"))).and_where(resolved.unary(ruvia::db_unary_operator::not_value, resolved.column("matched", "incoming"))).and_where(resolved.binary(resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"rule_id">(), "record"), Op::equal, resolved.column("rule_id", "incoming"))).and_where(resolved.binary(resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"status">(), "record"), Op::in, resolved.list({ resolved.value("active"), resolved.value("acknowledged") }))).and_where(resolved.binary(reverseReady, Op::or_value, autoReady)).returning({ { "id", resolved.column(service::alert::persistence::OpenAlertRecordEntity::column_name<"id">(), "record") }, { "rule_id", resolved.column("rule_id", "incoming") } });
 
-        Query changes(context.pool());
+        ruvia::db_query changes(context.pool());
         changes
             .select({ changes.alias(changes.cast(changes.value("device.alert.triggered"), Type::text), "event_type"), changes.alias(changes.cast(changes.value("active"), Type::text), "status"), changes.alias(changes.column("id", "created"), "id"), changes.alias(changes.column("rule_id", "created"), "rule_id") })
             .from("created", "created");
-        Query resolvedChanges(context.pool());
+        ruvia::db_query resolvedChanges(context.pool());
         resolvedChanges
             .select({ resolvedChanges.cast(resolvedChanges.value("device.alert.resolved"), Type::text), resolvedChanges.cast(resolvedChanges.value("resolved"), Type::text), resolvedChanges.column("id", "resolved"), resolvedChanges.column("rule_id", "resolved") })
             .from("resolved", "resolved");
         changes.combine(ruvia::db_set_operation::union_all, resolvedChanges);
 
-        Query queuedRows(context.pool());
+        ruvia::db_query queuedRows(context.pool());
         const auto jsonKey = [&queuedRows](std::string_view key) {
             return queuedRows.cast(queuedRows.value(key), Type::text);
         };
@@ -753,19 +765,18 @@ class AlertEvaluationService final {
             .select({ queuedRows.column("id", "changes"), queuedRows.column("event_type", "changes"), queuedRows.column("rule_id", "changes"), queuedRows.column("device_id", "incoming"), queuedRows.column("device_code", "incoming"), queuedRows.column("occurred_at_ms", "incoming"), eventData })
             .from("changes", "changes")
             .join(ruvia::db_join_type::inner, "incoming", queuedRows.binary(queuedRows.column("rule_id", "incoming"), Op::equal, queuedRows.column("rule_id", "changes")), "incoming");
-        Query queued(context.pool());
         using Outbox = persistence::AlertEventOutboxEntity;
-        queued
-            .insert_into(Outbox::table_name(), { Outbox::column_name<"event_id">(), Outbox::column_name<"event_type">(), Outbox::column_name<"rule_id">(), Outbox::column_name<"device_id">(), Outbox::column_name<"device_code">(), Outbox::column_name<"occurred_at_ms">(), Outbox::column_name<"data">() })
-            .insert_from(queuedRows)
-            .on_conflict({ .columns_ = { std::string(Outbox::column_name<"event_id">()), std::string(Outbox::column_name<"event_type">()) }, .do_nothing_ = true })
-            .returning({ queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"rule_id">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_id">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_code">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"occurred_at_ms">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"data">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"created_at">()) });
+        ruvia::db_query queued(context.pool());
+        auto queuedBuilder = context.db("telemetry-alert").template repository<Outbox>().insert_builder();
+        const std::array<std::string_view, 7> queuedColumns{ Outbox::column_name<"event_id">(), Outbox::column_name<"event_type">(), Outbox::column_name<"rule_id">(), Outbox::column_name<"device_id">(), Outbox::column_name<"device_code">(), Outbox::column_name<"occurred_at_ms">(), Outbox::column_name<"data">() };
+        const std::array<ruvia::borrowed_text, 2> sourceColumns7{ { Outbox::column_name<"event_id">(), Outbox::column_name<"event_type">() } };
+        queuedBuilder.insert_from(queuedColumns, queuedRows).on_conflict({ .conflict_paths_ = sourceColumns7, .do_nothing_ = true }).returning({ { "event_id", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()) }, { "event_type", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()) }, { "rule_id", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"rule_id">()) }, { "device_id", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_id">()) }, { "device_code", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_code">()) }, { "occurred_at_ms", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"occurred_at_ms">()) }, { "data", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"data">()) }, { "created_at", queued.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"created_at">()) } });
 
-        Query queuedBarrier(context.pool());
+        ruvia::db_query queuedBarrier(context.pool());
         queuedBarrier
             .select(queuedBarrier.alias(queuedBarrier.aggregate("count", { queuedBarrier.star() }), "queued_count"))
             .from("queued");
-        Query receiptedRows(context.pool());
+        ruvia::db_query receiptedRows(context.pool());
         receiptedRows
             .select({ receiptedRows.cast(receiptedRows.null_if(receiptedRows.cast(receiptedRows.column("receipt_id", "incoming"), Type::text), receiptedRows.cast(receiptedRows.value(""), Type::text)), Type::uuid), receiptedRows.column("device_id", "incoming") })
             .distinct()
@@ -781,70 +792,54 @@ class AlertEvaluationService final {
                 Op::greater_equal,
                 receiptedRows.cast(receiptedRows.value(std::int64_t{ 0 }), Type::big_int)
             ));
-        Query receipted(context.pool());
         using Receipt = persistence::AlertEvaluationReceiptEntity;
-        receipted
-            .insert_into(Receipt::table_name(), { Receipt::column_name<"message_id">(), Receipt::column_name<"device_id">() })
-            .insert_from(receiptedRows)
-            .on_conflict({ .columns_ = { std::string(Receipt::column_name<"message_id">()) }, .do_nothing_ = true })
-            .returning({ receipted.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">()) });
+        ruvia::db_query receipted(context.pool());
+        auto receiptedBuilder = context.db("telemetry-alert").template repository<Receipt>().insert_builder();
+        const std::array<std::string_view, 2> receiptedColumns{ Receipt::column_name<"message_id">(), Receipt::column_name<"device_id">() };
+        const std::array<ruvia::borrowed_text, 1> sourceColumns8{ { Receipt::column_name<"message_id">() } };
+        receiptedBuilder.insert_from(receiptedColumns, receiptedRows).on_conflict({ .conflict_paths_ = sourceColumns8, .do_nothing_ = true }).returning({ { "message_id", receipted.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">()) } });
 
-        Query receiptedCount(context.pool());
+        ruvia::db_query receiptedCount(context.pool());
         receiptedCount
             .select(receiptedCount.aggregate("count", { receiptedCount.star() }))
             .from("receipted");
-        Query pruned(context.pool());
-        pruned
-            .delete_from(service::alert::persistence::AlertEvaluationReceiptEntity::table_name())
-            .and_where(pruned.binary(
-                pruned.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"created_at">()),
-                Op::less,
-                pruned.binary(pruned.call("now"), Op::subtract, pruned.cast(pruned.value("7 days"), Type::interval))
-            ))
+        ruvia::db_query pruned(context.pool());
+        auto prunedBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertEvaluationReceiptEntity>().delete_builder();
+        prunedBuilder.and_where(pruned.binary(
+                                    pruned.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"created_at">()),
+                                    Op::less,
+                                    pruned.binary(pruned.call("now"), Op::subtract, pruned.cast(pruned.value("7 days"), Type::interval))
+                                ))
             .and_where(pruned.binary(pruned.subquery(receiptedCount), Op::greater_equal, pruned.cast(pruned.value(std::int64_t{ 0 }), Type::big_int)))
-            .returning({ pruned.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">()) });
+            .returning({ { "message_id", pruned.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">()) } });
 
-        Query relevant(context.pool());
+        ruvia::db_query relevant(context.pool());
         relevant
             .select(relevant.column("rule_id", "incoming"))
             .distinct()
             .from("incoming", "incoming");
-        Query deliverable(context.pool());
+        ruvia::db_query deliverable(context.pool());
         deliverable
             .select({ deliverable.column("event_id", "queued"), deliverable.column("event_type", "queued"), deliverable.column("rule_id", "queued"), deliverable.column("device_id", "queued"), deliverable.column("device_code", "queued"), deliverable.column("occurred_at_ms", "queued"), deliverable.column("data", "queued"), deliverable.column("created_at", "queued") })
             .from("queued", "queued");
-        Query existingDeliverable(context.pool());
+        ruvia::db_query existingDeliverable(context.pool());
         existingDeliverable
             .select({ existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"rule_id">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_id">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_code">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"occurred_at_ms">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"data">(), "outbox"), existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"created_at">(), "outbox") })
             .from(service::alert::persistence::AlertEventOutboxEntity::table_name(), "outbox")
             .join(ruvia::db_join_type::inner, "relevant", existingDeliverable.binary(existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"rule_id">(), "outbox"), Op::equal, existingDeliverable.column("rule_id", "relevant")), "relevant");
         deliverable.combine(ruvia::db_set_operation::union_all, existingDeliverable);
 
-        Query pruneBarrier(context.pool());
+        ruvia::db_query pruneBarrier(context.pool());
         pruneBarrier
             .select(pruneBarrier.alias(pruneBarrier.aggregate("count", { pruneBarrier.star() }), "pruned_count"))
             .from("pruned");
 
-        Query result(context.pool());
-        result
-            .with("incoming", incoming, { .columns_ = { "rule_id", "matched", "record_id", "device_id", "severity", "message", "detail", "silence_duration", "recovery_condition", "recovery_wait_seconds", "rule_name", "device_code", "occurred_at_ms", "receipt_id" } })
-            .with("states", states)
-            .with("created", created)
-            .with("resolved", resolved)
-            .with("changes", changes, { .materialization_ = ruvia::db_materialization::materialized })
-            .with("queued", queued)
-            .with("receipted", receipted)
-            .with("pruned", pruned)
-            .with("relevant", relevant)
-            .with("deliverable", deliverable)
-            .with("prune_barrier", pruneBarrier)
-            .select({ result.cast(result.column("event_id", "deliverable"), Type::text), result.column("event_type", "deliverable"), result.cast(result.column("device_id", "deliverable"), Type::text), result.column("device_code", "deliverable"), result.cast(result.column("occurred_at_ms", "deliverable"), Type::text), result.cast(result.column("data", "deliverable"), Type::text) })
-            .from("deliverable", "deliverable")
-            .join(ruvia::db_join_type::cross, "prune_barrier", {}, "prune_barrier")
-            .and_where(result.binary(result.column("pruned_count", "prune_barrier"), Op::greater_equal, result.cast(result.value(std::int64_t{ 0 }), Type::big_int)))
-            .order_by(result.column("created_at", "deliverable"))
-            .add_order_by(result.column("event_id", "deliverable"));
-        const auto events = co_await context.db().query(result);
+        ruvia::db_query result(context.pool());
+        auto resultBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertEventOutboxEntity>().query_builder("deliverable");
+        const std::array<ruvia::borrowed_text, 14> sourceColumns9{ { "rule_id", "matched", "record_id", "device_id", "severity", "message", "detail", "silence_duration", "recovery_condition", "recovery_wait_seconds", "rule_name", "device_code", "occurred_at_ms", "receipt_id" } };
+        resultBuilder.with("incoming", incoming, { .columns_ = sourceColumns9 }).with("states", statesBuilder.query()).with("created", createdBuilder.query()).with("resolved", resolvedBuilder.query()).with("changes", changes, { .materialization_ = ruvia::db_materialization::materialized }).with("queued", queuedBuilder.query()).with("receipted", receiptedBuilder.query()).with("pruned", prunedBuilder.query()).with("relevant", relevant).with("deliverable", deliverable).with("prune_barrier", pruneBarrier).select({ { "value0", result.cast(result.column("event_id", "deliverable"), Type::text) }, { "event_type", result.column("event_type", "deliverable") }, { "value2", result.cast(result.column("device_id", "deliverable"), Type::text) }, { "device_code", result.column("device_code", "deliverable") }, { "value4", result.cast(result.column("occurred_at_ms", "deliverable"), Type::text) }, { "value5", result.cast(result.column("data", "deliverable"), Type::text) } }).from_cte("deliverable").join_cte(ruvia::db_join_type::cross, "prune_barrier", "prune_barrier", {}).and_where(result.binary(result.column("pruned_count", "prune_barrier"), Op::greater_equal, result.cast(result.value(std::int64_t{ 0 }), Type::big_int))).order_by(result.column("created_at", "deliverable")).add_order_by(result.column("event_id", "deliverable"));
+
+        const auto events = co_await resultBuilder.get_raw_many();
         co_await publishOutboxRows(context, events);
     }
 
@@ -881,39 +876,35 @@ class AlertEvaluationService final {
         const auto replies = co_await std::move(pipeline).exec();
         service::utils::redis::requirePipelineSuccess("publish alert outbox", replies);
 
-        Query remove(context.pool());
-        std::vector<Query::expr_type> keys;
+        ruvia::db_query remove(context.pool());
+        std::vector<ruvia::db_expression> keys;
         keys.reserve(events.size());
         for (const auto& event : events) {
             keys.push_back(remove.tuple({ remove.cast(remove.value(event[0].value().value_or(std::string_view{})), Type::uuid), remove.cast(remove.value(event[1].value().value_or(std::string_view{})), Type::text) }));
         }
-        remove.delete_from(service::alert::persistence::AlertEventOutboxEntity::table_name())
-            .and_where(remove.binary(
-                remove.tuple({ remove.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()), remove.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()) }),
-                Op::in,
-                remove.list(keys)
-            ));
-        (void)co_await context.db().execute(remove);
+        auto removeBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertEventOutboxEntity>().delete_builder();
+        removeBuilder.and_where(remove.binary(
+            remove.tuple({ remove.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()), remove.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()) }),
+            Op::in,
+            remove.list(keys)
+        ));
+        (void)co_await removeBuilder.execute();
     }
 
     static ruvia::task<void> drainOutbox(ruvia::web_worker_context& context) {
-        Query prune(context.pool());
-        prune.delete_from(service::alert::persistence::AlertEvaluationReceiptEntity::table_name())
-            .and_where(prune.binary(
-                prune.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"created_at">()),
-                Op::less,
-                prune.binary(prune.call("now"), Op::subtract, prune.cast(prune.value("7 days"), Type::interval))
-            ));
-        (void)co_await context.db().execute(prune);
+        ruvia::db_query prune(context.pool());
+        auto pruneBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertEvaluationReceiptEntity>().delete_builder();
+        pruneBuilder.and_where(prune.binary(
+            prune.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"created_at">()),
+            Op::less,
+            prune.binary(prune.call("now"), Op::subtract, prune.cast(prune.value("7 days"), Type::interval))
+        ));
+        (void)co_await pruneBuilder.execute();
         while (true) {
-            Query eventsQuery(context.pool());
-            eventsQuery
-                .select({ eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()), Type::text), eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()), eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_id">()), Type::text), eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_code">()), eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"occurred_at_ms">()), Type::text), eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"data">()), Type::text) })
-                .from(service::alert::persistence::AlertEventOutboxEntity::table_name())
-                .order_by(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"created_at">()))
-                .add_order_by(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()))
-                .limit(256);
-            const auto events = co_await context.db().query(eventsQuery);
+            ruvia::db_query eventsQuery(context.pool());
+            auto eventsQueryBuilder = context.db("telemetry-alert").template repository<service::alert::persistence::AlertEventOutboxEntity>().query_builder();
+            eventsQueryBuilder.select({ { "event_id", eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">()), Type::text) }, { "event_type", eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_type">()) }, { "device_id", eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_id">()), Type::text) }, { "device_code", eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"device_code">()) }, { "occurred_at_ms", eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"occurred_at_ms">()), Type::text) }, { "data", eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"data">()), Type::text) } }).order_by(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"created_at">())).add_order_by(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::column_name<"event_id">())).limit(256);
+            const auto events = co_await eventsQueryBuilder.get_raw_many();
             if (events.empty()) {
                 co_return;
             }
@@ -928,63 +919,63 @@ class AlertEvaluationService final {
             .count();
     }
 
-    static Query offlineEvaluationQuery(const std::set<std::string, std::less<>>& ruleIds) {
-        Query requested;
+    static ruvia::db_query offlineEvaluationQuery(const std::set<std::string, std::less<>>& ruleIds) {
+        ruvia::db_query requested;
         for (const auto& id : ruleIds) {
             requested.values({ requested.cast(requested.value(id), Type::uuid) });
         }
-        Query rules;
+        ruvia::db_query rules;
         rules.select({ rules.alias(rules.cast(rules.value(0), Type::big_int), "input_sequence"), rules.star("rule"), rules.alias(rules.column(service::configuration::persistence::DeviceEntity::column_name<"name">(), "device"), "device_name"), rules.alias(rules.binary(rules.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "device"), Op::json_get_text, rules.value("device_code")), "device_code") })
             .from("requested")
             .join(ruvia::db_join_type::inner, service::alert::persistence::AlertRuleEntity::table_name(), rules.binary(rules.column(service::alert::persistence::AlertRuleEntity::column_name<"id">(), "rule"), Op::equal, rules.column("rule_id", "requested")), "rule")
             .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), rules.binary(rules.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Op::equal, rules.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule")));
-        activeRules(rules);
-        Query samples;
+        activeRules(rules, rules);
+        ruvia::db_query samples;
         samples.select({ samples.star("rules"), samples.column(service::alert::persistence::AlertInputStateEntity::column_name<"data">(), "state"), samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column(service::alert::persistence::AlertInputStateEntity::column_name<"observed_at_ms">(), "state"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at"), samples.column(service::alert::persistence::AlertInputStateEntity::column_name<"previous_data">(), "state") })
             .from("rules")
             .join(ruvia::db_join_type::left, service::alert::persistence::AlertInputStateEntity::table_name(), samples.binary(samples.column(service::alert::persistence::AlertInputStateEntity::column_name<"device_id">(), "state"), Op::equal, samples.column("device_id", "rules")), "state");
-        Query query;
-        query.with("requested", requested, { .columns_ = { "rule_id" } }).with("rules", rules).with("samples", samples);
+        ruvia::db_query query;
+
+        const std::array<ruvia::borrowed_text, 1> sourceColumns10{ { "rule_id" } };
+        query.with("requested", requested, { .columns_ = sourceColumns10 }).with("rules", rules).with("samples", samples);
         appendEvaluation(query);
         return query;
     }
 
-    static Query telemetryEvaluationQuery(
-        const std::vector<const service::message::ParsedDeviceMessage*>& messages,
-        const std::vector<std::string_view>& previousData
-    ) {
-        Query input;
+    static ruvia::db_query telemetryEvaluationQuery(const std::vector<const service::message::ParsedDeviceMessage*>& messages, const std::vector<std::string_view>& previousData) {
+        ruvia::db_query input;
         for (std::size_t i = 0; i < messages.size(); ++i) {
             input.values({ input.cast(input.value(static_cast<std::int64_t>(i)), Type::big_int), input.cast(input.value(messages[i]->messageId), Type::uuid), input.cast(input.value(messages[i]->deviceId), Type::uuid), input.cast(input.value(messages[i]->valuesJson), Type::jsonb), input.cast(input.value(previousData[i]), Type::jsonb), input.cast(input.value(messages[i]->observedAtMs), Type::big_int) });
         }
-        Query rules;
+        ruvia::db_query rules;
         rules.select({ rules.column("input_sequence", "input"), rules.star("rule"), rules.alias(rules.column(service::configuration::persistence::DeviceEntity::column_name<"name">(), "device"), "device_name"), rules.alias(rules.binary(rules.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "device"), Op::json_get_text, rules.value("device_code")), "device_code"), rules.alias(rules.column("data", "input"), "input_data"), rules.column("observed_at_ms", "input"), rules.column("previous_data", "input") })
             .from("input")
             .join(ruvia::db_join_type::inner, service::alert::persistence::AlertRuleEntity::table_name(), rules.binary(rules.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule"), Op::equal, rules.column("device_id", "input")), "rule")
             .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), rules.binary(rules.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "device"), Op::equal, rules.column(service::alert::persistence::AlertRuleEntity::column_name<"device_id">(), "rule")))
             .join(ruvia::db_join_type::left, service::alert::persistence::AlertEvaluationReceiptEntity::table_name(), rules.binary(rules.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">(), "receipt"), Op::equal, rules.column("message_id", "input")), "receipt")
             .and_where(rules.unary(ruvia::db_unary_operator::is_null, rules.column(service::alert::persistence::AlertEvaluationReceiptEntity::column_name<"message_id">(), "receipt")));
-        activeRules(rules);
-        Query samples;
+        activeRules(rules, rules);
+        ruvia::db_query samples;
         samples.select({ samples.star("rules"), samples.alias(samples.column("input_data", "rules"), "data"), samples.alias(samples.call("to_timestamp", { samples.binary(samples.cast(samples.column("observed_at_ms", "rules"), Type::double_value), Op::divide, samples.value(1000.0)) }), "observed_at") }).from("rules");
-        Query query;
-        query.with("input", input, { .columns_ = { "input_sequence", "message_id", "device_id", "data", "previous_data", "observed_at_ms" } }).with("rules", rules).with("samples", samples);
+        ruvia::db_query query;
+
+        const std::array<ruvia::borrowed_text, 6> sourceColumns11{ { "input_sequence", "message_id", "device_id", "data", "previous_data", "observed_at_ms" } };
+        query.with("input", input, { .columns_ = sourceColumns11 }).with("rules", rules).with("samples", samples);
         appendEvaluation(query);
         return query;
     }
 
-    static void activeRules(Query& query) {
+    static void activeRules(auto& target, Query& query) {
         for (const auto table : { "rule", "device" }) {
-            query.and_where(query.unary(ruvia::db_unary_operator::is_null, query.column("deleted_at", table)))
-                .and_where(query.binary(query.column("status", table), Op::equal, query.value("enabled")));
+            target.and_where(query.unary(ruvia::db_unary_operator::is_null, query.column("deleted_at", table))).and_where(query.binary(query.column("status", table), Op::equal, query.value("enabled")));
         }
     }
 
-    static Query::expr_type conditionText(Query& query, std::string_view key) {
+    static ruvia::db_expression conditionText(Query& query, std::string_view key) {
         return query.binary(query.column("value", "condition"), Op::json_get_text, query.value(key));
     }
 
-    static Query::expr_type sampleValue(Query& query, std::string_view column) {
+    static ruvia::db_expression sampleValue(Query& query, std::string_view column) {
         return query.binary(query.binary(query.binary(query.column(column, "samples"), Op::json_get, query.value("values")), Op::json_get, conditionText(query, "elementKey")), Op::json_get_text, query.value("value"));
     }
 
@@ -1021,9 +1012,11 @@ class AlertEvaluationService final {
         const auto rateMatched = conditions.case_when({ { missingRate, conditions.value(false) }, { conditions.binary(direction, Op::equal, conditions.value("rise")), conditions.binary(conditions.binary(numeric, Op::greater, priorNumeric), Op::and_value, delta) }, { conditions.binary(direction, Op::equal, conditions.value("fall")), conditions.binary(conditions.binary(numeric, Op::less, priorNumeric), Op::and_value, delta) } }, delta);
         const auto offline = conditions.binary(conditions.unary(ruvia::db_unary_operator::is_null, conditions.column("observed_at", "samples")), Op::or_value, conditions.binary(conditions.column("observed_at", "samples"), Op::less, conditions.binary(conditions.call("now"), Op::subtract, conditions.binary(conditions.coalesce({ conditions.column("duration_seconds", "condition_number"), conditions.value(300) }), Op::multiply, conditions.cast(conditions.value("1 second"), Type::interval)))));
         const auto kind = conditionText(conditions, "type");
+        const std::array<ruvia::db_source_column, 1> sourceColumns12{ { { .name_ = "value" } } };
         conditions.select({ conditions.star("samples"), conditions.alias(conditions.column("value", "condition"), "condition"), conditions.alias(conditions.case_when({ { conditions.binary(kind, Op::equal, conditions.value("offline")), offline }, { conditions.binary(kind, Op::equal, conditions.value("threshold")), conditions.case_when(thresholdCases, conditions.value(false)) }, { conditions.binary(kind, Op::equal, conditions.value("rate_of_change")), rateMatched } }, conditions.value(false)), "condition_matched") })
             .from("samples")
-            .join_function(ruvia::db_join_type::cross, conditions.call("jsonb_array_elements", { conditions.column("conditions", "samples") }), {}, "condition", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
+
+            .join_function(ruvia::db_join_type::cross, conditions.call("jsonb_array_elements", { conditions.column("conditions", "samples") }), {}, "condition", { .lateral_ = true, .columns_ = sourceColumns12 })
             .join(ruvia::db_join_type::left, numbers, conditions.value(true), "condition_number", { .lateral_ = true })
             .join(ruvia::db_join_type::left, current, conditions.value(true), "current_value", { .lateral_ = true })
             .join(ruvia::db_join_type::left, previous, conditions.value(true), "previous_value", { .lateral_ = true });

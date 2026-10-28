@@ -34,6 +34,9 @@ const FinsConfigPage = lazy(() =>
 const McConfigPage = lazy(() =>
     import('@/pages/protocol').then((module) => ({ default: module.McConfigPage }))
 );
+const ExternalIoConfigPage = lazy(() =>
+    import('@/pages/protocol').then((module) => ({ default: module.ExternalIoConfigPage }))
+);
 const DevicePage = lazy(() => import('@/pages/device'));
 const AccessPage = lazy(() => import('@/pages/open_access'));
 const EdgeNodePage = lazy(() => import('@/pages/edge_node'));
@@ -50,6 +53,7 @@ const pageElements = {
     fins: <FinsConfigPage />,
     mqtt: <MqttConfigPage />,
     mc: <McConfigPage />,
+    external_io: <ExternalIoConfigPage />,
     device: <DevicePage />,
     alert: <AlertPage />,
     gb28181: <Gb28181Page />,

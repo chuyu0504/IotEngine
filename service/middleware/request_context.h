@@ -11,7 +11,7 @@
 
 #include <ruvia/web/context.h>
 #include <ruvia/web/db/db_handle.h>
-#include <ruvia/web/http_client_handle.h>
+#include <ruvia/web/http_client.h>
 #include <ruvia/web/redis/redis_handle.h>
 
 namespace service::middleware {
@@ -54,12 +54,14 @@ class AuthorizationCache final {
 class RequestContext {
   public:
     RequestContext(ruvia::context& connection, std::string actorId)
-        : RequestContext(connection, std::move(actorId), connection.get_stop_token()) {}
+        : RequestContext(connection, std::move(actorId), connection.stop_token()) {}
 
     RequestContext(ruvia::context& connection, std::string actorId, ruvia::stop_token cancellation)
         : userId(std::move(actorId)), stop(std::move(cancellation)), connection_(connection), memory_(connection.pool()) {}
 
     auto db() const { return connection_.db().with_options({ .stop_token_ = stop }); }
+
+    auto db(std::string_view alias) const { return connection_.db(alias).with_options({ .stop_token_ = stop }); }
 
     auto redis() const { return connection_.redis().with_options({ .stop_token_ = stop }); }
 
@@ -67,7 +69,7 @@ class RequestContext {
 
     auto arena() { return &memory_; }
 
-    auto get_http_client(std::string_view alias) const { return connection_.get_http_client(alias).with_options({ .stop_token_ = stop }); }
+    auto http_client(std::string_view alias) const { return connection_.http_client(alias).with_options({ .stop_token_ = stop }); }
 
     // Borrow the connection's stable capability through this operation's awaits.
     const ruvia::worker_handle& worker() const& noexcept { return connection_.worker(); }
@@ -77,7 +79,7 @@ class RequestContext {
     template <typename State>
     State& worker_state() const { return connection_.worker_state<State>(); }
 
-    auto get_stop_token() const { return stop; }
+    auto stop_token() const { return stop; }
 
     const auto& env() const { return connection_.env(); }
 

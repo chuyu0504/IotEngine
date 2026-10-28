@@ -1,12 +1,14 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include <ruvia/web/db/db_migration.h>
 #include <ruvia/web/db/db_schema.h>
 
+#include "service/common/message.h"
 #include "service/config/channels.h"
 #include "service/config/current_device_model.h"
 #include "service/config/device_parameter_definitions.h"
@@ -1120,7 +1122,6 @@ $schema$;
         }(),
         [] {
             ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
-            ruvia::db_query q;
             schema.set_compression("device_data", { .enabled_ = true, .segment_by_ = { "device_id" }, .order_by_ = { { .column_ = "report_time", .direction_ = ruvia::db_order_direction::desc }, { .column_ = "id", .direction_ = ruvia::db_order_direction::desc } } });
             auto result = schema.compile("0017_device_data_compression_layout");
             return std::move(result.front());
@@ -1213,7 +1214,6 @@ $schema$;
 )sql" }),
         [] {
             ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
-            ruvia::db_query q;
             for (const auto table : { "gb28181_device", "gb28181_channel" }) {
                 schema.add_column(table, { .name_ = "custom_name", .type_ = { .data_type_ = Type::varchar, .length_ = 255 }, .nullable_ = true });
             }
@@ -1928,6 +1928,356 @@ BEGIN
 END $fn$;
 END $schema$;
 )sql" }),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            for (const auto table : { "protocol_config", "device_data" }) {
+                const auto name = std::string(table) + "_protocol_check";
+                schema.drop_constraint(table, name);
+                schema.add_constraint(table, { .name_ = name, .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.column("protocol"), ruvia::db_binary_operator::in, q.list({ q.value("SL651"), q.value("Modbus"), q.value("S7"), q.value("MC"), q.value("FINS"), q.value("DLT645"), q.value("MQTT"), q.value("ExternalIO") })) });
+            }
+            auto result = schema.compile("0058_external_io_protocol");
+            return std::move(result.front());
+        }(),
+        [] {
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            using Op = ruvia::db_binary_operator;
+            schema.add_constraint("device", { .name_ = "device_id_link_key", .kind_ = ruvia::db_constraint_kind::unique, .columns_ = { "id", "link_id" } });
+            schema.add_constraint("link", { .name_ = "link_id_node_key", .kind_ = ruvia::db_constraint_kind::unique, .columns_ = { "id", "edge_node_id" } });
+            schema.create_table({ .name_ = "device_external_io", .columns_ = {
+                                                                     { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true },
+                                                                     { .name_ = "link_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                     { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                     { .name_ = "protocol_config_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                     { .name_ = "derived_config", .type_ = { .data_type_ = Type::jsonb }, .default_value_ = q.cast(q.value("{}"), Type::jsonb) },
+                                                                 },
+                                  .constraints_ = {
+                                      { .name_ = "device_external_io_device_link_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "device_id", "link_id" }, .referenced_table_ = "device", .referenced_columns_ = { "id", "link_id" }, .on_delete_ = ruvia::db_referential_action::cascade, .on_update_ = ruvia::db_referential_action::cascade },
+                                      { .name_ = "device_external_io_link_node_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "link_id", "node_id" }, .referenced_table_ = "link", .referenced_columns_ = { "id", "edge_node_id" }, .on_delete_ = ruvia::db_referential_action::restrict },
+                                      { .name_ = "device_external_io_device_node_key", .kind_ = ruvia::db_constraint_kind::unique, .columns_ = { "device_id", "node_id" } },
+                                      { .name_ = "device_external_io_protocol_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "protocol_config_id" }, .referenced_table_ = "protocol_config", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::restrict },
+                                      { .name_ = "device_external_io_derived_config_check", .check_ = q.binary(q.call("jsonb_typeof", { q.column("derived_config") }), Op::equal, q.value("object")) },
+                                  } });
+            schema.create_table({ .name_ = "device_external_io_binding", .columns_ = {
+                                                                             { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                             { .name_ = "point_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                             { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                             { .name_ = "kind", .type_ = { .data_type_ = Type::varchar, .length_ = 2 } },
+                                                                             { .name_ = "channel", .type_ = { .data_type_ = Type::varchar, .length_ = 16 } },
+                                                                         },
+                                  .constraints_ = {
+                                      { .name_ = "device_external_io_binding_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "device_id", "point_id" } },
+                                      { .name_ = "device_external_io_binding_device_node_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "device_id", "node_id" }, .referenced_table_ = "device_external_io", .referenced_columns_ = { "device_id", "node_id" }, .on_delete_ = ruvia::db_referential_action::cascade },
+                                      { .name_ = "device_external_io_binding_node_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "node_id" }, .referenced_table_ = "edge_node", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::restrict },
+                                      { .name_ = "device_external_io_binding_kind_check", .check_ = q.binary(q.column("kind"), Op::in, q.list({ q.value("DI"), q.value("DO"), q.value("AI") })) },
+                                      { .name_ = "device_external_io_binding_channel_check", .check_ = q.binary(q.binary(q.binary(q.column("kind"), Op::equal, q.value("DI")), Op::and_value, q.binary(q.column("channel"), Op::regex, q.value("^di[0-9]+$"))), Op::or_value, q.binary(q.binary(q.binary(q.column("kind"), Op::equal, q.value("DO")), Op::and_value, q.binary(q.column("channel"), Op::regex, q.value("^do[0-9]+$"))), Op::or_value, q.binary(q.binary(q.column("kind"), Op::equal, q.value("AI")), Op::and_value, q.binary(q.column("channel"), Op::regex, q.value("^AI[0-9]+$"))))) },
+                                  } });
+            schema.create_index({ .name_ = "device_external_io_output_owner", .table_ = "device_external_io_binding", .keys_ = { { .column_ = "node_id" }, { .column_ = "channel" } }, .unique_ = true, .where_ = q.binary(q.column("kind"), Op::equal, q.value("DO")) });
+            {
+                ruvia::db_query source;
+                source.select(source.value(1)).from("device", "d").join(ruvia::db_join_type::inner, "link", source.binary(source.column("id", "l"), Op::equal, source.column("link_id", "d")), "l").join(ruvia::db_join_type::inner, "protocol_config", source.binary(source.column("id", "p"), Op::equal, source.column("protocol_config_id", "new")), "p").where(source.binary(source.column("id", "d"), Op::equal, source.column("device_id", "new"))).and_where(source.binary(source.column("link_id", "d"), Op::equal, source.column("link_id", "new"))).and_where(source.binary(source.column("edge_node_id", "l"), Op::equal, source.column("node_id", "new"))).and_where(source.unary(ruvia::db_unary_operator::is_null, source.column("deleted_at", "d"))).and_where(source.unary(ruvia::db_unary_operator::is_null, source.column("deleted_at", "l"))).and_where(source.unary(ruvia::db_unary_operator::is_null, source.column("deleted_at", "p"))).and_where(source.binary(source.column("execution", "l"), Op::equal, source.value("edge"))).and_where(source.unary(ruvia::db_unary_operator::is_not_null, source.column("edge_node_id", "l"))).and_where(source.binary(source.column("protocol", "p"), Op::equal, source.value("ExternalIO"))).and_where(source.column("enabled", "p")).lock({ .mode_ = ruvia::db_row_lock::share });
+                ruvia::db_query expression;
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.unary(ruvia::db_unary_operator::not_value, expression.exists(source)));
+                guard.raise_exception("external IO requires an active IO model and an edge device", "23514");
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_device_external_io", guard);
+                schema.create_trigger({ .name_ = "guard_device_external_io", .table_ = "device_external_io", .function_ = "guard_device_external_io", .events_ = { ruvia::db_trigger_event::insert, ruvia::db_trigger_event::update } });
+            }
+            {
+                ruvia::db_query match;
+                const auto entries = match.binary(match.column("config", "p"), Op::json_get, match.value("points"));
+                const auto id = match.cast(match.binary(match.column("value", "point"), Op::json_get_text, match.value("id")), Type::uuid);
+                const auto kind = match.binary(match.column("value", "point"), Op::json_get_text, match.value("kind"));
+                const std::array<ruvia::db_source_column, 1> columns{ { { .name_ = "value" } } };
+                const std::array<ruvia::borrowed_text, 4> locked{ "s", "d", "l", "p" };
+                match.select(match.value(1)).from("device_external_io", "s").join(ruvia::db_join_type::inner, "device", match.binary(match.column("id", "d"), Op::equal, match.column("device_id", "s")), "d").join(ruvia::db_join_type::inner, "link", match.binary(match.column("id", "l"), Op::equal, match.column("link_id", "d")), "l").join(ruvia::db_join_type::inner, "protocol_config", match.binary(match.column("id", "p"), Op::equal, match.column("protocol_config_id", "s")), "p").join_function(ruvia::db_join_type::cross, match.call("jsonb_array_elements", { entries }), {}, "point", { .lateral_ = true, .columns_ = columns }).where(match.binary(match.column("device_id", "s"), Op::equal, match.column("device_id", "new"))).and_where(match.binary(match.column("edge_node_id", "l"), Op::equal, match.column("node_id", "new"))).and_where(match.binary(id, Op::equal, match.column("point_id", "new"))).and_where(match.binary(kind, Op::equal, match.column("kind", "new"))).lock({ .mode_ = ruvia::db_row_lock::share, .tables_ = locked });
+                ruvia::db_query expression;
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.unary(ruvia::db_unary_operator::not_value, expression.exists(match)));
+                guard.raise_exception("external IO point or edge node does not match its device", "23514");
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_device_external_io_binding", guard);
+                schema.create_trigger({ .name_ = "guard_device_external_io_binding", .table_ = "device_external_io_binding", .function_ = "guard_device_external_io_binding", .events_ = { ruvia::db_trigger_event::insert, ruvia::db_trigger_event::update } });
+            }
+            {
+                ruvia::db_query expression;
+                ruvia::db_query bound;
+                bound.select(bound.value(1)).from("device_external_io_binding").where(bound.binary(bound.column("device_id"), Op::equal, bound.column("device_id", "new")));
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.binary(expression.binary(expression.column("protocol_config_id", "old"), Op::is_distinct_from, expression.column("protocol_config_id", "new")), Op::and_value, expression.exists(bound)));
+                guard.raise_exception("remove IO bindings before changing the IO model", "23514");
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_device_external_io_model", guard);
+                schema.create_trigger({ .name_ = "guard_device_external_io_model", .table_ = "device_external_io", .function_ = "guard_device_external_io_model", .events_ = { ruvia::db_trigger_event::update }, .update_columns_ = { "protocol_config_id" } });
+            }
+            {
+                ruvia::db_query expression;
+                ruvia::db_query source;
+                source.select(source.value(1)).from("device_external_io").where(source.binary(source.column("protocol_config_id"), Op::equal, source.column("id", "old")));
+                ruvia::db_query modelPoint;
+                const auto points = modelPoint.binary(modelPoint.column("config", "new"), Op::json_get, modelPoint.value("points"));
+                const std::array<ruvia::db_source_column, 1> columns{ { { .name_ = "value" } } };
+                modelPoint.select(modelPoint.value(1)).from_function(modelPoint.call("jsonb_array_elements", { points }), "point", { .columns_ = columns }).where(modelPoint.binary(modelPoint.cast(modelPoint.binary(modelPoint.column("value", "point"), Op::json_get_text, modelPoint.value("id")), Type::uuid), Op::equal, modelPoint.column("point_id", "b"))).and_where(modelPoint.binary(modelPoint.binary(modelPoint.column("value", "point"), Op::json_get_text, modelPoint.value("kind")), Op::equal, modelPoint.column("kind", "b")));
+                ruvia::db_query invalidBinding;
+                invalidBinding.select(invalidBinding.value(1)).from("device_external_io_binding", "b").join(ruvia::db_join_type::inner, "device_external_io", invalidBinding.binary(invalidBinding.column("device_id", "s"), Op::equal, invalidBinding.column("device_id", "b")), "s").where(invalidBinding.binary(invalidBinding.column("protocol_config_id", "s"), Op::equal, invalidBinding.column("id", "old"))).and_where(invalidBinding.unary(ruvia::db_unary_operator::not_value, invalidBinding.exists(modelPoint)));
+                const auto unavailable = expression.binary(expression.binary(expression.column("protocol", "new"), Op::not_equal, expression.value("ExternalIO")), Op::or_value, expression.binary(expression.unary(ruvia::db_unary_operator::not_value, expression.column("enabled", "new")), Op::or_value, expression.unary(ruvia::db_unary_operator::is_not_null, expression.column("deleted_at", "new"))));
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.binary(unavailable, Op::and_value, expression.exists(source)));
+                guard.raise_exception("remove device IO associations before disabling their model", "23514");
+                guard.end_if();
+                guard.begin_if(expression.exists(invalidBinding));
+                guard.raise_exception("remove IO bindings before removing or changing their points", "23514");
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_external_io_protocol", guard);
+                schema.create_trigger({ .name_ = "guard_external_io_protocol", .table_ = "protocol_config", .function_ = "guard_external_io_protocol", .events_ = { ruvia::db_trigger_event::update }, .update_columns_ = { "protocol", "config", "enabled", "deleted_at" } });
+            }
+            {
+                ruvia::db_query expression;
+                ruvia::db_query associated;
+                associated.select(associated.value(1)).from("device_external_io").where(associated.binary(associated.column("device_id"), Op::equal, associated.column("id", "new")));
+                ruvia::db_query sameNode;
+                sameNode.select(sameNode.value(1)).from("link", "previous").join(ruvia::db_join_type::inner, "link", sameNode.binary(sameNode.column("id", "target"), Op::equal, sameNode.column("link_id", "new")), "target").where(sameNode.binary(sameNode.column("id", "previous"), Op::equal, sameNode.column("link_id", "old"))).and_where(sameNode.binary(sameNode.column("edge_node_id", "previous"), Op::equal, sameNode.column("edge_node_id", "target"))).and_where(sameNode.binary(sameNode.column("execution", "target"), Op::equal, sameNode.value("edge"))).and_where(sameNode.unary(ruvia::db_unary_operator::is_null, sameNode.column("deleted_at", "target"))).lock({ .mode_ = ruvia::db_row_lock::share });
+                ruvia::db_query remove;
+                remove.delete_from("device_external_io")
+                    .where(remove.binary(remove.column("device_id"), Op::equal, remove.column("id", "new")));
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.unary(ruvia::db_unary_operator::is_not_null, expression.column("deleted_at", "new")));
+                guard.execute(remove);
+                guard.otherwise();
+                guard.begin_if(expression.binary(expression.binary(expression.column("link_id", "old"), Op::is_distinct_from, expression.column("link_id", "new")), Op::and_value, expression.exists(associated)));
+                guard.begin_if(expression.unary(ruvia::db_unary_operator::not_value, expression.exists(sameNode)));
+                guard.raise_exception("remove external IO before changing the edge node", "23514");
+                guard.end_if();
+                guard.end_if();
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_device_external_io_node", guard);
+                schema.create_trigger({ .name_ = "guard_device_external_io_node", .table_ = "device", .function_ = "guard_device_external_io_node", .events_ = { ruvia::db_trigger_event::update }, .update_columns_ = { "link_id", "deleted_at" } });
+            }
+            {
+                ruvia::db_query expression;
+                ruvia::db_query associated;
+                associated.select(associated.value(1)).from("device_external_io", "s").join(ruvia::db_join_type::inner, "device", associated.binary(associated.column("id", "d"), Op::equal, associated.column("device_id", "s")), "d").where(associated.binary(associated.column("link_id", "d"), Op::equal, associated.column("id", "old"))).and_where(associated.unary(ruvia::db_unary_operator::is_null, associated.column("deleted_at", "d")));
+                const auto changedNode = expression.binary(expression.column("edge_node_id", "old"), Op::is_distinct_from, expression.column("edge_node_id", "new"));
+                const auto changedExecution = expression.binary(expression.column("execution", "old"), Op::is_distinct_from, expression.column("execution", "new"));
+                const auto deleted = expression.unary(ruvia::db_unary_operator::is_not_null, expression.column("deleted_at", "new"));
+                ruvia::db_procedure guard;
+                guard.begin_if(expression.binary(expression.binary(expression.binary(changedNode, Op::or_value, changedExecution), Op::or_value, deleted), Op::and_value, expression.exists(associated)));
+                guard.raise_exception("remove external IO before changing its edge link", "23514");
+                guard.end_if();
+                guard.return_value(expression.column("new"));
+                schema.create_trigger_function("guard_link_external_io_node", guard);
+                schema.create_trigger({ .name_ = "guard_link_external_io_node", .table_ = "link", .function_ = "guard_link_external_io_node", .events_ = { ruvia::db_trigger_event::update }, .update_columns_ = { "edge_node_id", "execution", "deleted_at" } });
+            }
+            auto result = schema.compile("0059_device_external_io");
+            return std::move(result.front());
+        }(),
+        [] {
+            using Type = ruvia::db_data_type;
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query query;
+            schema.create_table({ .name_ = "edge_acquisition_snapshot", .columns_ = {
+                                                                            { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid } },
+                                                                            { .name_ = "digest", .type_ = { .data_type_ = Type::varchar, .length_ = 64 } },
+                                                                            { .name_ = "revision", .type_ = { .data_type_ = Type::big_int } },
+                                                                            { .name_ = "payload", .type_ = { .data_type_ = Type::jsonb } },
+                                                                            { .name_ = "created_at", .type_ = { .data_type_ = Type::timestamp_tz }, .default_value_ = query.call("now") },
+                                                                        },
+                                  .constraints_ = {
+                                      { .name_ = "edge_acquisition_snapshot_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "node_id", "digest" } },
+                                      { .name_ = "edge_acquisition_snapshot_revision_key", .kind_ = ruvia::db_constraint_kind::unique, .columns_ = { "node_id", "revision" } },
+                                      { .name_ = "edge_acquisition_snapshot_node_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "node_id" }, .referenced_table_ = "edge_node", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::cascade },
+                                  } });
+            auto result = schema.compile("0060_edge_acquisition_snapshot");
+            return std::move(result.front());
+        }(),
+        [] {
+            using Op = ruvia::db_binary_operator;
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            const auto text = [](ruvia::db_query& expression, ruvia::db_expression value, std::string_view key) {
+                return expression.binary(value, Op::json_get_text, expression.value(key));
+            };
+            const auto json = [](ruvia::db_query& expression, ruvia::db_expression value, std::string_view key) {
+                return expression.binary(value, Op::json_get, expression.value(key));
+            };
+            const std::array<ruvia::db_source_column, 2> entries{ { { .name_ = "value" }, { .name_ = "ordinal" } } };
+            // Existing per-device mappings are grouped by their resulting scheme content.
+            // Preserve point IDs and formulas; never overwrite a different device's mapping.
+            schema.drop_trigger("device_external_io", "guard_device_external_io_model");
+            schema.drop_trigger_function("guard_device_external_io_model");
+            ruvia::db_procedure upgrade;
+            upgrade.declare_record("source");
+            upgrade.declare_record("point");
+            upgrade.declare_variable({ .name_ = "mapped", .type_ = { .data_type_ = Type::jsonb } });
+            upgrade.declare_variable({ .name_ = "configuration", .type_ = { .data_type_ = Type::jsonb } });
+            upgrade.declare_variable({ .name_ = "channel_name", .type_ = { .data_type_ = Type::text } });
+            upgrade.declare_variable({ .name_ = "scheme_id", .type_ = { .data_type_ = Type::uuid } });
+            for (const auto name : { "di_index", "do_index", "ai_index" }) {
+                upgrade.declare_variable({ .name_ = name, .type_ = { .data_type_ = Type::integer } });
+            }
+            ruvia::db_query sources;
+            sources.select({ sources.alias(sources.column("device_id", "s"), "device_id"), sources.star("p") }).from("device_external_io", "s").join(ruvia::db_join_type::inner, "protocol_config", sources.binary(sources.column("id", "p"), Op::equal, sources.column("protocol_config_id", "s")), "p").order_by(sources.column("device_id", "s"));
+            upgrade.begin_for_query("source", sources);
+            upgrade.assign("mapped", q.cast(q.value("[]"), Type::jsonb));
+            ruvia::db_query points;
+            points.select(points.column("value")).from_function(points.call("jsonb_array_elements", { json(points, points.column("config", "source"), "points") }), "entry", { .with_ordinality_ = true, .columns_ = entries }).order_by(points.column("ordinal"));
+            upgrade.begin_for_query("point", points);
+            ruvia::db_query binding;
+            binding.select(binding.column("channel")).from("device_external_io_binding").where(binding.binary(binding.column("device_id"), Op::equal, binding.column("device_id", "source"))).and_where(binding.binary(binding.column("point_id"), Op::equal, binding.cast(text(binding, binding.column("value", "point"), "id"), Type::uuid)));
+            upgrade.select_into(binding, { std::array<std::string_view, 1>{ "channel_name" } });
+            upgrade.begin_if(q.unary(ruvia::db_unary_operator::is_null, q.column("channel_name")));
+            upgrade.raise_exception("cannot migrate an incomplete external IO mapping", "23514");
+            upgrade.end_if();
+            upgrade.assign("mapped", q.binary(q.column("mapped"), Op::json_concat, q.call("jsonb_build_array", { q.binary(q.column("value", "point"), Op::json_concat, q.call("jsonb_build_object", { q.cast(q.value("channel"), Type::text), q.column("channel_name") })) })));
+            upgrade.end_loop();
+            upgrade.assign("configuration", q.call("jsonb_set", { q.column("config", "source"), q.array({ q.value("points") }), q.column("mapped") }));
+            ruvia::db_query matching;
+            matching.select(matching.column("id")).from("protocol_config").where(matching.binary(matching.column("protocol"), Op::equal, matching.value("ExternalIO"))).and_where(matching.binary(matching.column("config"), Op::equal, matching.column("configuration"))).and_where(matching.binary(matching.column("created_by"), Op::equal, matching.column("created_by", "source"))).and_where(matching.binary(matching.column("enabled"), Op::equal, matching.column("enabled", "source"))).and_where(matching.unary(ruvia::db_unary_operator::is_null, matching.column("deleted_at"))).limit(1);
+            upgrade.select_into(matching, { std::array<std::string_view, 1>{ "scheme_id" } });
+            upgrade.begin_if(q.unary(ruvia::db_unary_operator::is_null, q.column("scheme_id")));
+            upgrade.assign("scheme_id", q.call("gen_random_uuid"));
+            ruvia::db_query clone;
+            clone.insert_into("protocol_config", { "id", "protocol", "name", "enabled", "config", "remark", "created_by" }).values({ clone.column("scheme_id"), clone.value("ExternalIO"), clone.call("concat", { clone.call("left", { clone.column("name", "source"), clone.value(24) }), clone.value(" ["), clone.cast(clone.column("scheme_id"), Type::text), clone.value("]") }), clone.column("enabled", "source"), clone.column("configuration"), clone.column("remark", "source"), clone.column("created_by", "source") });
+            upgrade.execute(clone);
+            upgrade.end_if();
+            ruvia::db_query move;
+            move.update("device_external_io").set("protocol_config_id", move.column("scheme_id")).where(move.binary(move.column("device_id"), Op::equal, move.column("device_id", "source")));
+            upgrade.execute(move);
+            upgrade.end_loop();
+            // Unused legacy templates had no physical mapping. Give them deterministic
+            // channels; every active association above already preserves its exact mapping.
+            ruvia::db_query models;
+            models.select(models.star()).from("protocol_config").where(models.binary(models.column("protocol"), Op::equal, models.value("ExternalIO")));
+            upgrade.begin_for_query("source", models);
+            upgrade.assign("mapped", q.cast(q.value("[]"), Type::jsonb));
+            for (const auto name : { "di_index", "do_index", "ai_index" }) {
+                upgrade.assign(name, q.value(0));
+            }
+            upgrade.begin_for_query("point", points);
+            const auto pointValue = q.column("value", "point");
+            for (const auto& [kind, prefix, counter] : { std::tuple{ "DI", "di", "di_index" }, std::tuple{ "DO", "do", "do_index" }, std::tuple{ "AI", "AI", "ai_index" } }) {
+                upgrade.begin_if(q.binary(text(q, pointValue, "kind"), Op::equal, q.value(kind)));
+                upgrade.assign("channel_name", q.coalesce({ text(q, pointValue, "channel"), q.call("concat", { q.value(prefix), q.column(counter) }) }));
+                upgrade.assign(counter, q.binary(q.column(counter), Op::add, q.value(1)));
+                upgrade.end_if();
+            }
+            upgrade.assign("mapped", q.binary(q.column("mapped"), Op::json_concat, q.call("jsonb_build_array", { q.binary(pointValue, Op::json_concat, q.call("jsonb_build_object", { q.cast(q.value("channel"), Type::text), q.column("channel_name") })) })));
+            upgrade.end_loop();
+            ruvia::db_query update;
+            update.update("protocol_config").set("config", update.call("jsonb_set", { update.column("config", "source"), update.array({ update.value("points") }), update.column("mapped") })).where(update.binary(update.column("id"), Op::equal, update.column("id", "source")));
+            upgrade.execute(update);
+            upgrade.end_loop();
+            schema.run(upgrade);
+            schema.add_constraint("device_external_io_binding", { .name_ = "device_external_io_channel_key", .kind_ = ruvia::db_constraint_kind::unique, .columns_ = { "device_id", "channel" } });
+            // Bindings are a database-maintained reservation/projection of scheme channels.
+            // The scheme is the only writable source of the physical mapping.
+            {
+                ruvia::db_query match;
+                const auto point = match.column("value", "point");
+                const auto channel = match.column("value", "channel");
+                const auto cap = match.binary(match.column("capability", "n"), Op::json_get, match.value("externalIo"));
+                match.select(match.value(1)).from("device_external_io", "s").join(ruvia::db_join_type::inner, "protocol_config", match.binary(match.column("id", "p"), Op::equal, match.column("protocol_config_id", "s")), "p").join(ruvia::db_join_type::inner, "edge_node", match.binary(match.column("id", "n"), Op::equal, match.column("node_id", "s")), "n").join_function(ruvia::db_join_type::cross, match.call("jsonb_array_elements", { json(match, match.column("config", "p"), "points") }), {}, "point", { .lateral_ = true, .columns_ = std::span(entries).first(1) }).join_function(ruvia::db_join_type::cross, match.call("jsonb_array_elements", { json(match, cap, "channels") }), {}, "channel", { .lateral_ = true, .columns_ = std::span(entries).first(1) }).where(match.binary(match.column("device_id", "s"), Op::equal, match.column("device_id", "new"))).and_where(match.binary(match.column("node_id", "s"), Op::equal, match.column("node_id", "new"))).and_where(match.cast(json(match, cap, "supported"), Type::boolean)).and_where(match.binary(match.cast(text(match, point, "id"), Type::uuid), Op::equal, match.column("point_id", "new"))).and_where(match.binary(text(match, point, "kind"), Op::equal, match.column("kind", "new"))).and_where(match.binary(text(match, point, "channel"), Op::equal, match.column("channel", "new"))).and_where(match.binary(text(match, channel, "kind"), Op::equal, match.column("kind", "new"))).and_where(match.binary(text(match, channel, "channel"), Op::equal, match.column("channel", "new"))).and_where(match.binary(match.binary(match.column("kind", "new"), Op::not_equal, match.value("DO")), Op::or_value, match.cast(json(match, channel, "controllable"), Type::boolean)));
+                ruvia::db_procedure guard;
+                guard.begin_if(q.unary(ruvia::db_unary_operator::not_value, q.exists(match)));
+                guard.raise_exception("external IO mapping must match its scheme and edge capabilities", "23514");
+                guard.end_if();
+                guard.return_value(q.column("new"));
+                schema.create_trigger_function("guard_device_external_io_binding", guard, true);
+            }
+            for (const bool protocol : { false, true }) {
+                ruvia::db_procedure refresh;
+                ruvia::db_query affected;
+                affected.select(affected.column("device_id")).from("device_external_io").where(affected.binary(affected.column(protocol ? "protocol_config_id" : "device_id"), Op::equal, affected.column(protocol ? "id" : "device_id", "new")));
+                ruvia::db_query remove;
+                remove.delete_from("device_external_io_binding").where(remove.binary(remove.column("device_id"), Op::in, remove.subquery(affected)));
+                refresh.execute(remove);
+                ruvia::db_query rows;
+                const auto point = rows.column("value", "point");
+                rows.select({ rows.column("device_id", "s"), rows.cast(text(rows, point, "id"), Type::uuid), rows.column("node_id", "s"), text(rows, point, "kind"), text(rows, point, "channel") }).from("device_external_io", "s").join(ruvia::db_join_type::inner, "protocol_config", rows.binary(rows.column("id", "p"), Op::equal, rows.column("protocol_config_id", "s")), "p").join_function(ruvia::db_join_type::cross, rows.call("jsonb_array_elements", { json(rows, rows.column("config", "p"), "points") }), {}, "point", { .lateral_ = true, .columns_ = std::span(entries).first(1) }).where(rows.binary(rows.column(protocol ? "protocol_config_id" : "device_id", "s"), Op::equal, rows.column(protocol ? "id" : "device_id", "new")));
+                ruvia::db_query insert;
+                insert.insert_into("device_external_io_binding", { "device_id", "point_id", "node_id", "kind", "channel" }).insert_from(rows);
+                refresh.execute(insert);
+                refresh.return_value(q.column("new"));
+                const auto name = protocol ? "refresh_external_io_scheme" : "refresh_device_external_io";
+                schema.create_trigger_function(name, refresh);
+                schema.create_trigger({ .name_ = name, .table_ = protocol ? "protocol_config" : "device_external_io", .function_ = name, .timing_ = ruvia::db_trigger_timing::after, .events_ = protocol ? std::pmr::vector<ruvia::db_trigger_event>{ ruvia::db_trigger_event::update } : std::pmr::vector<ruvia::db_trigger_event>{ ruvia::db_trigger_event::insert, ruvia::db_trigger_event::update }, .update_columns_ = protocol ? std::pmr::vector<ruvia::borrowed_text>{ "config" } : std::pmr::vector<ruvia::borrowed_text>{ "protocol_config_id", "node_id" } });
+            }
+            auto result = schema.compile("0061_external_io_scheme_channels");
+            return std::move(result.front());
+        }(),
+        [] {
+            using Op = ruvia::db_binary_operator;
+            ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+            ruvia::db_query q;
+            schema.create_table({ .name_ = "edge_acquisition_epoch", .columns_ = { { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid }, .primary_key_ = true }, { .name_ = "epoch", .type_ = { .data_type_ = Type::big_int }, .default_value_ = q.value(0) } }, .constraints_ = { { .name_ = "edge_acquisition_epoch_node_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "node_id" }, .referenced_table_ = "edge_node", .referenced_columns_ = { "id" }, .on_delete_ = ruvia::db_referential_action::cascade } } });
+            ruvia::db_query nodes;
+            nodes.select(nodes.column("id")).from("edge_node");
+            ruvia::db_query seed;
+            seed.insert_into("edge_acquisition_epoch", { "node_id" }).insert_from(nodes);
+            schema.execute(seed);
+            ruvia::db_procedure fence;
+            fence.perform(q.call("pg_advisory_xact_lock", { q.cast(q.value(service::message::lock::kAcquisitionConfiguration), Type::big_int) }));
+            fence.return_value(q.null_value());
+            schema.create_trigger_function("lock_acquisition_configuration", fence);
+            for (const auto table : { "device", "link", "protocol_config", "device_external_io", "device_external_io_binding", "edge_dtu" }) {
+                std::pmr::vector<ruvia::borrowed_text> fields;
+                if (std::string_view(table) == "edge_dtu") {
+                    fields = { "node_id", "channel_id", "config", "wire_hex" };
+                } else if (std::string_view(table) == "protocol_config") {
+                    fields = { "protocol", "name", "config", "enabled", "deleted_at" };
+                } else if (std::string_view(table) == "link") {
+                    fields = { "name", "protocol", "endpoint", "execution", "edge_node_id", "status", "debug_enabled", "deleted_at" };
+                } else if (std::string_view(table) == "device") {
+                    fields = { "name", "link_id", "protocol_config_id", "protocol_params", "protocol_address", "status", "deleted_at" };
+                } else if (std::string_view(table) == "device_external_io") {
+                    fields = { "device_id", "link_id", "node_id", "protocol_config_id", "derived_config" };
+                } else {
+                    fields = { "device_id", "point_id", "node_id", "kind", "channel" };
+                }
+                schema.create_trigger({ .name_ = "lock_acquisition_configuration", .table_ = table, .function_ = "lock_acquisition_configuration", .events_ = { ruvia::db_trigger_event::insert, ruvia::db_trigger_event::update, ruvia::db_trigger_event::delete_value }, .for_each_row_ = false, .update_columns_ = fields });
+                ruvia::db_procedure changed;
+                std::vector<ruvia::db_expression> oldValues, newValues;
+                for (const auto field : fields) {
+                    oldValues.push_back(q.column(field.view(), "old"));
+                    newValues.push_back(q.column(field.view(), "new"));
+                }
+                changed.begin_if(q.binary(q.tuple(oldValues), Op::is_not_distinct_from, q.tuple(newValues)));
+                changed.return_value(q.null_value());
+                changed.end_if();
+                ruvia::db_query affected;
+                if (std::string_view(table) == "device") {
+                    affected.select(affected.column("edge_node_id")).from("link").where(affected.binary(affected.column("id"), Op::in, affected.list({ affected.column("link_id", "old"), affected.column("link_id", "new") }))).and_where(affected.unary(ruvia::db_unary_operator::is_not_null, affected.column("edge_node_id")));
+                } else if (std::string_view(table) == "protocol_config") {
+                    affected.select(affected.column("edge_node_id", "l")).from("link", "l").join(ruvia::db_join_type::inner, "device", affected.binary(affected.column("link_id", "d"), Op::equal, affected.column("id", "l")), "d").join(ruvia::db_join_type::left, "device_external_io", affected.binary(affected.column("device_id", "s"), Op::equal, affected.column("id", "d")), "s").where(affected.binary(affected.binary(affected.column("protocol_config_id", "d"), Op::in, affected.list({ affected.column("id", "old"), affected.column("id", "new") })), Op::or_value, affected.binary(affected.column("protocol_config_id", "s"), Op::in, affected.list({ affected.column("id", "old"), affected.column("id", "new") })))).and_where(affected.unary(ruvia::db_unary_operator::is_not_null, affected.column("edge_node_id", "l"))).distinct();
+                } else {
+                    const auto column = std::string_view(table) == "link" ? "edge_node_id" : "node_id";
+                    affected.values({ affected.column(column, "old") }).values({ affected.column(column, "new") });
+                }
+                ruvia::db_query valid;
+                const std::array<ruvia::db_source_column, 1> columns{ { { .name_ = "node_id" } } };
+                valid.select(valid.column("node_id")).from(affected, "affected", { .columns_ = columns }).where(valid.unary(ruvia::db_unary_operator::is_not_null, valid.column("node_id"))).distinct();
+                ruvia::db_query epoch;
+                epoch.insert_into("edge_acquisition_epoch", { "node_id" }).insert_from(valid).on_conflict({ .columns_ = std::array<ruvia::borrowed_text, 1>{ "node_id" }, .update_ = std::array<ruvia::db_assignment, 1>{ { { "epoch", epoch.binary(epoch.column("epoch", "edge_acquisition_epoch"), Op::add, epoch.value(1)) } } } });
+                changed.execute(epoch);
+                changed.return_value(q.null_value());
+                const auto name = std::string("advance_acquisition_epoch_") + table;
+                schema.create_trigger_function(name, changed);
+                schema.create_trigger({ .name_ = name, .table_ = table, .function_ = name, .timing_ = ruvia::db_trigger_timing::after, .events_ = { ruvia::db_trigger_event::insert, ruvia::db_trigger_event::update, ruvia::db_trigger_event::delete_value }, .update_columns_ = fields });
+            }
+            schema.create_table({ .name_ = "edge_acquisition_sample", .columns_ = { { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "digest", .type_ = { .data_type_ = Type::varchar, .length_ = 64 } }, { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "record_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "observed_at_ms", .type_ = { .data_type_ = Type::big_int } }, { .name_ = "payload", .type_ = { .data_type_ = Type::jsonb } } }, .constraints_ = { { .name_ = "edge_acquisition_sample_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "node_id", "digest", "device_id", "record_id" } }, { .name_ = "edge_acquisition_sample_snapshot_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "node_id", "digest" }, .referenced_table_ = "edge_acquisition_snapshot", .referenced_columns_ = { "node_id", "digest" }, .on_delete_ = ruvia::db_referential_action::cascade } } });
+            schema.create_index({ .name_ = "edge_acquisition_sample_timeline", .table_ = "edge_acquisition_sample", .keys_ = { { .column_ = "node_id" }, { .column_ = "digest" }, { .column_ = "device_id" }, { .column_ = "observed_at_ms" }, { .column_ = "record_id" } } });
+            schema.create_table({ .name_ = "edge_acquisition_calculation", .columns_ = { { .name_ = "node_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "digest", .type_ = { .data_type_ = Type::varchar, .length_ = 64 } }, { .name_ = "device_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "record_id", .type_ = { .data_type_ = Type::uuid } }, { .name_ = "observed_at_ms", .type_ = { .data_type_ = Type::big_int } }, { .name_ = "state", .type_ = { .data_type_ = Type::jsonb } } }, .constraints_ = { { .name_ = "edge_acquisition_calculation_pkey", .kind_ = ruvia::db_constraint_kind::primary_key, .columns_ = { "node_id", "digest", "device_id" } }, { .name_ = "edge_acquisition_calculation_snapshot_fkey", .kind_ = ruvia::db_constraint_kind::foreign_key, .columns_ = { "node_id", "digest" }, .referenced_table_ = "edge_acquisition_snapshot", .referenced_columns_ = { "node_id", "digest" }, .on_delete_ = ruvia::db_referential_action::cascade } } });
+            schema.add_column("device_data", { .name_ = "configuration_digest", .type_ = { .data_type_ = Type::varchar, .length_ = 64 }, .nullable_ = true });
+            auto result = schema.compile("0062_acquisition_epoch_and_history");
+            return std::move(result.front());
+        }(),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

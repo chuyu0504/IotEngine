@@ -205,7 +205,7 @@ void testModuleExecutorDetection() {
     for (const auto* allowed : {
              "// std::thread example;",
              "std::thread::id owner;",
-             "auto client = context.get_http_client();" }) {
+             "auto client = context.http_client();" }) {
         require(!declaresPrivateExecutor(allowed), "non-owning worker usage was rejected");
     }
 }
@@ -494,7 +494,7 @@ void testSourceStructureDetection() {
     }
     for (const auto* code : {
              "RUVIA_ROUTES_BEGIN(Endpoint)\nRUVIA_ROUTES_END",
-             "RUVIA_GET_SSE(\"/events\", events)",
+             "RUVIA_GET(\"/events\", events)",
              "RUVIA_CONNECT_PROTOCOL_OPTIONS(\"protocol\", \"/\", stream, options)",
              "RUVIA_GROUP_BEGIN(\"/group\")\nRUVIA_GROUP_END" }) {
         require(sourceStructure(code).declaresRoutes, "structural routing macro was missed");
@@ -785,7 +785,7 @@ std::string withoutEntityScriptDefinitions(const std::string& content) {
 }
 
 void testStorageOwnership() {
-    const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bdb_query\b|\bget_repository\s*<)");
+    const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bdb_query\s+[A-Za-z_]\w*\s*[({;]|\brepository\s*<)");
     const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hget_all|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
     const std::regex rawHashAccess(
         R"re(["'](?:HGET|HGETALL|HMGET|HSET|HSETNX|HMSET|HDEL|HKEYS|HVALS|HEXISTS|HLEN|HSCAN|HINCRBY|HINCRBYFLOAT)["'])re",

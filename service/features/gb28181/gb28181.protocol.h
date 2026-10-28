@@ -16,7 +16,6 @@
 #include <vector>
 
 #include <ruvia/web/model.h>
-#include <ruvia/web/model_json.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -563,7 +562,7 @@ inline service::message::gb28181::Device deviceJson(std::pmr::memory_resource* r
         ruvia::model_options{ .resource_ = resource }
     );
     for (const auto& channel : device.channels) {
-        channels.emplace(channelJson(resource, channel));
+        channels.emplace_back(channelJson(resource, channel));
     }
 
     service::message::gb28181::Device result(ruvia::model_options{ .resource_ = resource });

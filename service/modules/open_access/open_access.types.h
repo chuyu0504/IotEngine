@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include <ruvia/web/model_object.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/validation.h>
 
 #include "service/common/http.h"

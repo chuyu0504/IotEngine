@@ -1,6 +1,6 @@
 #pragma once
 #include <ruvia/web/db/db_entity.h>
-#include <ruvia/web/redis/redis_entity.h>
+#include <ruvia/web/redis/redis_repository.h>
 
 #include "service/common/message.h"
 

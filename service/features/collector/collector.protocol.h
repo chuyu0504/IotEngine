@@ -20,7 +20,7 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/model_object.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/message.h"
 #include "service/features/collector/collector.config.h"
@@ -72,7 +72,7 @@ class AcquisitionCycle final {
         combined.rawPacketIds.insert(combined.rawPacketIds.end(), response.parsed.rawPacketIds.begin(), response.parsed.rawPacketIds.end());
         const auto readFields = [](std::string_view json, auto visit) {
             const auto object = ruvia::json_value::parse(json);
-            if (!object || !object->for_each_field([&](std::string_view name, const ruvia::json_value& value) {
+            if (!object.for_each_field([&](std::string_view name, const ruvia::json_value& value) {
                     return visit(name, value.view());
                 })) {
                 throw std::runtime_error("invalid acquisition values");
@@ -547,10 +547,8 @@ inline ResolvedCommand resolve(const DeviceDefinition& device, std::span<const C
     }
     if (device.protocol == "MQTT") {
         const auto config = ruvia::from_json<mqtt::Config>(device.calculationConfig);
-        if (!config) {
-            throw std::invalid_argument("command_invalid: MQTT configuration is invalid");
-        }
-        const auto& commands = config->get<"commands">();
+
+        const auto& commands = config.get<"commands">();
         if (commands) {
             const auto selected = std::find_if(commands->begin(), commands->end(), [&](const auto& message) {
                 return message.template get<"id">().view() == mqttMessageId;
@@ -559,7 +557,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device, std::span<const C
                 throw std::invalid_argument("command_invalid: 请选择有效的 MQTT 控制消息");
             }
             service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", "$deviceId", "$commandId" };
-            for (const auto& point : config->get<"points">()) {
+            for (const auto& point : config.get<"points">()) {
                 allowed.emplace("$point:" + std::string(point.get<"name">().view()));
             }
             const service::utils::JsonValueTemplate message(selected->get<"templateText">().view(), allowed, {}, false, 16384, 32, { "$param:" });
@@ -570,10 +568,10 @@ inline ResolvedCommand resolve(const DeviceDefinition& device, std::span<const C
                 }
             }
             for (const auto& input : requested) {
-                const auto point = std::find_if(config->get<"points">().begin(), config->get<"points">().end(), [&](const auto& point) {
+                const auto point = std::find_if(config.get<"points">().begin(), config.get<"points">().end(), [&](const auto& point) {
                     return point.template get<"id">().view() == input.elementId;
                 });
-                if (point == config->get<"points">().end() || (!message.references("$point:" + std::string(point->get<"name">().view())) && !topicNames.contains(point->get<"name">().view()))) {
+                if (point == config.get<"points">().end() || (!message.references("$point:" + std::string(point->get<"name">().view())) && !topicNames.contains(point->get<"name">().view()))) {
                     throw std::invalid_argument("command_invalid: 控制点不属于所选消息");
                 }
             }
@@ -582,7 +580,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device, std::span<const C
                     throw std::invalid_argument("command_invalid: 缺少必填控制点: " + std::string(required.view()));
                 }
             }
-            for (const auto& point : config->get<"points">()) {
+            for (const auto& point : config.get<"points">()) {
                 if (topicNames.contains(point.get<"name">().view()) && !ids.contains(point.get<"id">().view())) {
                     throw std::invalid_argument("command_invalid: 缺少 Topic 属性: " + std::string(point.get<"name">().view()));
                 }

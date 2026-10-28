@@ -18,7 +18,7 @@
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 #include <ruvia/web/controller.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/streaming.h>
 
 #include "service/common/http.h"
@@ -186,7 +186,7 @@ class LiveSubscription final {
         if (ready_ && !pending_.empty()) {
             co_return LiveWait::Changed;
         }
-        const auto result = co_await wake_.second.receive_for(timeout, context_.get_stop_token());
+        const auto result = co_await wake_.second.receive_for(timeout, context_.stop_token());
         if (failure_) {
             std::rethrow_exception(failure_);
         }
@@ -305,15 +305,15 @@ template <typename Serve>
 ruvia::task<void> withLiveSubscription(ruvia::context& context, std::vector<std::string> topics, Serve serve) {
     LiveSubscription subscription(context, std::move(topics));
     ruvia::task_scope reader(context.worker(), { .resource_ = context.pool() });
-    reader.spawn(subscription.read(ruvia::combine_stop_tokens(reader.get_stop_token(), context.get_stop_token())));
+    reader.spawn(subscription.read(ruvia::combine_stop_tokens(reader.get_stop_token(), context.stop_token())));
     std::exception_ptr failure;
     try {
-        while (!subscription.ready() && !context.get_stop_token().stop_requested()) {
+        while (!subscription.ready() && !context.stop_token().stop_requested()) {
             if (co_await subscription.wait(std::chrono::seconds(15)) == LiveWait::Stopped) {
                 break;
             }
         }
-        if (subscription.ready() && !context.get_stop_token().stop_requested()) {
+        if (subscription.ready() && !context.stop_token().stop_requested()) {
             co_await serve(subscription);
         }
     } catch (...) {
@@ -359,7 +359,7 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
     if (context.req().header("Accept").value_or("").find("text/event-stream") == std::string_view::npos) {
         service::common::fail(10002, "此接口需要 text/event-stream", 406);
     }
-    if (const auto* user = context.try_request_state<AuthenticatedUserSnapshot>()) {
+    if (const auto* user = &context.request_state<AuthenticatedUserSnapshot>(); user->query != nullptr) {
         channels.push_back({ "user", {}, user->query, {} });
     }
     std::vector<std::string> topics{ std::string(service::message::live::topic::kAuth) };
@@ -403,7 +403,7 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
         bool initial = true;
         bool refresh = true;
         bool recoveryPending = false;
-        while (!stream.aborted() && !context.get_stop_token().stop_requested()) {
+        while (!stream.aborted() && !context.stop_token().stop_requested()) {
             auto changes = subscription.take();
             if (!subscription.ready()) {
                 refresh = true;

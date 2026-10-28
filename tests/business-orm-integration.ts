@@ -275,6 +275,50 @@ try {
     assert.equal(updatedLink.endpoint.port, linkPort);
     console.log('PASS link ORM create, list, update and numeric endpoint JSON');
 
+    // 链路业务约束通过真实 HTTP、ORM 与数据库验证，替代旧 SQL 字符串假对象。
+    const invalidLinks = [
+        [{"execution": "edge", "name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Client", "targets": []}}, 15002, "边缘连接参数请在设备表单中配置"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"targets": []}}, 15002, "链路模式不能为空"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "", "targets": []}}, 15002, "链路模式不能为空"],
+        [{"name": "n", "protocol": "Modbus", "status": "paused", "endpoint": {"mode": "TCP Client", "targets": []}}, 10001, "request validation failed"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Client"}}, 15002, "目标列表不能为空"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "UDP", "targets": []}}, 15003, "链路模式无效"],
+        [{"name": "n", "protocol": "HTTP", "endpoint": {"mode": "TCP Client", "targets": []}}, 10001, "request validation failed"],
+        [{"name": "n", "protocol": "SL651", "endpoint": {"mode": "TCP Client", "targets": [{"id": "a", "name": "a", "ip": "10.0.0.1", "port": 1}]}}, 15003, "SL651 只支持 TCP Server 模式"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Server", "ip": "10.0.0.1", "port": 502, "targets": []}}, 15003, "TCP Server 监听 IP 必须是 0.0.0.0"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Client", "targets": []}}, 15003, "TCP Client 至少需要一个目标地址"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Client", "targets": [{"id": "a", "name": "a", "ip": "10.0.0.1", "port": 1, "status": "paused"}]}}, 10001, "request validation failed"],
+        [{"name": "n", "protocol": "Modbus", "endpoint": {"mode": "TCP Client", "targets": [{"id": "a", "name": "a", "ip": "10.0.0.1", "port": 1}, {"id": "a", "name": "b", "ip": "10.0.0.2", "port": 1}]}}, 15004, "同一链路内目标 ID 不能重复"],
+    ] as const;
+    for (const [body, code, message] of invalidLinks) {
+        const result = await jsonRequest('POST', '/v1/link', { ...body, name: `${tag}-invalid` }, code === 15004 ? 409 : 400);
+        assert.equal(result.code, code, JSON.stringify({ body, result }));
+        assert.equal(result.message, message);
+    }
+    assert.equal(Number((await db`SELECT count(*) AS count FROM link WHERE name=${`${tag}-invalid`}`)[0].count), 0);
+    const duplicatePort = await jsonRequest('POST', '/v1/link', {
+        name: `${tag}-duplicate`, protocol: 'Modbus', endpoint: linkEndpoint, status: 'disabled',
+    }, 409);
+    assert.equal(duplicatePort.code, 15005);
+    const protocolChange = await jsonRequest('PUT', `/v1/link/${link}`, {
+        name: updatedLinkName, protocol: 'S7', endpoint: linkEndpoint, status: 'disabled',
+    }, 400);
+    assert.equal(protocolChange.code, 15006);
+    const escapedName = 'A "q" \\ \n\u0001';
+    const escapedLinkName = `${tag}-escaped-client`;
+    await jsonRequest('POST', '/v1/link', {
+        name: escapedLinkName, protocol: 'Modbus', status: 'disabled',
+        endpoint: { mode: 'TCP Client', targets: [{ id: 't1', name: escapedName, ip: '192.0.2.10', port: 502 }] },
+    });
+    const [escapedLink] = await db`SELECT id,endpoint,execution,created_by FROM link WHERE name=${escapedLinkName}`;
+    assert.equal(escapedLink.endpoint.targets[0].name, escapedName);
+    assert.equal(escapedLink.endpoint.targets[0].status, 'enabled');
+    assert.equal(escapedLink.execution, 'collector');
+    assert.equal(escapedLink.created_by, admin);
+    await closeSseDeletes('/v1/link', [escapedLink.id]);
+    console.log('PASS link validation, immutable protocol, listen address conflict and escaped endpoint persistence');
+
+
     const missingNodeId = crypto.randomUUID();
     for (const method of ['POST', 'PUT']) {
         const result = await jsonRequest(method, method === 'POST' ? '/v1/link' : `/v1/link/${link}`, {

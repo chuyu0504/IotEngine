@@ -5,121 +5,23 @@
 #include <string>
 
 #include <ruvia/web/db/db_entity.h>
-#include <ruvia/web/db/db_predicate.h>
+#include <ruvia/web/db/db_query.h>
 
 #include "service/features/configuration/configuration.entity.h"
 
 // features 层告警表的唯一映射；device 复用 service::configuration::persistence::DeviceEntity。
 namespace service::alert::persistence {
 
-RUVIA_DB_ENTITY(AlertEvaluationReceiptEntity, "alert_evaluation_receipt",
-    RUVIA_DB_COLUMN(message_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(AlertEvaluationReceiptEntity, "alert_evaluation_receipt", RUVIA_DB_COLUMN(message_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
-RUVIA_DB_ENTITY(AlertEventOutboxEntity, "alert_event_outbox",
-    RUVIA_DB_COLUMN(event_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(event_type, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .primary_key_ = true, .length_ = 64}),
-    RUVIA_DB_COLUMN(rule_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(device_code, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 255, .default_expression_ = ruvia::fixed_string{"''::character varying"}}),
-    RUVIA_DB_COLUMN(occurred_at_ms, std::int64_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::big_int}),
-    RUVIA_DB_COLUMN(data, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(AlertEventOutboxEntity, "alert_event_outbox", RUVIA_DB_COLUMN(event_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(event_type, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .primary_key_ = true, .length_ = 64 }), RUVIA_DB_COLUMN(rule_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(device_code, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 255, .default_expression_ = ruvia::fixed_string{ "''::character varying" } }), RUVIA_DB_COLUMN(occurred_at_ms, std::int64_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::big_int }), RUVIA_DB_COLUMN(data, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
-RUVIA_DB_ENTITY(AlertInputStateEntity, "alert_input_state",
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(observed_at_ms, std::int64_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::big_int}),
-    RUVIA_DB_COLUMN(message_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(data, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb}),
-    RUVIA_DB_COLUMN(previous_data, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb}))
+RUVIA_DB_ENTITY(AlertInputStateEntity, "alert_input_state", RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(observed_at_ms, std::int64_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::big_int }), RUVIA_DB_COLUMN(message_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(data, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb }), RUVIA_DB_COLUMN(previous_data, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb }))
 
-RUVIA_DB_ENTITY(AlertRuleEntity, "alert_rule",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(name, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 128}),
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(severity, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20}),
-    RUVIA_DB_COLUMN(conditions, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb}),
-    RUVIA_DB_COLUMN(logic, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 8, .default_expression_ = ruvia::fixed_string{"'and'::character varying"}}),
-    RUVIA_DB_COLUMN(silence_duration, std::int32_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"300"}}),
-    RUVIA_DB_COLUMN(recovery_condition, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{"'reverse'::character varying"}}),
-    RUVIA_DB_COLUMN(recovery_wait_seconds, std::int32_t,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{"60"}}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{"status_enum"}, .default_expression_ = ruvia::fixed_string{"'enabled'::status_enum"}}),
-    RUVIA_DB_COLUMN(remark, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 500}),
-    RUVIA_DB_COLUMN(created_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}))
+RUVIA_DB_ENTITY(AlertRuleEntity, "alert_rule", RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(name, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 128 }), RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(severity, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 20 }), RUVIA_DB_COLUMN(conditions, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb }), RUVIA_DB_COLUMN(logic, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 8, .default_expression_ = ruvia::fixed_string{ "'and'::character varying" } }), RUVIA_DB_COLUMN(silence_duration, std::int32_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{ "300" } }), RUVIA_DB_COLUMN(recovery_condition, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{ "'reverse'::character varying" } }), RUVIA_DB_COLUMN(recovery_wait_seconds, std::int32_t, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::integer, .default_expression_ = ruvia::fixed_string{ "60" } }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text, .enum_name_ = ruvia::fixed_string{ "status_enum" }, .default_expression_ = ruvia::fixed_string{ "'enabled'::status_enum" } }), RUVIA_DB_COLUMN(remark, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 500 }), RUVIA_DB_COLUMN(created_by, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(deleted_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }))
 
-RUVIA_DB_ENTITY(AlertRuleStateEntity, "alert_rule_state",
-    RUVIA_DB_COLUMN(rule_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(matched, bool,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"false"}}),
-    RUVIA_DB_COLUMN(recovery_started_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(last_evaluated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(AlertRuleStateEntity, "alert_rule_state", RUVIA_DB_COLUMN(rule_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(matched, bool, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{ "false" } }), RUVIA_DB_COLUMN(recovery_started_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(last_evaluated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
-RUVIA_DB_ENTITY(OpenAlertRecordEntity, "open_alert_record",
-    RUVIA_DB_COLUMN(id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true}),
-    RUVIA_DB_COLUMN(rule_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(device_id, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid}),
-    RUVIA_DB_COLUMN(severity, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20}),
-    RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 20}),
-    RUVIA_DB_COLUMN(message, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::text}),
-    RUVIA_DB_COLUMN(detail, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
-    RUVIA_DB_COLUMN(triggered_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz}),
-    RUVIA_DB_COLUMN(resolved_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}),
-    RUVIA_DB_COLUMN(acknowledged_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true}),
-    RUVIA_DB_COLUMN(acknowledged_by, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::uuid, .nullable_ = true}),
-    RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(OpenAlertRecordEntity, "open_alert_record", RUVIA_DB_COLUMN(id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }), RUVIA_DB_COLUMN(rule_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }), RUVIA_DB_COLUMN(severity, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 20 }), RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 20 }), RUVIA_DB_COLUMN(message, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::text }), RUVIA_DB_COLUMN(detail, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{ "'{}'::jsonb" } }), RUVIA_DB_COLUMN(triggered_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz }), RUVIA_DB_COLUMN(resolved_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(created_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }), RUVIA_DB_COLUMN(acknowledged_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .nullable_ = true }), RUVIA_DB_COLUMN(acknowledged_by, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .nullable_ = true }), RUVIA_DB_COLUMN(updated_at, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{ "now()" } }))
 
 } // namespace service::alert::persistence

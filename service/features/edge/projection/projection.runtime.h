@@ -505,7 +505,7 @@ class ProjectionRuntime final {
         }
     }
 
-    void scheduleDerivedExpiry(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed, std::string config, std::optional<std::int64_t> deadline) {
+    void scheduleDerivedExpiry(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed, service::configuration::DerivedConfiguration config, std::optional<std::int64_t> deadline) {
         const auto id = parsed.deviceId;
         if (const auto old = derivedExpiry_.find(id); old != derivedExpiry_.end()) {
             old->second.stop->request_stop();
@@ -519,7 +519,7 @@ class ProjectionRuntime final {
         leaseScope_->spawn(expireDerived(context, std::move(parsed), std::move(config), *deadline, stop));
     }
 
-    ruvia::task<void> expireDerived(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed, std::string config, std::int64_t deadline, std::shared_ptr<ruvia::stop_source> stop) {
+    ruvia::task<void> expireDerived(ruvia::web_worker_context& context, service::message::ParsedDeviceMessage parsed, service::configuration::DerivedConfiguration config, std::int64_t deadline, std::shared_ptr<ruvia::stop_source> stop) {
         const auto token = ruvia::combine_stop_tokens(
             ruvia::combine_stop_tokens(stop_, leaseScope_->get_stop_token()),
             stop->token()

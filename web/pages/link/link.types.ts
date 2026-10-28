@@ -1,5 +1,5 @@
 import type { PageParams } from '@/types/pagination';
-import type { ProtocolType } from '../protocol/protocol.types';
+import type { AcquisitionProtocolType as ProtocolType } from '../protocol/protocol.types';
 
 type LinkMode = 'TCP Server' | 'TCP Client';
 type LinkStatus = 'enabled' | 'disabled';

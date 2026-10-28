@@ -28,7 +28,7 @@ class VpnController final {
     RUVIA_GET("/desktop/devices", desktopDevices, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">);
     RUVIA_POST("/desktop/peers", desktopCreatePeer, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">, service::middleware::ValidationErrorCodeMiddleware<21001>, ruvia::json_body<VpnDesktopPeerBody>);
     RUVIA_PATCH("/desktop/peers/:id", desktopUpdatePeer, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<VpnIdParams>, service::middleware::ValidationErrorCodeMiddleware<21001>, ruvia::json_body<VpnDesktopSelectionBody>);
-    RUVIA_GET_SSE("/desktop/peers/:id/config/events", desktopPeerConfigEvents, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<VpnIdParams>);
+    RUVIA_GET("/desktop/peers/:id/config/events", desktopPeerConfigEvents, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<VpnIdParams>);
     RUVIA_GET("/desktop/peers/:id/config", desktopPeerConfig, service::middleware::PermissionMiddleware<"iot:vpn:query">, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<VpnIdParams>);
     RUVIA_DELETE("/desktop/peers/:id", desktopDeletePeer, service::middleware::PermissionMiddleware<"iot:vpn:enroll">, ruvia::path_model<VpnIdParams>);
     RUVIA_ROUTES_END
@@ -123,9 +123,9 @@ class VpnController final {
         std::exception_ptr leaseFailure;
         auto renewLease = [&]() -> ruvia::task<void> {
             try {
-                while (!leases.stop_requested() && !c.get_stop_token().stop_requested()) {
+                while (!leases.stop_requested() && !c.stop_token().stop_requested()) {
                     (void)co_await ruvia::sleep_for(c.worker(), std::chrono::seconds(15), leases.get_stop_token());
-                    if (leases.stop_requested() || c.get_stop_token().stop_requested()) {
+                    if (leases.stop_requested() || c.stop_token().stop_requested()) {
                         break;
                     }
                     service::middleware::RequestContext renewal(c, userId, leases.get_stop_token());
@@ -154,7 +154,7 @@ class VpnController final {
             scope->networkId = co_await VpnService::instance().desktopPeerNetworkId(request, peerId);
             scope->edgeNodeIds.clear();
             const auto parsed = ruvia::json_value::parse(config);
-            if (const auto ids = parsed ? parsed->get<ruvia::array<ruvia::string>>("edgeNodeIds") : std::nullopt) {
+            if (const auto ids = parsed.get<ruvia::array<ruvia::string>>("edgeNodeIds")) {
                 for (const auto& id : *ids) {
                     scope->edgeNodeIds.emplace(id.view());
                 }

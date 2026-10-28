@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -10,7 +12,8 @@
 #include <vector>
 
 #include <ruvia/web/model.h>
-#include <ruvia/web/model_object.h>
+
+#include "service/common/uuid.h"
 
 namespace service::common {
 
@@ -36,33 +39,17 @@ struct DerivedPoint {
     bool visible{ true };
 };
 
-RUVIA_MODEL(DerivedPointInputConfig,
-    RUVIA_OPTIONAL_FIELD(alias, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(pointId, ruvia::string));
+RUVIA_MODEL(DerivedPointInputConfig, RUVIA_OPTIONAL_FIELD(alias, ruvia::string), RUVIA_OPTIONAL_FIELD(pointId, ruvia::string));
 
-RUVIA_MODEL(DerivedPointUnitRuleConfig,
-    RUVIA_OPTIONAL_FIELD(condition, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::string));
+RUVIA_MODEL(DerivedPointUnitRuleConfig, RUVIA_OPTIONAL_FIELD(condition, ruvia::string), RUVIA_OPTIONAL_FIELD(unit, ruvia::string));
 
-RUVIA_MODEL(DerivedPointConfig,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(unitMode, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(unitRules, ruvia::array<DerivedPointUnitRuleConfig>),
-    RUVIA_OPTIONAL_FIELD(sourceAlias, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(kind, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(expression, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(valueType, ruvia::string),
-    RUVIA_OPTIONAL_FIELD(inputs, ruvia::array<DerivedPointInputConfig>),
-    RUVIA_OPTIONAL_FIELD(windowSeconds, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::int64),
-    RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value));
+RUVIA_MODEL(DerivedPointConfig, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD(unit, ruvia::string), RUVIA_OPTIONAL_FIELD(unitMode, ruvia::string), RUVIA_OPTIONAL_FIELD(unitRules, ruvia::array<DerivedPointUnitRuleConfig>), RUVIA_OPTIONAL_FIELD(sourceAlias, ruvia::string), RUVIA_OPTIONAL_FIELD(kind, ruvia::string), RUVIA_OPTIONAL_FIELD(expression, ruvia::string), RUVIA_OPTIONAL_FIELD(valueType, ruvia::string), RUVIA_OPTIONAL_FIELD(inputs, ruvia::array<DerivedPointInputConfig>), RUVIA_OPTIONAL_FIELD(windowSeconds, ruvia::int64), RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::int64), RUVIA_OPTIONAL_FIELD(visible, ruvia::bool_value));
 
 enum class DerivedPointErrorCode {
     malformed,          // derivedPoints 不是派生点对象数组
     duplicateId,        // 派生点标识重复
     physicalIdConflict, // 派生点标识与采集点重复
+    sourceIdConflict,   // 不同采集来源的点位标识重复
     unknownInput,       // 输入既不是派生点也不是采集点（含非上行点）
     cycle,              // 派生点之间存在循环依赖
 };
@@ -93,6 +80,9 @@ class DerivedPointError final : public std::runtime_error {
                 break;
             case DerivedPointErrorCode::physicalIdConflict:
                 reason = "derived point id conflicts with a collected point";
+                break;
+            case DerivedPointErrorCode::sourceIdConflict:
+                reason = "collected point id is shared by multiple sources";
                 break;
             case DerivedPointErrorCode::unknownInput:
                 reason = "derived point input is not an uplink point";
@@ -153,40 +143,78 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::json_value& co
     return points;
 }
 
-// 按依赖拓扑排序：输入为派生点时先计算其依赖；采集点取 registers/areas/points 及 SL651 上行要素。
-inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& config) {
+// 按依赖拓扑排序；设备级配置可引用其他来源的采集点和派生点。
+inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::json_value& config, std::span<const ruvia::json_value> sources = {}) {
     auto points = decodeDerivedPoints(config);
     std::set<std::string> physical;
-    const auto collect = [&](const ruvia::json_value& array) {
-        (void)array.for_each_element([&](const ruvia::json_value& value) {
-            if (const auto id = value.get<ruvia::string>("id")) {
-                physical.emplace(id->view());
-            }
-            return true;
-        });
-    };
-    for (auto name : { "registers", "areas", "points" }) {
-        if (auto array = config.get<ruvia::json_value>(name)) {
-            collect(*array);
-        }
-    }
-    if (const auto functions = config.get<ruvia::json_value>("funcs")) {
-        (void)functions->for_each_element([&](const ruvia::json_value& function) {
-            const auto direction = function.get<ruvia::string>("dir");
-            if (direction && direction->view() == "UP") {
-                if (auto elements = function.get<ruvia::json_value>("elements")) {
-                    collect(*elements);
+    // UUID 的文本大小写在数据库中表示同一个点；跨来源时必须按同一身份检查冲突。
+    const auto canonicalId = [](std::string_view id) {
+        std::string result(id);
+        if (isUuid(id)) {
+            for (auto& character : result) {
+                if (character >= 'A' && character <= 'F') {
+                    character = static_cast<char>(character - 'A' + 'a');
                 }
             }
-            return true;
-        });
+        }
+        return result;
+    };
+    std::set<std::string> canonicalPhysical;
+    const auto collectSource = [&](const ruvia::json_value& source) {
+        std::set<std::string> sourceIds;
+        std::set<std::string> canonicalSourceIds;
+        const auto collect = [&](const ruvia::json_value& array) {
+            (void)array.for_each_element([&](const ruvia::json_value& value) {
+                if (const auto id = value.get<ruvia::string>("id")) {
+                    sourceIds.emplace(id->view());
+                }
+                return true;
+            });
+        };
+        for (auto name : { "registers", "areas", "points" }) {
+            if (auto array = source.get<ruvia::json_value>(name)) {
+                collect(*array);
+            }
+        }
+        if (const auto functions = source.get<ruvia::json_value>("funcs")) {
+            (void)functions->for_each_element([&](const ruvia::json_value& function) {
+                const auto direction = function.get<ruvia::string>("dir");
+                if (direction && direction->view() == "UP") {
+                    if (auto elements = function.get<ruvia::json_value>("elements")) {
+                        collect(*elements);
+                    }
+                }
+                return true;
+            });
+        }
+        for (const auto& id : sourceIds) {
+            if (!physical.insert(id).second) {
+                throw DerivedPointError(DerivedPointErrorCode::sourceIdConflict, id);
+            }
+            canonicalSourceIds.insert(canonicalId(id));
+        }
+        if (!sources.empty()) {
+            for (const auto& id : canonicalSourceIds) {
+                if (!canonicalPhysical.insert(id).second) {
+                    throw DerivedPointError(DerivedPointErrorCode::sourceIdConflict, id);
+                }
+            }
+        }
+    };
+    collectSource(config);
+    for (const auto& source : sources) {
+        collectSource(source);
+        auto sourcePoints = decodeDerivedPoints(source);
+        points.insert(points.end(), std::make_move_iterator(sourcePoints.begin()), std::make_move_iterator(sourcePoints.end()));
     }
     std::map<std::string, std::size_t> index;
+    std::set<std::string> canonicalDerived;
     for (std::size_t i = 0; i < points.size(); ++i) {
-        if (physical.contains(points[i].id)) {
+        const auto canonical = canonicalId(points[i].id);
+        if (physical.contains(points[i].id) || (!sources.empty() && canonicalPhysical.contains(canonical))) {
             throw DerivedPointError(DerivedPointErrorCode::physicalIdConflict, points[i].id);
         }
-        if (!index.emplace(points[i].id, i).second) {
+        if (!index.emplace(points[i].id, i).second || (!sources.empty() && !canonicalDerived.insert(canonical).second)) {
             throw DerivedPointError(DerivedPointErrorCode::duplicateId, points[i].id);
         }
     }

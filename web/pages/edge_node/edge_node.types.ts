@@ -97,6 +97,15 @@ export namespace Edge {
         log: LogStatus;
     }
     export interface Capability {
+        externalIo?: {
+            supported: boolean;
+            channels: {
+                channel: string;
+                kind: 'DI' | 'DO' | 'AI';
+                available: boolean;
+                controllable: boolean;
+            }[];
+        };
         serialDebug?: boolean;
         networkConfig: boolean;
         networkConfigVersion: number;

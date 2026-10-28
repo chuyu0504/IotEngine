@@ -1,3 +1,4 @@
+#include <array>
 #include <cstdio>
 #include <functional>
 #include <iostream>
@@ -29,8 +30,7 @@ std::optional<std::string> outcome(const std::function<void()>& action) {
         action();
     } catch (const ruvia::http_error& error) {
         const auto info = error.info();
-        require(info.code() == "16004" && info.status().value() == 400,
-            "rejection used the wrong error code: " + std::string(info.code()) + " " + std::string(info.message()));
+        require(info.code() == "16004" && info.status().value() == 400, "rejection used the wrong error code: " + std::string(info.code()) + " " + std::string(info.message()));
         return std::string(info.message());
     }
     return std::nullopt;
@@ -38,10 +38,10 @@ std::optional<std::string> outcome(const std::function<void()>& action) {
 
 // 返回的 json_value 借用 text，调用方须保证原文存活；临时字符串直接拒绝。
 ruvia::json_value json(std::string&&) = delete;
+
 ruvia::json_value json(const std::string& text) {
     auto value = ruvia::json_value::parse(std::string_view(text));
-    require(value.has_value(), "test JSON did not parse: " + text);
-    return std::move(*value);
+    return value;
 }
 
 struct ConfigCase {
@@ -54,10 +54,10 @@ struct ConfigCase {
 void check(const ConfigCase& item) {
     const auto text = std::string(item.config);
     const auto config = json(text);
-    const auto actual = outcome([&] { ProtocolService::validateConfig(item.protocol, config, item.complete); });
-    require(actual == item.expected,
-        item.protocol + (item.complete ? " create " : " patch ") + text + " => " + actual.value_or("accepted") +
-            ", expected " + item.expected.value_or("accepted"));
+    const auto actual = outcome([&] {
+        ProtocolService::validateConfig(item.protocol, config, item.complete);
+    });
+    require(actual == item.expected, item.protocol + (item.complete ? " create " : " patch ") + text + " => " + actual.value_or("accepted") + ", expected " + item.expected.value_or("accepted"));
 }
 
 std::string replaced(std::string text, std::string_view from, std::string_view to) {
@@ -160,7 +160,9 @@ void testModbus() {
     const auto config = [](std::string_view extra, std::string_view entry) {
         return R"({"storagePolicy":"report","byteOrder":"BIG_ENDIAN",)" + std::string(extra) + R"("registers":[)" + std::string(entry) + "]}";
     };
-    const auto withRegister = [&](std::string_view from, std::string_view to) { return config("", replaced(registerJson, from, to)); };
+    const auto withRegister = [&](std::string_view from, std::string_view to) {
+        return config("", replaced(registerJson, from, to));
+    };
     const std::string registerInvalid = "Modbus 寄存器配置无效";
     for (const auto& item : std::vector<ConfigCase>{
              { "Modbus", config("", registerJson), true, kAccepted },
@@ -215,7 +217,9 @@ void testS7() {
     const auto config = [](std::string_view extra, std::string_view entry) {
         return R"({"storagePolicy":"report","plcModel":"S7-1200",)" + std::string(extra) + R"("connection":{},"areas":[)" + std::string(entry) + "]}";
     };
-    const auto withArea = [&](std::string_view from, std::string_view to) { return config("", replaced(area, from, to)); };
+    const auto withArea = [&](std::string_view from, std::string_view to) {
+        return config("", replaced(area, from, to));
+    };
     const std::string invalid = "S7 配置无效";
     const std::string areaInvalid = "S7 寄存器配置无效";
     for (const auto& item : std::vector<ConfigCase>{
@@ -266,7 +270,9 @@ std::string uuidPoint(std::string_view fields) {
 
 void testMc() {
     const std::string point = uuidPoint(R"("dataType":"INT16","area":"D","address":0)");
-    const auto withPoint = [&](std::string_view from, std::string_view to) { return industrial("{}", replaced(point, from, to)); };
+    const auto withPoint = [&](std::string_view from, std::string_view to) {
+        return industrial("{}", replaced(point, from, to));
+    };
     const std::string invalid = "协议连接、点位或采集周期配置无效";
     const std::string connection = "MC/SLMP 连接参数无效";
     const std::string pointInvalid = "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证";
@@ -392,7 +398,9 @@ void testMqtt() {
     const auto config = [&](std::string_view extra, std::string_view entry) {
         return R"({"storagePolicy":"report","topic":"devices",)" + std::string(extra) + R"("points":[)" + std::string(entry) + "]}";
     };
-    const auto withPoint = [&](std::string_view from, std::string_view to) { return config("", replaced(point, from, to)); };
+    const auto withPoint = [&](std::string_view from, std::string_view to) {
+        return config("", replaced(point, from, to));
+    };
     const auto withTopic = [&](std::string_view topic) {
         return R"({"storagePolicy":"report","topic":")" + std::string(topic) + R"(","points":[)" + point + "]}";
     };
@@ -443,13 +451,17 @@ std::string derivedPoint(std::string_view id = kDerived, std::string_view inputI
 
 void checkDerived(const std::string& config, const std::optional<std::string>& expected) {
     const auto value = json(config);
-    const auto actual = outcome([&] { (void)ProtocolService::validateDerivedPoints(value); });
+    const auto actual = outcome([&] {
+        (void)ProtocolService::validateDerivedPoints(value);
+    });
     require(actual == expected, "derived " + config + " => " + actual.value_or("accepted") + ", expected " + expected.value_or("accepted"));
 }
 
 void testDerivedPoints() {
     const auto point = derivedPoint();
-    const auto with = [&](std::string_view from, std::string_view to) { return derivedConfig(replaced(point, from, to)); };
+    const auto with = [&](std::string_view from, std::string_view to) {
+        return derivedConfig(replaced(point, from, to));
+    };
     const std::string window = R"({"id":")" + std::string(kDerived) + R"(","name":"avg","kind":"average","valueType":"number","windowSeconds":60,"sourceAlias":"p","inputs":[{"alias":"p","pointId":")" + std::string(kPhysical) + R"("}]})";
     std::string tooMany, inputs;
     for (int index = 0; index < 33; ++index) {
@@ -468,6 +480,20 @@ void testDerivedPoints() {
         const std::string emptyText = R"({"registers":[]})";
         const auto empty = json(emptyText);
         require(!ProtocolService::validateDerivedPoints(empty), "configuration without derived points must not require edge support");
+    }
+    {
+        const std::string deviceText = R"({"derivedPoints":[)" + derivedPoint(kDerived, kPoint) + "]}";
+        const std::string protocolText = R"({"registers":[{"id":")" + std::string(kPhysical) + R"("}]})";
+        const std::string ioText = R"({"points":[{"id":")" + std::string(kPoint) + R"("}]})";
+        const auto device = json(deviceText);
+        const std::array sources{ json(protocolText), json(ioText) };
+        require(ProtocolService::validateDerivedPoints(device, sources), "device-level derived point must resolve an IO point from another source");
+        const std::string conflictingText = R"({"points":[{"id":")" + std::string(kPhysical) + R"("}]})";
+        const std::array conflictingSources{ json(protocolText), json(conflictingText) };
+        const auto conflict = outcome([&] {
+            (void)ProtocolService::validateDerivedPoints(device, conflictingSources);
+        });
+        require(conflict == "不同采集来源的点位标识不能重复", "duplicate source ids must be rejected by protocol validation");
     }
     const std::vector<std::pair<std::string, std::optional<std::string>>> cases{
         { derivedConfig(window), kAccepted },
@@ -529,12 +555,31 @@ void testDerivedPoints() {
     }
 }
 
+void testExternalIo() {
+    const std::string point = R"({"id":"00000000-0000-4000-8000-000000000001","name":"输入","kind":"DI","channel":"di0"})";
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[]})", true, kAccepted });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[)" + point + "]}", true, kAccepted });
+    check({ "ExternalIO", R"({"storagePolicy":"report"})", true, "外部 IO 点位配置无效" });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[)" + point + "," + point + "]}", true, "外部 IO 点位标识重复" });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"not-a-uuid","name":"输入","kind":"DI","channel":"di0"}]})", true, "外部 IO 点位标识无效" });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"输入","kind":"AO","channel":"di0"}]})", true, "外部 IO 点位类型无效" });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"uA"}]})", true, kAccepted });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"mA"}]})", true, "外部 IO 原始单位无效，请使用派生值换算" });
+}
+
 // ---- 请求模型 ----
 void testUpdateBodyTypes() {
-    require(!ruvia::from_json<service::protocol::UpdateProtocolBody>(R"({"name":5})"), "non-string update name must not parse");
-    require(!ruvia::from_json<service::protocol::UpdateProtocolBody>(R"({"protocol":1})"), "non-string update protocol must not parse");
+    for (const auto text : { R"({"name":5})", R"({"protocol":1})" }) {
+        bool rejected = false;
+        try {
+            (void)ruvia::from_json<service::protocol::UpdateProtocolBody>(text);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "non-string update fields must not parse");
+    }
     const auto cleared = ruvia::from_json<service::protocol::UpdateProtocolBody>(R"({"remark":null,"config":{"readInterval":5}})");
-    require(cleared && cleared->is_null<"remark">() && cleared->get<"config">(), "update remark must be nullable and config kept as raw JSON");
+    require(cleared.is_null<"remark">() && cleared.get<"config">(), "update remark must be nullable and config kept as raw JSON");
 }
 
 } // namespace
@@ -550,6 +595,7 @@ int main() {
         testDlt645();
         testMqtt();
         testDerivedPoints();
+        testExternalIo();
         testUpdateBodyTypes();
         std::cout << "protocol service tests passed\n";
         return 0;

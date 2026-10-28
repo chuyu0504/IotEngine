@@ -23,9 +23,9 @@
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 #include <ruvia/web/db/db_query.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/db/db_repository.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/redis/redis_handle.h>
-#include <ruvia/web/redis/redis_subscription.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
@@ -409,14 +409,9 @@ class GbProjectionService {
         }
         std::vector<std::string> arguments{ "ZADD", std::string(control_protocol::stream::kOwnerDeadlines), "NX" };
         ruvia::db_query deviceQuery(context.pool());
-        deviceQuery.select(deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()))
-            .from(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-            .where(deviceQuery.binary(
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()),
-                ruvia::db_binary_operator::equal,
-                deviceQuery.value(true)
-            ));
-        for (const auto& row : co_await context.db().query(deviceQuery)) {
+        auto deviceQueryBuilder = context.db().template repository<service::gb28181::persistence::Gb28181DeviceEntity>().query_builder();
+        deviceQueryBuilder.select({ { "id", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()) } }).where(deviceQuery.binary(deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()), ruvia::db_binary_operator::equal, deviceQuery.value(true)));
+        for (const auto& row : co_await deviceQueryBuilder.get_raw_many()) {
             const auto id = row[0].value().value_or(std::string_view{});
             if (!id.empty()) {
                 arguments.emplace_back("0");
@@ -424,15 +419,9 @@ class GbProjectionService {
             }
         }
         ruvia::db_query streamQuery(context.pool());
-        streamQuery
-            .select({ streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()), streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()), streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()) })
-            .from(service::gb28181::persistence::Gb28181StreamEntity::table_name())
-            .where(streamQuery.binary(
-                streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()),
-                ruvia::db_binary_operator::equal,
-                streamQuery.value(true)
-            ));
-        for (const auto& row : co_await context.db().query(streamQuery)) {
+        auto streamQueryBuilder = context.db().template repository<service::gb28181::persistence::Gb28181StreamEntity>().query_builder();
+        streamQueryBuilder.select({ { "app", streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()) }, { "stream", streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()) }, { "schema", streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()) } }).where(streamQuery.binary(streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()), ruvia::db_binary_operator::equal, streamQuery.value(true)));
+        for (const auto& row : co_await streamQueryBuilder.get_raw_many()) {
             const auto app = std::string(row[0].value().value_or(std::string_view{}));
             const auto stream = std::string(row[1].value().value_or(std::string_view{}));
             const auto schema = std::string(row[2].value().value_or(std::string_view{}));
@@ -512,15 +501,9 @@ class GbProjectionService {
             auto transaction = co_await context.db().begin_transaction();
             co_await transaction.advisory_lock(id, service::message::lock::kGb28181OwnerSeed);
             ruvia::db_query currentQuery(context.pool());
-            currentQuery.select(currentQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()))
-                .from(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-                .where(currentQuery.binary(
-                    currentQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()),
-                    ruvia::db_binary_operator::equal,
-                    currentQuery.value(id)
-                ))
-                .lock({ .mode_ = ruvia::db_row_lock::update });
-            const auto current = co_await transaction.query(currentQuery);
+            auto currentQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181DeviceEntity>().query_builder();
+            currentQueryBuilder.select({ { "online", currentQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()) } }).where(currentQuery.binary(currentQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, currentQuery.value(id))).set_lock({ .mode_ = ruvia::db_row_lock::update });
+            const auto current = co_await currentQueryBuilder.get_raw_many();
             if (current.empty() ||
                 !boolean(current.front()[0].value().value_or(std::string_view{}))) {
                 co_await transaction.commit();
@@ -531,20 +514,9 @@ class GbProjectionService {
                 co_return;
             }
             ruvia::db_query updateQuery(context.pool());
-            updateQuery.update(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-                .set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">(), updateQuery.value(false))
-                .set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"updated_at">(), updateQuery.call("now"))
-                .where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(id)
-                ))
-                .and_where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(true)
-                ));
-            (void)co_await transaction.execute(updateQuery);
+            auto updateQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181DeviceEntity>().update_builder();
+            updateQueryBuilder.set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">(), updateQuery.value(false)).set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"updated_at">(), updateQuery.call("now")).where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, updateQuery.value(id))).and_where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()), ruvia::db_binary_operator::equal, updateQuery.value(true)));
+            (void)co_await updateQueryBuilder.execute();
             co_await transaction.commit();
         }
     }
@@ -559,25 +531,9 @@ class GbProjectionService {
             auto transaction = co_await context.db().begin_transaction();
             co_await transaction.advisory_lock(identity, service::message::lock::kGb28181OwnerSeed);
             ruvia::db_query currentQuery(context.pool());
-            currentQuery.select(currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()))
-                .from(service::gb28181::persistence::Gb28181StreamEntity::table_name())
-                .where(currentQuery.binary(
-                    currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()),
-                    ruvia::db_binary_operator::equal,
-                    currentQuery.value(app)
-                ))
-                .and_where(currentQuery.binary(
-                    currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()),
-                    ruvia::db_binary_operator::equal,
-                    currentQuery.value(stream)
-                ))
-                .and_where(currentQuery.binary(
-                    currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()),
-                    ruvia::db_binary_operator::equal,
-                    currentQuery.value(schema)
-                ))
-                .lock({ .mode_ = ruvia::db_row_lock::update });
-            const auto current = co_await transaction.query(currentQuery);
+            auto currentQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181StreamEntity>().query_builder();
+            currentQueryBuilder.select({ { "online", currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()) } }).where(currentQuery.binary(currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()), ruvia::db_binary_operator::equal, currentQuery.value(app))).and_where(currentQuery.binary(currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()), ruvia::db_binary_operator::equal, currentQuery.value(stream))).and_where(currentQuery.binary(currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()), ruvia::db_binary_operator::equal, currentQuery.value(schema))).set_lock({ .mode_ = ruvia::db_row_lock::update });
+            const auto current = co_await currentQueryBuilder.get_raw_many();
             if (current.empty() ||
                 !boolean(current.front()[0].value().value_or(std::string_view{}))) {
                 co_await transaction.commit();
@@ -588,37 +544,15 @@ class GbProjectionService {
                 co_return;
             }
             ruvia::db_query updateQuery(context.pool());
-            updateQuery.update(service::gb28181::persistence::Gb28181StreamEntity::table_name())
-                .set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">(), updateQuery.value(false))
-                .set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">(), updateQuery.value(0))
-                .set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"updated_at">(), updateQuery.call("now"))
-                .where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(app)
-                ))
-                .and_where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(stream)
-                ))
-                .and_where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(schema)
-                ))
-                .and_where(updateQuery.binary(
-                    updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()),
-                    ruvia::db_binary_operator::equal,
-                    updateQuery.value(true)
-                ));
-            (void)co_await transaction.execute(updateQuery);
+            auto updateQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181StreamEntity>().update_builder();
+            updateQueryBuilder.set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">(), updateQuery.value(false)).set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">(), updateQuery.value(0)).set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"updated_at">(), updateQuery.call("now")).where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()), ruvia::db_binary_operator::equal, updateQuery.value(app))).and_where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()), ruvia::db_binary_operator::equal, updateQuery.value(stream))).and_where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()), ruvia::db_binary_operator::equal, updateQuery.value(schema))).and_where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()), ruvia::db_binary_operator::equal, updateQuery.value(true)));
+            (void)co_await updateQueryBuilder.execute();
             co_await transaction.commit();
         }
     }
 
   protected:
-    static ruvia::db_query::expr_type projectionCursor(
+    static ruvia::db_expression projectionCursor(
         ruvia::db_query& query,
         std::string_view streamMessageId
     ) {
@@ -662,20 +596,9 @@ class GbProjectionService {
         ProjectionSnapshot snapshot;
         std::unordered_map<std::string, std::size_t> deviceIndexes;
         ruvia::db_query deviceQuery(context.pool());
-        deviceQuery
-            .select({
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()),
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"name">()),
-                deviceQuery.coalesce({ deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"custom_name">()), deviceQuery.value(std::string_view{}) }),
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"manufacturer">()),
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"remote_address">()),
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"registration_source">()),
-                deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()),
-                deviceQuery.call("iot_utc_timestamp", { deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"last_seen_at">()) }),
-            })
-            .from(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-            .order_by(deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()));
-        const auto devices = co_await context.db().query(deviceQuery);
+        auto deviceQueryBuilder = context.db().template repository<service::gb28181::persistence::Gb28181DeviceEntity>().query_builder();
+        deviceQueryBuilder.select({ { "id", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()) }, { "name", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"name">()) }, { "custom_name", deviceQuery.coalesce({ deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"custom_name">()), deviceQuery.value(std::string_view{}) }) }, { "manufacturer", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"manufacturer">()) }, { "remote_address", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"remote_address">()) }, { "registration_source", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"registration_source">()) }, { "online", deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()) }, { "last_seen_at", deviceQuery.call("iot_utc_timestamp", { deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"last_seen_at">()) }) } }).order_by(deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()));
+        const auto devices = co_await deviceQueryBuilder.get_raw_many();
         snapshot.devices.reserve(devices.size());
         for (const auto& row : devices) {
             device::Device device;
@@ -700,12 +623,9 @@ class GbProjectionService {
         }
 
         ruvia::db_query channelQuery(context.pool());
-        channelQuery
-            .select({ channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"name">()), channelQuery.coalesce({ channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()), channelQuery.value(std::string_view{}) }), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"manufacturer">()), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"online">()), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"ptz_type">()) })
-            .from(service::gb28181::persistence::Gb28181ChannelEntity::table_name())
-            .order_by(channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()))
-            .add_order_by(channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()));
-        const auto channels = co_await context.db().query(channelQuery);
+        auto channelQueryBuilder = context.db().template repository<service::gb28181::persistence::Gb28181ChannelEntity>().query_builder();
+        channelQueryBuilder.select({ { "device_id", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()) }, { "id", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()) }, { "name", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"name">()) }, { "custom_name", channelQuery.coalesce({ channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()), channelQuery.value(std::string_view{}) }) }, { "manufacturer", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"manufacturer">()) }, { "online", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"online">()) }, { "ptz_type", channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"ptz_type">()) } }).order_by(channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">())).add_order_by(channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()));
+        const auto channels = co_await channelQueryBuilder.get_raw_many();
         for (const auto& row : channels) {
             const auto device = deviceIndexes.find(
                 std::string(row[0].value().value_or(std::string_view{}))
@@ -730,13 +650,13 @@ class GbProjectionService {
     static ruvia::task<void> syncChannels(Transaction& transaction, const device::Device& device, bool updateCustomNames = true) {
         if (device.channels.empty()) {
             ruvia::db_query removal;
-            removal.delete_from(service::gb28181::persistence::Gb28181ChannelEntity::table_name())
-                .where(removal.binary(
-                    removal.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()),
-                    ruvia::db_binary_operator::equal,
-                    removal.value(device.id)
-                ));
-            (void)co_await transaction.execute(removal);
+            auto removalBuilder = transaction.template repository<service::gb28181::persistence::Gb28181ChannelEntity>().delete_builder();
+            removalBuilder.where(removal.binary(
+                removal.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()),
+                ruvia::db_binary_operator::equal,
+                removal.value(device.id)
+            ));
+            (void)co_await removalBuilder.execute();
             co_return;
         }
 
@@ -783,15 +703,12 @@ class GbProjectionService {
             .insert_into(service::gb28181::persistence::Gb28181ChannelEntity::table_name(), { "device_id", "id", "name", "custom_name", "manufacturer", "online", "ptz_type", "updated_at" })
             .insert_from(insertSource);
         ruvia::db_conflict_options conflict;
-        conflict.columns_ = { "device_id", "id" };
-        conflict.update_ = {
-            { "name", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"name">()) },
-            { "custom_name", updateCustomNames ? upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()) : upsert.coalesce({ upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()), upsert.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">(), "gb28181_channel") }) },
-            { "manufacturer", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"manufacturer">()) },
-            { "online", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"online">()) },
-            { "ptz_type", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"ptz_type">()) },
-            { "updated_at", upsert.call("now") },
-        };
+
+        const std::array<ruvia::borrowed_text, 2> sourceColumns1{ { "device_id", "id" } };
+        conflict.columns_ = sourceColumns1;
+
+        const std::array<ruvia::db_assignment, 6> conflictUpdates2{ { { "name", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"name">()) }, { "custom_name", updateCustomNames ? upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()) : upsert.coalesce({ upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">()), upsert.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">(), "gb28181_channel") }) }, { "manufacturer", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"manufacturer">()) }, { "online", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"online">()) }, { "ptz_type", upsert.excluded(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"ptz_type">()) }, { "updated_at", upsert.call("now") } } };
+        conflict.update_ = conflictUpdates2;
         conflict.update_where_ = upsert.binary(
             upsert.tuple({
                 upsert.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"name">(), "gb28181_channel"),
@@ -817,21 +734,11 @@ class GbProjectionService {
             ));
 
         ruvia::db_query removal;
-        removal
-            .with("raw_incoming", rawIncoming, { .columns_ = { "ordinal", "id", "name", "custom_name", "manufacturer", "online", "ptz_type" } })
-            .with("incoming", incoming)
-            .with("upserted", upsert)
-            .delete_from(service::gb28181::persistence::Gb28181ChannelEntity::table_name(), "stored")
-            .where(removal.binary(
-                removal.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">(), "stored"),
-                ruvia::db_binary_operator::equal,
-                removal.value(device.id)
-            ))
-            .and_where(removal.unary(
-                ruvia::db_unary_operator::not_value,
-                removal.exists(incomingIds)
-            ));
-        (void)co_await transaction.execute(removal);
+        auto removalBuilder = transaction.template repository<service::gb28181::persistence::Gb28181ChannelEntity>().delete_builder("stored");
+
+        const std::array<ruvia::borrowed_text, 7> sourceColumns3{ { "ordinal", "id", "name", "custom_name", "manufacturer", "online", "ptz_type" } };
+        removalBuilder.with("raw_incoming", rawIncoming, { .columns_ = sourceColumns3 }).with("incoming", incoming).with("upserted", upsert).where(removal.binary(removal.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">(), "stored"), ruvia::db_binary_operator::equal, removal.value(device.id))).and_where(removal.unary(ruvia::db_unary_operator::not_value, removal.exists(incomingIds)));
+        (void)co_await removalBuilder.execute();
     }
 
     // Projection events carry a complete Collector-side snapshot, but a new
@@ -850,20 +757,9 @@ class GbProjectionService {
         auto transaction = co_await context.db().begin_transaction();
         co_await transaction.advisory_lock(device.id, service::message::lock::kGb28181OwnerSeed);
         ruvia::db_query cursorQuery(context.pool());
-        cursorQuery
-            .select(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"projection_cursor">()),
-                ruvia::db_binary_operator::greater_equal,
-                projectionCursor(cursorQuery, streamMessageId)
-            ))
-            .from(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-            .where(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()),
-                ruvia::db_binary_operator::equal,
-                cursorQuery.value(device.id)
-            ))
-            .lock({ .mode_ = ruvia::db_row_lock::update });
-        const auto cursor = co_await transaction.query(cursorQuery);
+        auto cursorQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181DeviceEntity>().query_builder();
+        cursorQueryBuilder.select({ { "projection_cursor", cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"projection_cursor">()), ruvia::db_binary_operator::greater_equal, projectionCursor(cursorQuery, streamMessageId)) } }).where(cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, cursorQuery.value(device.id))).set_lock({ .mode_ = ruvia::db_row_lock::update });
+        const auto cursor = co_await cursorQueryBuilder.get_raw_many();
         if (!cursor.empty() &&
             boolean(cursor.front()[0].value().value_or(std::string_view{}))) {
             co_await transaction.commit();
@@ -883,51 +779,55 @@ class GbProjectionService {
         }
         const auto lastSeen = service::common::utcTimestamp(device.lastSeen);
 
-        const auto buildDeviceUpsert = [&]() {
-            ruvia::db_query query(context.pool());
-            query
-                .insert_into(
-                    service::gb28181::persistence::Gb28181DeviceEntity::table_name(),
-                    { "id", "name", "custom_name", "manufacturer", "remote_address", "registration_source", "online", "last_seen_at", "updated_at" }
-                )
-                .values({
-                    query.value(device.id),
-                    query.value(device.name),
-                    query.null_if(query.value(device.customName), query.value(std::string_view{})),
-                    query.value(device.manufacturer),
-                    query.value(device.remoteAddress),
-                    query.value(device.registrationSource),
-                    query.value(device.online),
-                    query.cast(query.value(lastSeen), ruvia::db_data_type::timestamp_tz),
-                    query.call("now"),
-                });
-
-            ruvia::db_conflict_options conflict;
-            conflict.columns_ = { "id" };
-            const auto excluded = [&query](auto column) {
-                return ruvia::db_assignment{ std::string(column), query.excluded(column) };
-            };
-            if (changes.contains(device::DeviceChange::Catalog)) {
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"name">()));
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"manufacturer">()));
-            }
-            if (changes.contains(device::DeviceChange::Status) || changes.contains(device::DeviceChange::Catalog)) {
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"remote_address">()));
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"registration_source">()));
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()));
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"last_seen_at">()));
-            }
-            if (changes.contains(device::DeviceChange::DeviceName)) {
-                conflict.update_.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"custom_name">()));
-            }
-            conflict.update_.push_back({ "updated_at", query.call("now") });
-            query.on_conflict(conflict);
-            return query;
-        };
-
         if (changes.contains(device::DeviceChange::Status) || changes.contains(device::DeviceChange::Catalog) ||
             changes.contains(device::DeviceChange::DeviceName)) {
-            (void)co_await transaction.execute(buildDeviceUpsert());
+            ruvia::db_query query(context.pool());
+            using Entity = persistence::Gb28181DeviceEntity;
+            const std::array<std::string_view, 9> columns{ Entity::column_name<"id">(), Entity::column_name<"name">(), Entity::column_name<"custom_name">(), Entity::column_name<"manufacturer">(), Entity::column_name<"remote_address">(), Entity::column_name<"registration_source">(), Entity::column_name<"online">(), Entity::column_name<"last_seen_at">(), Entity::column_name<"updated_at">() };
+            ruvia::db_values_builder values(columns);
+            values.row({
+                query.value(device.id),
+                query.value(device.name),
+                query.null_if(query.value(device.customName), query.value(std::string_view{})),
+                query.value(device.manufacturer),
+                query.value(device.remoteAddress),
+                query.value(device.registrationSource),
+                query.value(device.online),
+                query.cast(query.value(lastSeen), ruvia::db_data_type::timestamp_tz),
+                query.call("now"),
+            });
+
+            ruvia::db_upsert_options conflict;
+            std::vector<ruvia::db_assignment> updates;
+
+            const std::array<ruvia::borrowed_text, 1> sourceColumns4{ Entity::column_name<"id">() };
+            conflict.conflict_paths_ = sourceColumns4;
+            const auto excluded = [&query](auto column) {
+                return ruvia::db_assignment{ column, query.excluded(column) };
+            };
+            if (changes.contains(device::DeviceChange::Catalog)) {
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"name">()));
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"manufacturer">()));
+            }
+            if (changes.contains(device::DeviceChange::Status) || changes.contains(device::DeviceChange::Catalog)) {
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"remote_address">()));
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"registration_source">()));
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"online">()));
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"last_seen_at">()));
+            }
+            if (changes.contains(device::DeviceChange::DeviceName)) {
+                updates.push_back(excluded(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"custom_name">()));
+            }
+            updates.push_back({ "updated_at", query.call("now") });
+            std::vector<ruvia::borrowed_text> updateColumns;
+            for (const auto& update : updates) {
+                updateColumns.emplace_back(update.column_);
+            }
+            conflict.update_columns_ = updateColumns;
+            conflict.update_expressions_ = updates;
+            auto builder = transaction.template repository<Entity>().insert_builder();
+            builder.insert_from(columns, values.query()).on_conflict(conflict);
+            (void)co_await builder.execute();
         }
         if (changes.contains(device::DeviceChange::Catalog)) {
             co_await syncChannels(transaction, device, false);
@@ -938,32 +838,15 @@ class GbProjectionService {
                     continue;
                 }
                 ruvia::db_query updateQuery(context.pool());
-                updateQuery.update(service::gb28181::persistence::Gb28181ChannelEntity::table_name())
-                    .set(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">(), updateQuery.value(channel.customName))
-                    .set(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"updated_at">(), updateQuery.call("now"))
-                    .where(updateQuery.binary(
-                        updateQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()),
-                        ruvia::db_binary_operator::equal,
-                        updateQuery.value(device.id)
-                    ))
-                    .and_where(updateQuery.binary(
-                        updateQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()),
-                        ruvia::db_binary_operator::equal,
-                        updateQuery.value(channel.id)
-                    ));
-                (void)co_await transaction.execute(updateQuery);
+                auto updateQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181ChannelEntity>().update_builder();
+                updateQueryBuilder.set(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"custom_name">(), updateQuery.value(channel.customName)).set(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"updated_at">(), updateQuery.call("now")).where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"device_id">()), ruvia::db_binary_operator::equal, updateQuery.value(device.id))).and_where(updateQuery.binary(updateQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::column_name<"id">()), ruvia::db_binary_operator::equal, updateQuery.value(channel.id)));
+                (void)co_await updateQueryBuilder.execute();
             }
         }
         ruvia::db_query cursorUpdate(context.pool());
-        cursorUpdate
-            .update(service::gb28181::persistence::Gb28181DeviceEntity::table_name())
-            .set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"projection_cursor">(), projectionCursor(cursorUpdate, streamMessageId))
-            .where(cursorUpdate.binary(
-                cursorUpdate.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()),
-                ruvia::db_binary_operator::equal,
-                cursorUpdate.value(device.id)
-            ));
-        (void)co_await transaction.execute(cursorUpdate);
+        auto cursorUpdateBuilder = transaction.template repository<service::gb28181::persistence::Gb28181DeviceEntity>().update_builder();
+        cursorUpdateBuilder.set(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"projection_cursor">(), projectionCursor(cursorUpdate, streamMessageId)).where(cursorUpdate.binary(cursorUpdate.column(service::gb28181::persistence::Gb28181DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::equal, cursorUpdate.value(device.id)));
+        (void)co_await cursorUpdateBuilder.execute();
         co_await transaction.commit();
         co_return true;
     }
@@ -980,30 +863,9 @@ class GbProjectionService {
         auto transaction = co_await context.db().begin_transaction();
         co_await transaction.advisory_lock(identity, service::message::lock::kGb28181OwnerSeed);
         ruvia::db_query cursorQuery(context.pool());
-        cursorQuery
-            .select(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"projection_cursor">()),
-                ruvia::db_binary_operator::greater_equal,
-                projectionCursor(cursorQuery, streamMessageId)
-            ))
-            .from(service::gb28181::persistence::Gb28181StreamEntity::table_name())
-            .where(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()),
-                ruvia::db_binary_operator::equal,
-                cursorQuery.value(stream.app)
-            ))
-            .and_where(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()),
-                ruvia::db_binary_operator::equal,
-                cursorQuery.value(stream.stream)
-            ))
-            .and_where(cursorQuery.binary(
-                cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()),
-                ruvia::db_binary_operator::equal,
-                cursorQuery.value(stream.schema)
-            ))
-            .lock({ .mode_ = ruvia::db_row_lock::update });
-        const auto cursor = co_await transaction.query(cursorQuery);
+        auto cursorQueryBuilder = transaction.template repository<service::gb28181::persistence::Gb28181StreamEntity>().query_builder();
+        cursorQueryBuilder.select({ { "projection_cursor", cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"projection_cursor">()), ruvia::db_binary_operator::greater_equal, projectionCursor(cursorQuery, streamMessageId)) } }).where(cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()), ruvia::db_binary_operator::equal, cursorQuery.value(stream.app))).and_where(cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()), ruvia::db_binary_operator::equal, cursorQuery.value(stream.stream))).and_where(cursorQuery.binary(cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()), ruvia::db_binary_operator::equal, cursorQuery.value(stream.schema))).set_lock({ .mode_ = ruvia::db_row_lock::update });
+        const auto cursor = co_await cursorQueryBuilder.get_raw_many();
         if (!cursor.empty() &&
             boolean(cursor.front()[0].value().value_or(std::string_view{}))) {
             co_await transaction.commit();
@@ -1022,43 +884,31 @@ class GbProjectionService {
             co_return false;
         }
         ruvia::db_query upsert(context.pool());
-        upsert
-            .insert_into(service::gb28181::persistence::Gb28181StreamEntity::table_name(), { "app", "stream", "schema", "online", "reader_count", "updated_at" })
-            .values({ upsert.value(stream.app), upsert.value(stream.stream), upsert.value(stream.schema), upsert.value(stream.online), upsert.value(stream.readerCount), upsert.call("now") });
-        ruvia::db_conflict_options conflict;
-        conflict.columns_ = { "app", "stream", "schema" };
-        conflict.update_ = {
-            { "online", upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()) },
-            { "reader_count", upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">()) },
-            { "updated_at", upsert.call("now") },
-        };
+        const std::array<std::string_view, 6> upsertColumns{ "app", "stream", "schema", "online", "reader_count", "updated_at" };
+        auto upsertBuilder = transaction.template repository<service::gb28181::persistence::Gb28181StreamEntity>().insert_builder();
+        ruvia::db_values_builder upsertValues(upsertColumns);
+        upsertValues.row({ upsert.value(stream.app), upsert.value(stream.stream), upsert.value(stream.schema), upsert.value(stream.online), upsert.value(stream.readerCount), upsert.call("now") });
+        ruvia::db_upsert_options conflict;
+
+        const std::array<ruvia::borrowed_text, 3> conflictColumns5{ { "app", "stream", "schema" } };
+        conflict.conflict_paths_ = conflictColumns5;
+
+        const std::array<ruvia::db_assignment, 3> conflictUpdates6{ { { "online", upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()) }, { "reader_count", upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">()) }, { "updated_at", upsert.call("now") } } };
+        conflict.update_expressions_ = conflictUpdates6;
+
+        const std::array<ruvia::borrowed_text, 3> updatedColumns7{ { "online", "reader_count", "updated_at" } };
+        conflict.update_columns_ = updatedColumns7;
         conflict.update_where_ = upsert.binary(
             upsert.tuple({ upsert.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">(), "gb28181_stream"), upsert.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">(), "gb28181_stream") }),
             ruvia::db_binary_operator::is_distinct_from,
             upsert.tuple({ upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"online">()), upsert.excluded(service::gb28181::persistence::Gb28181StreamEntity::column_name<"reader_count">()) })
         );
-        upsert.on_conflict(conflict);
-        (void)co_await transaction.execute(upsert);
+        upsertBuilder.insert_from(upsertColumns, upsertValues.query()).on_conflict(conflict);
+        (void)co_await upsertBuilder.execute();
         ruvia::db_query cursorUpdate(context.pool());
-        cursorUpdate
-            .update(service::gb28181::persistence::Gb28181StreamEntity::table_name())
-            .set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"projection_cursor">(), projectionCursor(cursorUpdate, streamMessageId))
-            .where(cursorUpdate.binary(
-                cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()),
-                ruvia::db_binary_operator::equal,
-                cursorUpdate.value(stream.app)
-            ))
-            .and_where(cursorUpdate.binary(
-                cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()),
-                ruvia::db_binary_operator::equal,
-                cursorUpdate.value(stream.stream)
-            ))
-            .and_where(cursorUpdate.binary(
-                cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()),
-                ruvia::db_binary_operator::equal,
-                cursorUpdate.value(stream.schema)
-            ));
-        (void)co_await transaction.execute(cursorUpdate);
+        auto cursorUpdateBuilder = transaction.template repository<service::gb28181::persistence::Gb28181StreamEntity>().update_builder();
+        cursorUpdateBuilder.set(service::gb28181::persistence::Gb28181StreamEntity::column_name<"projection_cursor">(), projectionCursor(cursorUpdate, streamMessageId)).where(cursorUpdate.binary(cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"app">()), ruvia::db_binary_operator::equal, cursorUpdate.value(stream.app))).and_where(cursorUpdate.binary(cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"stream">()), ruvia::db_binary_operator::equal, cursorUpdate.value(stream.stream))).and_where(cursorUpdate.binary(cursorUpdate.column(service::gb28181::persistence::Gb28181StreamEntity::column_name<"schema">()), ruvia::db_binary_operator::equal, cursorUpdate.value(stream.schema)));
+        (void)co_await cursorUpdateBuilder.execute();
         co_await transaction.commit();
         co_return true;
     }
@@ -1340,11 +1190,13 @@ class GbControlService final {
         }
 
         std::pmr::monotonic_buffer_resource resource;
-        auto request = ruvia::from_json<service::message::gb28181::ControlRequest>(
-            payload.empty() ? std::string_view{ "{}" } : payload,
-            { .resource_ = &resource }
-        );
-        if (!request) {
+        std::optional<service::message::gb28181::ControlRequest> request;
+        try {
+            request = ruvia::from_json<service::message::gb28181::ControlRequest>(
+                payload.empty() ? std::string_view{ "{}" } : payload,
+                { .resource_ = &resource }
+            );
+        } catch (const std::invalid_argument&) {
             service::common::fail(10001, "GB28181 RPC 请求体无效", 400);
         }
         const auto& input = *request;
@@ -1366,7 +1218,7 @@ class GbControlService final {
                 ruvia::model_options{ .resource_ = context.pool() }
             );
             for (const auto& device : snapshot.devices) {
-                items.emplace(control_protocol::deviceJson(context.pool(), device));
+                items.emplace_back(control_protocol::deviceJson(context.pool(), device));
             }
             service::message::gb28181::DeviceList result(ruvia::model_options{ .resource_ = context.pool() });
             result.set<"items">(std::move(items));
@@ -1461,9 +1313,9 @@ class GbControlService final {
             .set<"enabled">(state.enabled)
             .set<"started">(state.mediaStarted)
             .set<"error">(std::string_view{})
-            .set<"mediaPorts">(ports ? std::move(*ports) : control_protocol::mediaPortsJson(context.pool(), media::MediaServerPorts{}))
+            .set<"mediaPorts">(std::move(ports))
             .set<"mediaCapabilities">(
-                capabilities ? std::move(*capabilities) : control_protocol::mediaCapabilitiesJson(context.pool(), media::MediaCapabilities{})
+                std::move(capabilities)
             );
         return result;
     }
@@ -1593,7 +1445,7 @@ class GbControlService final {
         };
         ruvia::stop_source expired;
         ruvia::task_scope timer(context.worker());
-        const auto timerStop = ruvia::combine_stop_tokens(stop, context.get_stop_token());
+        const auto timerStop = ruvia::combine_stop_tokens(stop, context.stop_token());
         const auto operationStop = ruvia::combine_stop_tokens(timerStop, expired.token());
         timer.spawn(cancelControlAtDeadline(context.worker(), deadline, expired, ruvia::combine_stop_tokens(timerStop, timer.get_stop_token())));
         std::optional<ControlResultRecord> response;

@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include <ruvia/web/controller.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"

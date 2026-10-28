@@ -35,7 +35,7 @@ class WorkerReady final {
 template <typename Run>
 ruvia::task<void> runWorkerTask(ruvia::web_worker_context& context, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> done, ruvia::stop_token stop, Run run) {
     WorkerReady signal(*ready);
-    const auto combined = ruvia::combine_stop_tokens(context.get_stop_token(), stop);
+    const auto combined = ruvia::combine_stop_tokens(context.stop_token(), stop);
     try {
         co_await run(context, signal, combined);
         if (!signal.signalled()) {

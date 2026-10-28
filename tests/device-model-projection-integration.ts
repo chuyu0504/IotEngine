@@ -702,6 +702,20 @@ try {
     assert.deepEqual(repeated.items, initial.items, 'same-revision rebuild was nondeterministic');
     assert.deepEqual(repeated.commit, initial.commit);
 
+    const preservedFixture = fixtures.find(fixture => fixture.protocol === 'Modbus' && !fixture.explicit)!;
+    // The rejecting Collector endpoint legitimately reports disconnects during
+    // reconfiguration. Use the idle Edge device to isolate metadata preservation
+    // from transport state changes while keeping the same projection assertions.
+    assert(preservedFixture.edge);
+    const preservedDevice = preservedFixture.edge;
+    const preservedPoint = preservedFixture.validConfig.registers.at(-1)!;
+    const latestKey = `iot:v2:device:${preservedDevice}:latest`;
+    const runtimeKey = `iot:v2:runtime:device:${preservedDevice}`;
+    const onlineDeadline = String(Date.now() + 600000);
+    const observation = Date.now();
+    await redis.send('HSET', [latestKey, preservedPoint.id, JSON.stringify({ id: preservedPoint.id,
+        name: 'old metadata', value: '27.5', observedAt: observation, source: 'edge' })]);
+    await redis.send('HSET', [runtimeKey, 'online_until_ms', onlineDeadline, 'state', 'online']);
     stream = await openSnapshotSubscription('/v1/device/events', token);
     await receiveRealtime(() => fixtures.every(fixture => realtime.has(fixture.collector)));
     for (const fixture of fixtures.filter(fixture => !fixture.explicit)) {
@@ -723,7 +737,25 @@ try {
     }
     await receiveRealtime(() => fixtures.filter(fixture => !fixture.explicit).every(fixture =>
         realtime.get(fixture.collector)?.elements?.some((point: Json) => point.name === `${fixture.protocol} changed first`)));
+    await until(async () => {
+        const value = await redis.send('HGET', [latestKey, preservedPoint.id]);
+        return value !== null && JSON.parse(String(value)).name === 'Modbus changed first';
+    }, 'model edit did not refresh preserved live point metadata');
+    const preserved = JSON.parse(String(await redis.send('HGET', [latestKey, preservedPoint.id])));
+    assert.equal(preserved.value, '27.5');
+    assert.equal(preserved.observedAt, observation);
+    assert.equal(preserved.source, 'edge');
+    assert.equal((await hash(runtimeKey)).state, 'online');
+    assert.equal((await hash(runtimeKey)).online_until_ms, onlineDeadline);
+    assert.equal(Number(await redis.send('ZSCORE', ['iot:v2:schedule:device:online-deadlines', preservedDevice])), Number(onlineDeadline));
     await stream.close(); stream = undefined;
+    await redis.send('HSET', [runtimeKey, 'online_until_ms', 'not-a-number']);
+    await http('PUT', `/v1/protocol/configs/${preservedFixture.model}`, { remark: 'repair corrupted online deadline' });
+    await until(async () => {
+        const runtime = await hash(runtimeKey);
+        return !runtime.online_until_ms && runtime.state === 'offline';
+    }, 'model projection retained an invalid online deadline');
+    assert.equal(await redis.send('ZSCORE', ['iot:v2:schedule:device:online-deadlines', preservedDevice]), null);
     const changedVersion = await waitForCollector(() => true);
     assert.notEqual(changedVersion, initialVersion);
     await assertCollector(changedVersion, () => true); await assertHttp();

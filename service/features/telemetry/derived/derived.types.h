@@ -15,6 +15,7 @@ struct DeviceCalculation final {
     std::string stateKey;
     Calculation calculation;
     std::set<std::string, std::less<>> inputIds;
+    bool multipleSources = false;
 };
 
 } // namespace service::telemetry::derived

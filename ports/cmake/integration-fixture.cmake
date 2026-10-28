@@ -184,12 +184,23 @@ function(fixture_start index out)
     file(REMOVE "${executable}" "${directory}/engine.out" "${directory}/engine.err")
     file(CREATE_LINK "${ENGINE}" "${executable}" COPY_ON_ERROR)
     if(CMAKE_HOST_WIN32)
+        # ShellExecute starts a hidden command wrapper without inheriting
+        # CTest's capture pipes. The wrapper redirects the engine's own logs.
+        set(pid_file "${directory}/launch.pid")
+        set(error_file "${directory}/launch.err")
         execute_process(
-            COMMAND powershell -NoProfile -NonInteractive -Command
-                "(Start-Process -FilePath '${executable}' -WorkingDirectory '${directory}' -WindowStyle Hidden -PassThru -RedirectStandardOutput '${directory}/engine.out' -RedirectStandardError '${directory}/engine.err').Id"
-            OUTPUT_VARIABLE pid
-            OUTPUT_STRIP_TRAILING_WHITESPACE
+            COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/integration_fixture_start.ps1"
+                -Executable "${executable}"
+                -WorkingDirectory "${directory}"
+                -StandardOutput "${directory}/engine.out"
+                -StandardError "${directory}/engine.err"
+            INPUT_FILE NUL
+            OUTPUT_FILE "${pid_file}"
+            ERROR_FILE "${error_file}"
             RESULT_VARIABLE result)
+        file(READ "${pid_file}" pid)
+        string(STRIP "${pid}" pid)
     else()
         execute_process(
             COMMAND sh -c "\"$0\" >\"$1\" 2>\"$2\" </dev/null & echo $!"
@@ -200,7 +211,11 @@ function(fixture_start index out)
             RESULT_VARIABLE result)
     endif()
     if(NOT result EQUAL 0 OR NOT pid MATCHES "^[0-9]+$")
-        message(FATAL_ERROR "Could not start ${executable} for ${FIXTURE}: ${pid}")
+        set(launch_error "")
+        if(CMAKE_HOST_WIN32 AND EXISTS "${error_file}")
+            file(READ "${error_file}" launch_error)
+        endif()
+        message(FATAL_ERROR "Could not start ${executable} for ${FIXTURE}: ${pid}\n${launch_error}")
     endif()
     set(${out} ${pid} PARENT_SCOPE)
 endfunction()

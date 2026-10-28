@@ -97,7 +97,8 @@ ctest --test-dir build --build-config Release --output-on-failure
 Linux 默认使用 `x64-linux-musl` triplet 与 `ports/cmake/llvm.cmake` 链式加载工具链，Windows 默认使用与静态 MSVC 运行库匹配的 `x64-windows-static` triplet。
 首次配置会编译全部 vcpkg 端口，耗时较长；设置 `VCPKG_DEFAULT_BINARY_CACHE` 可复用二进制包，启用 `ccache` 可缓存编译单元。
 
-当前固定 Ruvia `3cc97b8b063ff466a98164438ceedf41ad3c3864`，直接使用经 SHA-256 校验的上游归档（`7b7ac4fd62a734faf5f20d52b643c30daa42dc5f9ebe4e9ec383469336281238`），不应用本地 Ruvia 补丁。
+当前固定 Ruvia `79059651e0c264a711a9e789d41c8e12b2e003c0`，直接使用经 SHA-256 校验的上游归档（`f48499115a819d7d8ef9363f8ba867be53d92805abfddf35826e1549fd5d930c`），包含上游 MSVC 协程编译修复，不应用本地 Ruvia 补丁。
+Ruvia 使用 Asio 的公开运行时配置与 disposition API；根清单通过 `ports/vcpkg/asio` 固定官方稳定版 `1.38.2` 及归档 SHA-512，Linux 和 Windows 共用。
 该版本包含 HTTP/1 消息边界、请求与响应生命周期、取消注册、Redis 重连、SQL 表限定符作用域及公开 Redis Pub/Sub API 的修复和支持。每条实时连接和在途 RPC 独占订阅连接，不占普通命令池；订阅确认后才读取快照或发出请求，Pub/Sub 只通知，可靠结果仍从持久化结果键及序号/ACK 恢复。
 业务变更分别发布到 `iot:db:<database>:live:topic:<topic>`；共享频道由实际 `REDIS_DATABASE` 显式派生，DB0 也不使用裸频道。同一数据库的多进程共享通知，不同数据库互不唤醒；Redis `SELECT` 本身不隔离 Pub/Sub。SSE 的权限缓存只属于当前连接，收到 auth 或丢失订阅时失效，恢复后只发送一次完整快照。终端 protocol 5+ 的输出一直保留到浏览器序号 ACK，取消订阅后仍能重放未确认帧；旧固件无序号协议保持原交互方式。开发代理在 SSE 上游 close/error 时结束下游，浏览器仅在真实断流时有界退避重连，不再使用 45 秒空闲 watchdog。
 重订阅全部确认后、连接重新就绪前再次清空权限缓存并推进 generation，防止断线期间在途查询重填旧授权。第三方 SSE 在首帧提交前的认证、范围及查询错误保留原 HTTP 状态和 JSON；已建连后的撤权才使用 SSE error 并结束连接。终端刷新令牌不会丢弃待渲染帧：已接收但未渲染的重放不提前 ACK，已渲染帧重放会重发可确认序号，原 ACK 或重放 ACK 首次成功只推进一次渲染队列。
@@ -109,6 +110,13 @@ RPC 请求流只属于接入请求的 Service Worker。启动时先通过共享 
 查询参数按需建立多值索引，PostgreSQL 参数复用已拥有的文本存储，Redis 类型化结果接管返回值存储；这些内部调整无需改动现有业务调用。
 上游已移除 `db_expressions`；系统管理、协议与链路模块统一使用公开 `db_query` 持有表达式，
 保持参数绑定、事务及表达式存储生命周期，不增加兼容包装。
+业务读写使用实体 `repository().query_builder()` 与写 Builder，查询表达式由公开 `db_query` 持有。
+`db_find_options`、CTE、窗口与 upsert 的 span 参数使用具名容器，覆盖 Builder 导入前的借用期；
+upsert 显式限制冲突更新列，保持原有状态和操作员自定义字段。
+读写 Builder 的 `query()` 视图用于组合事务 CTE，调用方先保存具名 Builder；导入时克隆 AST 与参数，覆盖源 Builder 的借用期。
+复杂查询使用公开的无实体 LATERAL JOIN 与 `db_selection::star()`，保持关联条件、星号展开和原子提交边界。
+Ruvia 的 mimalloc 依赖由根 `vcpkg.json` 统一提供；仅在非 Windows 平台启用 `override`，并由 Ruvia 整体链接静态库以替换进程的 `malloc` / `new`。Windows 保持原有分配器集成。
+
 SQL 实体列名统一通过实体公开的 `consteval column_name<"字段">()` 读取，Redis 实体列名通过 `column_index<...>()`、`columns_type` 和列描述的 `name.view()` 读取；事务级 advisory lock 统一使用公开 `db_transaction::advisory_lock` 与 `try_advisory_lock` API。
 直接使用 `column_name<...>()` 可保持实体编译期字段归属校验，同时避免在协程表达式中构造临时字段引用对象触发 MSVC 内部编译错误。
 `file_response_options::path_` 借用文件路径，调用 `c.file()` 时须传入仍然存活的具名路径；

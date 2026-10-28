@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { derivedPointSchema } from '@/utils/derived_point';
 import { formatJson } from '@/utils/json';
 import type { DeviceParameterDefinition } from '../protocol/protocol.types';
 
@@ -122,6 +123,13 @@ export function deviceParameterValues(
 }
 export const saveDeviceSchema = z
     .object({
+        externalIo: z
+            .object({
+                protocolConfigId: z.uuid(),
+                derivedPoints: z.array(derivedPointSchema).max(32).optional(),
+            })
+            .nullable()
+            .optional(),
         name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),
         device_code: z
             .string()

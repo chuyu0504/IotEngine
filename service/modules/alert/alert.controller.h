@@ -21,7 +21,7 @@ class AlertController final {
     RUVIA_ROUTES_BEGIN(AlertController)
     RUVIA_GET("/rules", rules, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
     RUVIA_GET("/templates", templates, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
-    RUVIA_GET_SSE("/events", alertEvents, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
+    RUVIA_GET("/events", alertEvents, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::query_model<AlertListQuery>);
     RUVIA_GET("/templates/:id", templateDetail, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::path_model<AlertIdParams>);
     RUVIA_POST("/rules", createRule, service::middleware::PermissionMiddleware<"iot:alert:add">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::json_body<RuleInput>);
     RUVIA_DELETE("/rules", batchRemoveRules, service::middleware::PermissionMiddleware<"iot:alert:delete">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::json_body<AlertBatchBody>);

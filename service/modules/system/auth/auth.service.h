@@ -1,5 +1,5 @@
 #pragma once
-
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -65,17 +65,16 @@ class AuthTokenService final {
         const auto secret = requiredSecret(c.env(), secretName);
         ruvia::jwt_sign_options options;
         options.secret_ = secret;
-        options.issuer_.assign("iot-engine");
-        options.audience_.assign("iot-engine-web");
-        options.subject_.assign(payload.userId);
+        options.issuer_ = "iot-engine";
+        options.audience_ = "iot-engine-web";
+        options.subject_ = payload.userId;
         options.expires_in_ = duration(c.env().get(durationName).value_or(""), fallback);
-        options.claims_.emplace_back(
-            ruvia::jwt_claim_options{ .name_ = "user_id", .value_ = payload.userId }
-        );
-        options.claims_.emplace_back(
-            ruvia::jwt_claim_options{ .name_ = "username", .value_ = payload.username }
-        );
-        options.claims_.emplace_back(ruvia::jwt_claim_options{ .name_ = "token_type", .value_ = type });
+        const std::array<ruvia::jwt_claim_view, 3> claims{ {
+            { .name_ = "user_id", .value_ = payload.userId },
+            { .name_ = "username", .value_ = payload.username },
+            { .name_ = "token_type", .value_ = type },
+        } };
+        options.claims_ = claims;
         options.resource_ = c.pool();
         const auto token = ruvia::jwt_sign(options);
         return std::string(token.data(), token.size());
@@ -88,8 +87,8 @@ class AuthTokenService final {
             ruvia::jwt_verify_options options;
             options.token_ = token;
             options.secret_ = secret;
-            options.issuer_.assign("iot-engine");
-            options.audience_.assign("iot-engine-web");
+            options.issuer_ = "iot-engine";
+            options.audience_ = "iot-engine-web";
             options.leeway_ = std::chrono::seconds(15);
             options.resource_ = c.pool();
             const auto decoded = ruvia::jwt_verify(options);
@@ -234,7 +233,7 @@ class AuthService {
         ruvia::db_find_options options;
         options.where_ = service::user::entities::UserEntity::column<"username">() == username &&
             service::user::entities::UserEntity::column<"deleted_at">().is_null();
-        const auto user = co_await c.db().template get_repository<service::user::entities::UserEntity>().find_one(options);
+        const auto user = co_await c.db().template repository<service::user::entities::UserEntity>().find_one(options);
 
         if (!user || !service::utils::comparePassword(password, user->template get<"password_hash">())) {
             const int remaining = LoginRateLimiter::limit - co_await limiter_.failure(c, username);
@@ -270,7 +269,7 @@ class AuthService {
         }
         ruvia::db_find_options options;
         options.where_ = service::common::database::activeId<service::user::entities::UserEntity>(payload.userId);
-        const auto user = co_await c.db().template get_repository<service::user::entities::UserEntity>().find_one(options);
+        const auto user = co_await c.db().template repository<service::user::entities::UserEntity>().find_one(options);
         if (!user) {
             service::common::fail(11008, "用户不存在", 404);
         }
@@ -294,7 +293,7 @@ class AuthService {
     ruvia::task<AuthUserInfoDto> current(Context& c, std::string_view userId) {
         ruvia::db_find_options options;
         options.where_ = service::common::database::activeId<service::user::entities::UserEntity>(userId);
-        const auto user = co_await c.db().template get_repository<service::user::entities::UserEntity>().find_one(options);
+        const auto user = co_await c.db().template repository<service::user::entities::UserEntity>().find_one(options);
         if (!user) {
             service::common::fail(11008, "用户不存在", 404);
         }
@@ -309,7 +308,7 @@ class AuthService {
     static ruvia::db_query_builder<service::role::entities::RoleEntity, ruvia::db_handle>
     enabledRoles(Context& c, std::string_view userId) {
         ruvia::db_query expressions(c.pool());
-        auto query = c.db().template get_repository<service::role::entities::RoleEntity>().create_query_builder("r");
+        auto query = c.db().template repository<service::role::entities::RoleEntity>().query_builder("r");
         query.template join<service::user::entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(service::user::entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
             .where(expressions.binary(service::user::entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
             .and_where(service::role::entities::RoleEntity::column<"status">() == "enabled" && service::role::entities::RoleEntity::column<"deleted_at">().is_null());
@@ -337,9 +336,11 @@ class AuthService {
         ruvia::db_query expressions(c.pool());
         constexpr char kPermissionColumn[] = "permission";
         auto permissionQuery = enabledRoles(c, userId);
+        const std::array<ruvia::db_source_column, 1> sourceColumns1{ { { .name_ = kPermissionColumn } } };
         permissionQuery.select({ { kPermissionColumn, expressions.column(kPermissionColumn, "p") } })
             .distinct()
-            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", ruvia::db_expression{}, { .lateral_ = true, .columns_ = { { .name_ = kPermissionColumn } } })
+
+            .join_function(ruvia::db_join_type::cross, expressions.call("jsonb_array_elements_text", { service::role::entities::RoleEntity::column<"permissions">().expression(expressions, "r") }), "p", ruvia::db_expression{}, { .lateral_ = true, .columns_ = sourceColumns1 })
             .order_by(expressions.column(kPermissionColumn, "p"));
         const auto permissions = co_await permissionQuery.template get_many<service::role::entities::RolePermission>();
         auto& permissionItems = user.ensure<"permissions">();

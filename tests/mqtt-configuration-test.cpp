@@ -15,8 +15,7 @@ constexpr std::string_view kPoint = "00000000-0000-7000-8000-000000000001";
 service::protocol::MqttPreviewResult preview(std::string_view config, std::string_view topic, std::string_view payload, std::string_view code = "") {
     const auto raw = "{\"config\":" + std::string(config) + ",\"topic\":" + service::utils::jsonQuoted(topic) + ",\"payload\":" + service::utils::jsonQuoted(payload) + ",\"deviceCode\":" + service::utils::jsonQuoted(code) + ",\"timezone\":\"+08:00\"}";
     const auto body = ruvia::from_json<service::protocol::MqttPreviewBody>(raw);
-    require(body.has_value(), "preview body did not parse");
-    return service::protocol::ProtocolService::previewMqtt(*body);
+    return service::protocol::ProtocolService::previewMqtt(body);
 }
 
 std::string configuration(std::string_view options, std::string_view pointOptions, std::string_view field = "temperature", std::string_view type = "DOUBLE") {
@@ -92,16 +91,18 @@ void testTemplates() {
     const std::string report = " {\"code\":\"$deviceCode\",\"temperature\":\"$point:温度\",\"at\":\"$time\",\"constant\":42} ";
     const auto metadata = configuration("\"reportTemplate\":" + service::utils::jsonQuoted(report) + ",", "");
     const auto typed = ruvia::from_json<service::protocol::MqttConfig>(metadata);
-    require(typed && typed->get<"reportTemplate">() && typed->get<"reportTemplate">()->view() == report, "report template metadata was dropped or normalized");
-    const auto serializedText = ruvia::to_json(*typed);
+    require(typed.get<"reportTemplate">() && typed.get<"reportTemplate">()->view() == report, "report template metadata was dropped or normalized");
+    const auto serializedText = ruvia::to_json(typed);
     const auto serialized = ruvia::json_value::parse(serializedText);
-    const auto storedReport = serialized ? serialized->get<ruvia::string>("reportTemplate") : std::nullopt;
+    const auto storedReport = serialized.get<ruvia::string>("reportTemplate");
     require(storedReport && storedReport->view() == report, "preview serialization lost report template");
     const auto metadataResult = preview(metadata, "devices", R"({"temperature":8})", "D001");
     require(metadataResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "report metadata altered canonical preview");
 
     std::string deep = "\"$point:温度\"";
-    for (int i = 0; i < 33; ++i) deep = "{\"nested\":" + deep + "}";
+    for (int i = 0; i < 33; ++i) {
+        deep = "{\"nested\":" + deep + "}";
+    }
     std::vector<std::string> invalid{
         withTemplate(R"({"target":"$point:不存在"})"),
         withTemplate(R"({"target":"$unknown"})"),
@@ -125,15 +126,17 @@ void testTemplates() {
     invalid.push_back(std::move(duplicateName));
     for (const auto& config : invalid) {
         bool rejected = false;
-        try { (void)preview(config, "devices", R"({"temperature":8})", "D001"); }
-        catch (const std::exception&) { rejected = true; }
+        try {
+            (void)preview(config, "devices", R"({"temperature":8})", "D001");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
         require(rejected, "invalid template accepted by module");
     }
 }
 
 void testMultipleControlMessages() {
-    const auto command = [](std::string_view id, std::string_view name, std::string_view topic,
-                            std::string_view payload, std::string_view required) {
+    const auto command = [](std::string_view id, std::string_view name, std::string_view topic, std::string_view payload, std::string_view required) {
         return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" + service::utils::jsonQuoted(name) +
             ",\"topic\":" + service::utils::jsonQuoted(topic) + ",\"template\":" + service::utils::jsonQuoted(payload) +
             ",\"requiredPointIds\":" + std::string(required) + "}";
@@ -145,8 +148,8 @@ void testMultipleControlMessages() {
     const auto second = command(secondId, "温度校准", "calibrate/{deviceCode}", R"({"calibrate":"$point:温度"})", "[]");
     const auto valid = configuration("\"commands\":[" + first + "," + second + "],", R"(,"writable":true)");
     const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
-    require(parsed && parsed->get<"commands">() && parsed->get<"commands">()->size() == 2, "multiple command configuration lost");
-    const auto encoded = ruvia::to_json(*parsed);
+    require(parsed.get<"commands">() && parsed.get<"commands">()->size() == 2, "multiple command configuration lost");
+    const auto encoded = ruvia::to_json(parsed);
     require(encoded.find("requiredPointIds") != std::string::npos && encoded.find("templateText") == std::string::npos, "command wire field names changed");
     const auto previewed = preview(valid, "devices", R"({"temperature":8})", "D001");
     require(previewed.get<"records">()[0].get<"points">().size() == 1, "multiple commands changed reports");
@@ -169,8 +172,11 @@ void testMultipleControlMessages() {
     };
     for (const auto& list : invalidLists) {
         bool rejected = false;
-        try { (void)preview(configuration("\"commands\":[" + list + "],", R"(,"writable":true)"), "devices", "{}", "D001"); }
-        catch (const std::exception&) { rejected = true; }
+        try {
+            (void)preview(configuration("\"commands\":[" + list + "],", R"(,"writable":true)"), "devices", "{}", "D001");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
         require(rejected, "invalid control message accepted");
     }
 }
@@ -210,10 +216,14 @@ void testCommandResponseConfiguration() {
     const auto valid = make(R"(["/id","/route"])");
     (void)preview(valid, "devices", R"({"temperature":8})", "D001");
     const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
-    require(parsed && parsed->get<"commands">()->front().get<"response">(), "generic result configuration lost");
-    for (const auto& invalid : {make(R"(["/route"])"), make(R"(["/id","/unknown"])"), make(R"(["/id","/id"])"), make(R"(["/id"])", "devices/+/result"), make(R"(["/id"])", "devices/{deviceCode}/result", 0)}) {
+    require(parsed.get<"commands">()->front().get<"response">().has_value(), "generic result configuration lost");
+    for (const auto& invalid : { make(R"(["/route"])"), make(R"(["/id","/unknown"])"), make(R"(["/id","/id"])"), make(R"(["/id"])", "devices/+/result"), make(R"(["/id"])", "devices/{deviceCode}/result", 0) }) {
         bool rejected = false;
-        try { (void)preview(invalid, "devices", "{}", "D001"); } catch (const std::exception&) { rejected = true; }
+        try {
+            (void)preview(invalid, "devices", "{}", "D001");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
         require(rejected, "invalid result correlation accepted");
     }
 }
@@ -226,12 +236,16 @@ void testMultipleReports() {
     const auto first = report("00000000-0000-4000-8000-000000000002", "温度", "devices/{deviceCode}/temperature", "/value");
     const auto second = report("00000000-0000-4000-8000-000000000003", "另一映射", "devices/{deviceCode}/alternate", "/value");
     const auto config = configuration("\"reports\":[" + first + ',' + second + "],", "");
-    const auto value = preview(config,"devices/D001/alternate", R"({"value":42})", "D001");
-    require(value.get<"records">().size()==1 && value.get<"records">()[0].get<"points">()[0].get<"value">().view()=="42", "preview did not select second report");
-    for (const auto& bad : {configuration("\"reports\":[],", ""), configuration("\"reports\":[" + first + ',' + first + "],", ""), configuration("\"reports\":[" + first + ',' + report("00000000-0000-4000-8000-000000000003","重叠","devices/+/temperature","/value") + "],", "")}) {
-        bool rejected=false;
-        try { (void)preview(bad,"devices/D001/temperature","{}","D001"); } catch(const std::exception&) {rejected=true;}
-        require(rejected,"invalid report list or overlapping topics accepted");
+    const auto value = preview(config, "devices/D001/alternate", R"({"value":42})", "D001");
+    require(value.get<"records">().size() == 1 && value.get<"records">()[0].get<"points">()[0].get<"value">().view() == "42", "preview did not select second report");
+    for (const auto& bad : { configuration("\"reports\":[],", ""), configuration("\"reports\":[" + first + ',' + first + "],", ""), configuration("\"reports\":[" + first + ',' + report("00000000-0000-4000-8000-000000000003", "重叠", "devices/+/temperature", "/value") + "],", "") }) {
+        bool rejected = false;
+        try {
+            (void)preview(bad, "devices/D001/temperature", "{}", "D001");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        require(rejected, "invalid report list or overlapping topics accepted");
     }
 }
 } // namespace

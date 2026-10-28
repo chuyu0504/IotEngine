@@ -156,7 +156,7 @@ inline std::vector<std::string> payloadRecords(std::string_view input, std::stri
     std::vector<std::string> result;
     if (format == "json") {
         const auto parsed = ruvia::json_value::parse(input);
-        const auto records = parsed ? jsonField(*parsed, recordsPath) : std::nullopt;
+        const auto records = jsonField(parsed, recordsPath);
         if (!records) {
             throw std::invalid_argument("JSON 无效或记录路径不存在");
         }
@@ -200,7 +200,7 @@ inline std::vector<std::string> payloadRecords(std::string_view input, std::stri
 class PayloadRecord {
   public:
     PayloadRecord(std::string_view input, std::string_view format, std::string_view delimiter)
-        : input_(input), format_(format), json_(format == "json" ? ruvia::json_value::parse(input) : std::nullopt) {
+        : input_(input), format_(format), json_(format == "json" ? std::optional{ ruvia::json_value::parse(input) } : std::nullopt) {
         if (format == "text") {
             columns_ = splitPayload(input, delimiter);
         }

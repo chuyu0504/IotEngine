@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/web/model_types.h>
+#include <ruvia/web/model.h>
 
 namespace service::common {
 

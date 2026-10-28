@@ -138,7 +138,7 @@ class TestMediaProxyController final {
   public:
     RUVIA_CONTROLLER_GROUP("/media")
     RUVIA_ROUTES_BEGIN(TestMediaProxyController)
-    RUVIA_GET_STREAM("/*", proxy);
+    RUVIA_GET("/*", proxy);
     RUVIA_ROUTES_END
 
   private:
@@ -159,7 +159,7 @@ ruvia::task<void> verifyProxy(ruvia::event_loop loop, std::uint16_t port) {
         {
             auto response = co_await http.send({ .target_ = "/media/rtp/large.live.flv" });
             const auto body = co_await response.body().read_all(4U * 1024U * 1024U);
-            require(body.size() == 3U * 1024U * 1024U && body.bytes().front() == std::byte{'m'} && body.bytes().back() == std::byte{'m'}, "media stream was truncated at the proxy buffering limit");
+            require(body.size() == 3U * 1024U * 1024U && body.bytes().front() == std::byte{ 'm' } && body.bytes().back() == std::byte{ 'm' }, "media stream was truncated at the proxy buffering limit");
         }
         {
             auto response = co_await http.send({ .target_ = "/media/rtp/cancel.live.flv" });
@@ -183,7 +183,7 @@ int main() {
         reservation.close();
         std::promise<void> ready;
         auto started = ready.get_future();
-        app.get_blocking_pool(nullptr).listen({ .address_ = "127.0.0.1", .http_ = port }).server({ .worker_count_ = 2 }).get_http_client({ .alias_ = "gb-media", .config_ = { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(), .connection_count_ = 2, .request_timeout_ = std::nullopt, .max_response_bytes_ = 2U * 1024U * 1024U } }).on_start([&] {
+        app.blocking_pool(nullptr).listen({ .address_ = "127.0.0.1", .http_ = port }).server({ .worker_count_ = 2 }).http_client({ .alias_ = "gb-media", .config_ = { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(), .connection_count_ = 2, .request_timeout_ = std::nullopt, .max_response_bytes_ = 2U * 1024U * 1024U } }).on_start([&] {
             ready.set_value();
         });
         serving = std::thread([&] {

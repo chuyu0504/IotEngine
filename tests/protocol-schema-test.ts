@@ -6,7 +6,19 @@ import {
     getS7DeviceTypeFormValues,
     numberOrDefault,
 } from '../web/pages/protocol/protocol.service';
-import { derivedPointSchema, protocolCreateSchema } from '../web/pages/protocol/protocol.schema';
+import { protocolCreateSchema } from '../web/pages/protocol/protocol.schema';
+import { derivedPointSchema } from '../web/utils/derived_point';
+
+test('外部 IO 与采集协议平级，校验点位类型、单位和唯一标识', () => {
+    const point = { id: '00000000-0000-4000-8000-000000000001', name: '电流', kind: 'AI', channel: 'AI0', unit: 'uA' };
+    const input = { name: '外部 IO', protocol: 'ExternalIO', config: { points: [point] } };
+    expect(protocolCreateSchema.safeParse(input).success).toBe(true);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [point, point] } }).success).toBe(false);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, channel: 'di0' }] } }).success).toBe(false);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [point, { ...point, id: '00000000-0000-4000-8000-000000000002' }] } }).success).toBe(false);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, unit: 'mA' }] } }).success).toBe(false);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, kind: 'DO' }] } }).success).toBe(false);
+});
 
 test('读取上报缺省为五分钟，显式间隔与命令快速读取保持不变', () => {
     expect(defaultConfig().readInterval).toBe(300);

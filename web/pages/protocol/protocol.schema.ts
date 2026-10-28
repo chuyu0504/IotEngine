@@ -1,14 +1,68 @@
 import { z } from 'zod';
+import { derivedPointSchema } from '@/utils/derived_point';
 import { formatJson, type JsonValue as MqttJson, parseJson } from '@/utils/json';
 import {
+    CONFIG_PROTOCOL_TYPES,
     type Modbus,
     type MqttConfig,
     type MqttPoint,
     type MqttTemplateDraft,
-    PROTOCOL_TYPES,
 } from './protocol.types';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
-export const protocolTypeSchema = z.enum(PROTOCOL_TYPES);
+export const protocolTypeSchema = z.enum(CONFIG_PROTOCOL_TYPES);
+
+const externalIoConfigSchema = z
+    .object({
+        points: z
+            .array(
+                z
+                    .object({
+                        id: z
+                            .uuid()
+                            .refine(
+                                (value) => value === value.toLowerCase(),
+                                '点位 UUID 必须为小写'
+                            ),
+                        name: z.string().min(1).max(100),
+                        kind: z.enum(['DI', 'DO', 'AI']),
+                        channel: z.string().min(1).max(16),
+                        unit: z.string().max(32).optional(),
+                        visible: z.boolean().optional(),
+                    })
+                    .refine(
+                        (point) => !point.unit || (point.kind === 'AI' && point.unit === 'uA'),
+                        'AI 原始单位为 uA，DI 和 DO 不设置单位'
+                    )
+                    .refine(
+                        (point) =>
+                            (point.kind === 'DI' && /^di[0-9]+$/.test(point.channel)) ||
+                            (point.kind === 'DO' && /^do[0-9]+$/.test(point.channel)) ||
+                            (point.kind === 'AI' && /^AI[0-9]+$/.test(point.channel)),
+                        '通道与 IO 类型不匹配'
+                    )
+            )
+            .max(15),
+    })
+    .superRefine((config, context) => {
+        const ids = new Set<string>();
+        const channels = new Set<string>();
+        config.points.forEach((point, index) => {
+            if (channels.has(point.channel))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['points', index, 'channel'],
+                    message: '通道不能重复',
+                });
+            channels.add(point.channel);
+            if (ids.has(point.id))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['points', index, 'id'],
+                    message: '点位标识不能重复',
+                });
+            ids.add(point.id);
+        });
+    });
 
 const mqttTopicSchema = z
     .string()
@@ -815,61 +869,6 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
     return draft;
 }
 
-export const derivedPointSchema = z
-    .object({
-        id: z.uuid(),
-        name: z.string().trim().min(1).max(100),
-        unit: z.string().max(32).optional(),
-        kind: z.enum(['expression', 'average', 'minimum', 'maximum']),
-        unitMode: z.enum(['fixed', 'conditional']),
-        unitRules: z
-            .array(
-                z.object({ condition: z.string().trim().min(1).max(512), unit: z.string().max(32) })
-            )
-            .max(8)
-            .optional(),
-        sourceAlias: z.string().optional(),
-        valueType: z.enum(['number', 'boolean']),
-        expression: z.string().max(512).optional(),
-        inputs: z
-            .array(
-                z.object({
-                    alias: z
-                        .string()
-                        .regex(/^[a-zA-Z_][a-zA-Z0-9_]{0,31}$/)
-                        .refine(
-                            (value) => value !== 'true' && value !== 'false',
-                            '变量名不能使用 true 或 false'
-                        ),
-                    pointId: z.uuid(),
-                })
-            )
-            .min(1)
-            .max(16),
-        windowSeconds: z.number().int().min(1).max(86400).optional(),
-        maxAgeSeconds: z.number().int().min(1).max(86400),
-        visible: z.boolean(),
-    })
-    .superRefine((point, context) => {
-        if (new Set(point.inputs.map((input) => input.alias)).size !== point.inputs.length)
-            context.addIssue({ code: 'custom', path: ['inputs'], message: '输入变量名不能重复' });
-        if (point.kind === 'expression' && !point.expression?.trim())
-            context.addIssue({ code: 'custom', path: ['expression'], message: '请输入公式' });
-        if (
-            point.kind !== 'expression' &&
-            (!point.windowSeconds ||
-                !point.inputs.some((input) => input.alias === point.sourceAlias) ||
-                point.valueType !== 'number')
-        )
-            context.addIssue({
-                code: 'custom',
-                path: ['sourceAlias'],
-                message: '请选择窗口计算的输入变量，并设置窗口时长和数值结果类型',
-            });
-        if (point.unitMode === 'conditional' && !point.unitRules?.length)
-            context.addIssue({ code: 'custom', path: ['unitRules'], message: '请添加单位条件' });
-    });
-
 export const dlt645PointCreateSchema = z.object({
     name: z.string().trim().min(1).max(100),
     unit: z.string().max(32).optional(),
@@ -1176,6 +1175,17 @@ export const protocolCreateSchema = baseSchema
     .extend({ protocol: protocolTypeSchema })
     .superRefine((value, context) => {
         const config = value.config;
+        if (value.protocol === 'ExternalIO') {
+            const result = externalIoConfigSchema.safeParse(config);
+            if (!result.success)
+                for (const issue of result.error.issues)
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['config', ...issue.path],
+                        message: issue.message,
+                    });
+            return;
+        }
         if (value.protocol === 'MQTT') {
             const result = mqttConfigSchema.safeParse(config);
             if (!result.success)

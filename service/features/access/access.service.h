@@ -15,7 +15,8 @@
 
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
-#include <ruvia/web/model_object.h>
+#include <ruvia/web/db/db_repository.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
 
@@ -74,14 +75,9 @@ ruvia::task<void> refresh(Context& context, bool onlyIfMissing = false) {
         bindingOrder
     );
     const auto bindingIdsOrEmpty = snapshot.coalesce({ snapshot.filter(bindingIds, snapshot.unary(ruvia::db_unary_operator::is_not_null, service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(snapshot, "binding"))), snapshot.cast(snapshot.value("[]"), ruvia::db_data_type::jsonb) });
-    snapshot
-        .select({ service::access::persistence::OpenAccessKeyEntity::column<"access_key_hash">().expression(snapshot, "key"), snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"), ruvia::db_data_type::text), service::access::persistence::OpenAccessKeyEntity::column<"name">().expression(snapshot, "key"), snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(snapshot, "key"), ruvia::db_data_type::text), expiresAtMs, snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(snapshot, "key"), ruvia::db_data_type::text), snapshot.cast(bindingIdsOrEmpty, ruvia::db_data_type::text) })
-        .from(service::access::persistence::OpenAccessKeyEntity::table_name(), "key")
-        .join(ruvia::db_join_type::left, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(), snapshot.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(snapshot, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key")), "binding")
-        .where(snapshot.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(snapshot, "key")))
-        .group_by({ service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key") })
-        .order_by(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"));
-    const auto rows = co_await transaction.query(snapshot);
+    auto snapshotBuilder = transaction.template repository<service::access::persistence::OpenAccessKeyEntity>().query_builder("key");
+    snapshotBuilder.select({ { "access_key_hash", service::access::persistence::OpenAccessKeyEntity::column<"access_key_hash">().expression(snapshot, "key") }, { "id", snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"), ruvia::db_data_type::text) }, { "name", service::access::persistence::OpenAccessKeyEntity::column<"name">().expression(snapshot, "key") }, { "status", snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(snapshot, "key"), ruvia::db_data_type::text) }, { "value4", expiresAtMs }, { "scopes", snapshot.cast(service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(snapshot, "key"), ruvia::db_data_type::text) }, { "value6", snapshot.cast(bindingIdsOrEmpty, ruvia::db_data_type::text) } }).template join<service::access::persistence::OpenAccessKeyDeviceEntity>(ruvia::db_join_type::left, "binding", snapshot.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(snapshot, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"))).where(snapshot.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(snapshot, "key"))).group_by({ service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key") }).order_by(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(snapshot, "key"));
+    const auto rows = co_await snapshotBuilder.get_raw_many();
 
     const auto version = service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>());
     const auto versionKey = std::string(service::message::access::session::kVersionPrefix) + version;
@@ -200,31 +196,15 @@ ruvia::task<void> loadTargets(ruvia::web_worker_context& context, Catalog& resul
             catalog.cast(catalog.value("[]"), ruvia::db_data_type::jsonb)
         ) }
     );
-    catalog
-        .select({ catalog.cast(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"), ruvia::db_data_type::text), service::configuration::persistence::DeviceEntity::column<"name">().expression(catalog, "device"), catalog.coalesce({ catalog.binary(service::configuration::persistence::DeviceEntity::column<"protocol_params">().expression(catalog, "device"), ruvia::db_binary_operator::json_get_text, catalog.value("device_code")), catalog.value("") }), catalog.cast(Entity::template column<"id">().expression(catalog, "webhook"), ruvia::db_data_type::text), catalog.cast(Entity::template column<"access_key_id">().expression(catalog, "webhook"), ruvia::db_data_type::text), url, option.template operator()<!mqtt>("secret"), headers, catalog.cast(Entity::template column<"timeout_seconds">().expression(catalog, "webhook"), ruvia::db_data_type::text), skipTls, expiresAtMs, catalog.column("value", "event_type"), option.template operator()<mqtt>("username"), option.template operator()<mqtt>("password") })
-        .from(Entity::table_name(), "webhook")
-        .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key"), ruvia::db_binary_operator::equal, Entity::template column<"access_key_id">().expression(catalog, "webhook")), "key")
-        .join(ruvia::db_join_type::inner, service::access::persistence::OpenAccessKeyDeviceEntity::table_name(), catalog.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(catalog, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key")), "binding")
-        .join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), catalog.binary(service::configuration::persistence::DeviceEntity::column<"id">().expression(catalog, "device"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding")), "device")
-        .join_function(ruvia::db_join_type::cross, eventTypes, {}, "event_type", { .lateral_ = true, .columns_ = { { .name_ = "value" } } })
-        .where(catalog.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(catalog, "webhook")))
-        .and_where(catalog.binary(Entity::template column<"status">().expression(catalog, "webhook"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
-        .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(catalog, "key")))
-        .and_where(catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(catalog, "key"), ruvia::db_binary_operator::equal, catalog.value("enabled")))
-        .and_where(catalog.binary(
-            catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")),
-            ruvia::db_binary_operator::or_value,
-            catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key"), ruvia::db_binary_operator::greater, catalog.call("now"))
-        ))
-        .and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::configuration::persistence::DeviceEntity::column<"deleted_at">().expression(catalog, "device")))
-        .order_by(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"))
-        .add_order_by(catalog.column("value", "event_type"))
-        .add_order_by(Entity::template column<"id">().expression(catalog, "webhook"));
+    auto catalogBuilder = context.db().template repository<Entity>().query_builder("webhook");
+
+    const std::array<ruvia::db_source_column, 1> sourceColumns1{ { { .name_ = "value" } } };
+    catalogBuilder.select({ { "device_id", catalog.cast(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"), ruvia::db_data_type::text) }, { "name", service::configuration::persistence::DeviceEntity::column<"name">().expression(catalog, "device") }, { "protocol_params", catalog.coalesce({ catalog.binary(service::configuration::persistence::DeviceEntity::column<"protocol_params">().expression(catalog, "device"), ruvia::db_binary_operator::json_get_text, catalog.value("device_code")), catalog.value("") }) }, { "id", catalog.cast(Entity::template column<"id">().expression(catalog, "webhook"), ruvia::db_data_type::text) }, { "access_key_id", catalog.cast(Entity::template column<"access_key_id">().expression(catalog, "webhook"), ruvia::db_data_type::text) }, { "value5", url }, { "value6", option.template operator()<!mqtt>("secret") }, { "value7", headers }, { "timeout_seconds", catalog.cast(Entity::template column<"timeout_seconds">().expression(catalog, "webhook"), ruvia::db_data_type::text) }, { "value9", skipTls }, { "value10", expiresAtMs }, { "value", catalog.column("value", "event_type") }, { "value12", option.template operator()<mqtt>("username") }, { "value13", option.template operator()<mqtt>("password") } }).template join<service::access::persistence::OpenAccessKeyEntity>(ruvia::db_join_type::inner, "key", catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key"), ruvia::db_binary_operator::equal, Entity::template column<"access_key_id">().expression(catalog, "webhook"))).template join<service::access::persistence::OpenAccessKeyDeviceEntity>(ruvia::db_join_type::inner, "binding", catalog.binary(service::access::persistence::OpenAccessKeyDeviceEntity::column<"access_key_id">().expression(catalog, "binding"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyEntity::column<"id">().expression(catalog, "key"))).template join<service::configuration::persistence::DeviceEntity>(ruvia::db_join_type::inner, "device", catalog.binary(service::configuration::persistence::DeviceEntity::column<"id">().expression(catalog, "device"), ruvia::db_binary_operator::equal, service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding"))).join_function(ruvia::db_join_type::cross, eventTypes, "event_type", {}, { .lateral_ = true, .columns_ = sourceColumns1 }).where(catalog.unary(ruvia::db_unary_operator::is_null, Entity::template column<"deleted_at">().expression(catalog, "webhook"))).and_where(catalog.binary(Entity::template column<"status">().expression(catalog, "webhook"), ruvia::db_binary_operator::equal, catalog.value("enabled"))).and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"deleted_at">().expression(catalog, "key"))).and_where(catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"status">().expression(catalog, "key"), ruvia::db_binary_operator::equal, catalog.value("enabled"))).and_where(catalog.binary(catalog.unary(ruvia::db_unary_operator::is_null, service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key")), ruvia::db_binary_operator::or_value, catalog.binary(service::access::persistence::OpenAccessKeyEntity::column<"expires_at">().expression(catalog, "key"), ruvia::db_binary_operator::greater, catalog.call("now")))).and_where(catalog.unary(ruvia::db_unary_operator::is_null, service::configuration::persistence::DeviceEntity::column<"deleted_at">().expression(catalog, "device"))).order_by(service::access::persistence::OpenAccessKeyDeviceEntity::column<"device_id">().expression(catalog, "binding")).add_order_by(catalog.column("value", "event_type")).add_order_by(Entity::template column<"id">().expression(catalog, "webhook"));
     if constexpr (mqtt) {
         const auto scope = catalog.case_when({ { catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({ catalog.value("device.alert.triggered"), catalog.value("device.alert.resolved") })), catalog.value("alert:read") }, { catalog.binary(catalog.column("value", "event_type"), ruvia::db_binary_operator::in, catalog.list({ catalog.value("device.command.accepted"), catalog.value("device.command.updated") })), catalog.value("device:command") } }, catalog.value("device:realtime"));
-        catalog.and_where(catalog.call("jsonb_exists", { service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(catalog, "key"), scope }));
+        catalogBuilder.and_where(catalog.call("jsonb_exists", { service::access::persistence::OpenAccessKeyEntity::column<"scopes">().expression(catalog, "key"), scope }));
     }
-    const auto rows = co_await context.db().query(catalog);
+    const auto rows = co_await catalogBuilder.get_raw_many();
     for (const auto& row : rows) {
         const std::string deviceId(row[0].value().value_or(std::string_view{}));
         auto& device = result[deviceId];
@@ -353,16 +333,13 @@ ruvia::task<void> persistTargetResults(
         .select({ logRows.column("log_id", "incoming"), logRows.column("access_key_id", "incoming"), mqtt ? logRows.null_value() : logRows.column("target_id", "incoming"), mqtt ? logRows.column("target_id", "incoming") : logRows.null_value(), logRows.value("push"), logRows.value(mqtt ? "mqtt" : "webhook"), logRows.column("event_type", "incoming"), logRows.column("status", "incoming"), logRows.value(mqtt ? "PUBLISH" : "POST"), logRows.column("target", "incoming"), logRows.null_if(logRows.column("http_status", "incoming"), logRows.value(std::int64_t{ 0 })), logRows.column("device_id", "incoming"), logRows.null_if(logRows.column("device_code", "incoming"), logRows.value("")), logRows.null_if(logRows.column("message", "incoming"), logRows.value("")), logRows.column("request_payload", "incoming"), logRows.column("response_payload", "incoming") })
         .from("incoming", "incoming");
 
-    ruvia::db_query write(context.pool());
-    write
-        .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "target_id", "event_type", "status", "target", "http_status", "device_id", "device_code", "message", "request_payload", "response_payload", "completed_at_ms" } })
-        .with("latest", latest)
-        .with("summary", summary)
-        .with("updated", updated)
-        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"webhook_id">(), Log::column_name<"mqtt_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"event_type">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"device_code">(), Log::column_name<"message">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() })
-        .insert_from(logRows)
-        .on_conflict({ .columns_ = { std::string(Log::column_name<"id">()) }, .do_nothing_ = true });
-    (void)co_await context.db().execute(write);
+    const std::array<std::string_view, 16> writeColumns{ Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"webhook_id">(), Log::column_name<"mqtt_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"event_type">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"device_code">(), Log::column_name<"message">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() };
+    auto writeBuilder = context.db().template repository<service::access::persistence::OpenAccessLogEntity>().insert_builder();
+
+    const std::array<ruvia::borrowed_text, 14> sourceColumns2{ { "sequence", "log_id", "access_key_id", "target_id", "event_type", "status", "target", "http_status", "device_id", "device_code", "message", "request_payload", "response_payload", "completed_at_ms" } };
+    const std::array<ruvia::borrowed_text, 1> conflictColumns3{ { Log::column_name<"id">() } };
+    writeBuilder.with("incoming", incoming, { .columns_ = sourceColumns2 }).with("latest", latest).with("summary", summary).with("updated", updated).insert_from(writeColumns, logRows).on_conflict({ .conflict_paths_ = conflictColumns3, .do_nothing_ = true });
+    (void)co_await writeBuilder.execute();
 }
 
 inline ruvia::task<void> persistResults(ruvia::web_worker_context& context, const std::vector<message::StreamMessage>& messages) {
@@ -442,15 +419,13 @@ inline ruvia::task<void> persistAudits(
         .join(ruvia::db_join_type::cross, updateBarrier, {}, "update_barrier")
         .where(logRows.binary(logRows.column("updated_count", "update_barrier"), ruvia::db_binary_operator::greater_equal, logRows.value(std::int64_t{ 0 })));
 
-    ruvia::db_query write(context.pool());
-    write
-        .with("incoming", incoming, { .columns_ = { "sequence", "log_id", "access_key_id", "action", "http_method", "target", "request_ip", "http_status", "device_id", "request_payload", "response_payload", "used_at_ms" } })
-        .with("latest_usage", latestUsage, { .materialization_ = ruvia::db_materialization::materialized })
-        .with("usage_updated", usageUpdated)
-        .insert_into(service::access::persistence::OpenAccessLogEntity::table_name(), { Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"request_ip">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() })
-        .insert_from(logRows)
-        .on_conflict({ .columns_ = { std::string(Log::column_name<"id">()) }, .do_nothing_ = true });
-    (void)co_await context.db().execute(write);
+    const std::array<std::string_view, 12> writeColumns{ Log::column_name<"id">(), Log::column_name<"access_key_id">(), Log::column_name<"direction">(), Log::column_name<"action">(), Log::column_name<"status">(), Log::column_name<"http_method">(), Log::column_name<"target">(), Log::column_name<"request_ip">(), Log::column_name<"http_status">(), Log::column_name<"device_id">(), Log::column_name<"request_payload">(), Log::column_name<"response_payload">() };
+    auto writeBuilder = context.db().template repository<service::access::persistence::OpenAccessLogEntity>().insert_builder();
+
+    const std::array<ruvia::borrowed_text, 12> sourceColumns4{ { "sequence", "log_id", "access_key_id", "action", "http_method", "target", "request_ip", "http_status", "device_id", "request_payload", "response_payload", "used_at_ms" } };
+    const std::array<ruvia::borrowed_text, 1> conflictColumns5{ { Log::column_name<"id">() } };
+    writeBuilder.with("incoming", incoming, { .columns_ = sourceColumns4 }).with("latest_usage", latestUsage, { .materialization_ = ruvia::db_materialization::materialized }).with("usage_updated", usageUpdated).insert_from(writeColumns, logRows).on_conflict({ .conflict_paths_ = conflictColumns5, .do_nothing_ = true });
+    (void)co_await writeBuilder.execute();
 }
 
 class DeliveryService final {
@@ -467,7 +442,13 @@ class DeliveryService final {
 
     static std::string mergeEventData(std::string_view deviceJson, std::string_view rawData) {
         std::string result = "{\"device\":" + std::string(deviceJson);
-        if (const auto parsed = ruvia::json_value::parse(rawData); parsed && parsed->is_object()) {
+        std::optional<ruvia::json_value> parsed;
+        try {
+            parsed = ruvia::json_value::parse(rawData);
+        } catch (const std::invalid_argument&) {
+            // 历史事件正文损坏时仍保留可信设备身份。
+        }
+        if (parsed && parsed->is_object()) {
             (void)parsed->for_each_field(
                 [&](std::string_view name, const ruvia::json_value& value) {
                     if (name != "device") {
@@ -482,9 +463,14 @@ class DeliveryService final {
     }
 
     static std::string imageEventData(std::string_view deviceJson, std::string_view rawData, std::string_view occurredAt) {
-        const auto parsed = ruvia::json_value::parse(rawData);
-        if (!parsed || !parsed->is_object()) {
-            return mergeEventData(deviceJson, rawData);
+        std::optional<ruvia::json_value> parsed;
+        try {
+            parsed = ruvia::json_value::parse(rawData);
+        } catch (const std::invalid_argument&) {
+            return mergeEventData(deviceJson, "{}");
+        }
+        if (!parsed->is_object()) {
+            return mergeEventData(deviceJson, "{}");
         }
         const auto values = parsed->get<ruvia::json_value>("values");
         if (!values || !values->is_object()) {
@@ -587,8 +573,8 @@ class DeliveryService final {
             data = imageEventData(device, rawData, delivery.occurredAt);
         } else if (delivery.eventType == "device.command.accepted" || delivery.eventType == "device.command.updated") {
             const auto payload = ruvia::json_value::parse(rawData);
-            data = payload && payload->is_object()
-                ? commandEventData(device, *payload)
+            data = payload.is_object()
+                ? commandEventData(device, payload)
                 : mergeEventData(device, rawData);
         } else {
             data = mergeEventData(device, rawData);
@@ -765,25 +751,23 @@ class AccessOperationService final {
         }
         if (operation == "audit") {
             const auto request = ruvia::from_json<service::message::access::AuditRequest>(payload, { .resource_ = context.pool() });
-            if (!request) {
-                service::common::fail(10002, "Invalid access audit payload", 400);
-            }
+
             const auto text = [](const std::optional<ruvia::string>& value) {
                 return value ? std::string(value->view()) : std::string{};
             };
             const auto json = [](const std::optional<ruvia::json_value>& value) {
                 return value ? std::string(value->view()) : std::string("{}");
             };
-            const auto& httpStatus = request->get<"httpStatus">();
+            const auto& httpStatus = request.get<"httpStatus">();
             const std::int64_t status = httpStatus ? static_cast<std::int64_t>(*httpStatus) : 200;
-            const auto action = text(request->get<"action">());
-            const auto accessKeyId = text(request->get<"accessKeyId">());
-            const auto method = text(request->get<"method">());
-            const auto target = text(request->get<"target">());
-            const auto requestIp = text(request->get<"requestIp">());
-            const auto deviceId = text(request->get<"deviceId">());
-            const auto requestPayload = json(request->get<"requestPayload">());
-            const auto responsePayload = json(request->get<"responsePayload">());
+            const auto action = text(request.get<"action">());
+            const auto accessKeyId = text(request.get<"accessKeyId">());
+            const auto method = text(request.get<"method">());
+            const auto target = text(request.get<"target">());
+            const auto requestIp = text(request.get<"requestIp">());
+            const auto deviceId = text(request.get<"deviceId">());
+            const auto requestPayload = json(request.get<"requestPayload">());
+            const auto responsePayload = json(request.get<"responsePayload">());
             co_await audit::publish(context.redis(), context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::utils::nextUuid(context.template worker_state<service::common::UuidV7State>()), action, accessKeyId, method, target, requestIp, status, context.worker_state<std::optional<service::common::WorkerIdentity>>().value().instanceId, deviceId, requestPayload, responsePayload);
             co_return "{}";
         }

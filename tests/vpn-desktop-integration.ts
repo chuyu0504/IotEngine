@@ -46,10 +46,12 @@ async function openStream(path: string, bearer = token, expectedCode = 0) {
     assert(response.body);
     const queue: Reply[]=[];
     let wake: (()=>void)|undefined;
-    let ended=false, failure:unknown;
+    let ended=false, failure:unknown, received=0;
+    let lastRoutes: unknown;
     void consumeServerSentEvents(response.body,event=>{
         if(event.event==='heartbeat') return;
         const value=JSON.parse(event.data);
+        received++; lastRoutes=value.data?.allowedRoutes ?? value.code;
         queue.push(value.code ? {error:{code:value.code,message:value.message}} : {data:value.data}); wake?.();
     },controller.signal).catch(error=>{if(!controller.signal.aborted) failure=error;})
         .finally(()=>{ended=true;wake?.();});
@@ -61,7 +63,7 @@ async function openStream(path: string, bearer = token, expectedCode = 0) {
             if(failure) throw failure;
             assert(!ended, 'SSE ended before expected update: '+path);
             await new Promise<void>((resolve,reject)=>{
-                const timer=setTimeout(()=>{wake=undefined;reject(new Error('SSE subscription timed out: '+path));},20000);
+                const timer=setTimeout(()=>{wake=undefined;reject(new Error(`SSE subscription timed out: ${path}; expected ${predicate}; received=${received}, last routes=${JSON.stringify(lastRoutes)}`));},20000);
                 wake=()=>{clearTimeout(timer);wake=undefined;resolve();};
             });
         }
@@ -320,14 +322,16 @@ try {
     await db`UPDATE vpn_route SET virtual_cidr='172.31.11.0/24' WHERE id=${routeA}`;
     const changed=await live.next(x=>x.data?.allowedRoutes.includes('172.31.11.0/24'));
     assert.deepEqual(changed.data.edgeNodeIds,[edgeA]); assert.ok(!changed.data.allowedRoutes.includes('172.31.10.0/24'));
-    await db`UPDATE vpn_route SET enabled=false WHERE id=${routeA}`;
+    await db`UPDATE vpn_route SET enabled=false,status='disabled' WHERE id=${routeA}`;
     await live.next(x=>x.data?.allowedRoutes.length===1);
     await db`UPDATE edge_node SET enrollment_status='pending' WHERE id=${edgeA}`;
     await live.next(x=>x.data?.allowedRoutes.length===0);
     assert.equal(check(await enroll(key,[edgeA])).peerId,peer,'lost HTTP response can recover identity after Edge approval changes');
     check(await patch(peer,[edgeA]),21001);
     await db`UPDATE edge_node SET enrollment_status='approved' WHERE id=${edgeA}`;
-    await db`UPDATE vpn_route SET enabled=true WHERE id=${routeA}`;
+    // This direct database fixture restores a fully applied mapping. Restoring
+    // only enabled leaves a concurrent Edge acknowledgement's disabled status.
+    await db`UPDATE vpn_route SET enabled=true,status='active' WHERE id=${routeA}`;
     await live.next(x=>x.data?.allowedRoutes.includes('172.31.11.0/24'));
     await db`UPDATE sys_role SET permissions='["iot:vpn:query"]'::jsonb WHERE id=${roleVpn}`;
     const revoked=await live.next(x=>!!x.error); assert.equal(revoked.error?.code,11007);

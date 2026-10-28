@@ -9,7 +9,7 @@
 #include <string_view>
 
 #include <ruvia/web/db/db_entity.h>
-#include <ruvia/web/db/db_predicate.h>
+#include <ruvia/web/db/db_query.h>
 #include <ruvia/web/redis/redis_types.h>
 
 #include "service/common/message.h"
@@ -140,8 +140,8 @@ struct LatestValuesRecord final {
                 if (field == "_element_ids") {
                     hasConfigured = true;
                     const auto parsed = ruvia::json_value::parse(raw);
-                    if (parsed && parsed->is_object()) {
-                        (void)parsed->for_each_field(
+                    if (parsed.is_object()) {
+                        (void)parsed.for_each_field(
                             [&](std::string_view name, const ruvia::json_value&) {
                                 if (!name.empty()) {
                                     configured.emplace(name);
@@ -156,40 +156,40 @@ struct LatestValuesRecord final {
                     continue;
                 }
                 const auto parsed = ruvia::json_value::parse(raw);
-                if (!parsed || !parsed->is_object()) {
+                if (!parsed.is_object()) {
                     continue;
                 }
                 Point point;
                 point.id.assign(field);
-                if (const auto value = parsed->get<ruvia::string>("id")) {
+                if (const auto value = parsed.get<ruvia::string>("id")) {
                     point.id.assign(value->view());
                 }
                 point.name = point.id;
-                if (const auto value = parsed->get<ruvia::string>("name")) {
+                if (const auto value = parsed.get<ruvia::string>("name")) {
                     point.name.assign(value->view());
                 }
-                if (const auto value = parsed->get<ruvia::string>("unit")) {
+                if (const auto value = parsed.get<ruvia::string>("unit")) {
                     point.unit.assign(value->view());
                 }
-                if (const auto value = parsed->get<ruvia::string>("dataType")) {
+                if (const auto value = parsed.get<ruvia::string>("dataType")) {
                     point.dataType.assign(value->view());
                 }
-                if (const auto value = parsed->get<ruvia::string>("encode")) {
+                if (const auto value = parsed.get<ruvia::string>("encode")) {
                     point.encode.assign(value->view());
                 }
-                if (const auto value = parsed->get<ruvia::int64>("sort")) {
+                if (const auto value = parsed.get<ruvia::int64>("sort")) {
                     point.sort = static_cast<std::int64_t>(*value);
                 }
-                if (const auto value = parsed->get<ruvia::int64>("observedAt")) {
+                if (const auto value = parsed.get<ruvia::int64>("observedAt")) {
                     point.observedAt = static_cast<std::int64_t>(*value);
                 }
-                if (const auto value = parsed->get<ruvia::json_value>("value")) {
+                if (const auto value = parsed.get<ruvia::json_value>("value")) {
                     point.value = service::message::telemetry::canonicalPointJson(
                         value->view(),
                         point.dataType
                     );
                 }
-                if (const auto value = parsed->get<ruvia::string>("access"); value && value->view() == "rw") {
+                if (const auto value = parsed.get<ruvia::string>("access"); value && value->view() == "rw") {
                     point.access = "rw";
                 }
                 latest.insert_or_assign(point.id, std::move(point));

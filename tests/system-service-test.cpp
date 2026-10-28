@@ -19,24 +19,28 @@
 namespace {
 
 void require(bool condition, const char* message) {
-    if (!condition)
+    if (!condition) {
         throw std::runtime_error(message);
+    }
 }
 
 std::atomic<int> permissionChecks{ 0 };
 
 service::middleware::AccessTokenCheck verifyProbeToken(ruvia::context&, std::string_view token) {
-    if (token == "valid")
+    if (token == "valid") {
         return { service::middleware::AccessTokenState::valid, "user-1" };
-    if (token == "expired")
+    }
+    if (token == "expired") {
         return { service::middleware::AccessTokenState::expired, {} };
+    }
     return { service::middleware::AccessTokenState::invalid, {} };
 }
 
 ruvia::task<void> requireProbePermission(service::middleware::RequestContext&, std::string_view userId, std::string_view permission) {
     ++permissionChecks;
-    if (userId != "user-1" || permission != "probe:allowed")
+    if (userId != "user-1" || permission != "probe:allowed") {
         service::common::fail(service::common::kPermissionDeniedErrorCode, "无权限", 403);
+    }
     co_return;
 }
 
@@ -67,9 +71,10 @@ class AuthProbeController final {
     }
 
     ruvia::task<ruvia::http_response> snapshot(ruvia::context& c) {
-        const auto* user = c.try_request_state<service::middleware::AuthenticatedUserSnapshot>();
-        if (user == nullptr)
+        const auto* user = &c.request_state<service::middleware::AuthenticatedUserSnapshot>();
+        if (user->query == nullptr) {
             co_return c.text(std::string_view("none"));
+        }
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto payload = co_await user->query(request);
         co_return c.text(std::string_view(payload));
@@ -78,8 +83,9 @@ class AuthProbeController final {
 
 ruvia::test_request probe(std::string_view path, std::optional<std::string_view> token) {
     auto request = ruvia::test_request::get(path);
-    if (token)
+    if (token) {
         request.header("Authorization", "Bearer " + std::string(*token));
+    }
     return request;
 }
 
@@ -128,8 +134,9 @@ void requireUnwiredAuthenticationFailsClosed() {
 
 ruvia::array<ruvia::string> permissionList(std::initializer_list<std::string_view> values) {
     ruvia::array<ruvia::string> result;
-    for (const auto value : values)
+    for (const auto value : values) {
         result.emplace_back(value);
+    }
     return result;
 }
 
@@ -138,8 +145,7 @@ void requirePermissionRejected(std::initializer_list<std::string_view> values, s
         (void)service::role::permissionsJson(permissionList(values));
     } catch (const ruvia::http_error& error) {
         const auto info = error.info();
-        require(info.status().value() == 400 && info.code() == "13005" && info.message() == message,
-                "role permission rejection changed code or message");
+        require(info.status().value() == 400 && info.code() == "13005" && info.message() == message, "role permission rejection changed code or message");
         return;
     }
     throw std::runtime_error("role permission validation accepted an invalid code");
@@ -147,11 +153,9 @@ void requirePermissionRejected(std::initializer_list<std::string_view> values, s
 
 void requireRolePermissionValidation() {
     require(service::role::permissionsJson(std::nullopt) == "[]", "missing permissions must store an empty array");
-    require(service::role::permissionsJson(permissionList({ "iot:device:query", "a\"b" })) == R"(["iot:device:query","a\"b"])",
-            "role permissions are not encoded as a JSON string array");
+    require(service::role::permissionsJson(permissionList({ "iot:device:query", "a\"b" })) == R"(["iot:device:query","a\"b"])", "role permissions are not encoded as a JSON string array");
     const std::string longest(128, 'p');
-    require(service::role::permissionsJson(permissionList({ longest })) == "[\"" + longest + "\"]",
-            "128-character permission code rejected");
+    require(service::role::permissionsJson(permissionList({ longest })) == "[\"" + longest + "\"]", "128-character permission code rejected");
     requirePermissionRejected({ "" }, "权限编码不能为空且不能超过 128 个字符");
     requirePermissionRejected({ std::string(129, 'p') }, "权限编码不能为空且不能超过 128 个字符");
     requirePermissionRejected({ "iot:device:query", "bad,permission" }, "权限编码不能包含逗号");
@@ -162,8 +166,7 @@ void requireWorkerMetricSnapshotContract() {
     const auto worker1 = service::message::worker_metrics::snapshotId(1, "test");
     require(worker0 != worker1, "worker snapshots share an identity");
     require(worker0 == "test:worker:0", "snapshot omits process and worker identity");
-    require(worker0 != service::message::worker_metrics::snapshotId(0, "other"),
-            "snapshots from different processes share an identity");
+    require(worker0 != service::message::worker_metrics::snapshotId(0, "other"), "snapshots from different processes share an identity");
 }
 
 } // namespace

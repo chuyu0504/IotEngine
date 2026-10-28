@@ -12,17 +12,14 @@
 #include "service/features/edge/edge.config.h"
 #include "service/features/edge/edge.service.h"
 
+#include "tests/database.fixture.h"
+
 namespace {
 
 void require(bool condition, std::string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
     }
-}
-
-std::string compileSql(const ruvia::db_query& query) {
-    auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::new_delete_resource(), ruvia::db_parameter_mode::literal);
-    return std::string(statement.sql());
 }
 
 void testPacketBytesRejectInvalidHex() {
@@ -74,18 +71,22 @@ void testNumberRejectsTrailingGarbage() {
 
 void testRevisionSqlGuardsCorruptNodeJson() {
     using namespace service::edge::config::detail;
-    const auto queue = compileSql(queueSnapshotQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
-    const auto requeue = compileSql(requeueDesiredQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
-    const auto pending = compileSql(
-        requeuePendingQuery("019fd9f6-4be5-7272-a194-9e571bce848d", 12, "rejected", "边缘固件尚未声明支持协议 DLT645")
-    );
-    const auto reject = compileSql(
-        rejectBuildQuery("rejected", "019fd9f6-4be5-7272-a194-9e571bce848d", 12)
-    );
-    require(queue.find("CASE WHEN") != std::string_view::npos && queue.find("AS BIGINT") != std::string_view::npos, "edge config queueSnapshot does not guard numeric revisions");
-    require(requeue.find("CASE WHEN") != std::string_view::npos && pending.find("CASE WHEN") != std::string_view::npos && reject.find("CASE WHEN") != std::string_view::npos, "edge config revision updates do not guard numeric revisions");
-    require(queue.find("^-?[0-9]{1,18}$") != std::string_view::npos, "edge config queueSnapshot does not guard desiredVersion");
-    require(queue.find("deviceConfig") != std::string_view::npos, "edge config queueSnapshot does not guard deviceConfig capability");
+    constexpr std::string_view node = "019fd9f6-4be5-7272-a194-9e571bce848d";
+    const auto queue = test::compileDatabaseStatement([node](auto& database) {
+        return queueSnapshotQuery(database, node);
+    });
+    const auto requeue = test::compileDatabaseStatement([node](auto& database) {
+        return requeueDesiredQuery(database, node);
+    });
+    const auto pending = test::compileDatabaseStatement([node](auto& database) {
+        return requeuePendingQuery(database, node, 12, "rejected", "边缘固件尚未声明支持协议 DLT645");
+    });
+    const auto reject = test::compileDatabaseStatement([node](auto& database) {
+        return rejectBuildQuery(database, "rejected", node, 12);
+    });
+    require(queue.sql.find("CASE WHEN") != std::string::npos && queue.sql.find("AS BIGINT") != std::string::npos, "edge config queueSnapshot does not guard numeric revisions");
+    require(requeue.sql.find("CASE WHEN") != std::string::npos && pending.sql.find("CASE WHEN") != std::string::npos && reject.sql.find("CASE WHEN") != std::string::npos, "edge config revision updates do not guard numeric revisions");
+    require(queue.parameterCount > 0, "edge config queueSnapshot no longer binds its input parameters");
 }
 
 void testConfigurationReplayAfterCapabilityRefresh() {

@@ -13,8 +13,7 @@ void require(bool value, const char* reason) {
 
 void validate(std::string_view raw) {
     const auto body = ruvia::from_json<service::protocol::ExpressionValidateBody>(raw);
-    require(body.has_value(), "validate body did not parse");
-    service::protocol::ProtocolService::validateExpression(*body);
+    service::protocol::ProtocolService::validateExpression(body);
 }
 
 std::string rejection(std::string_view raw) {

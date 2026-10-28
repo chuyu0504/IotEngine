@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <ruvia/core/event_loop_pool.h>
-#include <ruvia/web/redis/redis_client.h>
+#include <ruvia/web/redis/redis.h>
 
 #include "service/features/telemetry/latest/latest.service.h"
 

@@ -8,6 +8,7 @@ export type ManagementPageId =
     | 'fins'
     | 'mqtt'
     | 'mc'
+    | 'external_io'
     | 'device'
     | 'alert'
     | 'gb28181'
@@ -104,6 +105,12 @@ export const navigationGroups: readonly NavigationGroup[] = [
                 id: 'mc',
                 path: '/iot/mc',
                 title: 'MC / SLMP 配置',
+                permission: 'iot:protocol:query',
+            },
+            {
+                id: 'external_io',
+                path: '/iot/external-io',
+                title: '外部 IO 配置',
                 permission: 'iot:protocol:query',
             },
         ],

@@ -121,20 +121,22 @@ try {
         await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by) VALUES(${device},${name},${link},${model.id},${{device_code:'000000123456',remote_control:true}}::jsonb,${admin})`;
         await request(`/v1/device/${device}/debug`,{enabled:true},'PUT');
         let deviceConfig:Map<number,bigint|Buffer>|undefined,pointConfig:Map<number,bigint|Buffer>|undefined;
+        let deviceRevision:bigint|undefined,pointRevision:bigint|undefined,commit:Map<number,bigint|Buffer>|undefined;
         await until(async()=>{
             for(const payload of received.get(31)??[]){const item=decode(payload);
-                if(item.has(11)){const value=decode(item.get(11) as Buffer);if((value.get(1) as Buffer)?.equals(bytes(device)))deviceConfig=value;}
-                if(item.has(17)){const value=decode(item.get(17) as Buffer);if((value.get(1) as Buffer)?.equals(bytes(device)))pointConfig=value;}
+                if(item.has(11)){const value=decode(item.get(11) as Buffer);if((value.get(1) as Buffer)?.equals(bytes(device))){deviceConfig=value;deviceRevision=item.get(1) as bigint;}}
+                if(item.has(17)){const value=decode(item.get(17) as Buffer);if((value.get(1) as Buffer)?.equals(bytes(device))){pointConfig=value;pointRevision=item.get(1) as bigint;}}
             }
-            return !!deviceConfig && !!pointConfig;
-        },`${protocol} configuration not delivered`);
+            if(!deviceConfig||!pointConfig||typeof deviceRevision!=='bigint'||deviceRevision!==pointRevision)return false;
+            commit=(received.get(32)??[]).map(decode).find(value=>value.get(1)===deviceRevision);
+            return !!commit;
+        },`${protocol} configuration commit not delivered`);
         assert.equal(Number(deviceConfig!.get(5)),number);assert.equal((pointConfig!.get(2) as Buffer).toString(),point);
         const connection=decode(deviceConfig!.get(27) as Buffer);
         if(protocol==='MC'){assert.equal(connection.get(1),1n);assert.equal(connection.get(2),2n);}
         if(protocol==='FINS'){assert.equal(connection.get(8),10n);assert.equal(connection.get(11),20n);}
         if(protocol==='DLT645'){assert.equal(connection.get(13),2007n);assert.equal((connection.get(15) as Buffer).toString('hex'),'00123456');}
-        const commits=received.get(32)!;const commit=decode(commits[commits.length-1]);
-        socket.send(envelope(33,Buffer.concat([field(1,commit.get(1) as bigint),field(2,commit.get(2) as Buffer)])));
+        socket.send(envelope(33,Buffer.concat([field(1,commit!.get(1) as bigint),field(2,commit!.get(2) as Buffer)])));
         const report=crypto.randomUUID();
         const scalar=protocol==='DLT645'?Buffer.concat([field(1,7),field(8,'12345678901234.56')]):Buffer.concat([field(1,3),field(4,42)]);
         const record=Buffer.concat([field(1,bytes(report)),field(2,bytes(device)),field(3,bytes(link)),field(4,number),field(5,'POLL'),field(7,'UP'),field(8,Date.now()),field(9,Buffer.concat([field(1,point),field(2,'edge point'),field(3,'kWh'),field(4,scalar)])),field(14,Buffer.from([1,2])),field(15,bytes(report)),field(17,1),field(18,bytes(crypto.randomUUID()))]);

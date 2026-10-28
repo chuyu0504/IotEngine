@@ -32,7 +32,7 @@ class EdgeController final {
     const auto options = ruvia::websocket_route_config{ .lifecycle_ = {
                                                             .heartbeat_ = { .ping_interval_ = std::chrono::seconds(30), .pong_timeout_ = std::chrono::seconds(15) },
                                                             .close_handshake_timeout_ = std::chrono::seconds(5) } };
-    RUVIA_GET_WS_OPTIONS("/debug", debugConnection, options);
+    RUVIA_GET_WS("/debug", debugConnection, options);
     RUVIA_ROUTES_END
 
   private:
@@ -68,7 +68,7 @@ class EdgeManagementController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/edge", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN(EdgeManagementController)
-    RUVIA_GET_SSE("/events", pageEvents, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::query_model<EdgeEventsQuery>, ruvia::query_model<LogsQuery>);
+    RUVIA_GET("/events", pageEvents, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::query_model<EdgeEventsQuery>, ruvia::query_model<LogsQuery>);
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::query_model<EdgeListQuery>);
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<EdgeIdParams>);
     RUVIA_GET("/groups", groups, service::middleware::PermissionMiddleware<"iot:edge:query">);
@@ -84,7 +84,7 @@ class EdgeManagementController final {
     RUVIA_PUT("/:id/dtu", saveDtuChannel, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<DtuChannelBody>);
     RUVIA_DELETE("/:id/dtu/:channelId", deleteDtuChannel, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<DtuChannelParams>);
     RUVIA_POST("/:id/sync", sync, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>);
-    RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, service::middleware::PermissionMiddleware<"iot:edge:firmware">, ruvia::path_model<EdgeIdParams>, ruvia::query_model<FirmwareUploadBody>);
+    RUVIA_POST("/:id/firmware", uploadFirmware, service::middleware::PermissionMiddleware<"iot:edge:firmware">, ruvia::path_model<EdgeIdParams>, ruvia::query_model<FirmwareUploadBody>, ruvia::stream_body);
     RUVIA_POST("/:id/firmware/reuse", reuseFirmware, service::middleware::PermissionMiddleware<"iot:edge:firmware">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<FirmwareReuseBody>);
     RUVIA_POST("/:id/logs/capture", captureLogs, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<EdgeIdParams>);
     RUVIA_PUT("/:id/logs/level", logLevel, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<LogLevelBody>);
@@ -349,8 +349,9 @@ class EdgeManagementController final {
     ruvia::task<ruvia::http_response> saveDtuChannel(ruvia::context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto body = c.req().validated_json<DtuChannelBody>();
-        co_await EdgeService::instance().saveDtuChannel(request, c.req().validated<EdgeIdParams>().get<"id">().view(), body.value(), body.raw());
+        const auto& body = c.req().validated<DtuChannelBody>();
+        const auto raw = co_await c.req().text();
+        co_await EdgeService::instance().saveDtuChannel(request, c.req().validated<EdgeIdParams>().get<"id">().view(), body, raw);
         co_return c.json(service::common::operation(c, "ok"));
     }
 
@@ -391,7 +392,7 @@ class EdgeManagementController final {
         try {
             const auto directory = co_await EdgeService::instance().prepareFirmwareUpload(request, id);
             service::edge_node::FirmwareUpload file(service::utils::nextUuid(request.template worker_state<service::common::UuidV7State>()), directory, static_cast<std::uint64_t>(configuration.get<"sizeBytes">().value_));
-            auto& reader = c.req().get_body_reader();
+            auto& reader = c.req().body_reader();
             while (auto chunk = co_await reader.read()) {
                 auto remaining = *chunk;
                 while (!remaining.empty()) {

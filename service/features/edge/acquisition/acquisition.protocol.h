@@ -128,7 +128,7 @@ class RawAcquisition final {
         std::map<std::string, std::string> values;
         const auto merge = [&](std::string_view json) {
             const auto root = ruvia::json_value::parse(json);
-            const auto points = root ? root->get<ruvia::json_value>("values") : std::nullopt;
+            const auto points = root.get<ruvia::json_value>("values");
             if (!points || !points->is_object()) {
                 throw std::invalid_argument("invalid decoded acquisition values");
             }

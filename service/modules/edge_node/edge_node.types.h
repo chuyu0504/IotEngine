@@ -15,7 +15,7 @@
 #include <ruvia/core/stop_token.h>
 #include <ruvia/core/task.h>
 #include <ruvia/core/worker_handle.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/validation.h>
 
 #include "service/common/uuid.h"
@@ -121,7 +121,9 @@ RUVIA_MODEL(NodeStatusDto, RUVIA_OPTIONAL_FIELD(online, ruvia::bool_value), RUVI
 
 RUVIA_MODEL(VpnCapabilityDto, RUVIA_OPTIONAL_FIELD_NAME("supportsVpn", supportsVpn, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("wireguardVersion", wireguardVersion, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("agentVersion", agentVersion, ruvia::string), RUVIA_OPTIONAL_FIELD(publicKey, ruvia::string));
 
-RUVIA_MODEL(CapabilityDto, RUVIA_OPTIONAL_FIELD(serialDebug, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(terminal, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(vpn, VpnCapabilityDto));
+RUVIA_MODEL(ExternalIoChannelDto, RUVIA_OPTIONAL_FIELD(channel, ruvia::string), RUVIA_OPTIONAL_FIELD(kind, ruvia::string), RUVIA_OPTIONAL_FIELD(available, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(controllable, ruvia::bool_value));
+RUVIA_MODEL(ExternalIoCapabilityDto, RUVIA_OPTIONAL_FIELD(supported, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(channels, ruvia::array<ExternalIoChannelDto>));
+RUVIA_MODEL(CapabilityDto, RUVIA_OPTIONAL_FIELD(serialDebug, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(terminal, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(vpn, VpnCapabilityDto), RUVIA_OPTIONAL_FIELD(externalIo, ExternalIoCapabilityDto));
 
 RUVIA_MODEL(SerialDebugOpenRequest, RUVIA_REQUIRED_FIELD(path, ruvia::string, RUVIA_MAX(96, "串口路径过长")));
 
@@ -187,11 +189,11 @@ struct Request final {
             throw EventError(10002, "消息过大");
         }
         const auto value = ruvia::json_value::parse(wire);
-        if (!value || !value->is_object()) {
+        if (!value.is_object()) {
             throw EventError(10002, "消息格式无效");
         }
         unsigned fields = 0;
-        const auto validFields = value->for_each_field([&](std::string_view key, const ruvia::json_value&) {
+        const auto validFields = value.for_each_field([&](std::string_view key, const ruvia::json_value&) {
             const unsigned bit = key == "id" ? 1U : key == "event" ? 2U
                 : key == "data"                                    ? 4U
                                                                    : 0U;
@@ -201,9 +203,9 @@ struct Request final {
             fields |= bit;
             return true;
         });
-        const auto id = value->get<ruvia::string>("id");
-        const auto event = value->get<ruvia::string>("event");
-        const auto data = value->get<ruvia::json_value>("data");
+        const auto id = value.get<ruvia::string>("id");
+        const auto event = value.get<ruvia::string>("event");
+        const auto data = value.get<ruvia::json_value>("data");
         if (!id || !service::common::isUuid(id->view()) || !event || event->empty() ||
             event->view().size() > 128 || !data || !validFields || fields != 7U) {
             throw EventError(10002, "事件编号、名称或参数无效");

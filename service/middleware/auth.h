@@ -12,7 +12,9 @@
 
 namespace service::middleware {
 
-enum class AccessTokenState { valid, expired, invalid };
+enum class AccessTokenState { valid,
+                              expired,
+                              invalid };
 
 struct AccessTokenCheck {
     AccessTokenState state = AccessTokenState::invalid;
@@ -50,12 +52,12 @@ inline AuthenticatedUser requireAuth(ruvia::context& c) {
     }
     auto check = authPort(c).verifyAccessToken(c, *token);
     switch (check.state) {
-    case AccessTokenState::valid:
-        return AuthenticatedUser{ std::move(check.userId) };
-    case AccessTokenState::expired:
-        service::common::fail(service::common::kTokenExpiredErrorCode, "Token 已过期", 401);
-    case AccessTokenState::invalid:
-        break;
+        case AccessTokenState::valid:
+            return AuthenticatedUser{ std::move(check.userId) };
+        case AccessTokenState::expired:
+            service::common::fail(service::common::kTokenExpiredErrorCode, "Token 已过期", 401);
+        case AccessTokenState::invalid:
+            break;
     }
     service::common::fail(service::common::kTokenInvalidErrorCode, "Token 无效", 401);
 }
@@ -64,13 +66,11 @@ class AuthMiddleware final {
   public:
     ruvia::task<void> handle(ruvia::context& c, ruvia::next& next) {
         (void)requireAuth(c);
-        if (c.req().header("X-SSE-User").value_or("") == "1") {
-            const AuthenticatedUserSnapshot snapshot{ authPort(c).currentUserSnapshot };
-            const auto binding = c.bind_request_state(snapshot);
-            co_await next();
-        } else {
-            co_await next();
-        }
+        const AuthenticatedUserSnapshot snapshot{
+            c.req().header("X-SSE-User").value_or("") == "1" ? authPort(c).currentUserSnapshot : nullptr
+        };
+        const auto binding = c.bind_request_state(snapshot);
+        co_await next();
     }
 };
 

@@ -178,10 +178,8 @@ class TerminalService final {
             service::common::fail(17018, "终端操作已取消", 409);
         }
         const auto input = ruvia::from_json<service::message::terminal::Request>(payload, { .resource_ = c.pool() });
-        if (!input) {
-            service::common::fail(17018, "终端请求无效", 400);
-        }
-        const auto node = std::string(input->get<"nodeId">().view()), id = std::string(input->get<"sessionId">().view()), user = std::string(input->get<"userId">().view()), connection = std::string(input->get<"connectionId">().view());
+
+        const auto node = std::string(input.get<"nodeId">().view()), id = std::string(input.get<"sessionId">().view()), user = std::string(input.get<"userId">().view()), connection = std::string(input.get<"connectionId">().view());
         if (!service::common::isUuid(node) || !service::common::isUuid(id) || !service::common::isUuid(user) || !service::common::isUuid(connection)) {
             service::common::fail(17018, "终端会话身份无效", 400);
         }
@@ -191,8 +189,8 @@ class TerminalService final {
         const auto nodeKey = service::message::edge::sessionKey(node);
         const auto readyKey = TerminalBrowserRecord::readyKey(id);
         const auto dimensions = [&] {
-            const auto& columns = input->get<"columns">();
-            const auto& rows = input->get<"rows">();
+            const auto& columns = input.get<"columns">();
+            const auto& rows = input.get<"rows">();
             if (!columns || !rows || columns->value_ < 1 || columns->value_ > 1000 || rows->value_ < 1 || rows->value_ > 1000) {
                 service::common::fail(17018, "终端尺寸无效", 400);
             }
@@ -272,9 +270,9 @@ class TerminalService final {
             ruvia::boxed_array<service::message::terminal::Event> events(ruvia::model_options{ .resource_ = c.pool() });
             const auto outputKey = service::message::terminal::terminalOutputKey(node, id);
             const bool reliable = state->protocolVersion >= 5;
-            const auto& after = input->get<"after">();
-            const auto& ready = input->get<"ready">();
-            const auto& closed = input->get<"closed">();
+            const auto& after = input.get<"after">();
+            const auto& ready = input.get<"ready">();
+            const auto& closed = input.get<"closed">();
             const auto cursor = after ? after->value_ : 0;
             if (cursor < 0) {
                 service::common::fail(17018, "终端输出游标无效", 400);
@@ -305,7 +303,7 @@ class TerminalService final {
                     more = true;
                     break;
                 }
-                auto& event = events.emplace();
+                auto& event = events.emplace_back();
                 if (frame.has_ready()) {
                     event.set<"kind">("ready");
                 } else if (frame.has_close()) {
@@ -323,7 +321,7 @@ class TerminalService final {
             co_return service::message::rpc::encode(reply, c.pool());
         }
         if (operation == "terminal-input-status") {
-            const auto& sequence = input->get<"sequence">();
+            const auto& sequence = input.get<"sequence">();
             if (!sequence || sequence->value_ <= 0) {
                 service::common::fail(17018, "终端确认序号无效", 400);
             }
@@ -342,12 +340,12 @@ class TerminalService final {
         if (operation == "terminal-write") {
             std::string content;
             try {
-                const auto& encoded = input->get<"content">();
+                const auto& encoded = input.get<"content">();
                 content = service::utils::decode_base64(encoded ? encoded->view() : std::string_view{}, 4096);
             } catch (const service::utils::base64_decode_error&) {
                 service::common::fail(17018, "终端输入无效", 400);
             }
-            const auto& sequence = input->get<"sequence">();
+            const auto& sequence = input.get<"sequence">();
             if (!sequence || sequence->value_ < 0 || sequence->value_ > 9007199254740991LL || (state->protocolVersion >= 5 && sequence->value_ == 0)) {
                 service::common::fail(17018, "终端输入无效", 400);
             }
@@ -358,7 +356,7 @@ class TerminalService final {
                 data->set_sequence(static_cast<std::uint64_t>(sequence->value_));
             }
         } else if (operation == "terminal-output-ack") {
-            const auto& sequence = input->get<"sequence">();
+            const auto& sequence = input.get<"sequence">();
             if (!sequence || sequence->value_ <= 0 || sequence->value_ > 9007199254740991LL || state->protocolVersion < 5) {
                 service::common::fail(17018, "终端确认无效", 400);
             }

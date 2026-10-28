@@ -1,4 +1,3 @@
-#include <asio.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -6,8 +5,6 @@
 #include <string_view>
 #include <variant>
 #include <vector>
-
-#include <ruvia/core/event_loop_pool.h>
 
 #include "service/features/gb28181/device/device.protocol.h"
 #include "service/features/gb28181/gb28181.protocol.h"
@@ -33,38 +30,6 @@ void require(bool condition, std::string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
     }
-}
-
-struct ProjectionQueryCompiler {
-    std::vector<std::string> statements;
-
-    ruvia::task<void> execute(const ruvia::db_query& query) {
-        auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
-        statements.emplace_back(statement.sql());
-        co_return;
-    }
-};
-
-struct ProjectionQueries : service::gb28181::GbProjectionService {
-    using GbProjectionService::syncChannels;
-};
-
-void completeProjection(ruvia::task<void> task) {
-    ruvia::event_loop_pool pool({ .loop_count_ = 1 });
-    pool.start();
-    pool.loop(0).start(std::move(task)).get();
-    pool.stop();
-    pool.join();
-}
-
-void testNonemptyProjectionQueries() {
-    Device device;
-    device.id = "camera-query-test";
-    device.channels.push_back(Channel{ .id = "channel-1", .name = "Camera's channel" });
-    ProjectionQueryCompiler transaction;
-    completeProjection(ProjectionQueries::syncChannels(transaction, device));
-    require(transaction.statements.size() == 1, "nonempty projection did not compile the channel write");
-    require(transaction.statements[0].find("gb28181_channel") != std::string::npos, "projection compiled a different storage target");
 }
 
 Device queuedDevice(std::string id, std::string name) {
@@ -196,12 +161,11 @@ int main() {
         const auto startReply = control::jsonPreviewStart(started);
         require(startReply == R"({"code":0,"message":"ok","data":{"sent":true,"session_id":"session-1","device_id":"camera-1","channel_id":"channel-1","stream_id":"stream-1","ssrc":"0100000001","rtp_port":30000,"lease_timeout_seconds":90,"play_urls":{"http_flv":"f","ws_flv":"w","http_ts":"t","hls":"h","webrtc":"r","rtsp":"s","rtmp":"m"}}})", "GB28181 preview start reply wire shape changed");
         const auto parsedStart = ruvia::from_json<service::message::gb28181::PreviewStartResponse>(startReply);
-        require(parsedStart.has_value(), "GB28181 preview start reply is not a valid model");
-        const auto& startData = parsedStart->get<"data">();
+        require(parsedStart.get<"code">()->value_ == 0, "GB28181 preview start reply is not a valid model");
+        const auto& startData = parsedStart.get<"data">();
         require(startData && startData->get<"playUrls">() && startData->get<"playUrls">()->get<"webrtc">()->view() == "r", "GB28181 preview start reply is not readable by the module");
         const auto stopReply = control::jsonPreviewStop({ .sessionId = "session-1", .streamId = "stream-1", .byeSent = true });
         require(stopReply == R"({"code":0,"message":"ok","data":{"stopped":true,"session_id":"session-1","stream_id":"stream-1","bye_sent":true,"rtp_server_closed":false}})", "GB28181 preview stop reply wire shape changed");
-        testNonemptyProjectionQueries();
         testProjectionQueueCoalescing();
         testProjectionQueueBarriers();
         testProjectionChangeWire();

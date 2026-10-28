@@ -77,4 +77,17 @@ RUVIA_DB_ENTITY(SecurityAuditLogEntity, "security_audit_log",
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{"'{}'::jsonb"}}),
     RUVIA_DB_COLUMN(occurred_at, std::pmr::string,
         ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp_tz, .default_expression_ = ruvia::fixed_string{"now()"}}))
+RUVIA_DB_ENTITY(ExternalIoSourceEntity, "device_external_io",
+    RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }),
+    RUVIA_DB_COLUMN(link_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }),
+    RUVIA_DB_COLUMN(node_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }),
+    RUVIA_DB_COLUMN(protocol_config_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }),
+    RUVIA_DB_COLUMN(derived_config, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::jsonb, .default_expression_ = ruvia::fixed_string{ "'{}'::jsonb" } }))
+
+RUVIA_DB_ENTITY(ExternalIoBindingEntity, "device_external_io_binding",
+    RUVIA_DB_COLUMN(device_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }),
+    RUVIA_DB_COLUMN(point_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid, .primary_key_ = true }),
+    RUVIA_DB_COLUMN(node_id, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::uuid }),
+    RUVIA_DB_COLUMN(kind, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 2 }),
+    RUVIA_DB_COLUMN(channel, std::pmr::string, ruvia::db_column_options{ .data_type_ = ruvia::db_data_type::varchar, .length_ = 16 }))
 } // namespace service::device::entities

@@ -1,6 +1,6 @@
 #pragma once
-
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -48,18 +48,18 @@ class UserService {
             options.where_ = std::move(options.where_) && entities::UserEntity::column<"status">() == *status;
         }
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().template get_repository<entities::UserEntity>().count(options)
+            co_await c.db().template repository<entities::UserEntity>().count(options)
         );
         auto query = userSelect(c);
         query.where(options.where_)
             .order_by(entities::UserEntity::column_name<"id">(), ruvia::db_order_direction::desc)
-            .take(pageSize)
-            .skip((page - 1) * pageSize);
+            .limit(pageSize)
+            .offset((page - 1) * pageSize);
         const auto rows = co_await query.template get_many<entities::UserDetails>();
 
         ruvia::boxed_array<UserItemDto> users(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = users.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = users.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             fillBase(item, row);
             item.set<"roles">(co_await loadRoles(c, item.get<"id">()->view()));
         }
@@ -82,12 +82,14 @@ class UserService {
         }
         ruvia::db_find_options options;
         options.where_ = std::move(where);
-        options.order_ = { { "username" } };
+
+        const std::array<ruvia::db_find_order, 1> findOrder1{ { { "username" } } };
+        options.order_ = findOrder1;
         options.take_ = 100;
-        const auto rows = co_await c.db().template get_repository<entities::UserEntity>().find(options);
+        const auto rows = co_await c.db().template repository<entities::UserEntity>().find(options);
         ruvia::boxed_array<UserOptionDto> result(ruvia::model_options{ .resource_ = c.arena() });
         for (const auto& row : rows) {
-            auto& item = result.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& item = result.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             item.set<"id">(row.template get<"id">())
                 .template set<"username">(row.template get<"username">())
                 .template set<"nickname">(row.template is_null<"nickname">() ? std::string_view{} : row.template get<"nickname">());
@@ -101,7 +103,7 @@ class UserService {
         ruvia::db_find_options exists;
         exists.where_ = entities::UserEntity::column<"username">() == username &&
             entities::UserEntity::column<"deleted_at">().is_null();
-        if (co_await c.db().template get_repository<entities::UserEntity>().exists(exists)) {
+        if (co_await c.db().template repository<entities::UserEntity>().exists(exists)) {
             service::common::fail(12002, "用户名已存在", 409);
         }
         co_await validateRoles(c, body.get<"roleIds">());
@@ -146,7 +148,7 @@ class UserService {
         } else {
             user.set<"department_id">(departmentId);
         }
-        (void)co_await tx.template get_repository<entities::UserEntity>().insert(user);
+        (void)co_await tx.template repository<entities::UserEntity>().insert(user);
         co_await replaceRoles(tx, id, body.get<"roleIds">(), c.pool(), c.template worker_state<service::common::UuidV7State>());
         co_await tx.commit();
     }
@@ -155,7 +157,7 @@ class UserService {
     ruvia::task<void> update(Context& c, std::string_view id, const UpdateUserBody& body) {
         ruvia::db_find_options options;
         options.where_ = db::activeId<entities::UserEntity>(id);
-        const auto existing = co_await c.db().template get_repository<entities::UserEntity>().find_one(options);
+        const auto existing = co_await c.db().template repository<entities::UserEntity>().find_one(options);
         if (!existing) {
             service::common::fail(12001, "用户不存在", 404);
         }
@@ -178,7 +180,7 @@ class UserService {
         std::vector<ruvia::db_assignment> changes;
         bool changed = false;
         auto append = [&](std::string_view column, std::string_view value) {
-            changes.push_back({ std::string(column), query.value(value) });
+            changes.push_back({ column, query.value(value) });
             changed = true;
         };
         if (body.get<"nickname">()) {
@@ -197,13 +199,13 @@ class UserService {
             append(entities::UserEntity::column_name<"password_hash">(), service::utils::hashPassword(body.get<"password">()->view()));
         }
         if (body.get<"departmentId">()) {
-            changes.push_back({ std::string(entities::UserEntity::column_name<"department_id">()), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
+            changes.push_back({ entities::UserEntity::column_name<"department_id">(), query.cast(query.null_if(query.value(body.get<"departmentId">()->view()), query.value("")), ruvia::db_data_type::uuid) });
             changed = true;
         }
         auto tx = co_await c.db().begin_transaction();
         if (changed) {
-            changes.push_back({ std::string(entities::UserEntity::column_name<"updated_at">()), query.call("now") });
-            (void)co_await tx.template get_repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
+            changes.push_back({ entities::UserEntity::column_name<"updated_at">(), query.call("now") });
+            (void)co_await tx.template repository<entities::UserEntity>().update(entities::UserEntity::column<"id">() == id, changes);
         }
         if (body.get<"roleIds">()) {
             co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.pool(), c.template worker_state<service::common::UuidV7State>());
@@ -218,7 +220,7 @@ class UserService {
         }
         ruvia::db_find_options options;
         options.where_ = db::activeId<entities::UserEntity>(id);
-        const auto user = co_await c.db().template get_repository<entities::UserEntity>().find_one(options);
+        const auto user = co_await c.db().template repository<entities::UserEntity>().find_one(options);
         if (!user) {
             service::common::fail(12001, "用户不存在", 404);
         }
@@ -230,7 +232,7 @@ class UserService {
             { "deleted_at", expressions.call("now") },
             { "updated_at", expressions.call("now") }
         };
-        (void)co_await c.db().template get_repository<entities::UserEntity>().update(
+        (void)co_await c.db().template repository<entities::UserEntity>().update(
             entities::UserEntity::column<"id">() == id,
             deletionChanges
         );
@@ -242,7 +244,7 @@ class UserService {
         using namespace ruvia;
         using entities::UserEntity;
         db_query expressions(c.pool());
-        auto query = c.db().template get_repository<UserEntity>().create_query_builder("u");
+        auto query = c.db().template repository<UserEntity>().query_builder("u");
         query.select({ { "id", UserEntity::column<"id">().expression(expressions, "u") }, { "username", UserEntity::column<"username">().expression(expressions, "u") }, { "nickname", expressions.coalesce({ expressions.cast(UserEntity::column<"nickname">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "phone", expressions.coalesce({ expressions.cast(UserEntity::column<"phone">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "email", expressions.coalesce({ expressions.cast(UserEntity::column<"email">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "status", UserEntity::column<"status">().expression(expressions, "u") }, { "department_id", expressions.coalesce({ expressions.cast(UserEntity::column<"department_id">().expression(expressions, "u"), db_data_type::text), expressions.value("") }) }, { "department_name", expressions.coalesce({ expressions.cast(service::dept::entities::DeptEntity::column<"name">().expression(expressions, "d"), db_data_type::text), expressions.value("") }) }, { "created_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"created_at">().expression(expressions, "u") }) }, { "updated_at", expressions.call("iot_utc_timestamp", { UserEntity::column<"updated_at">().expression(expressions, "u") }) } });
         query.template join<service::dept::entities::DeptEntity>(db_join_type::left, "d", expressions.binary(service::dept::entities::DeptEntity::column<"id">().expression(expressions, "d"), db_binary_operator::equal, UserEntity::column<"department_id">().expression(expressions, "u")));
         return query;
@@ -265,7 +267,7 @@ class UserService {
     ruvia::task<ruvia::boxed_array<service::role::RoleOptionDto>>
     loadRoles(Context& c, std::string_view userId) {
         ruvia::db_query expressions(c.pool());
-        auto query = c.db().template get_repository<service::role::entities::RoleEntity>().create_query_builder("r");
+        auto query = c.db().template repository<service::role::entities::RoleEntity>().query_builder("r");
         query.select({ { "id" }, { "name" }, { "code" } })
             .template join<entities::UserRoleEntity>(ruvia::db_join_type::inner, "ur", expressions.binary(entities::UserRoleEntity::column<"role_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, service::role::entities::RoleEntity::column<"id">().expression(expressions, "r")))
             .where(expressions.binary(entities::UserRoleEntity::column<"user_id">().expression(expressions, "ur"), ruvia::db_binary_operator::equal, expressions.value(userId)))
@@ -276,7 +278,7 @@ class UserService {
             ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& row : rows) {
-            auto& role = roles.emplace(ruvia::model_options{ .resource_ = c.arena() });
+            auto& role = roles.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
             role.set<"id">(row.template get<"id">())
                 .template set<"name">(row.template get<"name">())
                 .template set<"code">(row.template get<"code">());
@@ -298,7 +300,7 @@ class UserService {
             ruvia::db_find_options options;
             options.where_ = db::activeId<service::role::entities::RoleEntity>(roleIdValue) &&
                 service::role::entities::RoleEntity::column<"status">() == "enabled";
-            if (!co_await c.db().template get_repository<service::role::entities::RoleEntity>().exists(options)) {
+            if (!co_await c.db().template repository<service::role::entities::RoleEntity>().exists(options)) {
                 service::common::fail(12005, "包含无效角色", 400);
             }
         }
@@ -312,7 +314,7 @@ class UserService {
         ruvia::db_find_options options;
         options.where_ = db::activeId<service::dept::entities::DeptEntity>(departmentId->view()) &&
             service::dept::entities::DeptEntity::column<"status">() == "enabled";
-        if (!co_await c.db().template get_repository<service::dept::entities::DeptEntity>().exists(options)) {
+        if (!co_await c.db().template repository<service::dept::entities::DeptEntity>().exists(options)) {
             service::common::fail(12006, "部门不存在或已禁用", 400);
         }
     }
@@ -324,7 +326,7 @@ class UserService {
             options.where_ =
                 db::activeId<service::role::entities::RoleEntity>(roleId.view()) &&
                 service::role::entities::RoleEntity::column<"code">() == service::role::kSuperAdminRoleCode;
-            if (co_await c.db().template get_repository<service::role::entities::RoleEntity>().exists(options)) {
+            if (co_await c.db().template repository<service::role::entities::RoleEntity>().exists(options)) {
                 co_return true;
             }
         }
@@ -332,7 +334,7 @@ class UserService {
     }
 
     static ruvia::task<void> replaceRoles(ruvia::db_transaction& tx, std::string_view userId, const ruvia::array<ruvia::string>& roleIds, std::pmr::memory_resource* resource, service::common::UuidV7State& uuidState) {
-        (void)co_await tx.template get_repository<entities::UserRoleEntity>().delete_by(
+        (void)co_await tx.template repository<entities::UserRoleEntity>().delete_by(
             entities::UserRoleEntity::column<"user_id">() == userId
         );
         for (const auto& roleId : roleIds) {
@@ -340,7 +342,7 @@ class UserService {
             binding.set<"id">(service::utils::nextUuid(uuidState));
             binding.set<"user_id">(userId);
             binding.set<"role_id">(roleId.view());
-            (void)co_await tx.template get_repository<entities::UserRoleEntity>().upsert(binding, { .do_nothing_ = true });
+            (void)co_await tx.template repository<entities::UserRoleEntity>().upsert(binding, { .do_nothing_ = true });
         }
     }
 };

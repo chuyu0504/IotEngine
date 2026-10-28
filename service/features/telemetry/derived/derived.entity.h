@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "service/features/telemetry/derived/derived.protocol.h"
 #include "service/utils/crypto.h"
 
@@ -7,9 +9,21 @@ namespace service::telemetry::derived {
 // Dynamic device/configuration keys and a CAS transition are not expressible by
 // Redis ORM. The stored value is the complete bounded calculation state.
 struct StateRecord final {
-    static std::string key(std::string_view deviceId, std::string_view configuration) {
+    static std::string key(std::string_view deviceId, std::string_view configuration, std::span<const std::string_view> sources = {}, std::string_view snapshotDigest = {}) {
         // 时间基准升级后不复用按接收时间保存的输入；原状态保留原有 TTL 自动回收。
-        return "iot:derived:state:" + std::string(deviceId) + ':' + utils::sha256("event-time-v1:" + std::string(configuration));
+        std::string identity = "event-time-v1:";
+        if (sources.empty()) {
+            identity += configuration;
+        } else {
+            identity += "device-sources-v1:" + std::to_string(configuration.size()) + ':' + std::string(configuration);
+            for (const auto source : sources) {
+                identity += ':' + std::to_string(source.size()) + ':' + std::string(source);
+            }
+        }
+        if (!snapshotDigest.empty()) {
+            identity += ":snapshot:" + std::string(snapshotDigest);
+        }
+        return "iot:derived:state:" + std::string(deviceId) + ':' + utils::sha256(identity);
     }
 
     static std::string encode(const State& state) {
@@ -72,16 +86,14 @@ struct StateRecord final {
             return state;
         }
         const auto value = ruvia::json_value::parse(wire);
-        if (!value) {
-            throw std::runtime_error("invalid derived state");
-        }
-        if (const auto latest = value->get<ruvia::json_value>("latest")) {
+
+        if (const auto latest = value.get<ruvia::json_value>("latest")) {
             (void)latest->for_each_field([&](std::string_view id, const ruvia::json_value& raw) {
                 state.latest[std::string(id)] = sample(raw, 0);
                 return true;
             });
         }
-        if (const auto windows = value->get<ruvia::json_value>("windows")) {
+        if (const auto windows = value.get<ruvia::json_value>("windows")) {
             (void)windows->for_each_field([&](std::string_view id, const ruvia::json_value& item) {
                 auto& window = state.windows[std::string(id)];
                 if (const auto unit = item.get<ruvia::string>("unit")) {

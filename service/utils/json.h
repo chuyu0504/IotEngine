@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/web/model_object.h>
+#include <ruvia/web/model.h>
 
 namespace service::utils {
 
@@ -77,13 +77,27 @@ inline void appendJsonEscaped(std::string& output, std::string_view value) {
         }
         ++index;
         switch (ch) {
-            case '"': output += "\\\""; break;
-            case '\\': output += "\\\\"; break;
-            case '\b': output += "\\b"; break;
-            case '\f': output += "\\f"; break;
-            case '\n': output += "\\n"; break;
-            case '\r': output += "\\r"; break;
-            case '\t': output += "\\t"; break;
+            case '"':
+                output += "\\\"";
+                break;
+            case '\\':
+                output += "\\\\";
+                break;
+            case '\b':
+                output += "\\b";
+                break;
+            case '\f':
+                output += "\\f";
+                break;
+            case '\n':
+                output += "\\n";
+                break;
+            case '\r':
+                output += "\\r";
+                break;
+            case '\t':
+                output += "\\t";
+                break;
             default:
                 if (ch < 0x20) {
                     appendJsonUnicodeEscape(output, ch);
@@ -162,10 +176,7 @@ inline std::vector<std::string> jsonFieldSegments(std::string_view path) {
 }
 
 inline std::optional<ruvia::json_value> jsonField(const ruvia::json_value& root, std::string_view path) {
-    auto current = ruvia::json_value::parse(root.view());
-    if (!current) {
-        return std::nullopt;
-    }
+    std::optional<ruvia::json_value> current{ ruvia::json_value::parse(root.view()) };
     for (const auto& key : jsonFieldSegments(path)) {
         if (current->is_object()) {
             current = current->get<ruvia::json_value>(key);
@@ -195,22 +206,25 @@ inline std::optional<ruvia::json_value> jsonField(const ruvia::json_value& root,
     return current;
 }
 
-
 // Compile JSON value placeholders without interpreting their domain-specific meaning.
 class JsonValueTemplate final {
   public:
     using Tokens = std::set<std::string, std::less<>>;
     using Values = std::map<std::string, std::string, std::less<>>;
 
-    JsonValueTemplate(std::string_view input, const Tokens& allowed, const Tokens& sparse = {}, bool unique = false,
-                      std::size_t maxBytes = 16384, unsigned maxDepth = 32, const Tokens& prefixes = {}) : capacity_(input.size()) {
-        if (input.empty() || input.size() > maxBytes) throw std::invalid_argument("JSON 模板字节长度无效");
+    JsonValueTemplate(std::string_view input, const Tokens& allowed, const Tokens& sparse = {}, bool unique = false, std::size_t maxBytes = 16384, unsigned maxDepth = 32, const Tokens& prefixes = {}) : capacity_(input.size()) {
+        if (input.empty() || input.size() > maxBytes) {
+            throw std::invalid_argument("JSON 模板字节长度无效");
+        }
         const auto root = ruvia::json_value::parse(input);
-        if (!root || !root->is_object()) throw std::invalid_argument("JSON 模板根节点必须是对象");
-        root_ = parse(*root, allowed, sparse, unique, 0, maxDepth, prefixes);
+        if (!root.is_object()) {
+            throw std::invalid_argument("JSON 模板根节点必须是对象");
+        }
+        root_ = parse(root, allowed, sparse, unique, 0, maxDepth, prefixes);
     }
 
     bool references(std::string_view token) const { return references_.contains(token); }
+
     const Tokens& references() const noexcept { return references_; }
 
     std::string render(const Values& values) const {
@@ -224,7 +238,10 @@ class JsonValueTemplate final {
     struct ObjectMember;
 
     struct Node {
-        enum class Kind { Scalar, Object, Array, Token } kind = Kind::Scalar;
+        enum class Kind { Scalar,
+                          Object,
+                          Array,
+                          Token } kind = Kind::Scalar;
         std::string value;
         bool sparse = false;
         std::vector<ObjectMember> members;
@@ -237,13 +254,17 @@ class JsonValueTemplate final {
     };
 
     Node parse(const ruvia::json_value& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth, const Tokens& prefixes) {
-        if (depth > maxDepth) throw std::invalid_argument("JSON 模板嵌套层数过多");
+        if (depth > maxDepth) {
+            throw std::invalid_argument("JSON 模板嵌套层数过多");
+        }
         Node node;
         if (raw.is_object()) {
             node.kind = Node::Kind::Object;
             Tokens keys;
             (void)raw.for_each_field([&](std::string_view key, const ruvia::json_value& child) {
-                if (!keys.emplace(key).second) throw std::invalid_argument("JSON 模板对象键重复");
+                if (!keys.emplace(key).second) {
+                    throw std::invalid_argument("JSON 模板对象键重复");
+                }
                 node.members.emplace_back(jsonQuoted(key), parse(child, allowed, sparse, unique, depth + 1, maxDepth, prefixes));
                 return true;
             });
@@ -255,9 +276,15 @@ class JsonValueTemplate final {
             });
         } else if (const auto text = raw.get<ruvia::string>(); text && text->view().starts_with('$')) {
             const auto token = text->view();
-            const bool named = std::any_of(prefixes.begin(), prefixes.end(), [&](const auto& prefix) { return token.starts_with(prefix) && token.size() > prefix.size(); });
-            if (!allowed.contains(token) && !named) throw std::invalid_argument("JSON 模板包含未知占位符: " + std::string(token));
-            if (!references_.emplace(token).second && unique) throw std::invalid_argument("JSON 模板占位符重复");
+            const bool named = std::any_of(prefixes.begin(), prefixes.end(), [&](const auto& prefix) {
+                return token.starts_with(prefix) && token.size() > prefix.size();
+            });
+            if (!allowed.contains(token) && !named) {
+                throw std::invalid_argument("JSON 模板包含未知占位符: " + std::string(token));
+            }
+            if (!references_.emplace(token).second && unique) {
+                throw std::invalid_argument("JSON 模板占位符重复");
+            }
             node.kind = Node::Kind::Token;
             node.value = token;
             node.sparse = sparse.contains(token);
@@ -269,10 +296,14 @@ class JsonValueTemplate final {
 
     static void append(const Node& node, const Values& values, std::string& result) {
         switch (node.kind) {
-            case Node::Kind::Scalar: result += node.value; return;
+            case Node::Kind::Scalar:
+                result += node.value;
+                return;
             case Node::Kind::Token: {
                 const auto value = values.find(node.value);
-                if (value == values.end()) throw std::invalid_argument("JSON 模板占位符缺少值: " + node.value);
+                if (value == values.end()) {
+                    throw std::invalid_argument("JSON 模板占位符缺少值: " + node.value);
+                }
                 result += value->second;
                 return;
             }
@@ -280,8 +311,12 @@ class JsonValueTemplate final {
                 result += '{';
                 bool first = true;
                 for (const auto& [key, child] : node.members) {
-                    if (child.kind == Node::Kind::Token && child.sparse && !values.contains(child.value)) continue;
-                    if (!first) result += ',';
+                    if (child.kind == Node::Kind::Token && child.sparse && !values.contains(child.value)) {
+                        continue;
+                    }
+                    if (!first) {
+                        result += ',';
+                    }
                     first = false;
                     result += key;
                     result += ':';
@@ -294,7 +329,9 @@ class JsonValueTemplate final {
                 result += '[';
                 bool first = true;
                 for (const auto& child : node.elements) {
-                    if (!first) result += ',';
+                    if (!first) {
+                        result += ',';
+                    }
                     first = false;
                     append(child, values, result);
                 }

@@ -7,14 +7,16 @@ import type { PaginatedResult } from '@/types/pagination';
 import { getGroupKey, normalizeGroupName } from '@/utils/group_key';
 import { fetchAllPages } from '@/utils/pagination';
 import { createQueryKeys } from '@/utils/query';
+import type { Edge } from '../edge_node/edge_node.types';
 import * as api from './protocol.api';
 import { formatTsapValue } from './protocol.schema';
 import type {
-    Dlt645PointCreateDto,
     DerivedPoint,
     DeviceTypeFormValues,
     DeviceTypeTimingConfig,
+    Dlt645PointCreateDto,
     ExpressionTestRequest,
+    ExternalIoConfig,
     GroupSection,
     Modbus,
     MqttPreviewRequest,
@@ -27,6 +29,25 @@ import type {
     SaveProtocolConfigParams,
     SL651,
 } from './protocol.types';
+
+export function externalIoCompatible(
+    config: ExternalIoConfig,
+    capability?: Edge.Capability
+): boolean {
+    const io = capability?.externalIo;
+    return (
+        io?.supported === true &&
+        config.points.length > 0 &&
+        config.points.every((point) =>
+            io.channels.some(
+                (channel) =>
+                    channel.channel === point.channel &&
+                    channel.kind === point.kind &&
+                    (point.kind !== 'DO' || channel.controllable)
+            )
+        )
+    );
+}
 
 const MAX_PAGE_SIZE = 1000;
 

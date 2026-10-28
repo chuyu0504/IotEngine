@@ -3,10 +3,12 @@
 // 数据库配置读取与 Collector 配置投影编排。
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -19,6 +21,7 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_handle.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/db/db_repository.h>
 #include <ruvia/web/redis/redis_handle.h>
 
 #include "service/common/message.h"
@@ -36,6 +39,49 @@
 #include "service/utils/uuid.h"
 
 namespace service::configuration {
+
+// Configuration writers take the exclusive transaction lock in database triggers.
+// Consumers retain this shared lock through their final database/Redis side effects.
+template <typename Context>
+ruvia::task<ruvia::db_transaction> lockAcquisition(Context& context) {
+    auto transaction = co_await context.db("acquisition-fence").begin_transaction();
+    ruvia::db_query q, singleton;
+    singleton.values({ singleton.value(1) });
+    auto lock = transaction.template repository<persistence::AcquisitionEpochEntity>().query_builder();
+    lock.with("singleton", singleton).from_cte("singleton").select({ { "locked", q.call("pg_advisory_xact_lock_shared", { q.cast(q.value(service::message::lock::kAcquisitionConfiguration), ruvia::db_data_type::big_int) }) } });
+    (void)co_await lock.get_raw_many();
+    co_return transaction;
+}
+
+template <typename Database>
+ruvia::task<std::int64_t> acquisitionEpoch(Database& database, std::string_view nodeId) {
+    ruvia::db_find_options options;
+    options.where_ = persistence::AcquisitionEpochEntity::column<"node_id">() == nodeId;
+    const auto row = co_await database.template repository<persistence::AcquisitionEpochEntity>().find_one(options);
+    co_return row ? row->template get<"epoch">() : -1;
+}
+
+template <typename Context>
+ruvia::task<std::optional<ruvia::db_transaction>> fenceAcquisition(Context& context, std::vector<service::message::ParsedDeviceMessage>& messages) {
+    if (std::ranges::none_of(messages, [](const auto& value) {
+            return !value.configurationDigest.empty();
+        })) {
+        co_return std::nullopt;
+    }
+    auto transaction = co_await lockAcquisition(context);
+    std::map<std::string, std::int64_t, std::less<>> epochs;
+    for (auto& value : messages) {
+        if (value.configurationDigest.empty() || value.historyOnly) {
+            continue;
+        }
+        auto found = epochs.find(value.connectionId);
+        if (found == epochs.end()) {
+            found = epochs.emplace(value.connectionId, co_await acquisitionEpoch(transaction, value.connectionId)).first;
+        }
+        value.historyOnly = value.configurationEpoch < 0 || value.configurationEpoch != found->second;
+    }
+    co_return std::move(transaction);
+}
 
 // DTU 注册包/心跳包内容 → 字节。
 inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_view content) {
@@ -135,21 +181,19 @@ bool cellBool(const Row& row, std::size_t column) {
 }
 
 // 所有未删除设备的同一模型联表；关联对象的删除/启停与执行位置由调用边界选择。
-inline void joinDeviceModels(ruvia::db_query& query) {
+inline void joinDeviceModels(auto& target, ruvia::db_query& query) {
     using Op = ruvia::db_binary_operator;
     using Device = persistence::DeviceEntity;
     using Link = persistence::LinkEntity;
     using Model = persistence::DeviceModelEntity;
-    query.from(Device::table_name(), "d")
-        .join(ruvia::db_join_type::inner, Link::table_name(), query.binary(Link::column<"id">().expression(query, "l"), Op::equal, Device::column<"link_id">().expression(query, "d")), "l")
-        .join(ruvia::db_join_type::inner, Model::table_name(), query.binary(Model::column<"device_id">().expression(query, "p"), Op::equal, Device::column<"id">().expression(query, "d")), "p")
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, Device::column<"deleted_at">().expression(query, "d")));
+    target.template join<Link>(ruvia::db_join_type::inner, "l", query.binary(Link::column<"id">().expression(query, "l"), Op::equal, Device::column<"link_id">().expression(query, "d"))).template join<Model>(ruvia::db_join_type::inner, "p", query.binary(Model::column<"device_id">().expression(query, "p"), Op::equal, Device::column<"id">().expression(query, "d"))).and_where(query.unary(ruvia::db_unary_operator::is_null, Device::column<"deleted_at">().expression(query, "d")));
 }
 
 } // namespace detail
 
 // 设备参数与协议默认值的唯一数据库投影；调用方追加真实执行上下文的筛选。
-inline ruvia::db_query deviceModelsQuery() {
+template <typename Database>
+auto deviceModelsQuery(Database&& database) {
     using Op = ruvia::db_binary_operator;
     using Type = ruvia::db_data_type;
     using Device = persistence::DeviceEntity;
@@ -169,78 +213,20 @@ inline ruvia::db_query deviceModelsQuery() {
     const auto registration = deviceQuery.binary(parameters, Op::json_get, deviceQuery.value("registration"));
     const auto connection = deviceQuery.binary(config, Op::json_get, deviceQuery.value("connection"));
     const auto packet = deviceQuery.binary(config, Op::json_get, deviceQuery.value("packet"));
-    deviceQuery.select({
-        deviceQuery.cast(Device::column<"id">().expression(deviceQuery, "d"), Type::text),
-        jsonText(parameters, "device_code"),
-        Device::column<"name">().expression(deviceQuery, "d"),
-        deviceQuery.cast(Device::column<"link_id">().expression(deviceQuery, "d"), Type::text),
-        jsonText(Link::column<"endpoint">().expression(deviceQuery, "l"), "mode"),
-        defaultText(parameters, "target_id", ""),
-        Model::column<"protocol">().expression(deviceQuery, "p"),
-        defaultText(parameters, "timezone", service::message::device::kDefaultTimezone),
-        deviceQuery.coalesce({ deviceQuery.null_if(jsonText(parameters, "online_timeout"), deviceQuery.value("")), deviceQuery.value("300") }),
-        defaultText(heartbeat, "mode", "OFF"),
-        defaultText(heartbeat, "content", ""),
-        defaultText(registration, "mode", "OFF"),
-        defaultText(registration, "content", ""),
-        defaultText(parameters, "modbus_mode", "TCP"),
-        deviceQuery.coalesce({ deviceQuery.null_if(jsonText(parameters, "slave_id"), deviceQuery.value("")), deviceQuery.value("1") }),
-        defaultText(connection, "mode", "RACK_SLOT"),
-        defaultText(connection, "connectionType", "PG"),
-        defaultText(connection, "rack", "0"),
-        defaultText(connection, "slot", "1"),
-        defaultText(connection, "localTSAP", "0100"),
-        defaultText(connection, "remoteTSAP", "0101"),
-        deviceQuery.coalesce({ jsonText(connection, "handshakeTimeout"), jsonText(config, "handshakeTimeout"), deviceQuery.value("5000") }),
-        deviceQuery.coalesce({ jsonText(connection, "directProbeTimeout"), jsonText(config, "directProbeTimeout"), deviceQuery.value("5000") }),
-        deviceQuery.coalesce({ jsonText(connection, "probeMode"), jsonText(config, "probeMode"), deviceQuery.value("STANDARD") }),
-        deviceQuery.coalesce({ deviceQuery.null_if(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("300") }),
-        defaultText(config, "storagePolicy", "report"),
-        defaultText(config, "commandFastReadDuration", "60"),
-        defaultText(config, "commandFastReadInterval", "1"),
-        defaultText(packet, "mergeGap", "100"),
-        defaultText(packet, "maxQuantity", "125"),
-        deviceQuery.cast(Model::column<"id">().expression(deviceQuery, "p"), Type::text),
-        defaultText(config, "responseMode", "M1"),
-        Device::column<"debug_enabled">().expression(deviceQuery, "d"),
-        defaultText(connection, "frame", "3E"),
-        defaultText(connection, "version", "2007"),
-        defaultText(connection, "network", "0"),
-        defaultText(connection, "station", "255"),
-        defaultText(connection, "moduleIo", "1023"),
-        defaultText(connection, "multidrop", "0"),
-        defaultText(connection, "monitoringTimer", "16"),
-        defaultText(connection, "destinationNetwork", "0"),
-        defaultText(connection, "destinationNode", "0"),
-        defaultText(connection, "destinationUnit", "0"),
-        defaultText(connection, "sourceNetwork", "0"),
-        defaultText(connection, "sourceNode", "0"),
-        defaultText(connection, "sourceUnit", "0"),
-        defaultText(connection, "wakeupBytes", "4"),
-        defaultText(connection, "writePassword", ""),
-        defaultText(connection, "operatorCode", ""),
-        deviceQuery.cast(config, Type::text),
-        defaultText(parameters, "parameters", "{}"),
-        deviceQuery.cast(Link::column<"endpoint">().expression(deviceQuery, "l"), Type::text),
-        Link::column<"name">().expression(deviceQuery, "l"),
-        Link::column<"status">().expression(deviceQuery, "l"),
-        Link::column<"debug_enabled">().expression(deviceQuery, "l"),
-        Device::column<"status">().expression(deviceQuery, "d"),
-        Model::column<"enabled">().expression(deviceQuery, "p"),
-        Link::column<"execution">().expression(deviceQuery, "l"),
-        deviceQuery.binary(deviceQuery.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(deviceQuery, "l")), Op::and_value, deviceQuery.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(deviceQuery, "p"))),
-    });
-    detail::joinDeviceModels(deviceQuery);
-    deviceQuery.add_order_by(Device::column<"link_id">().expression(deviceQuery, "d")).add_order_by(Device::column<"id">().expression(deviceQuery, "d"));
-    return deviceQuery;
+    auto deviceQueryBuilder = database.template repository<Device>().query_builder("d");
+    deviceQueryBuilder.select({ { "id", deviceQuery.cast(Device::column<"id">().expression(deviceQuery, "d"), Type::text) }, { "value1", jsonText(parameters, "device_code") }, { "name", Device::column<"name">().expression(deviceQuery, "d") }, { "link_id", deviceQuery.cast(Device::column<"link_id">().expression(deviceQuery, "d"), Type::text) }, { "endpoint", jsonText(Link::column<"endpoint">().expression(deviceQuery, "l"), "mode") }, { "value5", defaultText(parameters, "target_id", "") }, { "protocol", Model::column<"protocol">().expression(deviceQuery, "p") }, { "value7", defaultText(parameters, "timezone", service::message::device::kDefaultTimezone) }, { "value8", deviceQuery.coalesce({ deviceQuery.null_if(jsonText(parameters, "online_timeout"), deviceQuery.value("")), deviceQuery.value("300") }) }, { "value9", defaultText(heartbeat, "mode", "OFF") }, { "value10", defaultText(heartbeat, "content", "") }, { "value11", defaultText(registration, "mode", "OFF") }, { "value12", defaultText(registration, "content", "") }, { "value13", defaultText(parameters, "modbus_mode", "TCP") }, { "value14", deviceQuery.coalesce({ deviceQuery.null_if(jsonText(parameters, "slave_id"), deviceQuery.value("")), deviceQuery.value("1") }) }, { "value15", defaultText(connection, "mode", "RACK_SLOT") }, { "value16", defaultText(connection, "connectionType", "PG") }, { "value17", defaultText(connection, "rack", "0") }, { "value18", defaultText(connection, "slot", "1") }, { "value19", defaultText(connection, "localTSAP", "0100") }, { "value20", defaultText(connection, "remoteTSAP", "0101") }, { "value21", deviceQuery.coalesce({ jsonText(connection, "handshakeTimeout"), jsonText(config, "handshakeTimeout"), deviceQuery.value("5000") }) }, { "value22", deviceQuery.coalesce({ jsonText(connection, "directProbeTimeout"), jsonText(config, "directProbeTimeout"), deviceQuery.value("5000") }) }, { "value23", deviceQuery.coalesce({ jsonText(connection, "probeMode"), jsonText(config, "probeMode"), deviceQuery.value("STANDARD") }) }, { "value24", deviceQuery.coalesce({ deviceQuery.null_if(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("300") }) }, { "value25", defaultText(config, "storagePolicy", "report") }, { "value26", defaultText(config, "commandFastReadDuration", "60") }, { "value27", defaultText(config, "commandFastReadInterval", "1") }, { "value28", defaultText(packet, "mergeGap", "100") }, { "value29", defaultText(packet, "maxQuantity", "125") }, { "value30", deviceQuery.cast(Model::column<"id">().expression(deviceQuery, "p"), Type::text) }, { "value31", defaultText(config, "responseMode", "M1") }, { "debug_enabled", Device::column<"debug_enabled">().expression(deviceQuery, "d") }, { "value33", defaultText(connection, "frame", "3E") }, { "value34", defaultText(connection, "version", "2007") }, { "value35", defaultText(connection, "network", "0") }, { "value36", defaultText(connection, "station", "255") }, { "value37", defaultText(connection, "moduleIo", "1023") }, { "value38", defaultText(connection, "multidrop", "0") }, { "value39", defaultText(connection, "monitoringTimer", "16") }, { "value40", defaultText(connection, "destinationNetwork", "0") }, { "value41", defaultText(connection, "destinationNode", "0") }, { "value42", defaultText(connection, "destinationUnit", "0") }, { "value43", defaultText(connection, "sourceNetwork", "0") }, { "value44", defaultText(connection, "sourceNode", "0") }, { "value45", defaultText(connection, "sourceUnit", "0") }, { "value46", defaultText(connection, "wakeupBytes", "4") }, { "value47", defaultText(connection, "writePassword", "") }, { "value48", defaultText(connection, "operatorCode", "") }, { "value49", deviceQuery.cast(config, Type::text) }, { "value50", defaultText(parameters, "parameters", "{}") }, { "value51", deviceQuery.cast(Link::column<"endpoint">().expression(deviceQuery, "l"), Type::text) }, { "value52", Link::column<"name">().expression(deviceQuery, "l") }, { "status", Link::column<"status">().expression(deviceQuery, "l") }, { "value54", Link::column<"debug_enabled">().expression(deviceQuery, "l") }, { "value55", Device::column<"status">().expression(deviceQuery, "d") }, { "enabled", Model::column<"enabled">().expression(deviceQuery, "p") }, { "execution", Link::column<"execution">().expression(deviceQuery, "l") }, { "deleted_at", deviceQuery.binary(deviceQuery.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(deviceQuery, "l")), Op::and_value, deviceQuery.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(deviceQuery, "p"))) } });
+    detail::joinDeviceModels(deviceQueryBuilder, deviceQuery);
+    deviceQueryBuilder.add_order_by(Device::column<"link_id">().expression(deviceQuery, "d")).add_order_by(Device::column<"id">().expression(deviceQuery, "d"));
+
+    return deviceQueryBuilder;
 }
 
-template <typename Database>
-ruvia::task<std::vector<DeviceModel>> loadDeviceModels(Database& db, const ruvia::db_query& deviceQuery) {
+template <typename Database, typename Query>
+ruvia::task<std::vector<DeviceModel>> loadDeviceModels(Database& database, const Query& deviceQuery) {
     using detail::cell;
     using detail::cellBool;
     using detail::cellInt;
-    const auto rows = co_await db.query(deviceQuery);
+    const auto rows = co_await deviceQuery.get_raw_many();
     std::vector<DeviceModel> devices;
     devices.reserve(rows.size());
     for (const auto& row : rows) {
@@ -290,26 +276,89 @@ ruvia::task<std::vector<DeviceModel>> loadDeviceModels(Database& db, const ruvia
         service::collector::ConnectionConfig::apply(device, { { "mc_frame", cell(row, 33) }, { "dlt645_version", cell(row, 34) }, { "mc_network", cell(row, 35) }, { "mc_station", cell(row, 36) }, { "mc_module_io", cell(row, 37) }, { "mc_multidrop", cell(row, 38) }, { "mc_monitoring_timer", cell(row, 39) }, { "fins_destination_network", cell(row, 40) }, { "fins_destination_node", cell(row, 41) }, { "fins_destination_unit", cell(row, 42) }, { "fins_source_network", cell(row, 43) }, { "fins_source_node", cell(row, 44) }, { "fins_source_unit", cell(row, 45) }, { "dlt645_wakeup_bytes", cell(row, 46) }, { "dlt645_write_password", cell(row, 47) }, { "dlt645_operator_code", cell(row, 48) } });
         const std::string_view endpointJson = row[51].value().value_or(std::string_view{});
         const auto endpoint = ruvia::from_json<EndpointConfig>(endpointJson);
-        if (!endpoint) {
-            throw std::invalid_argument("invalid device endpoint configuration");
-        }
+
         model.endpoint.name = cell(row, 52);
         model.endpoint.enabled = cell(row, 53) == "enabled";
         model.endpoint.debugEnabled = cellBool(row, 54);
         model.enabled = model.endpoint.enabled && cell(row, 55) == "enabled" && cellBool(row, 56);
         model.execution = cell(row, 57);
         model.available = cellBool(row, 58);
-        model.endpoint.transport = configText(endpoint->get<"transport">());
-        model.endpoint.interfaceName = configText(endpoint->get<"interfaceName">());
-        model.endpoint.mode = configText(endpoint->get<"mode">());
-        model.endpoint.ip = configText(endpoint->get<"ip">());
-        model.endpoint.port = configInteger(endpoint->get<"port">());
-        model.endpoint.baudRate = configInteger(endpoint->get<"baud_rate">(), 9600);
-        model.endpoint.dataBits = configInteger(endpoint->get<"data_bits">(), 8);
-        model.endpoint.stopBits = configInteger(endpoint->get<"stop_bits">(), 1);
-        model.endpoint.parity = configText(endpoint->get<"parity">(), "none");
+        model.endpoint.transport = configText(endpoint.get<"transport">());
+        model.endpoint.interfaceName = configText(endpoint.get<"interfaceName">());
+        model.endpoint.mode = configText(endpoint.get<"mode">());
+        model.endpoint.ip = configText(endpoint.get<"ip">());
+        model.endpoint.port = configInteger(endpoint.get<"port">());
+        model.endpoint.baudRate = configInteger(endpoint.get<"baud_rate">(), 9600);
+        model.endpoint.dataBits = configInteger(endpoint.get<"data_bits">(), 8);
+        model.endpoint.stopBits = configInteger(endpoint.get<"stop_bits">(), 1);
+        model.endpoint.parity = configText(endpoint.get<"parity">(), "none");
         decodeModelElements(model);
+        model.calculation.config = device.calculationConfig;
         devices.push_back(std::move(model));
+    }
+    if (devices.empty()) {
+        co_return devices;
+    }
+    using Source = persistence::ExternalIoSourceEntity;
+    using Binding = persistence::ExternalIoBindingEntity;
+    using Protocol = persistence::ProtocolConfigEntity;
+    using Op = ruvia::db_binary_operator;
+    ruvia::db_query ioQuery;
+    std::vector<ruvia::db_expression> ids;
+    std::map<std::string, DeviceModel*, std::less<>> byId;
+    for (auto& model : devices) {
+        ids.push_back(ioQuery.cast(ioQuery.value(model.device.id), ruvia::db_data_type::uuid));
+        byId.emplace(model.device.id, &model);
+    }
+    auto ioBuilder = database.template repository<Source>().query_builder("s");
+    ioBuilder.select({ { "device", ioQuery.cast(Source::column<"device_id">().expression(ioQuery, "s"), ruvia::db_data_type::text) }, { "model", ioQuery.cast(Source::column<"protocol_config_id">().expression(ioQuery, "s"), ruvia::db_data_type::text) }, { "derived", Source::column<"derived_config">().expression(ioQuery, "s") }, { "config", Protocol::column<"config">().expression(ioQuery, "p") }, { "point", ioQuery.cast(Binding::column<"point_id">().expression(ioQuery, "b"), ruvia::db_data_type::text) }, { "kind", Binding::column<"kind">().expression(ioQuery, "b") }, { "channel", Binding::column<"channel">().expression(ioQuery, "b") } })
+        .template join<Protocol>(ruvia::db_join_type::inner, "p", ioQuery.binary(Protocol::column<"id">().expression(ioQuery, "p"), Op::equal, Source::column<"protocol_config_id">().expression(ioQuery, "s")))
+        .template join<Binding>(ruvia::db_join_type::inner, "b", ioQuery.binary(Binding::column<"device_id">().expression(ioQuery, "b"), Op::equal, Source::column<"device_id">().expression(ioQuery, "s")))
+        .where(ioQuery.binary(Source::column<"device_id">().expression(ioQuery, "s"), Op::in, ioQuery.list(ids)))
+        .add_order_by(Source::column<"device_id">().expression(ioQuery, "s"))
+        .add_order_by(Binding::column<"point_id">().expression(ioQuery, "b"));
+    for (const auto& row : co_await ioBuilder.get_raw_many()) {
+        auto& model = *byId.at(cell(row, 0));
+        model.externalIoModelId = cell(row, 1);
+        model.deviceDerivedConfig = cell(row, 2);
+        model.externalIoConfig = cell(row, 3);
+        model.externalIo.push_back({ .id = cell(row, 4), .channel = cell(row, 6), .kind = cell(row, 5) });
+    }
+    for (auto& model : devices) {
+        if (model.externalIo.empty()) {
+            continue;
+        }
+        const auto io = ruvia::json_value::parse(model.externalIoConfig);
+        const auto ioPoints = io.get<ruvia::json_value>("points");
+        if (!ioPoints) {
+            throw std::runtime_error("external IO model has no points");
+        }
+        (void)ioPoints->for_each_element([&](const ruvia::json_value& point) {
+            const auto id = point.get<ruvia::string>("id");
+            for (auto& bound : model.externalIo) {
+                if (id && bound.id == id->view()) {
+                    const auto name = point.get<ruvia::string>("name");
+                    const auto unit = point.get<ruvia::string>("unit");
+                    bound.name = name ? std::string(name->view()) : bound.id;
+                    bound.unit = bound.kind == "AI" ? "uA" : unit ? std::string(unit->view())
+                                                                  : std::string{};
+                    bound.visible = static_cast<bool>(point.get<ruvia::bool_value>("visible").value_or(ruvia::bool_value{ true }));
+                    model.points.push_back({ bound.id, bound.name, bound.unit });
+                }
+            }
+            return true;
+        });
+        model.calculation.config = model.deviceDerivedConfig;
+        model.calculation.sources = { model.device.calculationConfig, model.externalIoConfig };
+        const std::array sources{ ruvia::json_value::parse(model.device.calculationConfig), ruvia::json_value::parse(model.externalIoConfig) };
+        const auto combined = service::common::orderDerivedPoints(ruvia::json_value::parse(model.deviceDerivedConfig), sources);
+        for (const auto& point : combined) {
+            if (std::ranges::none_of(model.points, [&](const auto& existing) {
+                    return existing.id == point.id;
+                })) {
+                model.points.push_back({ point.id, point.name, point.unit });
+            }
+        }
     }
     co_return devices;
 }
@@ -321,15 +370,16 @@ ruvia::task<std::vector<service::collector::DeviceDefinition>> loadDeviceDefinit
     using Link = persistence::LinkEntity;
     using Model = persistence::DeviceModelEntity;
     using Op = ruvia::db_binary_operator;
-    auto query = deviceModelsQuery();
-    query.and_where(query.binary(Link::column<"execution">().expression(query, "l"), Op::equal, query.value("collector")))
-        .and_where(query.binary(Device::column<"status">().expression(query, "d"), Op::equal, query.value("enabled")))
-        .and_where(query.binary(Link::column<"status">().expression(query, "l"), Op::equal, query.value("enabled")))
-        .and_where(Model::column<"enabled">().expression(query, "p"))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(query, "l")))
-        .and_where(query.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(query, "p")));
+    ruvia::db_query queryExpressions;
+    auto query = deviceModelsQuery(db);
+    query.and_where(queryExpressions.binary(Link::column<"execution">().expression(queryExpressions, "l"), Op::equal, queryExpressions.value("collector")))
+        .and_where(queryExpressions.binary(Device::column<"status">().expression(queryExpressions, "d"), Op::equal, queryExpressions.value("enabled")))
+        .and_where(queryExpressions.binary(Link::column<"status">().expression(queryExpressions, "l"), Op::equal, queryExpressions.value("enabled")))
+        .and_where(Model::column<"enabled">().expression(queryExpressions, "p"))
+        .and_where(queryExpressions.unary(ruvia::db_unary_operator::is_null, Link::column<"deleted_at">().expression(queryExpressions, "l")))
+        .and_where(queryExpressions.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(queryExpressions, "p")));
     if (!deviceId.empty()) {
-        query.and_where(query.binary(Device::column<"id">().expression(query, "d"), Op::equal, query.cast(query.value(deviceId), ruvia::db_data_type::uuid)));
+        query.and_where(queryExpressions.binary(Device::column<"id">().expression(queryExpressions, "d"), Op::equal, queryExpressions.cast(queryExpressions.value(deviceId), ruvia::db_data_type::uuid)));
     }
     auto models = co_await loadDeviceModels(db, query);
     std::vector<service::collector::DeviceDefinition> devices;
@@ -354,12 +404,9 @@ ruvia::task<service::collector::RuntimeSnapshot> loadRuntimeSnapshot(Database& d
     const auto endpointText = [&](std::string_view key) {
         return linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">()), Op::json_get_text, linkQuery.value(key));
     };
-    linkQuery.select({ linkQuery.cast(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()), Type::text), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"name">()), endpointText("mode"), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"protocol">()), linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }), linkQuery.coalesce({ linkQuery.null_if(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"status">()), linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"debug_enabled">()) })
-        .from(service::configuration::persistence::LinkEntity::table_name())
-        .and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">())))
-        .and_where(linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">()), Op::equal, linkQuery.value("collector")))
-        .add_order_by(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()));
-    const auto links = co_await db.query(linkQuery);
+    auto linkQueryBuilder = db.template repository<service::configuration::persistence::LinkEntity>().query_builder();
+    linkQueryBuilder.select({ { "id", linkQuery.cast(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()), Type::text) }, { "name", linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"name">()) }, { "value2", endpointText("mode") }, { "protocol", linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"protocol">()) }, { "value4", linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }) }, { "value5", linkQuery.coalesce({ linkQuery.null_if(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }) }, { "status", linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"status">()) }, { "debug_enabled", linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"debug_enabled">()) } }).and_where(linkQuery.unary(ruvia::db_unary_operator::is_null, linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">()))).and_where(linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">()), Op::equal, linkQuery.value("collector"))).add_order_by(linkQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">()));
+    const auto links = co_await linkQueryBuilder.get_raw_many();
     for (const auto& row : links) {
         service::collector::LinkDefinition link;
         link.id = cell(row, 0);
@@ -382,14 +429,9 @@ ruvia::task<service::collector::RuntimeSnapshot> loadRuntimeSnapshot(Database& d
     const auto targetText = [&](std::string_view key) {
         return targetQuery.binary(targetQuery.column("target"), Op::json_get_text, targetQuery.value(key));
     };
-    targetQuery.select({ targetQuery.cast(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Type::text), targetText("id"), targetText("name"), targetText("ip"), targetQuery.coalesce({ targetQuery.null_if(targetText("port"), targetQuery.value("")), targetQuery.value("0") }), targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }), targetQuery.coalesce({ targetText("mqtt"), targetQuery.value("{}") }) })
-        .from(service::configuration::persistence::LinkEntity::table_name(), "l")
-        .join_function(ruvia::db_join_type::cross, targetQuery.call("jsonb_array_elements", { targetQuery.coalesce({ targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get, targetQuery.value("targets")), targetQuery.cast(targetQuery.value("[]"), Type::jsonb) }) }), {}, "target", { .lateral_ = true })
-        .and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">(), "l")))
-        .and_where(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, targetQuery.value("collector")))
-        .and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get_text, targetQuery.value("mode")), Op::equal, targetQuery.value("TCP Client")))
-        .add_order_by(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"));
-    const auto targets = co_await db.query(targetQuery);
+    auto targetQueryBuilder = db.template repository<service::configuration::persistence::LinkEntity>().query_builder("l");
+    targetQueryBuilder.select({ { "id", targetQuery.cast(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"), Type::text) }, { "value1", targetText("id") }, { "value2", targetText("name") }, { "value3", targetText("ip") }, { "value4", targetQuery.coalesce({ targetQuery.null_if(targetText("port"), targetQuery.value("")), targetQuery.value("0") }) }, { "value5", targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }) }, { "value6", targetQuery.coalesce({ targetText("mqtt"), targetQuery.value("{}") }) } }).join_function(ruvia::db_join_type::cross, targetQuery.call("jsonb_array_elements", { targetQuery.coalesce({ targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get, targetQuery.value("targets")), targetQuery.cast(targetQuery.value("[]"), Type::jsonb) }) }), "target", {}, { .lateral_ = true }).and_where(targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"deleted_at">(), "l"))).and_where(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"execution">(), "l"), Op::equal, targetQuery.value("collector"))).and_where(targetQuery.binary(targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"endpoint">(), "l"), Op::json_get_text, targetQuery.value("mode")), Op::equal, targetQuery.value("TCP Client"))).add_order_by(targetQuery.column(service::configuration::persistence::LinkEntity::column_name<"id">(), "l"));
+    const auto targets = co_await targetQueryBuilder.get_raw_many();
     for (const auto& row : targets) {
         const auto linkId = cell(row, 0);
         const auto link = linkIndexes.find(linkId);
@@ -407,7 +449,7 @@ ruvia::task<service::collector::RuntimeSnapshot> loadRuntimeSnapshot(Database& d
     }
 
     // 同一次模型投影分出采集执行上下文与完整实时读模型；不再另行展开协议 JSON。
-    auto models = co_await loadDeviceModels(db, deviceModelsQuery());
+    auto models = co_await loadDeviceModels(db, deviceModelsQuery(db));
     snapshot.devices.reserve(models.size());
     snapshot.realtimeDevices.reserve(models.size());
     for (auto& model : models) {

@@ -44,8 +44,8 @@ struct ControlResultRecord final {
 struct ConfigProjectionRecord final {
     bool enabled{};
     bool mediaStarted{};
-    std::string mediaPorts;
-    std::string mediaCapabilities;
+    std::string mediaPorts{ "{}" };
+    std::string mediaCapabilities{ "{}" };
 
     static bool flag(std::string_view value) {
         return value == "t" || value == "true" || value == "1";

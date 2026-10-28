@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include <ruvia/web/model_object.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/message.h"
 #include "service/utils/json.h"
@@ -29,10 +29,12 @@ inline void repairInvalidUtf8(message::ParsedDeviceMessage& input) {
 
 // 无要素的 SL651 报文只表示设备活动，不能作为指标样本。
 inline bool isSl651EmptyReport(const message::ParsedDeviceMessage& input) {
-    if (input.protocol != "SL651") return false;
+    if (input.protocol != "SL651") {
+        return false;
+    }
     const auto root = ruvia::json_value::parse(input.valuesJson);
     std::optional<bool> empty;
-    if (!root || !root->for_each_field([&](std::string_view name, const ruvia::json_value& value) {
+    if (!root.for_each_field([&](std::string_view name, const ruvia::json_value& value) {
             if (name != "values") {
                 return true;
             }
@@ -58,7 +60,7 @@ inline bool isSl651EmptyReport(const message::ParsedDeviceMessage& input) {
 // 整个文档只解析一次：根、values 与每个点都在同一次遍历中借用根文档的切片。
 inline void normalize(message::ParsedDeviceMessage& input) {
     const auto root = ruvia::json_value::parse(input.valuesJson);
-    if (!root || !root->is_object()) {
+    if (!root.is_object()) {
         throw std::runtime_error("Telemetry must be a JSON object");
     }
     std::string out = "{";
@@ -128,7 +130,7 @@ inline void normalize(message::ParsedDeviceMessage& input) {
         points += body;
         return true;
     };
-    (void)root->for_each_field([&](std::string_view key, const ruvia::json_value& value) {
+    (void)root.for_each_field([&](std::string_view key, const ruvia::json_value& value) {
         if (key == "values") {
             // 重复键以最后一次出现为准，与按键取值的语义一致。
             if (!value.is_object()) {
@@ -153,7 +155,9 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     input.eventKind = media ? "image" : "sample";
     out += "\"raw_packet_ids\":[";
     for (std::size_t index = 0; index < input.rawPacketIds.size(); ++index) {
-        if (index) out += ',';
+        if (index) {
+            out += ',';
+        }
         out += service::utils::jsonQuoted(input.rawPacketIds[index]);
     }
     out += "],\"schema_version\":1,\"event_kind\":" + service::utils::jsonQuoted(input.eventKind) + ",\"values\":{" + points + "},\"model\":";
@@ -161,7 +165,9 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     out += '}';
     // 历史身份由采集端创建；接收时间和内容不能重写轮次身份。
     input.valuesJson = std::move(out);
-    if (input.acquisitionId.empty()) throw std::invalid_argument("telemetry acquisition ID is required");
+    if (input.acquisitionId.empty()) {
+        throw std::invalid_argument("telemetry acquisition ID is required");
+    }
     input.messageId = input.acquisitionId;
 }
 

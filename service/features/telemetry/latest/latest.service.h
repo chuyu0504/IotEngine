@@ -16,6 +16,7 @@
 
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/db/db_repository.h>
 #include <ruvia/web/redis/redis.h>
 #include <ruvia/web/redis/redis_handle.h>
 #include <ruvia/web/web_worker.h>
@@ -520,12 +521,9 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     ruvia::db_query deviceQuery;
     const auto timeout = deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, deviceQuery.value("online_timeout"));
     const auto parsedTimeout = deviceQuery.case_when({ { deviceQuery.binary(deviceQuery.coalesce({ timeout, deviceQuery.value("") }), Op::regex, deviceQuery.value("^-?[0-9]{1,18}$")), deviceQuery.cast(timeout, Type::big_int) } });
-    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), Type::text), deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, deviceQuery.value("device_code")), deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::multiply, deviceQuery.value(1000)) })
-        .from(service::configuration::persistence::DeviceEntity::table_name(), "d")
-        .and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d")))
-        .and_where(selected(deviceQuery))
-        .add_order_by(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"));
-    const auto devices = co_await context.db().query(deviceQuery);
+    auto deviceQueryBuilder = context.db().template repository<service::configuration::persistence::DeviceEntity>().query_builder("d");
+    deviceQueryBuilder.select({ { "id", deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"), Type::text) }, { "protocol_params", deviceQuery.binary(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"protocol_params">(), "d"), Op::json_get_text, deviceQuery.value("device_code")) }, { "value2", deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::multiply, deviceQuery.value(1000)) } }).and_where(deviceQuery.unary(ruvia::db_unary_operator::is_null, deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">(), "d"))).and_where(selected(deviceQuery)).add_order_by(deviceQuery.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "d"));
+    const auto devices = co_await deviceQueryBuilder.get_raw_many();
     if (devices.empty()) {
         co_return;
     }
@@ -655,15 +653,21 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
                                                    query.column("element"),
                                                    query.cast(query.value(order), Type::integer) };
         if (protocol == "SL651" && arrayKey == "funcs") {
-            query.join_function(ruvia::db_join_type::cross, entries, {}, "functions", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "function" }, { .name_ = "function_position" } } });
+
+            const std::array<ruvia::db_source_column, 2> sourceColumns1{ { { .name_ = "function" }, { .name_ = "function_position" } } };
+            query.join_function(ruvia::db_join_type::cross, entries, {}, "functions", { .lateral_ = true, .with_ordinality_ = true, .columns_ = sourceColumns1 });
             const auto fieldArray = [&](std::string_view key) {
                 return query.coalesce({ query.binary(query.column("function"), Op::json_get, query.value(key)), query.cast(query.value("[]"), Type::jsonb) });
             };
-            query.join_function(ruvia::db_join_type::cross, query.call("jsonb_array_elements", { query.binary(fieldArray("elements"), Op::json_concat, fieldArray("responseElements")) }), {}, "elements", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "element_position" } } });
+
+            const std::array<ruvia::db_source_column, 2> sourceColumns2{ { { .name_ = "element" }, { .name_ = "element_position" } } };
+            query.join_function(ruvia::db_join_type::cross, query.call("jsonb_array_elements", { query.binary(fieldArray("elements"), Op::json_concat, fieldArray("responseElements")) }), {}, "elements", { .lateral_ = true, .with_ordinality_ = true, .columns_ = sourceColumns2 });
             columns.push_back(query.column("function_position"));
             columns.push_back(query.column("element_position"));
         } else {
-            query.join_function(ruvia::db_join_type::cross, entries, {}, "entry", { .lateral_ = true, .with_ordinality_ = true, .columns_ = { { .name_ = "element" }, { .name_ = "position" } } });
+
+            const std::array<ruvia::db_source_column, 2> sourceColumns3{ { { .name_ = "element" }, { .name_ = "position" } } };
+            query.join_function(ruvia::db_join_type::cross, entries, {}, "entry", { .lateral_ = true, .with_ordinality_ = true, .columns_ = sourceColumns3 });
             columns.push_back(query.column("position"));
             columns.push_back(query.cast(query.value(0), Type::big_int));
         }
@@ -694,10 +698,49 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto s7 = configuredProtocol("S7", "areas", 2);
     const auto sl651 = configuredProtocol("SL651", "funcs", 3);
     configured.combine(ruvia::db_set_operation::union_all, s7).combine(ruvia::db_set_operation::union_all, sl651);
+    // Physical IO, IO-model derived points, and device-level cross-source points
+    // belong to the same realtime device projection.
+    const auto configuredExternalIo = [&](int sourceKind) {
+        const bool derived = sourceKind != 0;
+        using Device = service::configuration::persistence::DeviceEntity;
+        using Source = service::configuration::persistence::ExternalIoSourceEntity;
+        using Binding = service::configuration::persistence::ExternalIoBindingEntity;
+        using Model = service::configuration::persistence::ProtocolConfigEntity;
+        ruvia::db_query query;
+        query.from(Device::table_name(), "d")
+            .join(ruvia::db_join_type::inner, Source::table_name(), query.binary(Source::column<"device_id">().expression(query, "s"), Op::equal, Device::column<"id">().expression(query, "d")), "s")
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, Device::column<"deleted_at">().expression(query, "d")))
+            .and_where(selected(query));
+        auto config = Source::column<"derived_config">().expression(query, "s");
+        if (sourceKind != 2) {
+            query.join(ruvia::db_join_type::inner, Model::table_name(), query.binary(Model::column<"id">().expression(query, "p"), Op::equal, Source::column<"protocol_config_id">().expression(query, "s")), "p");
+            config = Model::column<"config">().expression(query, "p");
+        }
+        const auto entries = query.call("jsonb_array_elements", { query.coalesce({ query.binary(config, Op::json_get, query.value(derived ? "derivedPoints" : "points")), query.cast(query.value("[]"), Type::jsonb) }) });
+        const std::array<ruvia::db_source_column, 2> entryColumns{ { { .name_ = "element" }, { .name_ = "position" } } };
+        query.join_function(ruvia::db_join_type::cross, entries, {}, "entry", { .lateral_ = true, .with_ordinality_ = true, .columns_ = entryColumns });
+        const auto element = query.column("element", "entry");
+        const auto elementId = query.binary(element, Op::json_get_text, query.value("id"));
+        auto writable = query.value(false);
+        if (!derived) {
+            query.join(ruvia::db_join_type::inner, Binding::table_name(), query.binary(query.binary(Binding::column<"device_id">().expression(query, "b"), Op::equal, Source::column<"device_id">().expression(query, "s")), Op::and_value, query.binary(query.cast(Binding::column<"point_id">().expression(query, "b"), Type::text), Op::equal, elementId)), "b");
+            writable = query.binary(Binding::column<"kind">().expression(query, "b"), Op::equal, query.value("DO"));
+        }
+        const auto kind = query.binary(element, Op::json_get_text, query.value("kind"));
+        const auto metadata = query.call("jsonb_build_object", { query.cast(query.value("visible"), Type::text), query.coalesce({ query.binary(element, Op::json_get, query.value("visible")), query.cast(query.value("true"), Type::jsonb) }), query.cast(query.value("access"), Type::text), query.case_when({ { writable, query.value("rw") } }, query.value("ro")), query.cast(query.value("unit"), Type::text), derived ? query.coalesce({ query.binary(element, Op::json_get_text, query.value("unit")), query.value("") }) : query.case_when({ { query.binary(kind, Op::equal, query.value("AI")), query.value("uA") } }, query.value("")), query.cast(query.value("dataType"), Type::text), derived ? query.value("") : query.case_when({ { query.binary(kind, Op::equal, query.value("AI")), query.value("INT64") } }, query.value("BOOL")) });
+        query.select({ Device::column<"id">().expression(query, "d"), query.binary(Device::column<"protocol_params">().expression(query, "d"), Op::json_get_text, query.value("device_code")), query.cast(query.value("ExternalIO"), Type::text), query.binary(element, Op::json_concat, metadata), query.cast(query.value(6 + sourceKind), Type::integer), query.column("position", "entry"), query.cast(query.value(0), Type::big_int) });
+        return query;
+    };
+    configured.combine(ruvia::db_set_operation::union_all, configuredExternalIo(0))
+        .combine(ruvia::db_set_operation::union_all, configuredExternalIo(1))
+        .combine(ruvia::db_set_operation::union_all, configuredExternalIo(2));
     ruvia::db_query numbered;
+
+    const std::array<ruvia::db_expr, 1> windowPartition4{ { numbered.column("device_id", "configured") } };
+    const std::array<ruvia::db_order_term, 3> windowOrder5{ { { numbered.column("protocol_order", "configured") }, { numbered.column("function_order", "configured") }, { numbered.column("element_order", "configured") } } };
     const ruvia::db_window_options order{
-        .partition_by_ = { numbered.column("device_id", "configured") },
-        .order_by_ = { { numbered.column("protocol_order", "configured") }, { numbered.column("function_order", "configured") }, { numbered.column("element_order", "configured") } }
+        .partition_by_ = windowPartition4,
+        .order_by_ = windowOrder5
     };
     numbered.select({ numbered.star("configured"), numbered.alias(numbered.binary(numbered.over(numbered.call("row_number"), order), Op::subtract, numbered.value(1)), "sort_order") }).from("configured");
     ruvia::db_query points;
@@ -716,16 +759,11 @@ ruvia::task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto storedPoint = points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"value">(), "point");
     const auto observedUnit = points.coalesce({ points.binary(storedPoint, Op::json_get_text, points.value("unit")), defaultText("unit", "") });
     const auto json = points.call("jsonb_build_object", { points.cast(points.value("id"), ruvia::db_data_type::text), elementText("id"), points.cast(points.value("name"), ruvia::db_data_type::text), elementText("name"), points.cast(points.value("value"), ruvia::db_data_type::text), displayValue, points.cast(points.value("access"), Type::text), defaultText("access", "ro"), points.cast(points.value("dataType"), ruvia::db_data_type::text), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::db_data_type::text), observedUnit, points.cast(points.value("visible"), Type::text), points.cast(defaultText("visible", "true"), Type::boolean), points.cast(points.value("quality"), Type::text), points.coalesce({ points.binary(storedPoint, Op::json_get_text, points.value("quality")), points.value("missing") }), points.cast(points.value("scale"), ruvia::db_data_type::text), points.value(1), points.cast(points.value("decimals"), ruvia::db_data_type::text), numericDecimals, points.cast(points.value("group"), ruvia::db_data_type::text), defaultText("group", ""), points.cast(points.value("encode"), ruvia::db_data_type::text), defaultText("encode", ""), points.cast(points.value("sort"), ruvia::db_data_type::text), points.column("sort_order", "numbered"), points.cast(points.value("protocol"), ruvia::db_data_type::text), points.column("protocol", "numbered"), points.cast(points.value("observedAt"), ruvia::db_data_type::text), points.case_when({ { missing, points.null_value() } }, observedAt), points.cast(points.value("updatedAt"), ruvia::db_data_type::text), points.cast(points.binary(points.extract(ruvia::db_date_part::epoch, points.call("clock_timestamp")), Op::multiply, points.value(1000)), Type::big_int), points.cast(points.value("source"), ruvia::db_data_type::text), points.case_when({ { missing, points.cast(points.value("empty"), ruvia::db_data_type::text) } }, points.cast(points.value("database"), ruvia::db_data_type::text)) });
-    points.with("configured", configured, { .columns_ = { "device_id", "device_code", "protocol", "element", "protocol_order", "function_order", "element_order" } })
-        .with("numbered", numbered)
-        .select({ points.cast(points.column("device_id", "numbered"), Type::text), points.column("device_code", "numbered"), points.column("protocol", "numbered"), elementText("id"), elementText("name"), observedUnit, displayValue, points.coalesce({ points.cast(observedAt, Type::text), points.value("") }), points.value("1"), points.coalesce({ points.null_if(decimals, points.value("")), points.value("-1") }), defaultText("group", ""), defaultText("encode", ""), points.cast(points.column("sort_order", "numbered"), Type::text), points.cast(json, Type::text) })
-        .from("numbered")
-        .join(ruvia::db_join_type::left, service::telemetry::latest::persistence::DeviceLatestValueEntity::table_name(), points.binary(points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"device_id">(), "point"), Op::equal, points.column("device_id", "numbered")), Op::and_value, points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"element_id">(), "point"), Op::equal, elementText("id"))), "point")
-        .add_order_by(points.column("device_id", "numbered"))
-        .add_order_by(points.column("protocol_order", "numbered"))
-        .add_order_by(points.column("function_order", "numbered"))
-        .add_order_by(points.column("element_order", "numbered"));
-    const auto elements = co_await context.db().query(points);
+    auto pointsBuilder = context.db().template repository<service::telemetry::latest::persistence::DeviceLatestValueEntity>().query_builder("numbered");
+
+    const std::array<ruvia::borrowed_text, 7> sourceColumns6{ { "device_id", "device_code", "protocol", "element", "protocol_order", "function_order", "element_order" } };
+    pointsBuilder.with("configured", configured, { .columns_ = sourceColumns6 }).with("numbered", numbered).select({ { "device_id", points.cast(points.column("device_id", "numbered"), Type::text) }, { "device_code", points.column("device_code", "numbered") }, { "protocol", points.column("protocol", "numbered") }, { "value3", elementText("id") }, { "value4", elementText("name") }, { "value5", observedUnit }, { "value6", displayValue }, { "value7", points.coalesce({ points.cast(observedAt, Type::text), points.value("") }) }, { "value8", points.value("1") }, { "value9", points.coalesce({ points.null_if(decimals, points.value("")), points.value("-1") }) }, { "value10", defaultText("group", "") }, { "value11", defaultText("encode", "") }, { "sort_order", points.cast(points.column("sort_order", "numbered"), Type::text) }, { "value13", points.cast(json, Type::text) } }).from_cte("numbered").template join<service::telemetry::latest::persistence::DeviceLatestValueEntity>(ruvia::db_join_type::left, "point", points.binary(points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"device_id">(), "point"), Op::equal, points.column("device_id", "numbered")), Op::and_value, points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"element_id">(), "point"), Op::equal, elementText("id")))).add_order_by(points.column("device_id", "numbered")).add_order_by(points.column("protocol_order", "numbered")).add_order_by(points.column("function_order", "numbered")).add_order_by(points.column("element_order", "numbered"));
+    const auto elements = co_await pointsBuilder.get_raw_many();
     static constexpr std::string_view kRefreshElementMetadataScript = R"lua(
 local element_id = ARGV[1]
 local ok, incoming = pcall(cjson.decode, ARGV[2])
@@ -854,8 +892,9 @@ inline ruvia::task<void> hydrateRecords(ruvia::web_worker_context& context) {
     bool projected = false;
     for (;;) {
         ruvia::db_query page;
-        page.select(page.cast(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">()), ruvia::db_data_type::text)).from(service::configuration::persistence::DeviceEntity::table_name()).and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">()))).and_where(page.binary(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::greater, page.cast(page.value(cursor), ruvia::db_data_type::uuid))).add_order_by(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">())).limit(kHydrationBatchSize);
-        const auto devices = co_await context.db().query(page);
+        auto pageBuilder = context.db().template repository<service::configuration::persistence::DeviceEntity>().query_builder();
+        pageBuilder.select({ { "id", page.cast(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">()), ruvia::db_data_type::text) } }).and_where(page.unary(ruvia::db_unary_operator::is_null, page.column(service::configuration::persistence::DeviceEntity::column_name<"deleted_at">()))).and_where(page.binary(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">()), ruvia::db_binary_operator::greater, page.cast(page.value(cursor), ruvia::db_data_type::uuid))).add_order_by(page.column(service::configuration::persistence::DeviceEntity::column_name<"id">())).limit(kHydrationBatchSize);
+        const auto devices = co_await pageBuilder.get_raw_many();
         if (devices.empty()) {
             break;
         }

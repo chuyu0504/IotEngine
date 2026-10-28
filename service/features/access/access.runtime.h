@@ -441,12 +441,12 @@ class DeliveryRuntime final {
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {
         std::vector<std::pair<std::string, std::string>> result;
         const auto object = ruvia::json_value::parse(json);
-        if (!object || !object->is_object()) {
+        if (!object.is_object()) {
             return result;
         }
-        (void)object->for_each_field(
+        (void)object.for_each_field(
             [&](std::string_view name, const ruvia::json_value&) {
-                const auto value = object->get<ruvia::string>(name);
+                const auto value = object.get<ruvia::string>(name);
                 if (value) {
                     validateWebhookHeader(name, value->view(), true);
                     result.emplace_back(name, value->view());

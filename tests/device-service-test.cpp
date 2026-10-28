@@ -4,16 +4,19 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+
 #include "service/modules/device/device.service.h"
 
 namespace {
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
 }
+
 void verifyDeviceCapabilities() {
     using namespace service::device;
-    constexpr std::array levels{DeviceAccessLevel::none, DeviceAccessLevel::view,
-        DeviceAccessLevel::operate, DeviceAccessLevel::owner};
+    constexpr std::array levels{ DeviceAccessLevel::none, DeviceAccessLevel::view, DeviceAccessLevel::operate, DeviceAccessLevel::owner };
     for (const auto level : levels) {
         for (unsigned permissions = 0; permissions != 16; ++permissions) {
             DeviceActor actor;
@@ -21,15 +24,14 @@ void verifyDeviceCapabilities() {
             actor.canDelete = (permissions & 2) != 0;
             actor.canShare = (permissions & 4) != 0;
             actor.canCommand = (permissions & 8) != 0;
-            for (const bool remoteControl : {false, true}) {
+            for (const bool remoteControl : { false, true }) {
                 const auto result = DeviceAccessService::capabilities(actor, level, remoteControl);
                 const bool owner = level == DeviceAccessLevel::owner;
                 const bool operatorAccess = owner || level == DeviceAccessLevel::operate;
                 require(result.canEdit == (owner && actor.canEdit), "edit requires ownership and permission");
                 require(result.canDelete == (owner && actor.canDelete), "delete requires ownership and permission");
                 require(result.canShare == (owner && actor.canShare), "share requires ownership and permission");
-                require(result.canCommand == (operatorAccess && remoteControl && actor.canCommand),
-                        "command requires operate access, remote control and permission");
+                require(result.canCommand == (operatorAccess && remoteControl && actor.canCommand), "command requires operate access, remote control and permission");
             }
         }
     }
@@ -37,15 +39,15 @@ void verifyDeviceCapabilities() {
     require(DeviceAccessService::rank("1") == DeviceAccessLevel::view, "view rank");
     require(DeviceAccessService::rank("2") == DeviceAccessLevel::operate, "operate rank");
     require(DeviceAccessService::rank("4") == DeviceAccessLevel::owner, "owner rank");
-    for (const auto invalid : {"", "-1", "1junk", "nan", "9999999999999999999999999"})
+    for (const auto invalid : { "", "-1", "1junk", "nan", "9999999999999999999999999" }) {
         require(DeviceAccessService::rank(invalid) == DeviceAccessLevel::none, "invalid rank must not grant access");
+    }
 }
 
 bool packetRejected(std::string_view json) {
-    auto packet = ruvia::from_json<service::device::DevicePacketBody>(json);
-    require(packet.has_value(), "packet body did not parse");
     try {
-        service::device::validatePacket(std::optional<service::device::DevicePacketBody>(std::move(*packet)));
+        auto packet = ruvia::from_json<service::device::DevicePacketBody>(json);
+        service::device::validatePacket(std::optional<service::device::DevicePacketBody>(std::move(packet)));
     } catch (...) {
         return true;
     }
@@ -74,7 +76,8 @@ void verifyDebugKeys() {
     const auto keys = DeviceService::debugIdleKeys("d1");
     require(keys.lease == "iot:debug:lease:device:d1" && keys.watch == "iot:debug:watch:device:d1", "device debug idle keys mismatch");
 }
-}
+} // namespace
+
 int main() {
     try {
         verifyDeviceCapabilities();

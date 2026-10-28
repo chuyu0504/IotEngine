@@ -101,7 +101,7 @@ struct ClaimContext {
 
     const ruvia::worker_handle& worker() const { return loop_.worker(); }
 
-    ruvia::stop_token get_stop_token() const { return {}; }
+    ruvia::stop_token stop_token() const { return {}; }
 
     template <typename State>
     State& worker_state() { return identity; }

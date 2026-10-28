@@ -28,7 +28,7 @@ class DeviceController final {
     RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN(DeviceController)
     // 共享流按频道独立鉴权，不能把设备、分组及用户频道改成整体 AND 权限。
-    RUVIA_GET_SSE("/events", deviceEvents, ruvia::query_model<DeviceEventsQuery>);
+    RUVIA_GET("/events", deviceEvents, ruvia::query_model<DeviceEventsQuery>);
     RUVIA_PUT("/:id/debug", setDebug, service::middleware::PermissionMiddleware<"iot:device:edit">, ruvia::path_model<DeviceIdParams>, ruvia::json_body<DeviceDebugBody>);
     // 设备
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"iot:device:query">);

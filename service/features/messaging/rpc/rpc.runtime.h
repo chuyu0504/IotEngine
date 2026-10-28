@@ -107,7 +107,7 @@ class RpcConsumerRuntime final {
                 if (handler == handlers_.end()) {
                     service::common::fail(10004, "Background component is unavailable", 503);
                 }
-                const auto token = ruvia::combine_stop_tokens(context.get_stop_token(), pending->stop.token());
+                const auto token = ruvia::combine_stop_tokens(context.stop_token(), pending->stop.token());
                 result = service::message::rpc::Contract::success(co_await handler->second(context, message.get("operation"), message.get("payload"), token));
             }
         } catch (const ruvia::http_error& error) {

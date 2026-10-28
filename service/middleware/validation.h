@@ -2,10 +2,11 @@
 
 #include <cstdint>
 #include <string_view>
+
 #include <ruvia/web/error.h>
 #include <ruvia/web/fixed_string.h>
 #include <ruvia/web/middleware.h>
-#include <ruvia/web/next.h>
+
 #include "service/common/http.h"
 
 namespace service::middleware {
@@ -19,11 +20,13 @@ struct RequestValidationErrorCodes final {
 
 inline std::int64_t requestErrorCode(const ruvia::context& context, const ruvia::http_error_info& error) {
     if (error.code() == "validation_failed") {
-        if (const auto* codes = context.try_request_state<RequestValidationErrorCodes>()) {
-            const auto issues = error.validation_issues();
-            if (!codes->field.empty() && !issues.empty() && issues.front().field() == codes->field && (codes->issueCode.empty() || issues.front().code() == codes->issueCode)) return codes->fieldCode;
-            return codes->code;
+        const auto& codes = context.request_state<RequestValidationErrorCodes>();
+        const auto issues = error.validation_issues();
+        if (!codes.field.empty() && !issues.empty() && issues.front().field() == codes.field &&
+            (codes.issueCode.empty() || issues.front().code() == codes.issueCode)) {
+            return codes.fieldCode;
         }
+        return codes.code;
     }
     return service::common::errorCode(error.code(), error.status().value());
 }
@@ -35,7 +38,7 @@ template <std::int64_t Code, ruvia::fixed_string Field = "", std::int64_t FieldC
 class ValidationErrorCodeMiddleware final {
   public:
     ruvia::task<void> handle(ruvia::context& context, ruvia::next& next) {
-        const RequestValidationErrorCodes codes{Code, Field.view(), FieldCode, IssueCode.view()};
+        const RequestValidationErrorCodes codes{ Code, Field.view(), FieldCode, IssueCode.view() };
         const auto binding = context.bind_request_state(codes);
         co_await next();
     }

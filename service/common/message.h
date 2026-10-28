@@ -18,8 +18,6 @@
 #include <vector>
 
 #include <ruvia/web/model.h>
-#include <ruvia/web/model_json.h>
-#include <ruvia/web/model_object.h>
 
 #include "service/common/uuid.h"
 #include "service/utils/json.h"
@@ -278,6 +276,9 @@ struct EgressPacket {
 
 struct ParsedDeviceMessage {
     std::string acquisitionId;
+    bool historyOnly = false;
+    std::string configurationDigest;
+    std::int64_t configurationEpoch = -1;
     // 原始帧身份独立于历史幂等 ID，按 rawPayloads 相同顺序排列。
     std::vector<std::string> rawPacketIds;
     std::string eventKind = "sample";
@@ -511,6 +512,9 @@ inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message)
              { "aggregate_id", message.deviceId },
              { "model_id", message.modelId },
              { "event_kind", message.eventKind },
+             { "history_only", message.historyOnly ? "1" : "0" },
+             { "configuration_digest", message.configurationDigest },
+             { "configuration_epoch", std::to_string(message.configurationEpoch) },
              { "message_id", message.messageId },
              { "causation_id", message.causationId },
              { "link_id", message.linkId },
@@ -550,12 +554,12 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     const auto packetIds = message.get("raw_packet_ids");
     if (!packetIds.empty()) {
         const auto array = ruvia::json_value::parse(packetIds);
-        if (!array || !array->is_array()) {
+        if (!array.is_array()) {
             throw std::runtime_error("Invalid raw packet IDs");
         }
         const std::string document = "{\"ids\":" + std::string(packetIds) + "}";
         const auto object = ruvia::json_value::parse(document);
-        const auto ids = object ? object->get<ruvia::array<ruvia::string>>("ids") : std::nullopt;
+        const auto ids = object.get<ruvia::array<ruvia::string>>("ids");
         if (!ids) {
             throw std::runtime_error("Invalid raw packet IDs");
         }
@@ -567,6 +571,16 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     if (parsed.eventKind != "sample" && parsed.eventKind != "image") {
         throw std::runtime_error("Invalid telemetry event kind");
     }
+    parsed.configurationDigest = std::string(message.get("configuration_digest"));
+    const auto configurationEpoch = message.get("configuration_epoch");
+    if (!configurationEpoch.empty()) {
+        parsed.configurationEpoch = integer("configuration_epoch");
+    }
+    const auto historyOnly = message.get("history_only");
+    if (!historyOnly.empty() && historyOnly != "0" && historyOnly != "1") {
+        throw std::runtime_error("Invalid telemetry history-only flag");
+    }
+    parsed.historyOnly = historyOnly == "1";
     parsed.modelId = std::string(message.get("model_id"));
     if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId)) {
         throw std::runtime_error("Invalid telemetry model UUID");
@@ -929,6 +943,7 @@ inline constexpr std::int32_t kFirmwareStorageObject{ 1 };
 // Seeds for hashtextextended(<resource>, seed), which derives per-resource lock keys.
 inline constexpr std::int64_t kVpnEdgeConfigSeed{ 5282804697543808072 };
 inline constexpr std::int64_t kTelemetryDeviceSeed{ 734621 };
+inline constexpr std::int64_t kAcquisitionConfiguration{ 5282804697543808077 };
 inline constexpr std::int64_t kGb28181OwnerSeed{ 28181 };
 inline constexpr std::int64_t kCommandIdempotencySeed{ 0 };
 
@@ -1073,12 +1088,12 @@ struct Entry final {
 inline std::vector<std::string> parseStringArray(std::string_view json) {
     std::vector<std::string> result;
     const auto array = ruvia::json_value::parse(json);
-    if (!array || !array->is_array()) {
+    if (!array.is_array()) {
         throw std::runtime_error("invalid projected access-session array");
     }
     const std::string document = "{\"values\":" + std::string(json) + "}";
     const auto object = ruvia::json_value::parse(document);
-    const auto parsed = object ? object->get<ruvia::array<ruvia::string>>("values") : std::nullopt;
+    const auto parsed = object.get<ruvia::array<ruvia::string>>("values");
     if (!parsed) {
         throw std::runtime_error("invalid projected access-session array");
     }

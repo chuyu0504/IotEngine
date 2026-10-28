@@ -9,7 +9,7 @@
 #include <string_view>
 #include <unordered_map>
 
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/model.h>
 
 #include "service/features/collector/mqtt/mqtt.types.h"
 #include "service/features/configuration/configuration.types.h"
@@ -147,9 +147,7 @@ inline bool configWritable(const std::optional<ruvia::json_value>& value) {
 inline void decodeModelElements(DeviceModel& model) {
     auto& device = model.device;
     const auto config = ruvia::json_value::parse(device.calculationConfig);
-    if (!config) {
-        throw std::invalid_argument("invalid device model configuration");
-    }
+
     const auto append = [&](const ElementConfig& source, std::string_view functionCode = {}, std::string_view direction = {}, bool response = false) {
         service::collector::ElementDefinition element;
         element.id = configText(source.get<"id">());
@@ -164,7 +162,7 @@ inline void decodeModelElements(DeviceModel& model) {
             element.byteOrder = configText(source.get<"byteOrder">(), device.protocol == "MC" ? "LITTLE_ENDIAN" : "BIG_ENDIAN");
         }
         if (device.protocol == "Modbus" && !source.get<"byteOrder">()) {
-            const auto byteOrder = config->get<ruvia::string>("byteOrder");
+            const auto byteOrder = config.get<ruvia::string>("byteOrder");
             element.byteOrder = byteOrder ? std::string(byteOrder->view()) : "BIG_ENDIAN";
         }
         element.registerType = configText(source.get<"registerType">());
@@ -200,10 +198,8 @@ inline void decodeModelElements(DeviceModel& model) {
     };
     if (device.protocol == "MQTT") {
         const auto mqtt = ruvia::from_json<service::collector::mqtt::Config>(device.calculationConfig);
-        if (!mqtt) {
-            throw std::invalid_argument("invalid MQTT configuration projection");
-        }
-        for (const auto& point : mqtt->get<"points">()) {
+
+        for (const auto& point : mqtt.get<"points">()) {
             service::collector::ElementDefinition element;
             element.id = point.get<"id">().view();
             element.configKey = "element:" + element.id;
@@ -217,7 +213,7 @@ inline void decodeModelElements(DeviceModel& model) {
             device.elements.push_back(std::move(element));
         }
     } else if (device.protocol == "SL651") {
-        if (const auto raw = config->get<ruvia::json_value>("funcs")) {
+        if (const auto raw = config.get<ruvia::json_value>("funcs")) {
             const auto functions = raw->get<ruvia::array<FunctionConfig>>();
             if (!functions) {
                 throw std::invalid_argument("invalid SL651 functions");
@@ -239,7 +235,7 @@ inline void decodeModelElements(DeviceModel& model) {
     } else {
         const auto arrayKey = device.protocol == "Modbus" ? "registers" : device.protocol == "S7" ? "areas"
                                                                                                   : "points";
-        if (const auto raw = config->get<ruvia::json_value>(arrayKey)) {
+        if (const auto raw = config.get<ruvia::json_value>(arrayKey)) {
             const auto elements = raw->get<ruvia::array<ElementConfig>>();
             if (!elements) {
                 throw std::invalid_argument("invalid protocol elements");
@@ -250,7 +246,7 @@ inline void decodeModelElements(DeviceModel& model) {
             }
         }
     }
-    if (const auto raw = config->get<ruvia::json_value>("derivedPoints")) {
+    if (const auto raw = config.get<ruvia::json_value>("derivedPoints")) {
         const auto points = raw->get<ruvia::array<service::common::DerivedPointConfig>>();
         if (!points) {
             throw std::invalid_argument("invalid derived points");
@@ -260,7 +256,7 @@ inline void decodeModelElements(DeviceModel& model) {
             model.points.push_back({ id, configText(point.get<"name">(), id), configText(point.get<"unit">()) });
         }
     }
-    model.derivedPoints = service::common::orderDerivedPoints(*config);
+    model.derivedPoints = service::common::orderDerivedPoints(config);
     // 外部 pointId 是最新值聚合身份，而不是函数 occurrence。SL651 目录只展示 UP，
     // 位置取首次出现、名称/单位取最后可展示定义；latest 的控制能力视图另含 DOWN/响应。
     if (model.points.size() < 2) {

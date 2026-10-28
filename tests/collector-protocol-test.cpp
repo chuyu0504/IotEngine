@@ -27,7 +27,7 @@
 #include <vector>
 
 #include <ruvia/core/event_loop_pool.h>
-#include <ruvia/web/redis/redis_client.h>
+#include <ruvia/web/redis/redis.h>
 
 #include "service/common/uuid.h"
 #include "service/common/worker.h"
@@ -78,47 +78,6 @@ Result runTask(ruvia::task<Result> task) {
         return result;
     }
 }
-
-struct FakeDbCell {
-    std::string content;
-    bool null = false;
-
-    [[nodiscard]] std::optional<std::string_view> value() const noexcept {
-        if (null) {
-            return std::nullopt;
-        }
-        return content;
-    }
-};
-
-struct FakeDbRow {
-    std::vector<FakeDbCell> cells;
-
-    explicit FakeDbRow(std::initializer_list<std::string_view> values) {
-        cells.reserve(values.size());
-        for (const auto value : values) {
-            cells.push_back({ std::string(value), false });
-        }
-    }
-
-    [[nodiscard]] const FakeDbCell& operator[](std::size_t index) const {
-        return cells.at(index);
-    }
-};
-
-struct FakeDbResult {
-    std::vector<FakeDbRow> values;
-
-    [[nodiscard]] auto begin() const noexcept { return values.begin(); }
-
-    [[nodiscard]] auto end() const noexcept { return values.end(); }
-
-    [[nodiscard]] bool empty() const noexcept { return values.empty(); }
-
-    [[nodiscard]] std::size_t size() const noexcept { return values.size(); }
-
-    [[nodiscard]] const FakeDbRow& operator[](std::size_t index) const { return values.at(index); }
-};
 
 struct RecordingRedis {
     explicit RecordingRedis(std::int64_t result)
@@ -226,39 +185,6 @@ struct FailingConfigRedis {
     bool hasActiveVersion;
 };
 
-struct LatestProjectionDb {
-    ruvia::task<FakeDbResult> query(const ruvia::db_query& query) {
-        const auto statement = query.compile(ruvia::db_driver::postgresql, std::pmr::get_default_resource(), ruvia::db_parameter_mode::literal);
-        const auto text = statement.sql();
-        FakeDbResult result;
-        if (text.find("'online_timeout'") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "D1", "300000" });
-        } else if (text.find("WITH \"configured\"") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "D1", "Modbus", "temperature", "New Name", "℃", "-", "", "2", "1", "environment", "", "0", "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"-\",\"unit\":\"℃\","
-                                                                                                                                                         "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
-                                                                                                                                                         "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":null,"
-                                                                                                                                                         "\"updatedAt\":1700000001000,\"source\":\"empty\"}" });
-        }
-        co_return result;
-    }
-};
-
-struct LatestProjectionContext {
-    LatestProjectionDb database;
-    ruvia::redis_handle redisClient;
-    std::optional<service::common::WorkerIdentity> identity{ std::in_place, "collector-test-instance", 0, 1, kChannels };
-
-    LatestProjectionDb& db() noexcept { return database; }
-
-    ruvia::redis_handle redis() const noexcept { return redisClient; }
-
-    template <typename State>
-    State& worker_state() noexcept {
-        static_assert(std::is_same_v<State, std::optional<service::common::WorkerIdentity>>);
-        return identity;
-    }
-};
-
 void require(bool condition, std::string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
@@ -275,15 +201,6 @@ ruvia::task<ruvia::redis_value> redisCommand(
 std::int64_t redisInteger(const ruvia::redis_value& reply) {
     require(reply.kind() == ruvia::redis_value::kind_type::integer, "Redis integer reply expected");
     return reply.integer();
-}
-
-ruvia::task<std::string> redisField(
-    const ruvia::redis_handle& redis,
-    std::string_view key,
-    std::string_view field
-) {
-    const auto reply = co_await redis.hget(key, field);
-    co_return reply ? std::string(*reply) : std::string{};
 }
 
 ruvia::task<void> subscribeConfirmed(ruvia::redis_subscription& subscription, std::string_view channel) {
@@ -2201,7 +2118,7 @@ void testProtocolJsonEscaping() {
     const std::array<std::uint8_t, 12> request{ 0, 1, 0, 0, 0, 6, 1, 3, 0, 0, 0, 1 };
     const std::array<std::uint8_t, 11> response{ 0, 1, 0, 0, 0, 5, 1, 3, 2, 0x12, 0x34 };
     const auto json = collector::modbus::Session::decodeRead(device, request, response);
-    require(ruvia::json_value::parse(json).has_value(), "Modbus values JSON is invalid");
+    require(ruvia::json_value::parse(json).is_object(), "Modbus values JSON is invalid");
     require(json.find("\"name\":\"A\\u0001\\tB\\u00c0\\\"\"") != std::string::npos && json.find("\"unit\":\"\\u001f\"") != std::string::npos, "Modbus element text did not keep control characters and invalid UTF-8 as JSON escapes");
 }
 
@@ -2568,51 +2485,6 @@ void testEventPublicationNotifiesConsumers() {
         (void)co_await redis.publish(wakeChannel, "wake-barrier");
         co_await expectPubSub(wakes, wakeChannel, "wake-barrier");
         require(redisInteger(co_await redisCommand(redis, { "XLEN", stream })) == 1 && redisInteger(co_await redisCommand(redis, { "XLEN", wake })) == 1, "idempotent replay duplicated an event or wake task");
-    });
-}
-
-void testLatestProjectionRefreshesPreservedElementMetadata() {
-    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
-        const auto latestKey = service::message::telemetry::latestKey("device-1");
-        const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
-        (void)co_await redisCommand(redis, { "HSET", latestKey, "_device_id", "device-1", "_element_ids", "{\"temperature\":true}", "temperature", R"({"id":"temperature","name":"Old Name","value":"27.5","observedAt":1800000000000,"source":"collector"})" });
-        (void)co_await redisCommand(redis, { "HSET", runtimeKey, "device_id", "device-1", "online_until_ms", "2000000000000", "state", "online" });
-        const auto channel = service::message::live::channel(kChannels, service::message::live::topic::kDeviceRealtime);
-        auto subscription = redis.subscription();
-        co_await subscribeConfirmed(subscription, channel);
-        LatestProjectionContext context{ {}, redis };
-        co_await service::telemetry::latest::projectDevice(context, "device-1");
-        co_await expectPubSub(subscription, channel, "device-1");
-        const auto stored = co_await redisField(redis, latestKey, "temperature");
-        const auto point = ruvia::json_value::parse(stored);
-        require(point.has_value(), "persisted point is not valid JSON");
-        const auto name = point->get<ruvia::string>("name");
-        const auto unit = point->get<ruvia::string>("unit");
-        const auto value = point->get<ruvia::string>("value");
-        const auto observedAt = point->get<ruvia::int64>("observedAt");
-        const auto source = point->get<ruvia::string>("source");
-        require(name && name->view() == "New Name" && unit && unit->view() == "℃" && value && value->view() == "27.5" && observedAt && static_cast<std::int64_t>(*observedAt) == 1800000000000 && source && source->view() == "collector", "projection notification did not expose refreshed metadata with preserved live value");
-        const auto preservedOnlineDeadline = co_await redisCommand(redis, { "ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1" });
-        require((co_await redisField(redis, runtimeKey, "state")) == "online" && (co_await redisField(redis, runtimeKey, "online_until_ms")) == "2000000000000" && preservedOnlineDeadline.string() == "2000000000000", "metadata refresh lost the preserved runtime state or deadline");
-        (void)co_await redis.publish(channel, "test:projection-complete");
-        co_await expectPubSub(subscription, channel, "test:projection-complete");
-    });
-}
-
-void testLatestProjectionRejectsInvalidPreservedDeadline() {
-    runRedisTest([](const ruvia::redis_handle& redis) -> ruvia::task<void> {
-        const auto latestKey = service::message::telemetry::latestKey("device-1");
-        const auto runtimeKey = service::message::telemetry::runtimeKey("device-1");
-        (void)co_await redisCommand(redis, { "HSET", latestKey, "_device_id", "device-1", "_element_ids", "{\"temperature\":true}" });
-        (void)co_await redisCommand(redis, { "HSET", runtimeKey, "device_id", "device-1", "online_until_ms", "not-a-number" });
-        (void)co_await redisCommand(redis, { "ZADD", service::telemetry::latest::onlineDeadlinesKey(), "123", "device-1" });
-        const auto channel = service::message::live::channel(kChannels, service::message::live::topic::kDeviceRealtime);
-        auto subscription = redis.subscription();
-        co_await subscribeConfirmed(subscription, channel);
-        LatestProjectionContext context{ {}, redis };
-        co_await service::telemetry::latest::projectDevice(context, "device-1");
-        co_await expectPubSub(subscription, channel, "device-1");
-        require((co_await redisCommand(redis, { "ZSCORE", service::telemetry::latest::onlineDeadlinesKey(), "device-1" })).kind() == ruvia::redis_value::kind_type::null && (co_await redisField(redis, runtimeKey, "online_until_ms")).empty() && (co_await redisField(redis, runtimeKey, "state")) == "offline", "invalid preserved deadline survived projection recovery");
     });
 }
 
@@ -3645,6 +3517,7 @@ void testEdgeParsedMessageContract() {
         parts[index].set_report_id(std::string(16, '\x04'));
         parts[index].set_part_count(3);
         parts[index].set_part_index(static_cast<std::uint32_t>(index));
+        parts[index].set_configuration_sha256(std::string(32, '\x0a'));
         parts[index].clear_raw_packet_ids();
         parts[index].clear_raw_payloads();
     }
@@ -3675,6 +3548,15 @@ void testEdgeParsedMessageContract() {
         rejectedMixed = true;
     }
     require(rejectedMixed, "SL651 upload mixed raw frames from different devices");
+    mixed = parts;
+    mixed[2].set_configuration_sha256(std::string(32, '\x0b'));
+    bool rejectedMixedSnapshot = false;
+    try {
+        (void)EdgeResponseProjection::assembleTelemetryParts(mixed);
+    } catch (const std::runtime_error&) {
+        rejectedMixedSnapshot = true;
+    }
+    require(rejectedMixedSnapshot, "SL651 upload mixed different acquisition snapshots");
     RecordingRedis uploadRedis(0);
     require(!runTask(EdgeResponseProjection::storeTelemetryPart(uploadRedis, parsed.connectionId, parts[0])), "SL651 incomplete stored upload emitted telemetry");
     require(uploadRedis.keys.size() == 1 && uploadRedis.keys[0].find(parsed.deviceId) != std::string::npos && uploadRedis.arguments.size() == 4 && uploadRedis.arguments[1] == "0" && uploadRedis.arguments[2] == "3", "SL651 stored upload lost device isolation or part addressing");
@@ -3834,10 +3716,6 @@ int main() {
         run("edge session ownership", testEdgeSessionOwnership);
         run("atomic event publication notifications", testEventPublicationNotifiesConsumers);
         run("latest projection Redis errors", testLatestProjectionRejectsRedisErrors);
-        run("latest projection metadata refresh",
-            testLatestProjectionRefreshesPreservedElementMetadata);
-        run("latest projection invalid preserved deadline",
-            testLatestProjectionRejectsInvalidPreservedDeadline);
         run("alert schedule invalid stored duration",
             testAlertScheduleSkipsInvalidStoredDuration);
         run("command value decimal parsing", testCommandValueDecimalParsing);

@@ -48,7 +48,7 @@ class EventProbe final {
         };
         service::edge_node::debug::ConnectionResources resources;
         std::any state;
-        service::edge_node::debug::EventContext context(c, identity, request, c.get_stop_token(), resources, state);
+        service::edge_node::debug::EventContext context(c, identity, request, c.stop_token(), resources, state);
         service::edge_node::debug::EventRegistry<service::edge_node::debug::EventContext> registry;
         registerEvents(registry);
         bool duplicate = false;
@@ -93,7 +93,7 @@ int main() {
             require(rejected, "duplicate or unknown envelope field accepted");
         }
         const auto duplicates = ruvia::json_value::parse(R"({"x":1,"x":{"nested":["comma,brace}",2]}})");
-        require(duplicates && duplicates->get<ruvia::json_value>("x")->view() == R"({"nested":["comma,brace}",2]})", "last duplicate field semantics changed");
+        require(duplicates.get<ruvia::json_value>("x")->view() == R"({"nested":["comma,brace}",2]})", "last duplicate field semantics changed");
         for (const auto bad : { "{}", "[]", "{\"id\":\"1\",\"event\":\"echo.read\",\"data\":{}}" }) {
             bool rejected = false;
             try {

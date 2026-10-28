@@ -180,11 +180,11 @@ class AccessController final {
   public:
     RUVIA_CONTROLLER_GROUP("/open-api/device")
     RUVIA_ROUTES_BEGIN(AccessController)
-    RUVIA_GET_SSE("/list", devices);
-    RUVIA_GET_SSE("/realtime", realtime);
-    RUVIA_GET_SSE("/history", history);
+    RUVIA_GET("/list", devices);
+    RUVIA_GET("/realtime", realtime);
+    RUVIA_GET("/history", history);
     RUVIA_POST("/command", command);
-    RUVIA_GET_SSE("/alert", alerts);
+    RUVIA_GET("/alert", alerts);
     RUVIA_ROUTES_END
 
   private:
@@ -236,7 +236,7 @@ class AccessController final {
             auto heartbeat = std::chrono::steady_clock::now() + 15s;
             bool refresh = true;
             std::int64_t expiresAtMs = 0;
-            while ((!stream || !stream->aborted()) && !context.get_stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
+            while ((!stream || !stream->aborted()) && !context.stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
                 if (expiresAtMs > 0 && expiresAtMs <= service::message::utcNowMilliseconds()) {
                     if (!stream) {
                         context.header("X-Accel-Buffering", "no");
@@ -255,8 +255,8 @@ class AccessController final {
                     bool reauthorize = refresh || changes.find(service::message::live::topic::kAuth) ||
                         changes.find(service::message::live::topic::kAccess);
                     if (revision != 0 && coalesceDelay.count() > 0) {
-                        (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.get_stop_token());
-                        if ((stream && stream->aborted()) || context.get_stop_token().stop_requested()) {
+                        (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.stop_token());
+                        if ((stream && stream->aborted()) || context.stop_token().stop_requested()) {
                             co_return;
                         }
                         // Everything received before this full query is

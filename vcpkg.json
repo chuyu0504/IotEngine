@@ -24,6 +24,16 @@
     "hiredis",
     "libpq",
     "libsrtp",
+    {
+      "name": "mimalloc",
+      "default-features": false,
+      "features": [
+        {
+          "name": "override",
+          "platform": "!windows"
+        }
+      ]
+    },
     "openssl",
     "protobuf",
     "pugixml",

@@ -74,8 +74,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 # Ruvia resolves its packages from this project's vcpkg manifest.
 FetchContent_Declare(ruvia
-    URL https://github.com/hyird/Ruvia/archive/3cc97b8b063ff466a98164438ceedf41ad3c3864.tar.gz
-    URL_HASH SHA256=7b7ac4fd62a734faf5f20d52b643c30daa42dc5f9ebe4e9ec383469336281238)
+    URL https://github.com/hyird/Ruvia/archive/79059651e0c264a711a9e789d41c8e12b2e003c0.tar.gz
+    URL_HASH SHA256=f48499115a819d7d8ef9363f8ba867be53d92805abfddf35826e1549fd5d930c)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -598,14 +598,15 @@ foreach(test_name
         edge-terminal-integration
         edge-vpn-integration
         entity-schema-audit
+        external-io-integration
         firmware-http-integration
         gb-control-claim-integration
+        gb28181-disabled-health-integration
         gb-owner-lease-integration
         gb-projection-publish-integration
         industrial-edge-integration
         industrial-protocol-integration
         link-edge-debug-integration
-        link-http-sse-integration
         mqtt-integration
         native-points-migration-integration
         packet-debug-collector-integration
@@ -682,12 +683,23 @@ iot_engine_add_integration(mqtt-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
 iot_engine_add_integration(entity-live-changes-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
+iot_engine_add_integration(edge-snapshot-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
+
+iot_engine_add_integration(external-io-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
 
 iot_engine_add_integration_fixture(storage-policy MANAGED)
 iot_engine_add_integration(storage-policy-integration FIXTURE storage-policy)
 
 iot_engine_add_integration(upload-recovery-integration
     EXECUTABLE "$<TARGET_FILE:api-upload-test>")
+
+# The race test holds a link table lock and inspects the server-wide Redis
+# client inventory. Prior API work or parallel clients would invalidate that
+# controlled window, so use a fresh fixture and serialize the test.
+iot_engine_add_integration_fixture(link-sse)
+iot_engine_add_integration(link-http-sse-integration FIXTURE link-sse RUN_SERIAL)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")
     add_custom_target(iot-engine-env ALL

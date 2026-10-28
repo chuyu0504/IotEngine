@@ -53,6 +53,9 @@ class TelemetryValues final {
         if (value == pb::PROTOCOL_DLT645) {
             return "DLT645";
         }
+        if (value == pb::PROTOCOL_EXTERNAL_IO) {
+            return "ExternalIO";
+        }
         return {};
     }
 
@@ -197,7 +200,7 @@ class TelemetryValues final {
             } else if (!item.encoded_value().empty()) {
                 throw std::runtime_error("edge binary element has no encoding");
             }
-            if (item.derived() && item.has_value()) {
+            if ((item.derived() || record.protocol() == pb::PROTOCOL_EXTERNAL_IO) && item.has_value()) {
                 if (item.value().value_case() == pb::ScalarValue::kBoolValue) {
                     valueJson = item.value().bool_value() ? "true" : "false";
                 } else if (item.value().value_case() == pb::ScalarValue::kDoubleValue) {
@@ -222,6 +225,8 @@ class TelemetryValues final {
             if (item.derived()) {
                 output += ",\"derived\":true,\"visible\":" + std::string(item.hidden() ? "false" : "true") +
                     ",\"quality\":" + service::utils::jsonQuoted(item.quality()) + ",\"sample_time_ms\":" + std::to_string(item.sample_time_ms());
+            } else if (record.protocol() == pb::PROTOCOL_EXTERNAL_IO) {
+                output += ",\"visible\":" + std::string(item.hidden() ? "false" : "true");
             }
             output += '}';
             first = false;

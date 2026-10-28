@@ -1,15 +1,3 @@
-#include <ruvia/core/event_loop_pool.h>
-#include <ruvia/core/memory/memory_pool.h>
-#include <ruvia/web/app.h>
-#include <ruvia/web/controller.h>
-#include <ruvia/web/http_client.h>
-#include <ruvia/web/db/db_client.h>
-#include <ruvia/web/db/db_query.h>
-#include <ruvia/web/redis/redis_client.h>
-
-#include "service/middleware/request_context.h"
-#include "tests/redis_reply.fixture.h"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +8,20 @@
 #include <span>
 #include <string>
 #include <thread>
+
+#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/memory/memory_pool.h>
+#include <ruvia/web/app.h>
+#include <ruvia/web/controller.h>
+#include <ruvia/web/db/db.h>
+#include <ruvia/web/db/db_query.h>
+#include <ruvia/web/http_client.h>
+#include <ruvia/web/redis/redis.h>
+
+#include "service/middleware/request_context.h"
+
+#include "tests/database.fixture.h"
+#include "tests/redis_reply.fixture.h"
 
 namespace {
 
@@ -33,22 +35,25 @@ void check(bool condition, const char* message) {
 }
 
 class CountingResource final : public std::pmr::memory_resource {
-public:
+  public:
     std::size_t live() const noexcept { return live_; }
 
-private:
+  private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         auto* value = std::pmr::new_delete_resource()->allocate(bytes, alignment);
         ++live_;
         return value;
     }
+
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override {
         --live_;
         std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
     }
+
     bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
         return this == &other;
     }
+
     std::size_t live_{};
 };
 
@@ -58,101 +63,11 @@ bool adjacent(const void* first, const void* second) {
     return left + 1 == right || right + 1 == left;
 }
 
-// Minimal PostgreSQL peer for public-client ownership checks. It completes the
-// startup and extended query exchange, returning one owned text field or a
-// statement failure followed by ReadyForQuery on the same connection.
-class PostgreSqlReplyServer final {
-public:
-    PostgreSqlReplyServer()
-        : acceptor_(io_, {asio::ip::address_v4::loopback(), 0}),
-          port_(acceptor_.local_endpoint().port()), thread_([this] { serve(); }) {}
-    ~PostgreSqlReplyServer() {
-        asio::error_code error;
-        asio::ip::tcp::socket wake(io_);
-        wake.connect({asio::ip::address_v4::loopback(), port_}, error);
-        wake.close(error);
-        thread_.join();
-    }
-    std::uint16_t port() const noexcept { return port_; }
-
-private:
-    static std::string number(std::uint32_t value, unsigned bytes = 4) {
-        std::string output(bytes, '\0');
-        for (unsigned index = 0; index < bytes; ++index)
-            output[index] = static_cast<char>(value >> (8 * (bytes - index - 1)));
-        return output;
-    }
-    static std::uint32_t length(const std::array<unsigned char, 4>& value) {
-        return (std::uint32_t(value[0]) << 24) | (std::uint32_t(value[1]) << 16) |
-            (std::uint32_t(value[2]) << 8) | value[3];
-    }
-    void serve() noexcept {
-        try {
-            asio::ip::tcp::socket socket(io_);
-            acceptor_.accept(socket);
-            const auto payload = [&] {
-                std::array<unsigned char, 4> size{};
-                asio::read(socket, asio::buffer(size));
-                const auto count = length(size);
-                if (count < 4 || count > 1024 * 1024) throw std::runtime_error("invalid PostgreSQL fixture frame");
-                std::string body(count - 4, '\0');
-                asio::read(socket, asio::buffer(body));
-                return body;
-            };
-            const auto send = [&](char type, std::string_view body) {
-                const auto frame = std::string(1, type) + number(static_cast<std::uint32_t>(body.size() + 4)) + std::string(body);
-                asio::write(socket, asio::buffer(frame));
-            };
-            (void)payload();
-            send('R', number(0));
-            send('S', std::string("client_encoding\0UTF8\0", 21));
-            send('S', std::string("server_version\00018.0\0", 20));
-            send('K', number(1) + number(2));
-            send('Z', "I");
-            bool statementFailure = false;
-            for (;;) {
-                char type{};
-                asio::read(socket, asio::buffer(&type, 1));
-                const auto input = payload();
-                if (type == 'X') return;
-                if (type == 'P') {
-                    statementFailure = input.find("fixture_failure") != std::string::npos;
-                    send('1', {});
-                }
-                if (type == 'B') send('2', {});
-                if (type == 'D' || type == 'Q') {
-                    send('T', number(1, 2) + std::string("value\0", 6) + number(0) +
-                        number(0, 2) + number(25) + number(0xffff, 2) + number(0xffffffff) + number(0, 2));
-                }
-                if (type == 'E' || type == 'Q') {
-                    if (statementFailure) {
-                        constexpr char error[] = "SERROR\0C22012\0Mfixture statement failed\0\0";
-                        send('E', std::string_view(error, sizeof(error) - 1));
-                    } else {
-                        send('D', number(1, 2) + number(2048) + std::string(2048, 'r'));
-                        send('C', std::string("SELECT 1\0", 9));
-                    }
-                }
-                if (type == 'S' || type == 'Q') send('Z', "I");
-            }
-        } catch (...) {
-            // Client closure ends this fixture; protocol failures reach its task.
-        }
-    }
-
-    asio::io_context io_;
-    asio::ip::tcp::acceptor acceptor_;
-    std::uint16_t port_;
-    std::thread thread_;
-};
-
-ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
-    std::uint16_t databasePort, std::uint16_t redisPort) {
+ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop, std::uint16_t databasePort, std::uint16_t redisPort) {
     ruvia::worker_memory worker;
     std::array<std::byte, 64 * 1024> buffer{};
     ruvia::request_memory request(worker, buffer);
-    check(request.upstream_resource() == worker.resource(),
-        "request memory does not borrow its worker pool");
+    check(request.upstream_resource() == worker.resource(), "request memory does not borrow its worker pool");
 
     ruvia::db_config databaseConfig;
     databaseConfig.driver_ = ruvia::db_driver::postgresql;
@@ -189,15 +104,13 @@ ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
         const auto* after = request.resource()->allocate(1, 1);
         check(!adjacent(before, after), "arena probe missed an injected request allocation");
         const auto retained = co_await databaseHandle.query("SELECT $1", std::string(2048, 'r'));
-        check(retained.front()["value"].value() == std::string(2048, 'r'),
-            "retained DB result changed");
+        check(retained.front()["value"].value() == std::string(2048, 'r'), "retained DB result changed");
         for (int index = 0; index != 100; ++index) {
             const auto transient = co_await databaseHandle.query("SELECT $1", std::string(2048, 'x'));
             check(transient.front()[0].value()->size() == 2048, "DB result value mismatch");
-            check(retained.front()["value"].value() == std::string(2048, 'r'),
-                "later DB query invalidated a retained result");
+            check(retained.front()["value"].value() == std::string(2048, 'r'), "later DB query invalidated a retained result");
         }
-        for (const bool query : {true, false}) {
+        for (const bool query : { true, false }) {
             bool rejected = false;
             try {
                 if (query) {
@@ -210,8 +123,7 @@ ruvia::task<void> coldOperationsUseClientStorage(ruvia::event_loop loop,
             }
             check(rejected, "PostgreSQL statement failure lost its original error");
             const auto recovered = co_await databaseHandle.query("SELECT $1", std::string(2048, 'r'));
-            check(recovered.front()["value"].value() == std::string(2048, 'r'),
-                "PostgreSQL statement failure left its connection unusable");
+            check(recovered.front()["value"].value() == std::string(2048, 'r'), "PostgreSQL statement failure left its connection unusable");
         }
     }
     co_await redis.shutdown();
@@ -231,8 +143,7 @@ void resultStorageIsReclaimed() {
             const auto retained = ownedStatement(&resource, 'r');
             const auto expected = std::string(retained.sql());
             const auto baseline = resource.live();
-            check(expected.find(std::string(2048, 'r')) != std::string::npos,
-                "compiled DB result lost owned input");
+            check(expected.find(std::string(2048, 'r')) != std::string::npos, "compiled DB result lost owned input");
             for (int index = 0; index != 100; ++index) {
                 {
                     const auto transient = ownedStatement(&resource, char('a' + index % 26));
@@ -253,7 +164,9 @@ void resultStorageIsReclaimed() {
             for (int index = 0; index != 100; ++index) {
                 {
                     const auto transient = test::redisString(
-                        std::string(2048, char('a' + index % 26)), &resource);
+                        std::string(2048, char('a' + index % 26)),
+                        &resource
+                    );
                     check(transient.string().size() == 2048, "Redis result value mismatch");
                 }
                 check(resource.live() == baseline, "Redis result storage accumulated");
@@ -265,13 +178,13 @@ void resultStorageIsReclaimed() {
 }
 
 class OperationMemoryController final {
-public:
+  public:
     RUVIA_CONTROLLER_GROUP("/operation-memory")
     RUVIA_ROUTES_BEGIN(OperationMemoryController)
     RUVIA_GET("", probe);
     RUVIA_ROUTES_END
 
-private:
+  private:
     ruvia::task<ruvia::http_response> probe(ruvia::context& connection) {
         for (int index = 0; index != 2000; ++index) {
             const auto* before = connection.arena()->allocate(1, 1);
@@ -296,29 +209,25 @@ private:
         const auto* after = connection.arena()->allocate(1, 1);
         check(!adjacent(before, after), "HTTP arena probe missed an injected request allocation");
         service::middleware::RequestContext request(connection, "memory-test");
-        OperationMemoryResult result(ruvia::model_options{.resource_ = request.arena()});
+        OperationMemoryResult result(ruvia::model_options{ .resource_ = request.arena() });
         result.set<"value">("operation storage released");
         co_return connection.json(result);
     }
 };
 
 ruvia::task<void> verifyHttpRequest(ruvia::event_loop loop, std::uint16_t port) {
-    ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http,
-        .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = std::chrono::seconds(5)});
+    ruvia::http_client client(loop, { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = std::chrono::seconds(5) });
     {
         const auto http = client.handle();
-        auto response = co_await http.send({.target_ = "/operation-memory"});
+        auto response = co_await http.send({ .target_ = "/operation-memory" });
         const auto body = co_await response.body().read_all();
-        check(response.status() == ruvia::http_status::ok &&
-            std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) ==
-                R"({"value":"operation storage released"})",
-            "serialized result did not survive operation storage release");
+        check(response.status() == ruvia::http_status::ok && std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == R"({"value":"operation storage released"})", "serialized result did not survive operation storage release");
     }
     co_await client.shutdown();
 }
 
 void requestStorageSurvives() {
-    PostgreSqlReplyServer database;
+    test::PostgreSqlReplyServer database;
     test::RedisReplyServer redis("+PONG\r\n");
     ruvia::db_config databaseConfig;
     databaseConfig.driver_ = ruvia::db_driver::postgresql;
@@ -329,29 +238,33 @@ void requestStorageSurvives() {
     redisConfig.pool_size_per_worker_ = 1;
     redisConfig.tls_.mode_ = ruvia::client_tls_mode::disabled;
     asio::io_context io;
-    asio::ip::tcp::acceptor reservation(io, {asio::ip::address_v4::loopback(), 0});
+    asio::ip::tcp::acceptor reservation(io, { asio::ip::address_v4::loopback(), 0 });
     const auto port = reservation.local_endpoint().port();
     reservation.close();
     auto& app = ruvia::app();
     std::promise<void> ready;
     auto started = ready.get_future();
-    app.get_blocking_pool(nullptr).listen({.address_ = "127.0.0.1", .http_ = port})
-        .server({.worker_count_ = 1}).database({.config_ = databaseConfig})
-        .redis({.config_ = redisConfig}).on_start([&] { ready.set_value(); });
+    app.blocking_pool(nullptr).listen({ .address_ = "127.0.0.1", .http_ = port }).server({ .worker_count_ = 1 }).database({ .config_ = databaseConfig }).redis({ .config_ = redisConfig }).on_start([&] {
+        ready.set_value();
+    });
     std::exception_ptr serverError;
     std::thread serving([&] {
         try {
             app.run();
         } catch (...) {
             serverError = std::current_exception();
-            try { ready.set_exception(serverError); } catch (...) {}
+            try {
+                ready.set_exception(serverError);
+            } catch (...) {
+            }
         }
     });
     try {
-        if (started.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+        if (started.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
             throw std::runtime_error("operation memory app startup timed out");
+        }
         started.get();
-        ruvia::event_loop_pool clients({.loop_count_ = 1});
+        ruvia::event_loop_pool clients({ .loop_count_ = 1 });
         clients.start();
         clients.loop(0).start(verifyHttpRequest(clients.loop(0), port)).get();
         clients.stop();
@@ -363,15 +276,17 @@ void requestStorageSurvives() {
     }
     app.stop();
     serving.join();
-    if (serverError) std::rethrow_exception(serverError);
+    if (serverError) {
+        std::rethrow_exception(serverError);
+    }
 }
 
 } // namespace
 
 int main() {
     try {
-        ruvia::event_loop_pool pool({.loop_count_ = 1});
-        PostgreSqlReplyServer database;
+        ruvia::event_loop_pool pool({ .loop_count_ = 1 });
+        test::PostgreSqlReplyServer database;
         test::RedisReplyServer redis("+PONG\r\n");
         pool.start();
         pool.loop(0).start(coldOperationsUseClientStorage(pool.loop(0), database.port(), redis.port())).get();

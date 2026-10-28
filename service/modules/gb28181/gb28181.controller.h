@@ -1,7 +1,7 @@
 #pragma once
 
 #include <ruvia/web/controller.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
@@ -16,7 +16,7 @@ class Gb28181Controller final {
     RUVIA_CONTROLLER_GROUP("/v1/gb28181", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN(Gb28181Controller)
     RUVIA_GET("/health", health, service::middleware::PermissionMiddleware<"iot:gb28181:query">);
-    RUVIA_GET_SSE("/devices/events", devicesEvents, service::middleware::PermissionMiddleware<"iot:gb28181:query">);
+    RUVIA_GET("/devices/events", devicesEvents, service::middleware::PermissionMiddleware<"iot:gb28181:query">);
     RUVIA_GET("/streams/:streamId/recording", recording, service::middleware::PermissionMiddleware<"iot:gb28181:record">, ruvia::path_model<GbStreamParams>);
     RUVIA_POST("/devices/:deviceId/catalog/query", catalog, service::middleware::PermissionMiddleware<"iot:gb28181:control">, ruvia::path_model<GbDeviceParams>);
     RUVIA_PUT("/devices/:deviceId/name", renameDevice, service::middleware::PermissionMiddleware<"iot:gb28181:control">, ruvia::path_model<GbDeviceParams>, ruvia::json_body<GbNameBody>);
@@ -39,16 +39,16 @@ class Gb28181Controller final {
 
     ruvia::task<void> devicesEvents(ruvia::context& c) {
         std::vector<service::middleware::LiveChannel> channels;
-        channels.push_back({ "snapshot", { std::string(service::message::live::topic::kGb28181) },
-            [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
-                // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
-                co_await service::middleware::requirePermission(request, "iot:gb28181:query");
-                auto result = co_await gb28181Service().devices(request);
-                co_return service::middleware::modelJson(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
-            },
-            {} });
-        co_await service::middleware::serveLive(c, service::middleware::requireAuth(c).userId, std::move(channels),
-            [&c] { (void)service::middleware::requireAuth(c); });
+        channels.push_back({ "snapshot", { std::string(service::message::live::topic::kGb28181) }, [](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+                                // 连接建立后权限仍可能被撤销，每次事件查询前重新校验。
+                                co_await service::middleware::requirePermission(request, "iot:gb28181:query");
+                                auto result = co_await gb28181Service().devices(request);
+                                co_return service::middleware::modelJson(service::common::ok<GbDeviceListResponse>(request, std::move(result)));
+                            },
+                             {} });
+        co_await service::middleware::serveLive(c, service::middleware::requireAuth(c).userId, std::move(channels), [&c] {
+            (void)service::middleware::requireAuth(c);
+        });
     }
 
     ruvia::task<ruvia::http_response> recording(ruvia::context& c) {
@@ -154,16 +154,8 @@ class MediaProxyController final {
   public:
     RUVIA_CONTROLLER_GROUP("/media")
     RUVIA_ROUTES_BEGIN(MediaProxyController)
-    RUVIA_GET_STREAM("/*", proxy);
-    ruvia_controller_access_type::add_response_stream_route(
-        ruvia_route_scope,
-        ruvia::http_known_method::post,
-        "/*",
-        ruvia_controller_access_type::template bind_stream<&ruvia_controller_type::proxy>(
-            this
-        ),
-        ruvia_controller_access_type::template make_middlewares<>()
-    );
+    RUVIA_GET("/*", proxy);
+    RUVIA_POST("/*", proxy);
     RUVIA_ROUTES_END
 
   private:

@@ -24,7 +24,6 @@
 #include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/web/redis/redis.h>
-#include <ruvia/web/redis/redis_client.h>
 
 #include "service/common/message.h"
 #include "service/common/worker.h"
@@ -63,7 +62,7 @@ class CollectorWorker final {
           scheduler_(loop_.io_context()),
           redisClient_(std::move(redisClient)),
           redisBlocking_(redisClient_->handle()),
-          redis_(redisClient_->with_options({ .timeout_ = std::chrono::seconds(30) })),
+          redis_(redisClient_->handle().with_options({ .timeout_ = std::chrono::seconds(30) })),
           engine_(protocols()),
           tcp_(
               uuidState_,
@@ -195,7 +194,7 @@ class CollectorWorker final {
 
     [[nodiscard]] ruvia::event_loop eventLoop() const { return loop_; }
 
-    [[nodiscard]] ruvia::redis_handle redisHandle() const { return redisClient_->with_options({}); }
+    [[nodiscard]] ruvia::redis_handle redisHandle() const { return redisClient_->handle().with_options({}); }
 
     [[nodiscard]] ruvia::task<void> shutdownRedis() {
         co_await redisClient_->shutdown();

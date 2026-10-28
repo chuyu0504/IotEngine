@@ -12,6 +12,8 @@
 #include "service/features/edge/gateway/gateway.service.h"
 #include "service/modules/edge_node/edge_node.service.h"
 
+#include "tests/database.fixture.h"
+
 int main() {
     try {
         const auto approved = service::edge::gateway::EnrollmentRecord::decode("node-1|approved");
@@ -189,15 +191,16 @@ int main() {
         }
         {
             constexpr std::string_view nodeId = "00000000-0000-4000-8000-0000000000aa";
-            const auto removal = service::edge_node::EdgeService::pendingEnrollmentRemoval(std::pmr::new_delete_resource(), nodeId);
-            const auto statement = removal.compile(ruvia::db_driver::postgresql, std::pmr::new_delete_resource(), ruvia::db_parameter_mode::literal);
-            const std::string sql(statement.sql());
+            const auto statement = test::compileDatabaseStatement([nodeId](auto& database) {
+                return service::edge_node::EdgeService::pendingEnrollmentRemoval(database, std::pmr::new_delete_resource(), nodeId);
+            });
+            const auto& sql = statement.sql;
             const auto where = sql.find("WHERE");
             if (sql.find("DELETE FROM") == std::string::npos || sql.find("edge_node") == std::string::npos) {
                 throw std::runtime_error("pending enrollment removal is not a DELETE on edge_node");
             }
             if (where == std::string::npos || sql.find("enrollment_status", where) == std::string::npos ||
-                sql.find("'pending'", where) == std::string::npos || sql.find(nodeId, where) == std::string::npos ||
+                statement.parameterCount != 2 ||
                 sql.find(" AND ", where) == std::string::npos) {
                 throw std::runtime_error("pending enrollment removal does not restrict deletion to the pending node");
             }

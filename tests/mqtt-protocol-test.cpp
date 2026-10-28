@@ -146,7 +146,7 @@ void testBatchPathsAndRetries() {
     require(array.receive(publication("devices", R"([{"deviceCode":"0","temperature":1},{"deviceCode":"1","temperature":2}])", 0)).size() == 4, "top-level array failed");
     const std::string json = R"({"a/b":{"~name":[false,42]}})";
     const auto object = ruvia::json_value::parse(json);
-    const auto selected = service::utils::jsonField(*object, "/a~1b/~0name/1");
+    const auto selected = service::utils::jsonField(object, "/a~1b/~0name/1");
     require(selected && selected->view() == "42", "JSON Pointer escape or index failed");
 }
 
@@ -180,10 +180,13 @@ std::string publishedPayload(const std::vector<ProtocolAction>& actions) {
     const auto& bytes = actions.front().bytes;
     require((bytes.front() >> 4) == 3, "command frame is not PUBLISH");
     std::size_t offset = 1;
-    while (bytes.at(offset++) & 128) {}
+    while (bytes.at(offset++) & 128) {
+    }
     const auto topicLength = (bytes.at(offset) << 8) | bytes.at(offset + 1);
     offset += 2 + topicLength;
-    if ((bytes.front() >> 1) & 3) offset += 2;
+    if ((bytes.front() >> 1) & 3) {
+        offset += 2;
+    }
     return std::string(bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end());
 }
 
@@ -239,7 +242,7 @@ void testNamedTemplates() {
     legacy.start();
     const auto legacyPayloadText = publishedPayload(legacy.execute({ .id = "legacy", .deviceId = "0", .elements = { { "temperature", "15" } } }));
     const auto legacyPayload = ruvia::json_value::parse(legacyPayloadText);
-    const auto legacyTemperature = legacyPayload ? service::utils::jsonField(*legacyPayload, "/body/report/temperature") : std::nullopt;
+    const auto legacyTemperature = service::utils::jsonField(legacyPayload, "/body/report/temperature");
     require(legacyTemperature && legacyTemperature->view() == "15", "legacy $values API behavior regressed");
 
     for (const auto invalid : { R"({"x":"$unknown"})", R"({"x":"$time"})", R"({"x":"$point:不存在"})", R"({"x":1,"x":"$point:温度"})", R"(["$point:温度"])" }) {
@@ -253,45 +256,58 @@ void testNamedTemplates() {
         require(rejected, "invalid named template accepted by runtime");
     }
 }
+
 void testMultipleMessagesAndRequiredPoints() {
     Fixture fixture;
     auto& device = fixture.snapshot->devices.front();
     device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{deviceCode}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
     device.elements = {
-        {.id="temperature", .name="温度", .dataType="DOUBLE", .mqttField="temperature", .writable=true},
-        {.id="enabled", .name="开关", .dataType="BOOL", .writable=true},
-        {.id="channel", .name="通道", .dataType="STRING", .size=256, .writable=true},
+        { .id = "temperature", .name = "温度", .dataType = "DOUBLE", .mqttField = "temperature", .writable = true },
+        { .id = "enabled", .name = "开关", .dataType = "BOOL", .writable = true },
+        { .id = "channel", .name = "通道", .dataType = "STRING", .size = 256, .writable = true },
     };
     fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     fixture.start();
-    const auto selected = fixture.execute({.id="set-1", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}, .mqttMessageId="set"});
+    const auto selected = fixture.execute({ .id = "set-1", .deviceId = "0", .elements = { { "temperature", "15" }, { "channel", "zone-a" } }, .mqttMessageId = "set" });
     require(publishedPayload(selected) == R"({"action":"set","values":{"temperature":15}})", "optional property was filled or required value not converted");
     const std::string wire(selected.front().bytes.begin(), selected.front().bytes.end());
     require(wire.find("devices/0/settings/zone-a") != std::string::npos, "selected command Topic was not rendered from properties");
-    require(publishedPayload(fixture.execute({.id="switch-1", .deviceId="0", .elements={{"enabled","0"}}, .mqttMessageId="switch"})) == R"({"switch":false})", "other message payload was used or false value omitted");
-    require(publishedPayload(fixture.execute({.id="set-2", .deviceId="0", .elements={{"temperature","0"},{"enabled","0"},{"channel","zone-b"}}, .mqttMessageId="set"})) == R"({"action":"set","values":{"temperature":0,"enabled":false}})", "zero or false optional control value was lost");
+    require(publishedPayload(fixture.execute({ .id = "switch-1", .deviceId = "0", .elements = { { "enabled", "0" } }, .mqttMessageId = "switch" })) == R"({"switch":false})", "other message payload was used or false value omitted");
+    require(publishedPayload(fixture.execute({ .id = "set-2", .deviceId = "0", .elements = { { "temperature", "0" }, { "enabled", "0" }, { "channel", "zone-b" } }, .mqttMessageId = "set" })) == R"({"action":"set","values":{"temperature":0,"enabled":false}})", "zero or false optional control value was lost");
     for (const auto& command : std::vector<ProtocolCommand>{
-        {.id="missing-choice", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}},
-        {.id="unknown-choice", .deviceId="0", .elements={{"enabled","1"}}, .mqttMessageId="unknown"},
-        {.id="missing-required", .deviceId="0", .elements={{"enabled","1"},{"channel","zone-a"}}, .mqttMessageId="set"},
-        {.id="missing-topic", .deviceId="0", .elements={{"temperature","15"}}, .mqttMessageId="set"},
-        {.id="wrong-membership", .deviceId="0", .elements={{"temperature","15"},{"enabled","1"}}, .mqttMessageId="switch"},
-        {.id="blank-required", .deviceId="0", .elements={{"temperature"," "},{"channel","zone-a"}}, .mqttMessageId="set"},
-        {.id="topic-injection", .deviceId="0", .elements={{"temperature","15"},{"channel","zone/#"}}, .mqttMessageId="set"},
-    }) requireCommandFailure(fixture.execute(command));
+             { .id = "missing-choice", .deviceId = "0", .elements = { { "temperature", "15" }, { "channel", "zone-a" } } },
+             { .id = "unknown-choice", .deviceId = "0", .elements = { { "enabled", "1" } }, .mqttMessageId = "unknown" },
+             { .id = "missing-required", .deviceId = "0", .elements = { { "enabled", "1" }, { "channel", "zone-a" } }, .mqttMessageId = "set" },
+             { .id = "missing-topic", .deviceId = "0", .elements = { { "temperature", "15" } }, .mqttMessageId = "set" },
+             { .id = "wrong-membership", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "1" } }, .mqttMessageId = "switch" },
+             { .id = "blank-required", .deviceId = "0", .elements = { { "temperature", " " }, { "channel", "zone-a" } }, .mqttMessageId = "set" },
+             { .id = "topic-injection", .deviceId = "0", .elements = { { "temperature", "15" }, { "channel", "zone/#" } }, .mqttMessageId = "set" },
+         }) {
+        requireCommandFailure(fixture.execute(command));
+    }
     // 准备阶段也必须拒绝缺少必填值，不能仅依靠实际发送阶段。
     bool rejected = false;
-    try { (void)command::resolve(device, std::vector<CommandElementValue>{{"enabled","1"}}, "set"); }
-    catch (const std::invalid_argument&) { rejected = true; }
+    try {
+        (void)command::resolve(device, std::vector<CommandElementValue>{ { "enabled", "1" } }, "set");
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
     require(rejected, "command preparation did not enforce required points");
     service::message::ProtocolTask task;
-    task.messageId="command"; task.groupKey="device:0"; task.protocol="MQTT"; task.transport="RAW";
-    task.kind="command"; task.linkId="link"; task.deviceId="0"; task.createdAtMs=1;
-    task.elements={{"enabled","0"}}; task.mqttMessageId="switch";
+    task.messageId = "command";
+    task.groupKey = "device:0";
+    task.protocol = "MQTT";
+    task.transport = "RAW";
+    task.kind = "command";
+    task.linkId = "link";
+    task.deviceId = "0";
+    task.createdAtMs = 1;
+    task.elements = { { "enabled", "0" } };
+    task.mqttMessageId = "switch";
     service::message::StreamMessage envelope;
-    envelope.fields=service::message::protocolTaskFields(task);
-    const auto restored=service::message::protocolTaskFrom(envelope);
-    require(restored.mqttMessageId=="switch" && restored.elements==task.elements, "Redis command contract lost message selection");
+    envelope.fields = service::message::protocolTaskFields(task);
+    const auto restored = service::message::protocolTaskFrom(envelope);
+    require(restored.mqttMessageId == "switch" && restored.elements == task.elements, "Redis command contract lost message selection");
 }
 } // namespace
 
@@ -304,12 +320,12 @@ void testConfiguredCommandResponses() {
     }
     fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     (void)fixture.session->connected();
-    const auto subscriptions = fixture.receive({0x20, 2, 0, 0});
+    const auto subscriptions = fixture.receive({ 0x20, 2, 0, 0 });
     const std::string subscriptionBytes(subscriptions.front().bytes.begin(), subscriptions.front().bytes.end());
     require(subscriptionBytes.find("devices/0/result") != std::string::npos && subscriptionBytes.find("devices/1/result") != std::string::npos, "device result topics were not subscribed");
-    (void)fixture.receive({0x90, 6, 0, 1, 1, 1, 1, 1});
+    (void)fixture.receive({ 0x90, 6, 0, 1, 1, 1, 1, 1 });
     auto issue = [&](std::string id, std::string device = "0") {
-        return fixture.execute({.id = std::move(id), .deviceId = std::move(device), .elements = {{"temperature", "12.5"}}, .mqttMessageId = "set"});
+        return fixture.execute({ .id = std::move(id), .deviceId = std::move(device), .elements = { { "temperature", "12.5" } }, .mqttMessageId = "set" });
     };
     auto requestId = [](const std::vector<ProtocolAction>& actions) {
         const std::string frame(actions.front().bytes.begin(), actions.front().bytes.end());
@@ -318,23 +334,32 @@ void testConfiguredCommandResponses() {
         const service::utils::PayloadRecord sent(payload, "json", ",");
         const auto id = sent.field("id");
         require(id && std::holds_alternative<double>(*id) && std::get<double>(*id) > 0 && std::get<double>(*id) <= 9007199254740991., "command ID is not a safe positive JSON integer");
-        require(sent.field("uuid") == service::utils::PayloadScalar{"0"} && sent.field("code") == service::utils::PayloadScalar{"0"}, "device identity was not substituted");
-        require(sent.field("channel") == service::utils::PayloadScalar{2.0} && sent.field("enabled") == service::utils::PayloadScalar{true}, "parameter JSON types were changed");
-        require(sent.field("route") == service::utils::PayloadScalar{"A0"}, "device parameter was not substituted");
+        require(sent.field("uuid") == service::utils::PayloadScalar{ "0" } && sent.field("code") == service::utils::PayloadScalar{ "0" }, "device identity was not substituted");
+        require(sent.field("channel") == service::utils::PayloadScalar{ 2.0 } && sent.field("enabled") == service::utils::PayloadScalar{ true }, "parameter JSON types were changed");
+        require(sent.field("route") == service::utils::PayloadScalar{ "A0" }, "device parameter was not substituted");
         return service::utils::payloadScalarJson(*id);
     };
     const auto first = issue("business-1");
     const auto firstId = requestId(first);
-    const auto ack = fixture.receive({0x40, 2, 0, 2});
-    require(std::none_of(ack.begin(), ack.end(), [](const auto& action) { return action.kind == ProtocolActionKind::CompleteCommand; }), "broker PUBACK reported device success");
+    const auto ack = fixture.receive({ 0x40, 2, 0, 2 });
+    require(std::none_of(ack.begin(), ack.end(), [](const auto& action) {
+                return action.kind == ProtocolActionKind::CompleteCommand;
+            }),
+            "broker PUBACK reported device success");
     auto result = [&](const std::string& id, std::string route = "A0", std::string operation = "set", int code = 0) {
         return "{\"id\":" + id + ",\"route\":\"" + route + "\",\"operation\":\"" + operation + "\",\"result\":{\"code\":" + std::to_string(code) + ",\"response_hex\":null}}";
     };
-    auto completed = [](const auto& actions) { return std::count_if(actions.begin(), actions.end(), [](const auto& action) { return action.kind == ProtocolActionKind::CompleteCommand || action.kind == ProtocolActionKind::FailCommand; }); };
-    for (const auto& payload : {result("1"), result(firstId, "A1"), result(firstId, "A0", "other")})
+    auto completed = [](const auto& actions) {
+        return std::count_if(actions.begin(), actions.end(), [](const auto& action) {
+            return action.kind == ProtocolActionKind::CompleteCommand || action.kind == ProtocolActionKind::FailCommand;
+        });
+    };
+    for (const auto& payload : { result("1"), result(firstId, "A1"), result(firstId, "A0", "other") }) {
         require(completed(fixture.receive(publication("devices/0/result", payload, 1))) == 0, "unmatched result completed command");
+    }
     require(completed(fixture.receive(publication("devices/1/result", result(firstId), 1))) == 0, "other device completed command");
-    auto retained = publication("devices/0/result", result(firstId), 1); retained.front() |= 1;
+    auto retained = publication("devices/0/result", result(firstId), 1);
+    retained.front() |= 1;
     require(completed(fixture.receive(retained)) == 0, "retained result completed command");
     const auto success = fixture.receive(publication("devices/0/result", result(firstId), 1));
     require(completed(success) == 1 && success.front().commandId == "business-1" && success.front().kind == ProtocolActionKind::CompleteCommand, "matched device success missing");
@@ -344,40 +369,39 @@ void testConfiguredCommandResponses() {
     require(secondId != firstId, "new command reused numeric ID");
     const auto failure = fixture.receive(publication("devices/0/result", result(secondId, "A0", "set", 1), 1));
     require(completed(failure) == 1 && failure.front().kind == ProtocolActionKind::FailCommand && failure.front().reason.find("response_hex") != std::string::npos, "device failure or raw result lost");
-    require(completed(fixture.receive({0x40, 2, 0, 3})) == 0, "late PUBACK completed failed command");
+    require(completed(fixture.receive({ 0x40, 2, 0, 3 })) == 0, "late PUBACK completed failed command");
     const auto third = issue("business-3");
-    (void)fixture.receive({0x40, 2, 0, 4});
+    (void)fixture.receive({ 0x40, 2, 0, 4 });
     const auto timeout = dynamic_cast<DeadlineCapabilitySession*>(fixture.session.get())->deadline(third.back().deadlineToken);
     require(timeout.size() == 1 && timeout.front().kind == ProtocolActionKind::FailCommand && timeout.front().reason == "mqtt_device_response_timeout", "response timeout retried or closed unrelated devices");
     const auto other = issue("device-two", "1");
     const std::string frame(other.front().bytes.begin(), other.front().bytes.end());
     const auto payload = frame.substr(frame.find('{'));
     const service::utils::PayloadRecord otherSent(payload, "json", ",");
-    require(otherSent.field("route") == service::utils::PayloadScalar{"A1"} && otherSent.field("uuid") == service::utils::PayloadScalar{"1"}, "another device reused parameters or identity");
+    require(otherSent.field("route") == service::utils::PayloadScalar{ "A1" } && otherSent.field("uuid") == service::utils::PayloadScalar{ "1" }, "another device reused parameters or identity");
     fixture.snapshot->devices.front().parameters = "{}";
     fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     (void)fixture.session->connected();
-    (void)fixture.receive({0x20, 2, 0, 0});
-    (void)fixture.receive({0x90, 6, 0, 1, 1, 1, 1, 1});
+    (void)fixture.receive({ 0x20, 2, 0, 0 });
+    (void)fixture.receive({ 0x90, 6, 0, 1, 1, 1, 1, 1 });
     const auto missing = issue("missing-parameter");
     require(missing.size() == 1 && missing.front().kind == ProtocolActionKind::FailCommand && missing.front().reason.find("$param:") != std::string::npos, "missing parameter published an incomplete command");
-
 }
 
 void testMultipleReports() {
     Fixture fixture;
-    auto& device=fixture.snapshot->devices.front();
-    device.calculationConfig=R"json({"reports":[{"id":"00000000-0000-4000-8000-000000000001","name":"温度","topic":"devices/{deviceCode}/temperature","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","pointFields":[{"pointId":"temperature","field":"/value"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"状态","topic":"devices/{deviceCode}/state","qos":1,"reportTemplate":"{\"enabled\":\"$point:开关\"}","pointFields":[{"pointId":"enabled","field":"/enabled"}]}],"points":[{"id":"temperature","name":"温度","field":"","dataType":"DOUBLE"},{"id":"enabled","name":"开关","field":"","dataType":"BOOL"}]})json";
-    fixture.session=mqtt::Factory{}.createSession(fixture.snapshot->links.front(),"connection","broker",fixture.snapshot);
+    auto& device = fixture.snapshot->devices.front();
+    device.calculationConfig = R"json({"reports":[{"id":"00000000-0000-4000-8000-000000000001","name":"温度","topic":"devices/{deviceCode}/temperature","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","pointFields":[{"pointId":"temperature","field":"/value"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"状态","topic":"devices/{deviceCode}/state","qos":1,"reportTemplate":"{\"enabled\":\"$point:开关\"}","pointFields":[{"pointId":"enabled","field":"/enabled"}]}],"points":[{"id":"temperature","name":"温度","field":"","dataType":"DOUBLE"},{"id":"enabled","name":"开关","field":"","dataType":"BOOL"}]})json";
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
     (void)fixture.session->connected();
-    const auto subscribe=fixture.receive({0x20,2,0,0});
-    require(subscribe.front().bytes.front()==0x82,"multiple report topics not subscribed");
-    const auto subscribed=fixture.receive({0x90,4,0,1,1,1});
-    require(subscribed.front().kind==ProtocolActionKind::CancelDeadline,"multiple report SUBACK rejected");
-    const auto temperature=fixture.receive(publication("devices/0/temperature",R"({"value":25,"enabled":false})",0));
-    require(temperature.size()==2 && temperature.front().parsed.valuesJson.find("25")!=std::string::npos && temperature.front().parsed.valuesJson.find("enabled")==std::string::npos,"first report used another message mapping");
-    const auto state=fixture.receive(publication("devices/0/state",R"({"enabled":true,"value":100})",0));
-    require(state.size()==2 && state.front().parsed.valuesJson.find("true")!=std::string::npos && state.front().parsed.valuesJson.find("temperature")==std::string::npos,"second report used another message mapping");
+    const auto subscribe = fixture.receive({ 0x20, 2, 0, 0 });
+    require(subscribe.front().bytes.front() == 0x82, "multiple report topics not subscribed");
+    const auto subscribed = fixture.receive({ 0x90, 4, 0, 1, 1, 1 });
+    require(subscribed.front().kind == ProtocolActionKind::CancelDeadline, "multiple report SUBACK rejected");
+    const auto temperature = fixture.receive(publication("devices/0/temperature", R"({"value":25,"enabled":false})", 0));
+    require(temperature.size() == 2 && temperature.front().parsed.valuesJson.find("25") != std::string::npos && temperature.front().parsed.valuesJson.find("enabled") == std::string::npos, "first report used another message mapping");
+    const auto state = fixture.receive(publication("devices/0/state", R"({"enabled":true,"value":100})", 0));
+    require(state.size() == 2 && state.front().parsed.valuesJson.find("true") != std::string::npos && state.front().parsed.valuesJson.find("temperature") == std::string::npos, "second report used another message mapping");
 }
 
 int main() {

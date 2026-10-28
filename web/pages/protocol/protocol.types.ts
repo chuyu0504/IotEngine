@@ -4,7 +4,22 @@ import type { PageParams } from '@/types/pagination';
  */
 /** 协议类型 */
 export const PROTOCOL_TYPES = ['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT'] as const;
-export type ProtocolType = (typeof PROTOCOL_TYPES)[number];
+export const CONFIG_PROTOCOL_TYPES = [...PROTOCOL_TYPES, 'ExternalIO'] as const;
+export type AcquisitionProtocolType = (typeof PROTOCOL_TYPES)[number];
+export type ProtocolType = (typeof CONFIG_PROTOCOL_TYPES)[number];
+
+export interface ExternalIoPoint {
+    id: string;
+    name: string;
+    kind: 'DI' | 'DO' | 'AI';
+    channel: string;
+    unit?: string;
+    visible?: boolean;
+}
+
+export interface ExternalIoConfig extends DeviceTypeTimingConfig {
+    points: ExternalIoPoint[];
+}
 
 export interface DeviceParameterDefinition {
     name: string;
@@ -399,6 +414,7 @@ export interface ProtocolConfigItem {
         | S7Config
         | IndustrialConfig
         | MqttConfig
+        | ExternalIoConfig
         | Record<string, unknown>;
     remark?: string;
     created_at?: string;
@@ -425,6 +441,7 @@ export interface CreateProtocolConfigDto {
         | S7Config
         | IndustrialConfig
         | MqttConfig
+        | ExternalIoConfig
         | Record<string, unknown>;
     remark?: string;
 }
@@ -438,6 +455,7 @@ export interface UpdateProtocolConfigDto {
         | S7Config
         | IndustrialConfig
         | MqttConfig
+        | ExternalIoConfig
         | Record<string, unknown>;
     remark?: string;
 }

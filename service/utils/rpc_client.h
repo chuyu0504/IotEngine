@@ -151,8 +151,8 @@ ruvia::task<std::string> callRpc(Context& context, std::string_view component, s
     const auto& worker = context.worker();
     ruvia::stop_source expired;
     ruvia::task_scope timer(worker);
-    const auto stop = ruvia::combine_stop_tokens(context.get_stop_token(), expired.token());
-    timer.spawn(rpc_detail::expireAtDeadline(worker, deadline, expired, ruvia::combine_stop_tokens(context.get_stop_token(), timer.get_stop_token())));
+    const auto stop = ruvia::combine_stop_tokens(context.stop_token(), expired.token());
+    timer.spawn(rpc_detail::expireAtDeadline(worker, deadline, expired, ruvia::combine_stop_tokens(context.stop_token(), timer.get_stop_token())));
     std::optional<std::string> response;
     std::exception_ptr failure;
     try {
@@ -162,7 +162,7 @@ ruvia::task<std::string> callRpc(Context& context, std::string_view component, s
     }
     timer.request_stop();
     co_await timer.join();
-    if (!response && !context.get_stop_token().stop_requested() && expired.token().stop_requested()) {
+    if (!response && !context.stop_token().stop_requested() && expired.token().stop_requested()) {
         // A result may have committed at the deadline while read() was stopped.
         try {
             if (const auto result = co_await context.redis().get(replyKey)) {
@@ -189,7 +189,7 @@ ruvia::task<std::string> callRpc(Context& context, std::string_view component, s
     if (failure) {
         std::rethrow_exception(failure);
     }
-    service::common::fail(10004, context.get_stop_token().stop_requested() ? "Background operation cancelled" : "Background operation timed out", context.get_stop_token().stop_requested() ? 503 : 504);
+    service::common::fail(10004, context.stop_token().stop_requested() ? "Background operation cancelled" : "Background operation timed out", context.stop_token().stop_requested() ? 503 : 504);
 }
 
 } // namespace service::utils

@@ -22,7 +22,10 @@ try {
         const id = crypto.randomUUID();
         await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by,debug_enabled)
             VALUES(${id},${id},'SL651','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":59780}'::jsonb,'disabled','collector','00000000-0000-7000-8000-000000000002',true)`;
-        await Bun.write(path,JSON.stringify({checksum,id,journal:await journal()}));
+        const dependentTriggers = await db`SELECT c.relname AS table_name,t.tgname AS trigger_name,pg_get_triggerdef(t.oid) AS definition
+            FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+            WHERE c.relname IN ('device','link') AND t.tgname IN ('lock_acquisition_configuration','advance_acquisition_epoch_device','advance_acquisition_epoch_link')`;
+        await Bun.write(path,JSON.stringify({checksum,id,journal:await journal(),dependentTriggers}));
     } else {
         const state = await Bun.file(path).json();
         assert.deepEqual(await journal(),state.journal);
@@ -31,6 +34,10 @@ try {
             assert.equal((await db`SELECT debug_enabled FROM link WHERE id=${state.id}`)[0].debug_enabled,true);
         } else if(phase==='prepare-upgrade'||phase==='prepare-failure') {
             await db.begin(async tx => {
+                // Isolate the historical migration from later triggers referencing
+                // its columns, then restore those exact definitions after upgrade.
+                for (const trigger of state.dependentTriggers)
+                    await tx.unsafe(`DROP TRIGGER ${trigger.trigger_name} ON ${trigger.table_name}`);
                 await tx.unsafe('ALTER TABLE device DROP COLUMN debug_enabled');
                 await tx.unsafe('ALTER TABLE link DROP COLUMN debug_enabled');
                 await tx`DELETE FROM sys_schema_migrations WHERE migration_id=${migration}`;
@@ -40,6 +47,7 @@ try {
             await schema();
             assert.equal((await db`SELECT checksum FROM sys_schema_migrations WHERE migration_id=${migration}`)[0].checksum,state.checksum);
             assert.equal((await db`SELECT debug_enabled FROM link WHERE id=${state.id}`)[0].debug_enabled,false);
+            if(phase==='upgraded') for(const trigger of state.dependentTriggers) await db.unsafe(trigger.definition);
         } else if(phase==='prepare-drift') {
             await db`UPDATE sys_schema_migrations SET checksum='debug-drift' WHERE migration_id=${migration}`;
         } else if(phase==='check-drift') {

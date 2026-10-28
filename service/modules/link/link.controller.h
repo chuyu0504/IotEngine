@@ -22,7 +22,7 @@ class LinkController final {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/link", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN(LinkController)
-    RUVIA_GET_SSE("/events", linkEvents, service::middleware::PermissionMiddleware<"iot:link:query">, ruvia::query_model<LinkListQuery>, ruvia::query_model<LinkEventsQuery>);
+    RUVIA_GET("/events", linkEvents, service::middleware::PermissionMiddleware<"iot:link:query">, ruvia::query_model<LinkListQuery>, ruvia::query_model<LinkEventsQuery>);
     RUVIA_PUT("/:id/debug", setDebug, service::middleware::PermissionMiddleware<"iot:link:edit">, ruvia::path_model<LinkIdParams>, ruvia::json_body<LinkDebugBody>);
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:link:query">, ruvia::query_model<LinkListQuery>);
     RUVIA_GET("/enums", enums, service::middleware::PermissionMiddleware<"iot:link:query">);

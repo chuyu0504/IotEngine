@@ -10,9 +10,9 @@
 
 #include <ruvia/core/event_loop_pool.h>
 #include <ruvia/web/app.h>
+#include <ruvia/web/controller.h>
 #include <ruvia/web/http_client.h>
 
-#include <ruvia/web/controller.h>
 #include "service/modules/link/link.service.h"
 
 using namespace std::chrono_literals;
@@ -37,8 +37,8 @@ class Origin final {
 
     std::uint16_t port() const { return acceptor_.local_endpoint().port(); }
 
-    std::atomic_int scenario{0};
-    std::atomic_int requests{0};
+    std::atomic_int scenario{ 0 };
+    std::atomic_int requests{ 0 };
     std::atomic_bool failed{ false };
 
   private:
@@ -93,14 +93,17 @@ class Origin final {
                 require(request.starts_with("GET / HTTP/1.1\r\n"), "public IP request target changed");
                 require(request.find("text/plain") != std::string::npos, "missing text Accept header");
                 const int selected = scenario.load();
-                if (selected == 5) continue;
+                if (selected == 5) {
+                    continue;
+                }
                 if (selected == 4) {
                     (void)send(socket, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nB\r\n2001:db8::1\r\n0\r\n\r\n", stop);
                     continue;
                 }
-                const std::string body = selected == 0 ? "  203.0.113.7\r\n" :
-                    selected == 1 ? "203.0.113.8" : selected == 2 ? "<html>error</html>" :
-                    selected == 3 ? " \r\n" : std::string(65537, 'a');
+                const std::string body = selected == 0 ? "  203.0.113.7\r\n" : selected == 1 ? "203.0.113.8"
+                    : selected == 2                                                          ? "<html>error</html>"
+                    : selected == 3                                                          ? " \r\n"
+                                                                                             : std::string(65537, 'a');
                 const auto status = selected == 1 ? "503 Unavailable" : "200 OK";
                 (void)send(socket, std::string("HTTP/1.1 ") + status + "\r\nConnection: close\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body, stop);
             }
@@ -117,12 +120,12 @@ class Origin final {
 } // namespace
 
 class PublicIpTestController final {
-public:
+  public:
     RUVIA_CONTROLLER_GROUP("/test")
     RUVIA_ROUTES_BEGIN(PublicIpTestController)
     RUVIA_GET("/ip", ip);
     RUVIA_ROUTES_END
-private:
+  private:
     ruvia::task<ruvia::http_response> ip(ruvia::context& context) {
         const auto owner = std::this_thread::get_id();
         service::link::LinkService service;
@@ -136,16 +139,17 @@ private:
 };
 
 ruvia::task<void> verifyPublicIp(ruvia::event_loop loop, std::uint16_t port, Origin& origin) {
-    ruvia::http_client client(loop, {.scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s});
+    ruvia::http_client client(loop, { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = port, .request_timeout_ = 5s });
     {
         const auto http = client.handle();
         for (int scenario = 0; scenario != 7; ++scenario) {
             origin.scenario = scenario;
             const auto before = origin.requests.load();
-            auto response = co_await http.send({.target_ = "/test/ip"});
+            auto response = co_await http.send({ .target_ = "/test/ip" });
             require(response.status().value() == 200, "public IP handler failed");
             const auto body = co_await response.body().read_all();
-            const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1" : "";
+            const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1"
+                                                                                            : "";
             require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == expected, "public IP response validation failed");
             require(origin.requests.load() == before + 1, "cached query reached upstream again");
         }
@@ -160,28 +164,28 @@ int main() {
     try {
         Origin origin;
         asio::io_context reserveIo;
-        asio::ip::tcp::acceptor reservation(reserveIo, {asio::ip::address_v4::loopback(), 0});
+        asio::ip::tcp::acceptor reservation(reserveIo, { asio::ip::address_v4::loopback(), 0 });
         const auto port = reservation.local_endpoint().port();
         reservation.close();
         std::promise<void> ready;
         auto started = ready.get_future();
-        app.get_blocking_pool(nullptr).listen({.address_ = "127.0.0.1", .http_ = port})
-            .server({.worker_count_ = 2})
-            .get_http_client({.alias_ = "link-public-ip", .config_ = {
-                .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(),
-                .request_timeout_ = 2s, .max_response_bytes_ = 64U * 1024U,
-                .user_agent_ = "curl/8.0"}})
-            .on_start([&] { ready.set_value(); });
+        app.blocking_pool(nullptr).listen({ .address_ = "127.0.0.1", .http_ = port }).server({ .worker_count_ = 2 }).http_client({ .alias_ = "link-public-ip", .config_ = { .scheme_ = ruvia::http_scheme::http, .host_ = "127.0.0.1", .port_ = origin.port(), .request_timeout_ = 2s, .max_response_bytes_ = 64U * 1024U, .user_agent_ = "curl/8.0" } }).on_start([&] {
+            ready.set_value();
+        });
         serving = std::thread([&] {
-            try { app.run(); }
-            catch (...) {
+            try {
+                app.run();
+            } catch (...) {
                 serverError = std::current_exception();
-                try { ready.set_exception(serverError); } catch (...) {}
+                try {
+                    ready.set_exception(serverError);
+                } catch (...) {
+                }
             }
         });
         require(started.wait_for(10s) == std::future_status::ready, "test app startup timed out");
         started.get();
-        ruvia::event_loop_pool pool({.loop_count_ = 1});
+        ruvia::event_loop_pool pool({ .loop_count_ = 1 });
         pool.start();
         pool.loop(0).start(verifyPublicIp(pool.loop(0), port, origin)).get();
         pool.stop();
@@ -189,12 +193,16 @@ int main() {
         require(!origin.failed.load(), "local HTTP origin failed");
         app.stop();
         serving.join();
-        if (serverError) std::rethrow_exception(serverError);
+        if (serverError) {
+            std::rethrow_exception(serverError);
+        }
         std::cout << "public IP HTTP validation, cache and Worker tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         app.stop();
-        if (serving.joinable()) serving.join();
+        if (serving.joinable()) {
+            serving.join();
+        }
         std::cerr << error.what() << '\n';
         return 1;
     }

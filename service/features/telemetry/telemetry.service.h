@@ -1,6 +1,6 @@
 #pragma once
-
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
@@ -17,6 +17,7 @@
 #include <ruvia/core/task.h>
 #include <ruvia/web/db/db.h>
 #include <ruvia/web/db/db_query.h>
+#include <ruvia/web/db/db_repository.h>
 #include <ruvia/web/web_worker.h>
 
 #include "service/common/http.h"
@@ -25,6 +26,7 @@
 #include "service/common/worker.h"
 #include "service/features/access/access.service.h"
 #include "service/features/configuration/configuration.entity.h"
+#include "service/features/configuration/configuration.service.h"
 #include "service/features/live/live.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/latest/latest.entity.h"
@@ -74,10 +76,12 @@ for entry=11,#KEYS do
  if not count then return redis.error_reply('telemetry fanout field count is missing') end
  local fields = {'*'}
  local replay = false
+ local history_only = false
  for i=cursor+1,cursor+count,2 do
   fields[#fields+1]=ARGV[i]
   fields[#fields+1]=ARGV[i+1]
   if ARGV[i] == 'raw_packet_ids' and ARGV[i+1] ~= '[]' then replay = true end
+  if ARGV[i] == 'history_only' and ARGV[i+1] == '1' then history_only = true end
  end
  cursor = cursor + count + 1
  if redis.call('EXISTS',KEYS[entry]) ~= 0 then
@@ -86,7 +90,8 @@ for entry=11,#KEYS do
    redis.call('PUBLISH',KEYS[6],id)
   end
  else
-  for i=1,4 do
+  local last = history_only and 1 or 4
+  for i=1,last do
    local id = redis.call('XADD',KEYS[i],unpack(fields))
    redis.call('PUBLISH',KEYS[i+5],id)
   end
@@ -213,6 +218,22 @@ class TelemetryService {
         if (parsedMessages.empty()) {
             co_return;
         }
+        auto fence = co_await service::configuration::fenceAcquisition(context, parsedMessages);
+        if (consumer != Consumer::History) {
+            std::erase_if(parsedMessages, [](const auto& value) {
+                return value.historyOnly;
+            });
+        } else {
+            std::erase_if(parsedMessages, [](const auto& value) {
+                return value.historyOnly && value.source == "derived" && !value.configurationDigest.empty();
+            });
+        }
+        if (parsedMessages.empty()) {
+            if (fence) {
+                co_await fence->commit();
+            }
+            co_return;
+        }
         const auto redis = context.redis();
         const auto& scope = context.worker_state<std::optional<common::WorkerIdentity>>().value().channels;
         switch (consumer) {
@@ -221,13 +242,17 @@ class TelemetryService {
                 std::vector<std::string> deviceIds;
                 deviceIds.reserve(parsedMessages.size());
                 for (const auto& parsed : parsedMessages) {
-                    deviceIds.emplace_back(parsed.deviceId);
+                    if (parsed.source != "derived" || parsed.configurationDigest.empty()) {
+                        deviceIds.emplace_back(parsed.deviceId);
+                    }
                 }
                 std::ranges::sort(deviceIds);
                 deviceIds.erase(std::unique(deviceIds.begin(), deviceIds.end()), deviceIds.end());
                 // Latest publishes device.realtime for the same samples; History
                 // only tells readers of persisted rows (open history stream).
-                co_await service::live::publish(redis, scope, service::message::live::topic::kDeviceHistory, deviceIds);
+                if (!deviceIds.empty()) {
+                    co_await service::live::publish(redis, scope, service::message::live::topic::kDeviceHistory, deviceIds);
+                }
                 break;
             }
             case Consumer::Latest:
@@ -239,10 +264,14 @@ class TelemetryService {
             case Consumer::Dispatch:
                 break;
         }
+        if (fence) {
+            co_await fence->commit();
+        }
     }
 
   protected:
-    static ruvia::db_query persistenceQuery(std::pmr::memory_resource* resource, const std::vector<message::ParsedDeviceMessage>& messages) {
+    template <typename Database>
+    static auto persistenceQuery(Database&& database, std::pmr::memory_resource* resource, const std::vector<message::ParsedDeviceMessage>& messages, bool authoritativeDerivedHistory = false) {
         std::vector<std::string> rawPayloadArrays;
         rawPayloadArrays.reserve(messages.size());
         for (const auto& message : messages) {
@@ -263,126 +292,129 @@ class TelemetryService {
         const auto timestamp = [](Query& query, std::int64_t milliseconds) {
             return query.call("to_timestamp", { query.binary(query.cast(query.value(milliseconds), Type::double_value), Op::divide, query.value(1000.0)) });
         };
-        Query incoming(resource);
+        ruvia::db_query incoming(resource);
         for (std::size_t index = 0; index < messages.size(); ++index) {
             const auto& parsed = messages[index];
-            incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), Type::big_int), timestamp(incoming, parsed.observedAtMs), incoming.cast(incoming.value(parsed.messageId), Type::uuid), incoming.cast(incoming.value(parsed.deviceId), Type::uuid), incoming.cast(incoming.value(parsed.linkId), Type::uuid), incoming.cast(incoming.value(parsed.connectionId), Type::uuid), incoming.cast(incoming.value(parsed.protocol), Type::text), incoming.cast(incoming.value(parsed.source), Type::text), timestamp(incoming, parsed.occurredAtMs), incoming.cast(incoming.value(parsed.valuesJson), Type::jsonb), incoming.cast(incoming.value(rawPayloadArrays[index]), Type::jsonb), incoming.cast(incoming.value(parsed.storagePolicy), Type::text) });
+            incoming.values({ incoming.cast(incoming.value(static_cast<std::int64_t>(index)), Type::big_int), timestamp(incoming, parsed.observedAtMs), incoming.cast(incoming.value(parsed.messageId), Type::uuid), incoming.cast(incoming.value(parsed.deviceId), Type::uuid), incoming.cast(incoming.value(parsed.linkId), Type::uuid), incoming.cast(incoming.value(parsed.connectionId), Type::uuid), incoming.cast(incoming.value(parsed.protocol), Type::text), incoming.cast(incoming.value(parsed.source), Type::text), timestamp(incoming, parsed.occurredAtMs), incoming.cast(incoming.value(parsed.valuesJson), Type::jsonb), incoming.cast(incoming.value(rawPayloadArrays[index]), Type::jsonb), incoming.cast(incoming.value(parsed.storagePolicy), Type::text), incoming.cast(incoming.value(parsed.historyOnly), Type::boolean), parsed.configurationDigest.empty() ? incoming.cast(incoming.null_value(), Type::text) : incoming.cast(incoming.value(parsed.configurationDigest), Type::text), incoming.cast(incoming.value(!authoritativeDerivedHistory && parsed.source == "derived" && !parsed.configurationDigest.empty()), Type::boolean) });
         }
-        Query valid(resource);
-        valid.select(valid.star("incoming")).from("incoming").join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), valid.binary(valid.binary(valid.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "current_device"), Op::equal, valid.column("device_id", "incoming")), Op::and_value, valid.binary(valid.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "current_device"), Op::equal, valid.column("link_id", "incoming"))), "current_device");
-        Query requested(resource);
+        ruvia::db_query valid(resource);
+        valid.select(valid.star("incoming")).from("incoming").join(ruvia::db_join_type::inner, service::configuration::persistence::DeviceEntity::table_name(), valid.binary(valid.binary(valid.column(service::configuration::persistence::DeviceEntity::column_name<"id">(), "current_device"), Op::equal, valid.column("device_id", "incoming")), Op::and_value, valid.binary(valid.binary(valid.column(service::configuration::persistence::DeviceEntity::column_name<"link_id">(), "current_device"), Op::equal, valid.column("link_id", "incoming")), Op::or_value, valid.column("history_only", "incoming"))), "current_device");
+        ruvia::db_query requested(resource);
         requested.select(requested.column("device_id")).distinct().from("valid_incoming");
-        Query states(resource);
+        ruvia::db_query states(resource);
         selectColumns(states, { "device_id", "last_stored_at", "last_observed_at", "last_observed_id", "last_data" }, "state");
         states.from(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), "state").join(ruvia::db_join_type::inner, "requested", states.binary(states.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">(), "state"), Op::equal, states.column("device_id", "requested")));
-        Query ordered(resource);
+        ruvia::db_query ordered(resource);
         ordered.select({ ordered.star("incoming"), ordered.alias(ordered.column("last_stored_at", "states"), "last_stored") })
             .from("valid_incoming", "incoming")
             .join(ruvia::db_join_type::inner, "states", ordered.binary(ordered.column("device_id", "incoming"), Op::equal, ordered.column("device_id", "states")));
         const auto unpackValue = [](Query& query, ruvia::db_expression value) {
             return query.case_when({ { query.binary(query.binary(query.call("jsonb_typeof", { value }), Op::equal, query.value("object")), Op::and_value, query.binary(value, Op::json_has_key, query.value("value"))), query.binary(value, Op::json_get, query.value("value")) } }, value);
         };
-        Query incomingPoints(resource);
+        ruvia::db_query incomingPoints(resource);
         incomingPoints.select({ incomingPoints.column("input_sequence", "ordered"), incomingPoints.column("device_id", "ordered"), incomingPoints.column("report_time", "ordered"), incomingPoints.alias(incomingPoints.column("id", "ordered"), "record_id"), incomingPoints.alias(incomingPoints.column("key", "point"), "element_id"), incomingPoints.alias(unpackValue(incomingPoints, incomingPoints.column("value", "point")), "point_value") })
             .from("ordered")
+            .and_where(incomingPoints.unary(ruvia::db_unary_operator::not_value, incomingPoints.column("history_only", "ordered")))
             .join_function(ruvia::db_join_type::cross, incomingPoints.call("jsonb_each", { incomingPoints.coalesce({ incomingPoints.binary(incomingPoints.column("data", "ordered"), Op::json_get, incomingPoints.value("values")), emptyJson(incomingPoints) }) }), {}, "point", { .lateral_ = true });
-        Query timeline(resource);
+        ruvia::db_query timeline(resource);
         timeline.select({ timeline.column("input_sequence"), timeline.column("device_id"), timeline.column("element_id"), timeline.alias(timeline.column("report_time"), "observed_at"), timeline.column("record_id"), timeline.column("point_value"), timeline.alias(timeline.cast(timeline.value(false), Type::boolean), "baseline") }).from("incoming_points");
-        Query baseline(resource);
+        ruvia::db_query baseline(resource);
         baseline.select({ baseline.cast(baseline.null_value(), Type::big_int), baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"device_id">(), "latest"), baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"element_id">(), "latest"), baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"observed_at">(), "latest"), baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"record_id">(), "latest"), unpackValue(baseline, baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"value">(), "latest")), baseline.cast(baseline.value(true), Type::boolean) })
             .from(service::telemetry::latest::persistence::DeviceLatestValueEntity::table_name(), "latest")
             .join(ruvia::db_join_type::inner, "requested", baseline.binary(baseline.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::column_name<"device_id">(), "latest"), Op::equal, baseline.column("device_id", "requested")));
         timeline.combine(ruvia::db_set_operation::union_all, baseline);
-        Query pointLagged(resource);
-        const ruvia::db_window_options pointOrder{ .partition_by_ = { pointLagged.column("device_id"), pointLagged.column("element_id") },
-                                                   .order_by_ = { { pointLagged.column("observed_at") }, { pointLagged.column("record_id") }, { pointLagged.column("baseline"), ruvia::db_order_direction::desc }, { pointLagged.column("input_sequence"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::first } } };
+        ruvia::db_query pointLagged(resource);
+
+        const std::array<ruvia::db_expr, 2> windowPartition1{ { pointLagged.column("device_id"), pointLagged.column("element_id") } };
+        const std::array<ruvia::db_order_term, 4> windowOrder2{ { { pointLagged.column("observed_at") }, { pointLagged.column("record_id") }, { pointLagged.column("baseline"), ruvia::db_order_direction::desc }, { pointLagged.column("input_sequence"), ruvia::db_order_direction::asc, ruvia::db_nulls_order::first } } };
+        const ruvia::db_window_options pointOrder{ .partition_by_ = windowPartition1,
+                                                   .order_by_ = windowOrder2 };
         pointLagged.select({ pointLagged.star("timeline"), pointLagged.alias(pointLagged.over(pointLagged.call("lag", { pointLagged.column("point_value") }), pointOrder), "prior_value"), pointLagged.alias(pointLagged.over(pointLagged.call("lag", { pointLagged.cast(pointLagged.value(true), Type::boolean) }), pointOrder), "prior_present") }).from("point_timeline", "timeline");
-        Query changes(resource);
+        ruvia::db_query changes(resource);
         changes.select({ changes.column("input_sequence"), changes.alias(changes.aggregate("bool_or", { changes.binary(changes.unary(ruvia::db_unary_operator::is_null, changes.column("prior_present")), Op::or_value, changes.binary(changes.column("point_value"), Op::is_distinct_from, changes.column("prior_value"))) }), "changed") })
             .from("point_lagged")
             .and_where(changes.unary(ruvia::db_unary_operator::not_value, changes.column("baseline")))
             .group_by({ changes.column("input_sequence") });
-        Query filtered(resource);
-        const auto accepted = filtered.binary(filtered.binary(filtered.column("storage_policy"), Op::equal, filtered.value("report")), Op::or_value, filtered.binary(filtered.binary(filtered.column("storage_policy"), Op::equal, filtered.value("change")), Op::and_value, filtered.coalesce({ filtered.column("changed", "point_changes"), filtered.value(false) })));
+        ruvia::db_query filtered(resource);
+        const auto accepted = filtered.binary(filtered.column("history_only", "ordered"), Op::or_value, filtered.binary(filtered.binary(filtered.column("storage_policy"), Op::equal, filtered.value("report")), Op::or_value, filtered.binary(filtered.binary(filtered.column("storage_policy"), Op::equal, filtered.value("change")), Op::and_value, filtered.coalesce({ filtered.column("changed", "point_changes"), filtered.value(false) }))));
         filtered.select({ filtered.star("ordered"), filtered.alias(accepted, "accepted") }).from("ordered").join(ruvia::db_join_type::left, "point_changes", filtered.binary(filtered.column("input_sequence", "ordered"), Op::equal, filtered.column("input_sequence", "point_changes")));
-        Query records(resource);
+        ruvia::db_query records(resource);
         selectColumns(records, { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex" });
         const auto model = records.binary(records.column("data"), Op::json_get, records.value("model"));
-        records.add_select(records.cast(records.binary(model, Op::json_get_text, records.value("id")), Type::uuid)).from("filtered").and_where(records.column("accepted"));
+        records.add_select(records.cast(records.binary(model, Op::json_get_text, records.value("id")), Type::uuid)).add_select(records.column("configuration_digest")).from("filtered").and_where(records.column("accepted")).and_where(records.unary(ruvia::db_unary_operator::not_value, records.column("journal_derived")));
         using Data = service::telemetry::persistence::DeviceDataEntity;
-        Query inserted(resource);
-        inserted.insert_into(service::telemetry::persistence::DeviceDataEntity::table_name(), { Data::column_name<"report_time">(), Data::column_name<"id">(), Data::column_name<"device_id">(), Data::column_name<"link_id">(), Data::column_name<"connection_id">(), Data::column_name<"protocol">(), Data::column_name<"source">(), Data::column_name<"occurred_at">(), Data::column_name<"data">(), Data::column_name<"raw_payload_hex">(), Data::column_name<"model_id">() })
-            .insert_from(records)
-            .on_conflict({ .columns_ = { std::string(Data::column_name<"id">()), std::string(Data::column_name<"report_time">()) }, .do_nothing_ = true })
-            .returning({ inserted.column(Data::column_name<"device_id">()) });
-        Query storage(resource);
+        ruvia::db_query inserted(resource);
+        auto insertedBuilder = database.template repository<service::telemetry::persistence::DeviceDataEntity>().insert_builder();
+        const std::array<std::string_view, 12> insertedColumns{ Data::column_name<"report_time">(), Data::column_name<"id">(), Data::column_name<"device_id">(), Data::column_name<"link_id">(), Data::column_name<"connection_id">(), Data::column_name<"protocol">(), Data::column_name<"source">(), Data::column_name<"occurred_at">(), Data::column_name<"data">(), Data::column_name<"raw_payload_hex">(), Data::column_name<"model_id">(), Data::column_name<"configuration_digest">() };
+        const std::array<ruvia::borrowed_text, 2> sourceColumns3{ { Data::column_name<"id">(), Data::column_name<"report_time">() } };
+        insertedBuilder.insert_from(insertedColumns, records).on_conflict({ .conflict_paths_ = sourceColumns3, .do_nothing_ = true }).returning({ { "device_id", inserted.column(Data::column_name<"device_id">()) } });
+        ruvia::db_query storage(resource);
         const auto lastStored = storage.aggregate("max", { storage.column("last_stored") });
-        const auto lastAccepted = storage.filter(storage.aggregate("max", { storage.column("report_time") }), storage.column("accepted"));
+        const auto lastAccepted = storage.filter(storage.aggregate("max", { storage.column("report_time") }), storage.binary(storage.column("accepted"), Op::and_value, storage.unary(ruvia::db_unary_operator::not_value, storage.column("history_only"))));
         storage.select({ storage.column("device_id"), storage.alias(storage.coalesce({ storage.greatest({ lastStored, lastAccepted }), lastStored, lastAccepted }), "last_stored_at") })
             .from("filtered")
             .group_by({ storage.column("device_id") });
-        Query newObserved(resource);
-        const ruvia::db_window_options newestOrder{ .partition_by_ = { newObserved.column("device_id", "incoming") },
-                                                    .order_by_ = { { newObserved.column("report_time", "incoming"), ruvia::db_order_direction::desc }, { newObserved.column("id", "incoming"), ruvia::db_order_direction::desc } } };
+        ruvia::db_query newObserved(resource);
+
+        const std::array<ruvia::db_expr, 1> windowPartition4{ { newObserved.column("device_id", "incoming") } };
+        const std::array<ruvia::db_order_term, 2> windowOrder5{ { { newObserved.column("report_time", "incoming"), ruvia::db_order_direction::desc }, { newObserved.column("id", "incoming"), ruvia::db_order_direction::desc } } };
+        const ruvia::db_window_options newestOrder{ .partition_by_ = windowPartition4,
+                                                    .order_by_ = windowOrder5 };
         newObserved.select({ newObserved.star("incoming"), newObserved.alias(newObserved.over(newObserved.call("row_number"), newestOrder), "newest") })
             .from("valid_incoming", "incoming")
+            .and_where(newObserved.unary(ruvia::db_unary_operator::not_value, newObserved.column("history_only", "incoming")))
             .join(ruvia::db_join_type::inner, "states", newObserved.binary(newObserved.column("device_id", "incoming"), Op::equal, newObserved.column("device_id", "states")))
             .and_where(newObserved.binary(newObserved.unary(ruvia::db_unary_operator::is_null, newObserved.column("last_observed_at", "states")), Op::or_value, newObserved.binary(newObserved.tuple({ newObserved.column("report_time", "incoming"), newObserved.column("id", "incoming") }), Op::greater, newObserved.tuple({ newObserved.column("last_observed_at", "states"), newObserved.column("last_observed_id", "states") }))));
-        Query observed(resource);
+        ruvia::db_query observed(resource);
         observed.select({ observed.column("device_id", "newest"), observed.alias(observed.column("report_time", "newest"), "last_observed_at"), observed.alias(observed.column("id", "newest"), "last_observed_id"), observed.alias(observed.column("data", "newest"), "last_data"), observed.alias(observed.coalesce({ observed.column("data", "previous"), observed.column("last_data", "states") }), "previous_data") })
             .from("new_observed", "newest")
             .join(ruvia::db_join_type::inner, "states", observed.binary(observed.column("device_id", "newest"), Op::equal, observed.column("device_id", "states")))
             .join(ruvia::db_join_type::left, "new_observed", observed.binary(observed.binary(observed.column("device_id", "previous"), Op::equal, observed.column("device_id", "newest")), Op::and_value, observed.binary(observed.column("newest", "previous"), Op::equal, observed.value(2))), "previous")
             .and_where(observed.binary(observed.column("newest", "newest"), Op::equal, observed.value(1)));
-        Query latestElements(resource);
+        ruvia::db_query latestElements(resource);
         latestElements.select({ latestElements.column("device_id", "incoming"), latestElements.alias(latestElements.column("key", "point"), "element_id"), latestElements.column("value", "point"), latestElements.alias(latestElements.column("report_time", "incoming"), "observed_at"), latestElements.alias(latestElements.column("id", "incoming"), "record_id") })
             .distinct_on({ latestElements.column("device_id", "incoming"), latestElements.column("key", "point") })
             .from("valid_incoming", "incoming")
+            .and_where(latestElements.unary(ruvia::db_unary_operator::not_value, latestElements.column("history_only", "incoming")))
             .join(ruvia::db_join_type::inner, "states", latestElements.binary(latestElements.column("device_id", "incoming"), Op::equal, latestElements.column("device_id", "states")))
             .join_function(ruvia::db_join_type::cross, latestElements.call("jsonb_each", { latestElements.coalesce({ latestElements.binary(latestElements.column("data", "incoming"), Op::json_get, latestElements.value("values")), emptyJson(latestElements) }) }), {}, "point", { .lateral_ = true })
             .add_order_by(latestElements.column("device_id", "incoming"))
             .add_order_by(latestElements.column("key", "point"))
             .add_order_by(latestElements.column("report_time", "incoming"), ruvia::db_order_direction::desc)
             .add_order_by(latestElements.column("id", "incoming"), ruvia::db_order_direction::desc);
-        Query latestRows(resource);
+        ruvia::db_query latestRows(resource);
         selectColumns(latestRows, { "device_id", "element_id", "value", "observed_at", "record_id" });
         latestRows.add_select(latestRows.call("now")).from("latest_elements");
         using Latest = service::telemetry::latest::persistence::DeviceLatestValueEntity;
-        Query latestValues(resource);
-        latestValues.insert_into(Latest::table_name(), { Latest::column_name<"device_id">(), Latest::column_name<"element_id">(), Latest::column_name<"value">(), Latest::column_name<"observed_at">(), Latest::column_name<"record_id">(), Latest::column_name<"updated_at">() }).insert_from(latestRows).on_conflict({ .columns_ = { std::string(Latest::column_name<"device_id">()), std::string(Latest::column_name<"element_id">()) }, .update_ = { { std::string(Latest::column_name<"value">()), latestValues.excluded(Latest::column_name<"value">()) }, { std::string(Latest::column_name<"observed_at">()), latestValues.excluded(Latest::column_name<"observed_at">()) }, { std::string(Latest::column_name<"record_id">()), latestValues.excluded(Latest::column_name<"record_id">()) }, { std::string(Latest::column_name<"updated_at">()), latestValues.call("now") } }, .update_where_ = latestValues.binary(latestValues.tuple({ latestValues.excluded(Latest::column_name<"observed_at">()), latestValues.excluded(Latest::column_name<"record_id">()) }), Op::greater, latestValues.tuple({ Latest::column<"observed_at">().expression(latestValues), Latest::column<"record_id">().expression(latestValues) })) }).returning({ latestValues.column(Latest::column_name<"device_id">()) });
+        ruvia::db_query latestValues(resource);
+        auto latestValuesBuilder = database.template repository<Latest>().insert_builder();
+        const std::array<std::string_view, 6> latestValuesColumns{ Latest::column_name<"device_id">(), Latest::column_name<"element_id">(), Latest::column_name<"value">(), Latest::column_name<"observed_at">(), Latest::column_name<"record_id">(), Latest::column_name<"updated_at">() };
+
+        const std::array<ruvia::borrowed_text, 2> sourceColumns6{ { Latest::column_name<"device_id">(), Latest::column_name<"element_id">() } };
+        const std::array<ruvia::db_assignment, 4> conflictUpdates7{ { { Latest::column_name<"value">(), latestValues.excluded(Latest::column_name<"value">()) }, { Latest::column_name<"observed_at">(), latestValues.excluded(Latest::column_name<"observed_at">()) }, { Latest::column_name<"record_id">(), latestValues.excluded(Latest::column_name<"record_id">()) }, { Latest::column_name<"updated_at">(), latestValues.call("now") } } };
+        std::vector<ruvia::borrowed_text> latestValuesUpdateColumns;
+        for (const auto& item : conflictUpdates7) {
+            latestValuesUpdateColumns.emplace_back(item.column_);
+        }
+        latestValuesBuilder.insert_from(latestValuesColumns, latestRows).on_conflict({ .conflict_paths_ = sourceColumns6, .update_columns_ = latestValuesUpdateColumns, .update_expressions_ = conflictUpdates7, .update_where_ = latestValues.binary(latestValues.tuple({ latestValues.excluded(Latest::column_name<"observed_at">()), latestValues.excluded(Latest::column_name<"record_id">()) }), Op::greater, latestValues.tuple({ Latest::column<"observed_at">().expression(latestValues), Latest::column<"record_id">().expression(latestValues) })) }).returning({ { "device_id", latestValues.column(Latest::column_name<"device_id">()) } });
         const auto barrier = [&](std::string_view table, std::string_view countName) {
-            Query query(resource);
+            ruvia::db_query query(resource);
             query.select(query.alias(query.aggregate("count", { query.star() }), countName)).from(table);
             return query;
         };
         auto insertedBarrier = barrier("inserted", "inserted_count");
-        Query stateUpdated(resource);
-        stateUpdated.update(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), "state").set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_stored_at">(), stateUpdated.column("last_stored_at", "storage")).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_at">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_at", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_at">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_id">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_id", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_id">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_data">(), stateUpdated.coalesce({ stateUpdated.column("last_data", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_data">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"previous_data">(), stateUpdated.case_when({ { stateUpdated.unary(ruvia::db_unary_operator::is_null, stateUpdated.column("device_id", "observed")), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"previous_data">(), "state") } }, stateUpdated.column("previous_data", "observed"))).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"updated_at">(), stateUpdated.call("now")).update_from("storage_summary", "storage").join(ruvia::db_join_type::left, "observed_summary", stateUpdated.binary(stateUpdated.column("device_id", "storage"), Op::equal, stateUpdated.column("device_id", "observed")), "observed").join(ruvia::db_join_type::cross, insertedBarrier, {}, "inserted_barrier").and_where(stateUpdated.binary(stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">(), "state"), Op::equal, stateUpdated.column("device_id", "storage"))).and_where(stateUpdated.binary(stateUpdated.column("inserted_count", "inserted_barrier"), Op::greater_equal, stateUpdated.value(0))).returning({ stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">(), "state") });
+        ruvia::db_query stateUpdated(resource);
+        auto stateUpdatedBuilder = database.template repository<service::telemetry::persistence::DeviceDataIngestStateEntity>().update_builder("state");
+        stateUpdatedBuilder.set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_stored_at">(), stateUpdated.column("last_stored_at", "storage")).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_at">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_at", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_at">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_id">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_id", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_observed_id">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_data">(), stateUpdated.coalesce({ stateUpdated.column("last_data", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"last_data">(), "state") })).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"previous_data">(), stateUpdated.case_when({ { stateUpdated.unary(ruvia::db_unary_operator::is_null, stateUpdated.column("device_id", "observed")), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"previous_data">(), "state") } }, stateUpdated.column("previous_data", "observed"))).set(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"updated_at">(), stateUpdated.call("now")).update_from_cte("storage_summary", "storage").join_cte(ruvia::db_join_type::left, "observed_summary", "observed", stateUpdated.binary(stateUpdated.column("device_id", "storage"), Op::equal, stateUpdated.column("device_id", "observed"))).join(ruvia::db_join_type::cross, insertedBarrier, "inserted_barrier", {}).and_where(stateUpdated.binary(stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">(), "state"), Op::equal, stateUpdated.column("device_id", "storage"))).and_where(stateUpdated.binary(stateUpdated.column("inserted_count", "inserted_barrier"), Op::greater_equal, stateUpdated.value(0))).returning({ { "device_id", stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">(), "state") } });
         auto updateBarrier = barrier("state_updated", "updated_count");
         auto latestBarrier = barrier("latest_values", "latest_count");
-        Query persisted(resource);
+        ruvia::db_query persisted(resource);
+        auto persistedBuilder = database.template repository<service::telemetry::persistence::DeviceDataEntity>().query_builder("update_barrier");
         const ruvia::db_cte_options materialized{ .materialization_ = ruvia::db_materialization::materialized };
-        persisted.with("incoming", incoming, { .columns_ = { "input_sequence", "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "storage_policy" } })
-            .with("valid_incoming", valid, materialized)
-            .with("requested", requested, materialized)
-            .with("states", states, materialized)
-            .with("ordered", ordered)
-            .with("incoming_points", incomingPoints, materialized)
-            .with("point_timeline", timeline, materialized)
-            .with("point_lagged", pointLagged, materialized)
-            .with("point_changes", changes, materialized)
-            .with("filtered", filtered, materialized)
-            .with("inserted", inserted)
-            .with("storage_summary", storage, materialized)
-            .with("new_observed", newObserved, materialized)
-            .with("observed_summary", observed, materialized)
-            .with("latest_elements", latestElements, materialized)
-            .with("latest_values", latestValues)
-            .with("state_updated", stateUpdated)
-            .select({ persisted.column("updated_count", "update_barrier"), persisted.column("latest_count", "latest_barrier") })
-            .from(updateBarrier, "update_barrier")
-            .join(ruvia::db_join_type::cross, latestBarrier, {}, "latest_barrier");
-        return persisted;
+
+        const std::array<ruvia::borrowed_text, 15> sourceColumns8{ { "input_sequence", "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "storage_policy", "history_only", "configuration_digest", "journal_derived" } };
+        persistedBuilder.with("incoming", incoming, { .columns_ = sourceColumns8 }).with("valid_incoming", valid, materialized).with("requested", requested, materialized).with("states", states, materialized).with("ordered", ordered).with("incoming_points", incomingPoints, materialized).with("point_timeline", timeline, materialized).with("point_lagged", pointLagged, materialized).with("point_changes", changes, materialized).with("filtered", filtered, materialized).with("inserted", insertedBuilder.query()).with("storage_summary", storage, materialized).with("new_observed", newObserved, materialized).with("observed_summary", observed, materialized).with("latest_elements", latestElements, materialized).with("latest_values", latestValuesBuilder.query()).with("state_updated", stateUpdatedBuilder.query()).select({ { "updated_count", persisted.column("updated_count", "update_barrier") }, { "latest_count", persisted.column("latest_count", "latest_barrier") } }).with("update_barrier", updateBarrier).from_cte("update_barrier").join(ruvia::db_join_type::cross, latestBarrier, "latest_barrier", {});
+        return persistedBuilder;
     }
 
     // 写入一批历史：按设备加锁并补齐写入状态后，在一条语句内写 device_data、device_latest_value 与 device_data_ingest_state。
@@ -390,37 +422,58 @@ class TelemetryService {
         if (messages.empty()) {
             co_return;
         }
+        auto transaction = co_await context.db("telemetry-history").begin_transaction();
+        co_await persistTransaction(context, transaction, messages);
+        co_await transaction.commit();
+    }
+
+  public:
+    static ruvia::task<void> persistSnapshotDerived(ruvia::web_worker_context& context, ruvia::db_transaction& transaction, std::string_view nodeId, std::string_view digest, std::string_view deviceId, const std::vector<message::ParsedDeviceMessage>& messages, bool replace = false) {
+        using Data = persistence::DeviceDataEntity;
+        if (replace) {
+            ruvia::db_query q(context.pool());
+            auto remove = transaction.template repository<Data>().delete_builder();
+            remove.where(((Data::column<"connection_id">() == nodeId) && (Data::column<"device_id">() == deviceId) && (Data::column<"configuration_digest">() == digest) && (Data::column<"source">() == "derived")).expression(q));
+            (void)co_await remove.execute();
+        }
+        constexpr std::size_t batchSize = 128;
+        for (std::size_t offset = 0; offset < messages.size(); offset += batchSize) {
+            const auto count = (std::min)(batchSize, messages.size() - offset);
+            std::vector<message::ParsedDeviceMessage> batch(messages.begin() + offset, messages.begin() + offset + count);
+            co_await persistTransaction(context, transaction, batch, true);
+        }
+    }
+
+  private:
+    static ruvia::task<void> persistTransaction(ruvia::web_worker_context& context, ruvia::db_transaction& transaction, const std::vector<message::ParsedDeviceMessage>& messages, bool authoritativeDerivedHistory = false) {
         using Query = ruvia::db_query;
         using Type = ruvia::db_data_type;
-        auto persisted = persistenceQuery(context.pool(), messages);
-        // Acquire per-device locks before taking the statement snapshot. Seeding
-        // in a data-modifying CTE is invisible to sibling SELECTs and drops a
-        // newly created device's first sample.
-        auto transaction = co_await context.db("telemetry-history").begin_transaction();
+
         std::set<std::string_view> deviceIds;
         for (const auto& value : messages) {
             deviceIds.insert(value.deviceId);
         }
-        Query requestedDevices(context.pool());
+        ruvia::db_query requestedDevices(context.pool());
         for (const auto deviceId : deviceIds) {
             requestedDevices.values({ requestedDevices.cast(requestedDevices.value(deviceId), Type::uuid) });
         }
-        Query locks(context.pool());
-        locks.with("requested", requestedDevices, { .columns_ = { "device_id" } })
-            .select(locks.call("pg_advisory_xact_lock", { locks.call("hashtextextended", { locks.cast(locks.column("device_id"), Type::text), locks.cast(locks.value(service::message::lock::kTelemetryDeviceSeed), Type::big_int) }) }))
-            .from("requested")
-            .add_order_by(locks.column("device_id"));
-        (void)co_await transaction.query(locks);
-        Query deviceRows(context.pool());
+        ruvia::db_query locks(context.pool());
+        auto locksBuilder = transaction.template repository<service::telemetry::persistence::DeviceDataIngestStateEntity>().query_builder("requested");
+
+        const std::array<ruvia::borrowed_text, 1> sourceColumns9{ { "device_id" } };
+        locksBuilder.with("requested", requestedDevices, { .columns_ = sourceColumns9 }).select({ { "acquired_lock", locks.call("pg_advisory_xact_lock", { locks.call("hashtextextended", { locks.cast(locks.column("device_id"), Type::text), locks.cast(locks.value(service::message::lock::kTelemetryDeviceSeed), Type::big_int) }) }) } }).from_cte("requested").add_order_by(locks.column("device_id", "requested"));
+        (void)co_await locksBuilder.get_raw_many();
+        ruvia::db_query deviceRows(context.pool());
         deviceRows.select(deviceRows.column("device_id")).from("requested");
-        Query seed(context.pool());
-        seed.with("requested", requestedDevices, { .columns_ = { "device_id" } })
-            .insert_into(service::telemetry::persistence::DeviceDataIngestStateEntity::table_name(), { service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">() })
-            .insert_from(deviceRows)
-            .on_conflict({ .columns_ = { std::string(service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">()) }, .do_nothing_ = true });
-        (void)co_await transaction.execute(seed);
-        (void)co_await transaction.query(persisted);
-        co_await transaction.commit();
+        const std::array<std::string_view, 1> seedColumns{ service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">() };
+        auto seedBuilder = transaction.template repository<service::telemetry::persistence::DeviceDataIngestStateEntity>().insert_builder();
+
+        const std::array<ruvia::borrowed_text, 1> sourceColumns10{ { "device_id" } };
+        const std::array<ruvia::borrowed_text, 1> conflictColumns11{ { service::telemetry::persistence::DeviceDataIngestStateEntity::column_name<"device_id">() } };
+        seedBuilder.with("requested", requestedDevices, { .columns_ = sourceColumns10 }).insert_from(seedColumns, deviceRows).on_conflict({ .conflict_paths_ = conflictColumns11, .do_nothing_ = true });
+        (void)co_await seedBuilder.execute();
+        auto persisted = persistenceQuery(transaction, context.pool(), messages, authoritativeDerivedHistory);
+        (void)co_await persisted.get_raw_many();
     }
 };
 

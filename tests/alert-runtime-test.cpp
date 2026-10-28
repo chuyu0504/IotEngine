@@ -7,6 +7,8 @@
 #include "service/features/alert/alert.runtime.h"
 #include "service/modules/alert/alert.types.h"
 
+#include "tests/database.fixture.h"
+
 void require(bool condition, const char* message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -42,8 +44,11 @@ int main() {
         require(sql.find("^([0-9]|[1-5][0-9]|6[0-2])$") != std::string::npos, "bit index must be bounded before shifting");
         require(sql.find("int8shr") != std::string::npos, "bit conditions must use the parsed index");
         require(sql.find("CASE WHEN") != std::string::npos, "numeric casts must retain guarded CASE expressions");
-        const auto refreshSql = service::alert::metadata::detail::refreshQuery().compile(ruvia::db_driver::postgresql, nullptr, ruvia::db_parameter_mode::literal);
-        require(refreshSql.sql().find("^[0-9]{1,10}$") != std::string_view::npos, "metadata refresh must guard offline duration");
+        const auto refreshSql = test::compileDatabaseStatement([](auto& database) {
+            return service::alert::metadata::detail::refreshQuery(database);
+        },
+                                                               ruvia::db_parameter_mode::literal);
+        require(refreshSql.sql.find("^[0-9]{1,10}$") != std::string::npos, "metadata refresh must guard offline duration");
         const auto metadataSource = readSource("service/features/alert/alert.service.h");
         requireAbsent(metadataSource, "std::stoll(", "alert metadata uses unsafe/partial stoll parsing");
         const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");

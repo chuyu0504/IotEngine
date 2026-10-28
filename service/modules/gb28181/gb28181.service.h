@@ -3,15 +3,16 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include <ruvia/web/context.h>
-#include <ruvia/web/context_request.h>
-#include <ruvia/web/http_client_handle.h>
-#include <ruvia/web/model_json.h>
+#include <ruvia/web/http_client.h>
+#include <ruvia/web/model.h>
 #include <ruvia/web/streaming.h>
 
 #include "service/common/http.h"
@@ -26,9 +27,18 @@ namespace detail {
 
 template <typename Response, typename Context>
 Response parseResponse(Context& c, std::string_view body) {
-    auto parsed =
-        ruvia::from_json<Response>(body, { .resource_ = c.arena() });
-    if (!parsed || !parsed->template get<"data">()) {
+    std::optional<Response> parsed;
+    try {
+        parsed = ruvia::from_json<Response>(body, { .resource_ = c.arena() });
+    } catch (const std::invalid_argument&) {
+        service::common::fail(10004, "GB28181 RPC 响应无效", 502);
+    } catch (const ruvia::http_error& error) {
+        if (error.info().code() != "validation_failed") {
+            throw;
+        }
+        service::common::fail(10004, "GB28181 RPC 响应无效", 502);
+    }
+    if (!parsed->template get<"data">()) {
         service::common::fail(10004, "GB28181 RPC 响应无效", 502);
     }
     return std::move(*parsed);
@@ -213,7 +223,7 @@ GbDeviceDto device(Context& c, const service::message::gb28181::Device& value) {
             ruvia::model_options{ .resource_ = c.arena() }
         );
         for (const auto& item : *source) {
-            channels.emplace(channel(c, item));
+            channels.emplace_back(channel(c, item));
         }
         result.set<"channels">(std::move(channels));
     }
@@ -327,7 +337,7 @@ class Gb28181Service final {
         );
         if (const auto& values = source.template get<"items">()) {
             for (const auto& item : *values) {
-                items.emplace(detail::device(c, item));
+                items.emplace_back(detail::device(c, item));
             }
         }
         GbDeviceListDto result(ruvia::model_options{ .resource_ = c.arena() });
@@ -558,7 +568,7 @@ class MediaProxyService final {
             : ruvia::http_client_request_content_view::none();
         // The registered client, upstream socket, and response body all belong to
         // the accepting Service Worker. Ruvia supplies cancellation and backpressure.
-        auto upstream = co_await context.get_http_client("gb-media").send({ .method_ = request.method(), .target_ = target, .headers_ = headers, .content_ = content });
+        auto upstream = co_await context.http_client("gb-media").send({ .method_ = request.method(), .target_ = target, .headers_ = headers, .content_ = content });
         if (upstream.status().value() < 200 || upstream.status().value() > 599) {
             service::common::fail(10002, "媒体服务返回了无效状态", 502);
         }
