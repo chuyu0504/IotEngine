@@ -114,6 +114,9 @@ try {
     sendRecord(Buffer.concat([...common(crypto.randomUUID(),7,io,t+1),field(9,aiValue)]));
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->${derived}->>'value'='12'`).length>0,'cross-source derived value not persisted');
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->${combined}->>'value'='14'`).length>0,'chained cross-source value not persisted');
+    // Derived history commits with the acquisition journal before raw telemetry
+    // reaches its history consumer; wait for both durable results independently.
+    await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND protocol='ExternalIO' AND source='edge' AND data->'values'->${analog}->>'value'='2'`).length>0,'raw IO value not persisted');
     const rows=await db`SELECT protocol,source,data->'values' AS values FROM device_data WHERE device_id=${device}`;
     assert(rows.some(row=>row.protocol==='ExternalIO'&&row.values[analog]?.value===2));
     assert(rows.some(row=>row.source==='derived'&&row.values[derived]?.value===12));
