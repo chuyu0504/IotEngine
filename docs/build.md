@@ -86,6 +86,9 @@ Linux CI 以 GitHub Actions `services:` 提供同样镜像并运行 `ctest -L in
 `windows-http-sse-integration` 由 `clients/windows` 的 `windows-native-tests` 运行。
 前端与契约测试在仓库根执行 `bun test ./tests/*-test.ts ./tests/*-test.tsx`，其中 `terminal-state-test.ts` 需要 `PATH` 中的 `redis-server`。
 
+权限恢复、租约恢复及链路 SSE 竞态测试为每次执行启动独立的本地 Redis 和应用进程，故障注入不影响其他 fixture。
+这些用例还需要可执行的 `redis-server`，由 CMake 的 `REDIS_SERVER_EXECUTABLE` 定位；日志和进程记录仍位于对应 fixture 目录。
+
 Windows：
 
 ```powershell

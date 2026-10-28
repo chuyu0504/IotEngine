@@ -634,8 +634,9 @@ iot_engine_add_integration(edge-liveness-integration FIXTURE edge-liveness TIMEO
 iot_engine_add_integration_fixture(outbox-notification)
 iot_engine_add_integration(outbox-notification-integration FIXTURE outbox-notification)
 
-# Redis CLIENT PAUSE is a server-wide fault; isolate the auth race and serialize it.
-iot_engine_add_integration_fixture(auth-recovery)
+# CLIENT PAUSE affects the whole Redis server, including other fixtures' leases.
+# Fault tests own private Redis and application processes for each execution.
+iot_engine_add_integration_fixture(auth-recovery PER_TEST)
 iot_engine_add_integration(auth-http-sse-integration FIXTURE auth-recovery RUN_SERIAL)
 iot_engine_add_integration_fixture(rpc-startup-lease MANAGED)
 iot_engine_add_integration(rpc-startup-lease-integration FIXTURE rpc-startup-lease)
@@ -650,8 +651,8 @@ if(WIN32)
 endif()
 
 # Expiring a Redis owner makes the instance permanently unready. The test also
-# revokes SCAN from the shared Redis server's default user.
-iot_engine_add_integration_fixture(edge-recovery)
+# revokes SCAN from its private Redis server's default user.
+iot_engine_add_integration_fixture(edge-recovery PER_TEST)
 iot_engine_add_integration(edge-recovery-application FIXTURE edge-recovery RUN_SERIAL)
 
 iot_engine_add_integration_fixture(gb28181 GB28181)
@@ -698,7 +699,7 @@ iot_engine_add_integration(upload-recovery-integration
 # The race test holds a link table lock and inspects the server-wide Redis
 # client inventory. Prior API work or parallel clients would invalidate that
 # controlled window, so use a fresh fixture and serialize the test.
-iot_engine_add_integration_fixture(link-sse)
+iot_engine_add_integration_fixture(link-sse PER_TEST)
 iot_engine_add_integration(link-http-sse-integration FIXTURE link-sse RUN_SERIAL)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")

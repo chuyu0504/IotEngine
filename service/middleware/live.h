@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -18,7 +19,9 @@
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 #include <ruvia/web/controller.h>
+#include <ruvia/web/db/db_types.h>
 #include <ruvia/web/model.h>
+#include <ruvia/web/redis/redis_types.h>
 #include <ruvia/web/streaming.h>
 
 #include "service/common/http.h"
@@ -169,8 +172,8 @@ enum class LiveWait {
 // I/O is the dedicated subscription; modules retain all query/scope decisions.
 class LiveSubscription final {
   public:
-    LiveSubscription(ruvia::context& context, std::vector<std::string> topics)
-        : context_(context), topics_(std::move(topics)), wake_(ruvia::make_channel<int>(context.worker(), { .capacity_ = 1 })) {
+    LiveSubscription(ruvia::context& context, std::vector<std::string> topics, ruvia::stop_token cancellation)
+        : context_(context), stop_(std::move(cancellation)), topics_(std::move(topics)), wake_(ruvia::make_channel<int>(context.worker(), { .capacity_ = 1 })) {
         std::sort(topics_.begin(), topics_.end());
         topics_.erase(std::unique(topics_.begin(), topics_.end()), topics_.end());
         for (const auto& topic : topics_) {
@@ -180,13 +183,15 @@ class LiveSubscription final {
 
     [[nodiscard]] bool ready() const { return ready_; }
 
+    [[nodiscard]] const ruvia::stop_token& stop_token() const { return stop_; }
+
     [[nodiscard]] auto generation() const { return authorization.generation(); }
 
     ruvia::task<LiveWait> wait(std::chrono::milliseconds timeout) {
         if (ready_ && !pending_.empty()) {
             co_return LiveWait::Changed;
         }
-        const auto result = co_await wake_.second.receive_for(timeout, context_.stop_token());
+        const auto result = co_await wake_.second.receive_for(timeout, stop_);
         if (failure_) {
             std::rethrow_exception(failure_);
         }
@@ -291,6 +296,7 @@ class LiveSubscription final {
     }
 
     ruvia::context& context_;
+    ruvia::stop_token stop_;
     std::vector<std::string> topics_;
     std::vector<std::string> channels_;
     std::pair<ruvia::channel_sender<int>, ruvia::channel_receiver<int>> wake_;
@@ -302,18 +308,19 @@ class LiveSubscription final {
 // Always stop and join the reader before its subscription, pending values and
 // request context are destroyed, including when a query or socket write fails.
 template <typename Serve>
-ruvia::task<void> withLiveSubscription(ruvia::context& context, std::vector<std::string> topics, Serve serve) {
-    LiveSubscription subscription(context, std::move(topics));
+ruvia::task<void> withLiveSubscription(ruvia::context& context, std::vector<std::string> topics, ruvia::stop_token cancellation, Serve serve) {
+    LiveSubscription subscription(context, std::move(topics), std::move(cancellation));
+    const auto stop = subscription.stop_token();
     ruvia::task_scope reader(context.worker(), { .resource_ = context.pool() });
-    reader.spawn(subscription.read(ruvia::combine_stop_tokens(reader.get_stop_token(), context.stop_token())));
+    reader.spawn(subscription.read(ruvia::combine_stop_tokens(reader.get_stop_token(), stop)));
     std::exception_ptr failure;
     try {
-        while (!subscription.ready() && !context.stop_token().stop_requested()) {
+        while (!subscription.ready() && !stop.stop_requested()) {
             if (co_await subscription.wait(std::chrono::seconds(15)) == LiveWait::Stopped) {
                 break;
             }
         }
-        if (subscription.ready() && !context.stop_token().stop_requested()) {
+        if (subscription.ready() && !stop.stop_requested()) {
             co_await serve(subscription);
         }
     } catch (...) {
@@ -327,6 +334,17 @@ ruvia::task<void> withLiveSubscription(ruvia::context& context, std::vector<std:
 }
 
 namespace live_detail {
+
+inline bool cancelled(const std::exception& failure) {
+    if (const auto* database = dynamic_cast<const ruvia::db_error*>(&failure)) {
+        return database->code() == ruvia::db_error::code_type::cancelled;
+    }
+    if (const auto* redis = dynamic_cast<const ruvia::redis_error*>(&failure)) {
+        return redis->code() == ruvia::redis_error::code_type::cancelled;
+    }
+    const auto* system = dynamic_cast<const std::system_error*>(&failure);
+    return system != nullptr && system->code() == std::errc::operation_canceled;
+}
 
 inline std::string failurePayload(ruvia::context& context, const ruvia::http_error& failure) {
     const auto info = failure.info();
@@ -370,27 +388,39 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
             }
         }
     }
-    co_await withLiveSubscription(context, std::move(topics), [&](LiveSubscription& subscription) -> ruvia::task<void> {
+    co_await withLiveSubscription(context, std::move(topics), context.stream().cancel_on_peer_eof(), [&](LiveSubscription& subscription) -> ruvia::task<void> {
         auto snapshot = [&](const LiveChannel& channel) -> ruvia::task<std::string> {
             try {
-                RequestContext request(context, userId);
+                RequestContext request(context, userId, subscription.stop_token());
                 request.shareAuthorization(subscription.authorization);
                 co_return co_await channel.snapshot(request);
             } catch (const ruvia::http_error& failure) {
+                if (subscription.stop_token().stop_requested()) {
+                    co_return std::string{};
+                }
                 co_return live_detail::failurePayload(context, failure);
             } catch (const std::exception& failure) {
+                if (subscription.stop_token().stop_requested() && live_detail::cancelled(failure)) {
+                    co_return std::string{};
+                }
                 LOG_WARN << "SSE snapshot failed: " << failure.what();
                 co_return std::string(live_detail::kInterrupted);
             }
         };
         auto update = [&](const LiveChannel& channel, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
             try {
-                RequestContext request(context, userId);
+                RequestContext request(context, userId, subscription.stop_token());
                 request.shareAuthorization(subscription.authorization);
                 co_return co_await channel.update(request, changes);
             } catch (const ruvia::http_error& failure) {
+                if (subscription.stop_token().stop_requested()) {
+                    co_return std::nullopt;
+                }
                 co_return live_detail::failurePayload(context, failure);
             } catch (const std::exception& failure) {
+                if (subscription.stop_token().stop_requested() && live_detail::cancelled(failure)) {
+                    co_return std::nullopt;
+                }
                 LOG_WARN << "SSE update failed: " << failure.what();
                 co_return std::string(live_detail::kInterrupted);
             }
@@ -403,7 +433,7 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
         bool initial = true;
         bool refresh = true;
         bool recoveryPending = false;
-        while (!stream.aborted() && !context.stop_token().stop_requested()) {
+        while (!stream.aborted() && !subscription.stop_token().stop_requested()) {
             auto changes = subscription.take();
             if (!subscription.ready()) {
                 refresh = true;
@@ -432,6 +462,9 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
             const auto generation = subscription.generation();
             std::vector<std::optional<std::string>> payloads(channels.size());
             for (std::size_t index = 0; index < channels.size(); ++index) {
+                if (subscription.stop_token().stop_requested()) {
+                    co_return;
+                }
                 const auto& channel = channels[index];
                 const auto relevant = live_detail::relevant(changes, channel);
                 if (!resend && relevant.topics.empty()) {
@@ -442,6 +475,9 @@ ruvia::task<void> serveLive(ruvia::context& context, std::string userId, std::ve
                 } else {
                     payloads[index] = co_await update(channel, relevant);
                 }
+            }
+            if (subscription.stop_token().stop_requested()) {
+                co_return;
             }
             // An auth event or connection loss during an awaited DB query
             // invalidates its result too, not merely the next cached lookup.

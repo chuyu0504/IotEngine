@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][string]$WorkingDirectory,
     [Parameter(Mandatory)][string]$StandardOutput,
-    [Parameter(Mandatory)][string]$StandardError
+    [Parameter(Mandatory)][string]$StandardError,
+    [string]$Argument = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,7 +12,11 @@ $ErrorActionPreference = 'Stop'
 # The command wrapper redirects only the engine's own output files.
 $start = [System.Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $env:ComSpec
-$start.Arguments = '/d /s /c ""{0}" > "{1}" 2> "{2}""' -f $Executable, $StandardOutput, $StandardError
+$start.Arguments = if ($Argument -eq '') {
+    '/d /s /c ""{0}" > "{1}" 2> "{2}""' -f $Executable, $StandardOutput, $StandardError
+} else {
+    '/d /s /c ""{0}" "{1}" > "{2}" 2> "{3}""' -f $Executable, $Argument, $StandardOutput, $StandardError
+}
 $start.WorkingDirectory = $WorkingDirectory
 $start.UseShellExecute = $true
 $start.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden

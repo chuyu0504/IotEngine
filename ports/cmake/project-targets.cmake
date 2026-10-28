@@ -57,9 +57,10 @@ endfunction()
 set(IOT_ENGINE_INTEGRATION_PORT_BASE 25100 CACHE STRING
     "First loopback port of the integration fixture port blocks")
 
-# iot_engine_add_integration_fixture(<name> [MANAGED] [GB28181] [SEED_UPLOADS]
+# iot_engine_add_integration_fixture(<name> [MANAGED|PER_TEST] [GB28181] [SEED_UPLOADS]
 #     [INSTANCES <n>] [SETTINGS <KEY=VALUE>...])
 #   MANAGED       each test starts and stops iot-engine itself; tests serialize
+#   PER_TEST      each test owns fresh application and local Redis processes
 #   GB28181       enable the SIP and media runtime; SIP uses the block's last port,
 #                 WebRTC the one before it
 #   SEED_UPLOADS  place abandoned upload files before the first start
@@ -67,10 +68,13 @@ set(IOT_ENGINE_INTEGRATION_PORT_BASE 25100 CACHE STRING
 #   SETTINGS      .env overrides for every instance
 function(iot_engine_add_integration_fixture name)
     cmake_parse_arguments(PARSE_ARGV 1 arg
-        "MANAGED;GB28181;SEED_UPLOADS" "INSTANCES" "SETTINGS")
+        "MANAGED;PER_TEST;GB28181;SEED_UPLOADS" "INSTANCES" "SETTINGS")
     if(arg_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR
             "Unknown arguments for integration fixture ${name}: ${arg_UNPARSED_ARGUMENTS}")
+    endif()
+    if(arg_MANAGED AND arg_PER_TEST)
+        message(FATAL_ERROR "Integration fixture ${name} cannot use both MANAGED and PER_TEST")
     endif()
     if(NOT arg_INSTANCES)
         set(arg_INSTANCES 1)
@@ -85,7 +89,7 @@ function(iot_engine_add_integration_fixture name)
     math(EXPR api_port "${IOT_ENGINE_INTEGRATION_PORT_BASE} + 10 * ${index}")
     set_property(GLOBAL APPEND PROPERTY IOT_ENGINE_INTEGRATION_FIXTURES "${name}")
 
-    foreach(option MANAGED GB28181 SEED_UPLOADS)
+    foreach(option MANAGED PER_TEST GB28181 SEED_UPLOADS)
         if(arg_${option})
             set(value_${option} ON)
         else()
@@ -99,10 +103,12 @@ set(FIXTURE_DIRECTORY \"${directory}\")
 set(SOURCE_DIR \"${PROJECT_SOURCE_DIR}\")
 set(BUN \"${BUN_EXECUTABLE}\")
 set(ENGINE \"$<TARGET_FILE:iot-engine>\")
+set(REDIS_SERVER \"${REDIS_SERVER_EXECUTABLE}\")
 set(API_PORT ${api_port})
 set(REDIS_DATABASE ${redis_database})
 set(INSTANCES ${arg_INSTANCES})
 set(MANAGED ${value_MANAGED})
+set(PER_TEST ${value_PER_TEST})
 set(GB28181 ${value_GB28181})
 set(SEED_UPLOADS ${value_SEED_UPLOADS})
 set(SETTINGS \"${arg_SETTINGS}\")
@@ -115,7 +121,7 @@ set(SETTINGS \"${arg_SETTINGS}\")
         COMMAND "${CMAKE_COMMAND}" ${configuration} -DACTION=stop ${script})
     set_tests_properties("integration-${name}-stop" PROPERTIES
         FIXTURES_CLEANUP "iot-${name}")
-    if(NOT arg_MANAGED)
+    if(NOT arg_MANAGED AND NOT arg_PER_TEST)
         add_test(NAME "integration-${name}-start"
             COMMAND "${CMAKE_COMMAND}" ${configuration} -DACTION=start ${script})
         set_tests_properties("integration-${name}-start" PROPERTIES

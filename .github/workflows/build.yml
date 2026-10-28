@@ -276,7 +276,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: integration-fixtures-${{ github.sha }}
-          path: build/ci/integration/*/instance-*/engine.*
+          path: |
+            build/ci/integration/*/instance-*/engine.*
+            build/ci/integration/*/redis.out
+            build/ci/integration/*/redis.err
           if-no-files-found: ignore
           retention-days: 7
 

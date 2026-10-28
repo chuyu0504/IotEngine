@@ -4,6 +4,11 @@
 #include <string>
 #include <string_view>
 
+#ifdef __linux__
+#include <net/if.h>
+#include <unistd.h>
+#endif
+
 #include "service/common/message.h"
 #include "service/features/vpn/firewall/firewall.transport.h"
 #include "service/features/vpn/vpn.service.h"
@@ -76,6 +81,17 @@ int main() {
     require(service::vpn::VpnHubKeyService::derivePublicKey(privateKey, derivedPublicKey) && derivedPublicKey == publicKey, "Hub public key derivation");
 
 #ifdef __linux__
+    const service::vpn::wireguard::HubConfig absentHub{
+        .interfaceName = "iot-rm-" + std::to_string(::getpid()),
+        .privateKey = privateKey,
+        .publicKey = publicKey,
+    };
+    require(::if_nametoindex(absentHub.interfaceName.c_str()) == 0, "VPN regression interface must not exist");
+    auto& controller = service::vpn::wireguard::controller();
+    require(controller.removePeer(absentHub, publicKey).configured, "removing a peer from an absent interface succeeds");
+    require(controller.removePeer(absentHub, publicKey).configured, "repeated absent-interface peer removal is idempotent");
+    const auto invalidRemoval = controller.removePeer(absentHub, "invalid");
+    require(!invalidRemoval.configured && invalidRemoval.code == "invalid_peer", "absent-interface cleanup retains key validation");
     if (std::system("command -v nft >/dev/null 2>&1") == 0) {
         require(service::vpn::firewall::runNft({ "nft", "--version" }), "VPN firewall cannot launch the installed nft executable");
     }

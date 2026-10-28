@@ -706,6 +706,14 @@ class Controller final : public IWireGuardController {
         if (!validConfig(config) || !key) {
             return failure("invalid_peer", "WireGuard peer public key is invalid");
         }
+        errno = 0;
+        if (::if_nametoindex(config.interfaceName.c_str()) == 0) {
+            const auto errorCode = errno;
+            if (errorCode == ENODEV || errorCode == ENXIO) {
+                return success();
+            }
+            return failure("interface_lookup_failed", errorText(errorCode != 0 ? errorCode : EIO));
+        }
         NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid()) {
             return failure("netlink_unavailable", errorText(errno));
@@ -727,6 +735,9 @@ class Controller final : public IWireGuardController {
         request.endNested(peers);
         const auto reply = generic.request(request.finish());
         if (!reply.ok) {
+            if (reply.errorCode == ENODEV || reply.errorCode == ENOENT) {
+                return success();
+            }
             return failure("peer_remove_failed", errorText(reply.errorCode));
         }
         return success();

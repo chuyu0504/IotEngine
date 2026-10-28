@@ -70,6 +70,14 @@ async function pubsubClients() {
     }))) : [];
 }
 
+async function linkQueryIsBlocked() {
+    const [blocked] = await db`SELECT EXISTS (
+        SELECT 1 FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            AND relation='link'::regclass AND NOT granted
+    ) AS waiting`;
+    return Boolean(blocked.waiting);
+}
+
 async function verifySubscriptionRaceAndRecovery() {
     const raceId = crypto.randomUUID();
     const marker = `${tag}_subscription_race`;
@@ -91,15 +99,16 @@ async function verifySubscriptionRaceAndRecovery() {
             const deadline = Date.now() + 10000;
             for (;;) {
                 const clients = (await pubsubClients()).filter(client => !before.has(client.id) && Number(client.sub) >= 3);
-                const [blocked] = await db`SELECT EXISTS (
-                    SELECT 1 FROM pg_locks
-                    WHERE relation='link'::regclass AND NOT granted
-                ) AS waiting`;
-                if (clients.length === 1 && blocked.waiting) {
+                if (clients.length === 1 && await linkQueryIsBlocked()) {
                     clientId = clients[0].id;
                     break;
                 }
-                assert(Date.now() < deadline, 'SSE must subscribe before its blocked initial snapshot query');
+                if (Date.now() >= deadline) {
+                    const waitingQueries = await db`SELECT left(a.query, 500) AS query
+                        FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid
+                        WHERE a.datname=current_database() AND l.relation='link'::regclass AND NOT l.granted`;
+                    assert.fail(`SSE must subscribe before its blocked initial snapshot query: ${JSON.stringify({ clients, waitingQueries })}`);
+                }
                 await Bun.sleep(10);
             }
             await transaction`UPDATE link SET name=${latest} WHERE id=${raceId}`;
@@ -216,7 +225,33 @@ async function verifyRuntimeAggregation() {
     // Another link's change is not visible on this filtered page.
     await change('link', crypto.randomUUID());
     await stream.expectQuiet(1000);
-    await stream.close();
+    await db.begin(async transaction => {
+        await transaction`LOCK TABLE link IN ACCESS EXCLUSIVE MODE`;
+        await change('link', runtimeLink);
+        const blockedBy = Date.now() + 10000;
+        while (!await linkQueryIsBlocked()) {
+            assert(Date.now() < blockedBy, 'link update did not reach the query cancellation barrier');
+            await Bun.sleep(10);
+        }
+        await stream.close();
+        const retiredBy = Date.now() + 10000;
+        for (;;) {
+            const subscribers = await redis.send('PUBSUB', ['NUMSUB', sharedChannel(redisUrl, 'live:topic:link')]) as unknown[];
+            if (Number(subscribers[1]) === 0) break;
+            assert(Date.now() < retiredBy, `closed link view retained its subscription: ${JSON.stringify(subscribers)}`);
+            await Bun.sleep(10);
+        }
+        // Cancellation discards the libpq connection. PostgreSQL can retain a
+        // blocked backend until its lock wait completes; it must not retain the
+        // application's connection-pool lease or its subscription.
+        await Promise.all(Array.from({length:8}, () => request('GET','/v1/roles?keyword=closed_link_view')));
+    });
+    const drainedBy = Date.now() + 10000;
+    while (await linkQueryIsBlocked()) {
+        assert(Date.now() < drainedBy, 'closed link query did not drain after releasing its database lock');
+        await Bun.sleep(10);
+    }
+    console.log('PASS closing SSE cancels its subscription and releases query capacity during an in-flight database wait');
 }
 try {
     await request('GET','/v1/link',undefined,11004);

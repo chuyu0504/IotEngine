@@ -229,14 +229,14 @@ class AccessController final {
         }
         topics.emplace_back(service::message::live::topic::kAuth);
         topics.emplace_back(service::message::live::topic::kAccess);
-        co_await service::middleware::withLiveSubscription(context, std::move(topics), [&](service::middleware::LiveSubscription& subscription) -> ruvia::task<void> {
+        co_await service::middleware::withLiveSubscription(context, std::move(topics), context.stop_token(), [&](service::middleware::LiveSubscription& subscription) -> ruvia::task<void> {
             std::optional<ruvia::sse_writer> stream;
             std::uint64_t revision = 0;
             const auto expires = std::chrono::steady_clock::now() + (coalesceDelay.count() > 0 ? 1min : 5min);
             auto heartbeat = std::chrono::steady_clock::now() + 15s;
             bool refresh = true;
             std::int64_t expiresAtMs = 0;
-            while ((!stream || !stream->aborted()) && !context.stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
+            while ((!stream || !stream->aborted()) && !subscription.stop_token().stop_requested() && std::chrono::steady_clock::now() < expires) {
                 if (expiresAtMs > 0 && expiresAtMs <= service::message::utcNowMilliseconds()) {
                     if (!stream) {
                         context.header("X-Accel-Buffering", "no");
@@ -255,8 +255,8 @@ class AccessController final {
                     bool reauthorize = refresh || changes.find(service::message::live::topic::kAuth) ||
                         changes.find(service::message::live::topic::kAccess);
                     if (revision != 0 && coalesceDelay.count() > 0) {
-                        (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, context.stop_token());
-                        if ((stream && stream->aborted()) || context.stop_token().stop_requested()) {
+                        (void)co_await ruvia::sleep_for(context.worker(), coalesceDelay, subscription.stop_token());
+                        if ((stream && stream->aborted()) || subscription.stop_token().stop_requested()) {
                             co_return;
                         }
                         // Everything received before this full query is
