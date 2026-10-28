@@ -89,7 +89,8 @@ void serveAndVerify(const std::filesystem::path& path, const std::string& conten
     auto& app = ruvia::app();
     std::promise<void> ready;
     auto started = ready.get_future();
-    app.blocking_pool(nullptr)
+    // Linux file reads use the same asynchronous I/O pool as the application.
+    app.blocking_pool({ .thread_count_ = 1 })
         .listen({ .address_ = "127.0.0.1", .http_ = port })
         .server({ .worker_count_ = 1 })
         .use_worker_state<std::filesystem::path>([path] {
