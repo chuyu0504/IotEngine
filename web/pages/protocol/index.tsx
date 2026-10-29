@@ -76,6 +76,7 @@ import {
     buildRegisterGroupSections,
     buildRemoteTsapFromRackSlot,
     defaultConfig,
+    externalIoAvailableChannels,
     getConnectionFormValues,
     getDataTypeSize,
     getModbusDeviceTypeFormValues,
@@ -5084,21 +5085,33 @@ export const Dlt645ConfigPage = () => <IndustrialConfigPage protocol="DLT645" />
 export function ExternalIoConfigPage() {
     const shell = useProtocolConfigShell('ExternalIO');
     const [open, setOpen] = useState(false);
+    const [pointOpen, setPointOpen] = useState(false);
     const {
         data: hardwareModels = [],
         isLoading: loadingModels,
         error: modelsError,
-    } = useExternalIoModels(open);
-
+        refetch: refetchHardware,
+    } = useExternalIoModels(shell.canQuery);
     const [editing, setEditing] = useState<Protocol.Item>();
-    const [form] = Form.useForm<{
-        name: string;
-        enabled: boolean;
-        edgeNodeModel: string;
-        points: ExternalIoPoint[];
-    }>();
+    const [pointTypeId, setPointTypeId] = useState<string>();
+    const [editingPointId, setEditingPointId] = useState<string>();
+    const [form] = Form.useForm<{ name: string; enabled: boolean; edgeNodeModel: string }>();
+    const [pointForm] = Form.useForm<ExternalIoPoint>();
     const selectedModel = Form.useWatch('edgeNodeModel', form);
-    const hardware = hardwareModels.find((item) => item.model === selectedModel);
+    const selectedKind = Form.useWatch('kind', pointForm);
+    const selectedHardware = hardwareModels.find((item) => item.model === selectedModel);
+    const config = shell.activeType?.config as ExternalIoConfig | undefined;
+    const points = config?.points ?? [];
+    const hardware = hardwareModels.find((item) => item.model === config?.edgeNodeModel);
+    const pointType = shell.types.find((item) => item.id === pointTypeId);
+    const pointConfig = pointType?.config as ExternalIoConfig | undefined;
+    const pointHardware = hardwareModels.find((item) => item.model === pointConfig?.edgeNodeModel);
+    const availableChannels = externalIoAvailableChannels(
+        pointHardware,
+        pointConfig?.points ?? [],
+        editingPointId
+    );
+    const availableKinds = [...new Set(availableChannels.map((channel) => channel.kind))];
     const show = (item?: Protocol.Item) => {
         setEditing(item);
         form.resetFields();
@@ -5106,11 +5119,33 @@ export function ExternalIoConfigPage() {
             name: item?.name ?? '',
             enabled: item?.enabled ?? true,
             edgeNodeModel: (item?.config as ExternalIoConfig | undefined)?.edgeNodeModel,
-            points: item ? (item.config as ExternalIoConfig).points : [],
         });
         setOpen(true);
     };
-    const points = (shell.activeType?.config as ExternalIoConfig | undefined)?.points ?? [];
+    const showPoint = (point?: ExternalIoPoint) => {
+        if (!shell.activeType) return;
+        const channels = externalIoAvailableChannels(hardware, points, point?.id);
+        if (!channels.length) return;
+        setPointTypeId(shell.activeType.id);
+        setEditingPointId(point?.id);
+        pointForm.resetFields();
+        pointForm.setFieldsValue(
+            point ?? {
+                id: createUuid(),
+                name: '',
+                kind: channels[0].kind,
+                channel: channels[0].channel,
+                visible: true,
+            }
+        );
+        setPointOpen(true);
+    };
+    const savePoints = async (target: Protocol.Item, nextPoints: ExternalIoPoint[]) => {
+        await shell.saveMutation.mutateAsync({
+            id: target.id,
+            config: { ...(target.config as ExternalIoConfig), points: nextPoints },
+        });
+    };
     return (
         <ProtocolConfigLayout
             shell={shell}
@@ -5120,24 +5155,115 @@ export function ExternalIoConfigPage() {
             }
             onCreateType={() => show()}
             onEditType={show}
-            heading={shell.activeType?.name}
+            heading={
+                <Space wrap>
+                    <span>点位配置</span>
+                    <Tag>{config?.edgeNodeModel ?? '未选择型号'}</Tag>
+                    {hardware &&
+                        ['DI', 'DO', 'AI'].map((kind) => (
+                            <Tag key={kind}>
+                                {kind}{' '}
+                                {
+                                    hardware.channels.filter((channel) => channel.kind === kind)
+                                        .length
+                                }{' '}
+                                路
+                            </Tag>
+                        ))}
+                </Space>
+            }
+            actions={
+                shell.canEdit && (
+                    <Button
+                        type="primary"
+                        disabled={
+                            !externalIoAvailableChannels(hardware, points).length ||
+                            shell.saveMutation.isPending
+                        }
+                        onClick={() => showPoint()}
+                    >
+                        新增点位
+                    </Button>
+                )
+            }
             body={(derivedPoints) => (
-                <div className="flex flex-col gap-4">
-                    <Tag>
-                        {(shell.activeType?.config as ExternalIoConfig | undefined)
-                            ?.edgeNodeModel ?? '未选择型号'}
-                    </Tag>
+                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto">
+                    {modelsError && (
+                        <Alert
+                            type="error"
+                            showIcon
+                            title="边缘节点型号加载失败"
+                            action={
+                                <Button size="small" onClick={() => void refetchHardware()}>
+                                    重试
+                                </Button>
+                            }
+                        />
+                    )}
                     <Table<ExternalIoPoint>
                         rowKey="id"
+                        size="small"
                         dataSource={points}
                         pagination={false}
+                        scroll={{ x: 680, y: 320 }}
+                        locale={{ emptyText: <Empty description="暂无点位，点击右上角新增点位" /> }}
                         columns={[
-                            { title: '名称', dataIndex: 'name' },
-                            { title: '类型', dataIndex: 'kind' },
-                            { title: '物理通道', dataIndex: 'channel' },
+                            { title: '名称', dataIndex: 'name', width: 160 },
+                            { title: '类型', dataIndex: 'kind', width: 80 },
+                            {
+                                title: '物理通道',
+                                dataIndex: 'channel',
+                                width: 100,
+                                render: (channel: string) => channel.toUpperCase(),
+                            },
                             {
                                 title: '单位',
-                                render: (_, point) => (point.kind === 'AI' ? 'uA' : '—'),
+                                width: 80,
+                                render: (_, point) => (point.kind === 'AI' ? 'μA' : '—'),
+                            },
+                            {
+                                title: '读写',
+                                width: 80,
+                                render: (_, point) => (point.kind === 'DO' ? '可写' : '只读'),
+                            },
+                            {
+                                title: '操作',
+                                width: 140,
+                                fixed: 'right',
+                                render: (_, point) =>
+                                    shell.canEdit && (
+                                        <Space>
+                                            <Button
+                                                type="link"
+                                                size="small"
+                                                disabled={!hardware || shell.saveMutation.isPending}
+                                                onClick={() => showPoint(point)}
+                                            >
+                                                编辑
+                                            </Button>
+                                            <Popconfirm
+                                                title="删除此点位？"
+                                                onConfirm={() =>
+                                                    shell.activeType &&
+                                                    savePoints(
+                                                        shell.activeType,
+                                                        points.filter(
+                                                            (item) => item.id !== point.id
+                                                        )
+                                                    )
+                                                }
+                                            >
+                                                <Button
+                                                    type="link"
+                                                    size="small"
+                                                    danger
+                                                    disabled={shell.saveMutation.isPending}
+                                                >
+                                                    删除
+                                                </Button>
+                                            </Popconfirm>
+                                        </Space>
+                                    ),
                             },
                         ]}
                     />
@@ -5151,49 +5277,45 @@ export function ExternalIoConfigPage() {
                 onCancel={() => setOpen(false)}
                 onOk={() => form.submit()}
                 confirmLoading={shell.saveMutation.isPending}
-                destroyOnHidden
             >
                 <Form
+                    name="external-io-config"
                     form={form}
                     layout="vertical"
                     onFinish={async (values) => {
-                        if (!hardware) {
+                        if (!hardwareModels.some((item) => item.model === values.edgeNodeModel)) {
                             form.setFields([
                                 { name: 'edgeNodeModel', errors: ['请选择受支持的边缘节点型号'] },
                             ]);
                             return;
                         }
-                        const config = {
-                            ...(editing?.config as ExternalIoConfig | undefined),
-                            edgeNodeModel: values.edgeNodeModel,
-                            points: values.points.map((point) => ({
-                                ...point,
-                                unit: point.kind === 'AI' ? 'uA' : '',
-                            })),
-                            storagePolicy:
-                                (editing?.config as ExternalIoConfig | undefined)?.storagePolicy ??
-                                ('report' as const),
-                        };
-                        if (editing)
-                            await shell.saveMutation.mutateAsync({
-                                id: editing.id,
-                                protocol: 'ExternalIO',
-                                name: values.name,
-                                enabled: values.enabled,
-                                config,
-                            });
-                        else
-                            await shell.saveMutation.mutateAsync({
-                                protocol: 'ExternalIO',
-                                name: values.name,
-                                enabled: values.enabled,
-                                config,
-                            });
+                        const previous = editing?.config as ExternalIoConfig | undefined;
+                        await shell.saveMutation.mutateAsync({
+                            id: editing?.id,
+                            protocol: 'ExternalIO',
+                            name: values.name,
+                            enabled: values.enabled,
+                            config: {
+                                storagePolicy: 'report',
+                                points: [],
+                                ...previous,
+                                edgeNodeModel: values.edgeNodeModel,
+                            },
+                        });
                         setOpen(false);
+                        const refreshed = await shell.refetch();
+                        shell.selectType(
+                            editing?.id ??
+                                refreshed.data?.find((item) => item.name === values.name)?.id
+                        );
                     }}
                 >
-                    <Form.Item name="name" label="配置名称" rules={[{ required: true, max: 64 }]}>
-                        <Input />
+                    <Form.Item
+                        name="name"
+                        label="配置名称"
+                        rules={[{ required: true, whitespace: true, max: 64 }]}
+                    >
+                        <Input maxLength={64} />
                     </Form.Item>
                     <Form.Item name="enabled" label="启用" valuePropName="checked">
                         <Switch />
@@ -5202,158 +5324,139 @@ export function ExternalIoConfigPage() {
                         name="edgeNodeModel"
                         label="边缘节点型号"
                         rules={[{ required: true, message: '请选择边缘节点型号' }]}
-                        extra="方案仅用于同型号边缘节点，设备绑定时还会检查实际通道能力。"
+                        extra={
+                            (editing?.config as ExternalIoConfig | undefined)?.points.length
+                                ? '已有点位时型号固定；如需其他型号，请新增方案。'
+                                : '型号决定 IO 类型和通道数量，保存后在右侧添加点位。'
+                        }
                     >
                         <Select
                             loading={loadingModels}
+                            disabled={Boolean(
+                                (editing?.config as ExternalIoConfig | undefined)?.points.length
+                            )}
                             placeholder="请选择边缘节点型号"
                             options={hardwareModels.map((item) => ({
                                 value: item.model,
                                 label: item.model,
                             }))}
-                            onChange={(value) => {
-                                const channels =
-                                    hardwareModels.find((item) => item.model === value)?.channels ??
-                                    [];
-                                const current = form.getFieldValue('points') as ExternalIoPoint[];
-                                form.setFieldValue(
-                                    'points',
-                                    (current ?? []).map((point) => ({
-                                        ...point,
-                                        channel: channels.some(
-                                            (channel) =>
-                                                channel.channel === point.channel &&
-                                                channel.kind === point.kind
-                                        )
-                                            ? point.channel
-                                            : '',
-                                    }))
-                                );
-                            }}
                         />
                     </Form.Item>
-                    {modelsError && (
-                        <Alert
-                            type="error"
-                            showIcon
-                            message="边缘节点型号加载失败，请重新打开表单重试。"
-                        />
+                    {selectedHardware && (
+                        <Space wrap>
+                            {['DI', 'DO', 'AI'].map((kind) => (
+                                <Tag key={kind}>
+                                    {kind}{' '}
+                                    {
+                                        selectedHardware.channels.filter(
+                                            (channel) => channel.kind === kind
+                                        ).length
+                                    }{' '}
+                                    路
+                                </Tag>
+                            ))}
+                        </Space>
                     )}
-                    <Form.List name="points">
-                        {(fields, { add, remove }) => (
-                            <Space direction="vertical" className="w-full">
-                                {fields.map((field) => (
-                                    <Space key={field.key} align="baseline" wrap>
-                                        <Form.Item name={[field.name, 'id']} hidden>
-                                            <Input />
-                                        </Form.Item>
-                                        <Form.Item
-                                            name={[field.name, 'name']}
-                                            label="点位名称"
-                                            rules={[{ required: true, max: 100 }]}
-                                        >
-                                            <Input />
-                                        </Form.Item>
-                                        <Form.Item
-                                            name={[field.name, 'kind']}
-                                            label="类型"
-                                            rules={[{ required: true }]}
-                                        >
-                                            <Select
-                                                style={{ width: 100 }}
-                                                onChange={() =>
-                                                    form.setFieldValue(
-                                                        ['points', field.name, 'channel'],
-                                                        ''
-                                                    )
-                                                }
-                                                options={['DI', 'DO', 'AI'].map((value) => ({
-                                                    value,
-                                                    label: value,
-                                                }))}
-                                            />
-                                        </Form.Item>
-                                        <Form.Item noStyle shouldUpdate>
-                                            {() => {
-                                                const kind = form.getFieldValue([
-                                                    'points',
-                                                    field.name,
-                                                    'kind',
-                                                ]);
-                                                const channels = (hardware?.channels ?? []).filter(
-                                                    (channel) =>
-                                                        channel.kind === kind &&
-                                                        (kind !== 'DO' || channel.controllable)
-                                                );
-                                                const options = channels.map((channel) => ({
-                                                    value: channel.channel,
-                                                    label: channel.channel,
-                                                }));
-                                                return (
-                                                    <Form.Item
-                                                        name={[field.name, 'channel']}
-                                                        label="物理通道"
-                                                        rules={[
-                                                            {
-                                                                required: true,
-                                                                message: '请选择通道',
-                                                            },
-                                                            {
-                                                                validator: (_, value) =>
-                                                                    !value ||
-                                                                    options.some(
-                                                                        (option) =>
-                                                                            option.value === value
-                                                                    )
-                                                                        ? Promise.resolve()
-                                                                        : Promise.reject(
-                                                                              new Error(
-                                                                                  '该型号不支持此通道'
-                                                                              )
-                                                                          ),
-                                                            },
-                                                        ]}
-                                                    >
-                                                        <Select
-                                                            style={{ width: 160 }}
-                                                            options={options}
-                                                            disabled={!hardware}
-                                                            placeholder="先选择边缘节点型号"
-                                                        />
-                                                    </Form.Item>
-                                                );
-                                            }}
-                                        </Form.Item>
-                                        <Button danger onClick={() => remove(field.name)}>
-                                            删除
-                                        </Button>
-                                    </Space>
-                                ))}
-                                <Button
-                                    disabled={
-                                        !hardware || fields.length >= hardware.channels.length
-                                    }
-                                    onClick={() =>
-                                        add({
-                                            id: createUuid(),
-                                            name: '',
-                                            kind: 'DI',
-                                            channel: '',
-                                            visible: true,
-                                        })
-                                    }
-                                >
-                                    添加点位
-                                </Button>
-                            </Space>
-                        )}
-                    </Form.List>
+                    {modelsError && (
+                        <Alert type="error" showIcon title="边缘节点型号加载失败，请重试。" />
+                    )}
+                </Form>
+            </FormModal>
+            <FormModal
+                open={pointOpen}
+                title={editingPointId ? '编辑外部 IO 点位' : '新增外部 IO 点位'}
+                onCancel={() => setPointOpen(false)}
+                onOk={() => pointForm.submit()}
+                confirmLoading={shell.saveMutation.isPending}
+            >
+                <Form
+                    name="external-io-point"
+                    form={pointForm}
+                    layout="vertical"
+                    onFinish={async (values) => {
+                        if (
+                            !pointType ||
+                            !availableChannels.some(
+                                (channel) =>
+                                    channel.kind === values.kind &&
+                                    channel.channel === values.channel
+                            )
+                        ) {
+                            pointForm.setFields([
+                                {
+                                    name: 'channel',
+                                    errors: ['该通道不受型号支持或已被其他点位使用'],
+                                },
+                            ]);
+                            return;
+                        }
+                        const point = { ...values, unit: values.kind === 'AI' ? 'uA' : '' };
+                        const previous = pointConfig?.points ?? [];
+                        await savePoints(
+                            pointType,
+                            editingPointId
+                                ? previous.map((item) =>
+                                      item.id === editingPointId ? point : item
+                                  )
+                                : [...previous, point]
+                        );
+                        setPointOpen(false);
+                    }}
+                >
+                    <Form.Item name="id" hidden>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item
+                        name="name"
+                        label="点位名称"
+                        rules={[{ required: true, whitespace: true, max: 100 }]}
+                    >
+                        <Input maxLength={100} />
+                    </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="kind" label="IO 类型" rules={[{ required: true }]}>
+                            <Select
+                                options={availableKinds.map((kind) => ({
+                                    value: kind,
+                                    label: kind,
+                                }))}
+                                onChange={(kind) =>
+                                    pointForm.setFieldValue(
+                                        'channel',
+                                        availableChannels.find((channel) => channel.kind === kind)
+                                            ?.channel
+                                    )
+                                }
+                            />
+                        </Form.Item>
+                        <Form.Item
+                            name="channel"
+                            label="物理通道"
+                            rules={[{ required: true, message: '请选择通道' }]}
+                        >
+                            <Select
+                                options={availableChannels
+                                    .filter((channel) => channel.kind === selectedKind)
+                                    .map((channel) => ({
+                                        value: channel.channel,
+                                        label: channel.channel,
+                                    }))}
+                            />
+                        </Form.Item>
+                    </div>
+                    <p className="mb-4 text-sm text-slate-500">
+                        {selectedKind === 'AI'
+                            ? 'AI 采集原始电流，单位为 μA；工程量通过派生值换算。'
+                            : selectedKind === 'DO'
+                              ? 'DO 为布尔输出，可在设备管理中控制。'
+                              : 'DI 为布尔输入，只读采集。'}
+                    </p>
+                    <PointAccessFields initialVisible />
                 </Form>
             </FormModal>
         </ProtocolConfigLayout>
     );
 }
-
 const MQTT_POINT_TYPES = [
     { value: 'DOUBLE', label: '数值' },
     { value: 'BOOL', label: '布尔' },

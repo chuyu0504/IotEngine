@@ -17,6 +17,8 @@ import type {
     Dlt645PointCreateDto,
     ExpressionTestRequest,
     ExternalIoConfig,
+    ExternalIoHardwareModel,
+    ExternalIoPoint,
     GroupSection,
     Modbus,
     MqttPreviewRequest,
@@ -29,6 +31,20 @@ import type {
     SaveProtocolConfigParams,
     SL651,
 } from './protocol.types';
+
+export function externalIoAvailableChannels(
+    hardware: ExternalIoHardwareModel | undefined,
+    points: readonly ExternalIoPoint[],
+    editingPointId?: string
+): ExternalIoHardwareModel['channels'] {
+    const occupied = new Set(
+        points.filter((point) => point.id !== editingPointId).map((point) => point.channel)
+    );
+    return (hardware?.channels ?? []).filter(
+        (channel) =>
+            !occupied.has(channel.channel) && (channel.kind !== 'DO' || channel.controllable)
+    );
+}
 
 export function externalIoCompatible(
     config: ExternalIoConfig,
