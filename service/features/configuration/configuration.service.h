@@ -349,9 +349,15 @@ ruvia::task<std::vector<DeviceModel>> loadDeviceModels(Database& database, const
             return true;
         });
         model.calculation.config = model.deviceDerivedConfig;
-        model.calculation.sources = { model.device.calculationConfig, model.externalIoConfig };
-        const std::array sources{ ruvia::json_value::parse(model.device.calculationConfig), ruvia::json_value::parse(model.externalIoConfig) };
+        model.calculation.sources = model.device.protocol == "ExternalIO"
+            ? std::vector<std::string>{ model.externalIoConfig }
+            : std::vector<std::string>{ model.device.calculationConfig, model.externalIoConfig };
+        std::vector<ruvia::json_value> sources;
+        for (const auto& source : model.calculation.sources) {
+            sources.push_back(ruvia::json_value::parse(source));
+        }
         const auto combined = service::common::orderDerivedPoints(ruvia::json_value::parse(model.deviceDerivedConfig), sources);
+        model.derivedPoints = combined;
         for (const auto& point : combined) {
             if (std::ranges::none_of(model.points, [&](const auto& existing) {
                     return existing.id == point.id;

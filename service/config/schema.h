@@ -2341,6 +2341,15 @@ END $schema$;
 )sql" }),
     };
     migrations.emplace_back(ruvia::db_migration({ .id_ = "0064_mqtt_intrinsic_properties", .sql_ = std::string(kMqttIntrinsicPropertiesMigration) }));
+    {
+        ruvia::db_schema schema({ .driver_ = ruvia::db_driver::postgresql });
+        ruvia::db_query q;
+        schema.drop_constraint("link", "link_protocol_check");
+        schema.add_constraint("link", { .name_ = "link_protocol_check", .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.column("protocol"), ruvia::db_binary_operator::in, q.list({ q.value("SL651"), q.value("Modbus"), q.value("S7"), q.value("MC"), q.value("FINS"), q.value("DLT645"), q.value("MQTT"), q.value("ExternalIO") })) });
+        schema.add_constraint("link", { .name_ = "link_external_io_endpoint_check", .kind_ = ruvia::db_constraint_kind::check, .check_ = q.binary(q.binary(q.column("protocol"), ruvia::db_binary_operator::not_equal, q.value("ExternalIO")), ruvia::db_binary_operator::or_value, q.binary(q.binary(q.column("execution"), ruvia::db_binary_operator::equal, q.value("edge")), ruvia::db_binary_operator::and_value, q.binary(q.column("endpoint"), ruvia::db_binary_operator::equal, q.cast(q.value(R"({"transport":"io"})"), ruvia::db_data_type::jsonb)))) });
+        auto result = schema.compile("0065_standalone_external_io");
+        migrations.emplace_back(std::move(result.front()));
+    }
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.
     ruvia::db_schema adoption({ .driver_ = ruvia::db_driver::postgresql });

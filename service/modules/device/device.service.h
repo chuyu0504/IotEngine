@@ -638,7 +638,7 @@ class DeviceService {
         const std::string linkId = resolvedLinkId;
         ruvia::db_query channelQuery(c.pool());
         auto channelQueryBuilder = transaction.template repository<service::link::entities::LinkEntity>().query_builder();
-        channelQueryBuilder.select({ { "edge_node_id", channelQuery.coalesce({ db::text(channelQuery, channelQuery.column(service::link::entities::LinkEntity::column_name<"edge_node_id">())), channelQuery.value("") }) } }).where(db::andAll(channelQuery, channelQuery.binary(channelQuery.column(service::link::entities::LinkEntity::column_name<"id">()), ruvia::db_binary_operator::equal, db::uuid(channelQuery, linkId)), channelQuery.unary(ruvia::db_unary_operator::is_null, channelQuery.column(service::link::entities::LinkEntity::column_name<"deleted_at">()))));
+        channelQueryBuilder.select({ { "edge_node_id", channelQuery.coalesce({ db::text(channelQuery, channelQuery.column(service::link::entities::LinkEntity::column_name<"edge_node_id">())), channelQuery.value("") }) }, { "protocol", service::link::entities::LinkEntity::column<"protocol">().expression(channelQuery) } }).where(db::andAll(channelQuery, channelQuery.binary(channelQuery.column(service::link::entities::LinkEntity::column_name<"id">()), ruvia::db_binary_operator::equal, db::uuid(channelQuery, linkId)), channelQuery.unary(ruvia::db_unary_operator::is_null, channelQuery.column(service::link::entities::LinkEntity::column_name<"deleted_at">()))));
         const auto channel = co_await channelQueryBuilder.get_raw_many();
         if (channel.empty()) {
             service::common::fail(18003, "通道不存在", 400);
@@ -679,7 +679,12 @@ class DeviceService {
         insertValues.row({ db::uuid(insert, id), insert.value(name), db::uuid(insert, linkId), db::uuid(insert, protocolConfigId), db::nullableUuid(insert, groupId), insert.value(status), protocolParams, insert.null_if(db::text(insert, insert.value(remark)), insert.value("")), db::uuid(insert, c.userId) });
         insertBuilder.insert_from(insertColumns, insertValues.query());
         (void)co_await insertBuilder.execute();
-        if (body.template get<"externalIo">()) {
+        if (channel.front()[1].value().value_or("") == "ExternalIO") {
+            DeviceExternalIoBody io(ruvia::model_options{ .resource_ = c.arena() });
+            io.set<"protocolConfigId">(protocolConfigId);
+            validateStandaloneIo(body, protocolConfigId);
+            co_await saveExternalIo(c, transaction, id, linkId, protocolConfigId, io);
+        } else if (body.template get<"externalIo">()) {
             co_await saveExternalIo(c, transaction, id, linkId, protocolConfigId, *body.template get<"externalIo">());
         }
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
@@ -904,7 +909,7 @@ return result
         const std::string targetProtocolConfigId = body.template get<"protocolConfigId">() ? str(body.template get<"protocolConfigId">()) : currentProtocolConfigId;
         ruvia::db_query targetQuery(c.pool());
         auto targetQueryBuilder = transaction.template repository<service::link::entities::LinkEntity>().query_builder("l");
-        targetQueryBuilder.select({ { "edge_node_id", targetQuery.coalesce({ db::text(targetQuery, targetQuery.column(service::link::entities::LinkEntity::column_name<"edge_node_id">(), "l")), targetQuery.value("") }) } }).template join<service::protocol::entities::ProtocolConfigEntity>(ruvia::db_join_type::inner, "p", targetQuery.binary(targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, targetQuery.column(service::link::entities::LinkEntity::column_name<"protocol">(), "l"))).where(db::andAll(targetQuery, targetQuery.binary(targetQuery.column(service::link::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, db::uuid(targetQuery, targetLinkId)), targetQuery.binary(targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"id">(), "p"), ruvia::db_binary_operator::equal, db::uuid(targetQuery, targetProtocolConfigId)), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::link::entities::LinkEntity::column_name<"deleted_at">(), "l")), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "p"))));
+        targetQueryBuilder.select({ { "edge_node_id", targetQuery.coalesce({ db::text(targetQuery, targetQuery.column(service::link::entities::LinkEntity::column_name<"edge_node_id">(), "l")), targetQuery.value("") }) }, { "protocol", service::link::entities::LinkEntity::column<"protocol">().expression(targetQuery, "l") } }).template join<service::protocol::entities::ProtocolConfigEntity>(ruvia::db_join_type::inner, "p", targetQuery.binary(targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"protocol">(), "p"), ruvia::db_binary_operator::equal, targetQuery.column(service::link::entities::LinkEntity::column_name<"protocol">(), "l"))).where(db::andAll(targetQuery, targetQuery.binary(targetQuery.column(service::link::entities::LinkEntity::column_name<"id">(), "l"), ruvia::db_binary_operator::equal, db::uuid(targetQuery, targetLinkId)), targetQuery.binary(targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"id">(), "p"), ruvia::db_binary_operator::equal, db::uuid(targetQuery, targetProtocolConfigId)), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::link::entities::LinkEntity::column_name<"deleted_at">(), "l")), targetQuery.unary(ruvia::db_unary_operator::is_null, targetQuery.column(service::protocol::entities::ProtocolConfigEntity::column_name<"deleted_at">(), "p"))));
         const auto target = co_await targetQueryBuilder.get_raw_many();
         if (target.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
@@ -914,9 +919,18 @@ return result
         const bool connectionChanged = targetLinkId != currentLinkId || targetProtocolConfigId != currentProtocolConfigId;
         auto externalIo = co_await loadExternalIo(c, transaction, id);
         const DeviceExternalIoBody* ioConfiguration = externalIo ? &*externalIo : nullptr;
-        if (body.template is_present<"externalIo">()) {
-            co_await clearExternalIo(c, transaction, id);
+        const bool standaloneIo = target.front()[1].value().value_or("") == "ExternalIO";
+        DeviceExternalIoBody standaloneConfiguration(ruvia::model_options{ .resource_ = c.arena() });
+        if (standaloneIo) {
+            validateStandaloneIo(body, targetProtocolConfigId);
+            standaloneConfiguration.set<"protocolConfigId">(targetProtocolConfigId);
+            ioConfiguration = &standaloneConfiguration;
+        } else if (body.template is_present<"externalIo">()) {
             ioConfiguration = body.template get<"externalIo">() ? &*body.template get<"externalIo">() : nullptr;
+        }
+        const bool ioChanged = connectionChanged || body.template is_present<"externalIo">() || (standaloneIo && !externalIo);
+        if (ioChanged && externalIo) {
+            co_await clearExternalIo(c, transaction, id);
         }
         co_await ensureUnique(c, transaction, resolvedLinkId, body, std::string(id));
         co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::string(id));
@@ -1019,8 +1033,7 @@ return result
             if (changed) {
                 (void)co_await updateBuilder.execute();
             }
-            if (ioConfiguration && (connectionChanged || body.template is_present<"externalIo">())) {
-                co_await clearExternalIo(c, transaction, id);
+            if (ioConfiguration && ioChanged) {
                 co_await saveExternalIo(c, transaction, id, targetLinkId, targetProtocolConfigId, *ioConfiguration);
             }
             co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, service::utils::nextUuid(c.template worker_state<service::common::UuidV7State>()));
@@ -1917,6 +1930,15 @@ return result
         co_return result;
     }
 
+    template <typename Body>
+    static void validateStandaloneIo(const Body& body, std::string_view modelId) {
+        if (body.template is_present<"externalIo">() &&
+            (!body.template get<"externalIo">() || body.template get<"externalIo">()->template get<"protocolConfigId">().view() != modelId ||
+             (body.template get<"externalIo">()->template get<"derivedPoints">() && !body.template get<"externalIo">()->template get<"derivedPoints">()->empty()))) {
+            service::common::fail(18002, "独立外部 IO 只使用所选 IO 方案", 400);
+        }
+    }
+
     template <typename Context>
     static ruvia::task<void> clearExternalIo(Context& c, ruvia::db_transaction& transaction, std::string_view id) {
         using Source = entities::ExternalIoSourceEntity;
@@ -1937,7 +1959,7 @@ return result
         auto builder = transaction.template repository<Link>().query_builder("l");
         builder.select({ { "node", db::text(query, Link::column<"edge_node_id">().expression(query, "l")) }, { "capability", Node::column<"capability">().expression(query, "n") }, { "model", Node::column<"model">().expression(query, "n") } })
             .template join<Node>(ruvia::db_join_type::inner, "n", query.binary(Node::column<"id">().expression(query, "n"), Op::equal, Link::column<"edge_node_id">().expression(query, "l")))
-            .where(db::andAll(query, query.binary(Link::column<"id">().expression(query, "l"), Op::equal, db::uuid(query, linkId)), query.binary(Link::column<"execution">().expression(query, "l"), Op::equal, query.value("edge"))))
+            .where(db::andAll(query, query.binary(Link::column<"id">().expression(query, "l"), Op::equal, db::uuid(query, linkId)), query.binary(Link::column<"execution">().expression(query, "l"), Op::equal, query.value("edge")), query.binary(Node::column<"enrollment_status">().expression(query, "n"), Op::equal, query.value("approved"))))
             .set_lock(ruvia::db_lock_options{});
         const auto nodes = co_await builder.get_raw_many();
         if (nodes.empty()) {
@@ -1956,7 +1978,7 @@ return result
             .where(db::andAll(modelsQuery, modelsQuery.binary((Model::column<"id">() == primaryModelId).expression(modelsQuery), Op::or_value, (Model::column<"id">() == std::string_view(ioModelId)).expression(modelsQuery)), modelsQuery.unary(ruvia::db_unary_operator::is_null, Model::column<"deleted_at">().expression(modelsQuery)), (Model::column<"enabled">() == true).expression(modelsQuery)))
             .set_lock(ruvia::db_lock_options{});
         const auto models = co_await modelsBuilder.get_raw_many();
-        std::string primaryConfig, ioConfig;
+        std::string primaryConfig = primaryModelId == ioModelId ? "{}" : "", ioConfig;
         for (const auto& row : models) {
             if (row[0].value().value_or("") == ioModelId && row[1].value().value_or("") == "ExternalIO") {
                 ioConfig = row[2].value().value_or("{}");
@@ -1966,6 +1988,14 @@ return result
         }
         if (primaryConfig.empty() || ioConfig.empty()) {
             service::common::fail(18002, "采集协议或外部 IO 配置不存在或未启用", 400);
+        }
+        if (primaryModelId == ioModelId) {
+            const auto protocols = capability.template get<ruvia::array<ruvia::string>>("protocols");
+            if (!protocols || std::ranges::none_of(*protocols, [](const auto& protocol) {
+                    return protocol.view() == "ExternalIO";
+                })) {
+                service::common::fail(18002, "节点固件不支持独立外部 IO，请先升级固件", 400);
+            }
         }
         const auto io = ruvia::from_json<service::protocol::ExternalIoConfig>(ioConfig);
         service::protocol::ProtocolService::validateExternalIoCapability(io, nodes.front()[2].value().value_or(""), capability);

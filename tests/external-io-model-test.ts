@@ -4,6 +4,7 @@ import type { ExternalIoConfig, ExternalIoHardwareModel } from '../web/pages/pro
 import { protocolCreateSchema } from '../web/pages/protocol/protocol.schema';
 import type { Edge } from '../web/pages/edge_node/edge_node.types';
 import { ioControlSchema } from '../web/pages/edge_node/edge_node.schema';
+import { saveDeviceSchema } from '../web/pages/device/device.schema';
 const config: ExternalIoConfig = {
     edgeNodeModel: 'Ebyte T113-I ECM30',
     storagePolicy: 'report',
@@ -19,6 +20,26 @@ const node = {
     },
 } as Pick<Edge.Node, 'model' | 'capability'>;
 describe('external IO model selection', () => {
+    it('creates a standalone IO device without network or serial settings', () => {
+        const body = {
+            name: 'IO device',
+            device_code: 'IO_1',
+            protocol_config_id: crypto.randomUUID(),
+            edge_connection: {
+                name: 'IO device',
+                edge_node_id: crypto.randomUUID(),
+                protocol: 'ExternalIO',
+                endpoint: { transport: 'io' },
+                status: 'enabled',
+            },
+        };
+        expect(saveDeviceSchema.safeParse(body).success).toBe(true);
+        for (const setting of [{ ip: '127.0.0.1' }, { port: 502 }, { interface: 'br-lan' }, { baud_rate: 9600 }, { mode: 'TCP Client' }]) {
+            expect(saveDeviceSchema.safeParse({ ...body, edge_connection: { ...body.edge_connection, endpoint: { transport: 'io', ...setting } } }).success).toBe(false);
+        }
+        expect(saveDeviceSchema.safeParse({ ...body, edge_connection: { ...body.edge_connection, protocol: 'Modbus' } }).success).toBe(false);
+        expect(saveDeviceSchema.safeParse({ ...body, edge_connection: { ...body.edge_connection, endpoint: { transport: 'tcp' } } }).success).toBe(false);
+    });
     const hardware: ExternalIoHardwareModel = {
         model: config.edgeNodeModel!,
         channels: [

@@ -846,6 +846,9 @@ class ConfigService final {
         if (value == "DLT645") {
             return pb::PROTOCOL_DLT645;
         }
+        if (value == "ExternalIO") {
+            return pb::PROTOCOL_EXTERNAL_IO;
+        }
         return pb::PROTOCOL_UNSPECIFIED;
     }
 
@@ -1184,7 +1187,12 @@ class ConfigService final {
                 value->set_protocol(protocol);
                 value->set_debug_enabled(link.debugEnabled);
                 value->set_enabled(link.enabled);
-                if (link.transport == "serial") {
+                if (link.transport == "io") {
+                    if (protocol != pb::PROTOCOL_EXTERNAL_IO || !externalIoSupported) {
+                        throw std::invalid_argument("external IO endpoint requires node capability");
+                    }
+                    value->set_transport(pb::TRANSPORT_EXTERNAL_IO);
+                } else if (link.transport == "serial") {
                     value->set_transport(pb::TRANSPORT_SERIAL);
                     value->set_mode(pb::LINK_MODE_SERIAL);
                     auto* serial = value->mutable_serial();

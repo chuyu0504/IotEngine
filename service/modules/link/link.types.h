@@ -1,8 +1,8 @@
 #pragma once
 
-#include "service/common/uuid.h"
-
 #include <ruvia/web/validation.h>
+
+#include "service/common/uuid.h"
 
 namespace service::link {
 
@@ -15,22 +15,18 @@ RUVIA_MODEL(LinkDebugAcquisitionDto, RUVIA_REQUIRED_FIELD(id, ruvia::string), RU
 
 RUVIA_MODEL(LinkDebugBody, RUVIA_REQUIRED_FIELD(enabled, ruvia::bool_value));
 
-RUVIA_MODEL(MqttConnectionBody,
-    RUVIA_REQUIRED_FIELD(clientId, ruvia::string, RUVIA_MIN(1, "MQTT Client ID 不能为空"), RUVIA_MAX(128, "MQTT Client ID 过长")),
-    RUVIA_OPTIONAL_FIELD(username, ruvia::string, RUVIA_MAX(1024, "MQTT 用户名过长")),
-    RUVIA_OPTIONAL_FIELD(password, ruvia::string, RUVIA_MAX(1024, "MQTT 密码过长")),
-    RUVIA_OPTIONAL_FIELD(keepAliveSeconds, ruvia::int64, decltype(kDefaultKeepAliveSeconds), RUVIA_MIN(1, "MQTT 保活时间必须大于 0"), RUVIA_MAX(65535, "MQTT 保活时间过长")));
+RUVIA_MODEL(MqttConnectionBody, RUVIA_REQUIRED_FIELD(clientId, ruvia::string, RUVIA_MIN(1, "MQTT Client ID 不能为空"), RUVIA_MAX(128, "MQTT Client ID 过长")), RUVIA_OPTIONAL_FIELD(username, ruvia::string, RUVIA_MAX(1024, "MQTT 用户名过长")), RUVIA_OPTIONAL_FIELD(password, ruvia::string, RUVIA_MAX(1024, "MQTT 密码过长")), RUVIA_OPTIONAL_FIELD(keepAliveSeconds, ruvia::int64, decltype(kDefaultKeepAliveSeconds), RUVIA_MIN(1, "MQTT 保活时间必须大于 0"), RUVIA_MAX(65535, "MQTT 保活时间过长")));
 
 RUVIA_MODEL(LinkTargetBody, RUVIA_OPTIONAL_FIELD(mqtt, MqttConnectionBody), RUVIA_REQUIRED_FIELD(id, ruvia::string, RUVIA_MAX(64, "目标 ID 不能超过 64 个字符")), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MAX(100, "目标名称不能超过 100 个字符")), RUVIA_REQUIRED_FIELD(ip, ruvia::string, RUVIA_MAX(253, "目标地址不能超过 253 个字符")), RUVIA_REQUIRED_FIELD(port, ruvia::int64, RUVIA_MIN(1, "目标端口必须在 1 - 65535 之间"), RUVIA_MAX(65535, "目标端口必须在 1 - 65535 之间")), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("目标状态无效", "enabled", "disabled")));
 
 RUVIA_MODEL(LinkEndpointBody, RUVIA_OPTIONAL_FIELD(transport, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("interface", interfaceName, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("baud_rate", baudRate, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("data_bits", dataBits, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("stop_bits", stopBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(parity, ruvia::string), RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value),
 
-                    RUVIA_OPTIONAL_FIELD(mode, ruvia::string),
-                    RUVIA_OPTIONAL_FIELD(ip, ruvia::string),
-                    RUVIA_OPTIONAL_FIELD(port, ruvia::int64),
-                    RUVIA_OPTIONAL_FIELD(targets, ruvia::array<LinkTargetBody>));
+            RUVIA_OPTIONAL_FIELD(mode, ruvia::string),
+            RUVIA_OPTIONAL_FIELD(ip, ruvia::string),
+            RUVIA_OPTIONAL_FIELD(port, ruvia::int64),
+            RUVIA_OPTIONAL_FIELD(targets, ruvia::array<LinkTargetBody>));
 
-RUVIA_MODEL(SaveLinkBody, RUVIA_OPTIONAL_FIELD(execution, ruvia::string, RUVIA_ONE_OF("采集位置无效", "collector", "edge")), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "链路名称不能为空"), RUVIA_MAX(100, "链路名称不能超过 100 个字符")), RUVIA_REQUIRED_FIELD(protocol, ruvia::string, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT")), RUVIA_REQUIRED_FIELD(endpoint, LinkEndpointBody), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
+RUVIA_MODEL(SaveLinkBody, RUVIA_OPTIONAL_FIELD(execution, ruvia::string, RUVIA_ONE_OF("采集位置无效", "collector", "edge")), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_MIN(1, "链路名称不能为空"), RUVIA_MAX(100, "链路名称不能超过 100 个字符")), RUVIA_REQUIRED_FIELD(protocol, ruvia::string, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT", "ExternalIO")), RUVIA_REQUIRED_FIELD(endpoint, LinkEndpointBody), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
 
 RUVIA_MODEL(LinkEventsQuery, RUVIA_OPTIONAL_FIELD_NAME("debugLinkId", debugLinkId, ruvia::string, RUVIA_CUSTOM("调试链路 ID 必须是 UUID", service::common::isUuidField)));
 
@@ -44,10 +40,10 @@ RUVIA_MODEL(LinkTargetDto, RUVIA_OPTIONAL_FIELD(mqtt, MqttConnectionBody), RUVIA
 
 RUVIA_MODEL(LinkEndpointDto, RUVIA_OPTIONAL_FIELD(transport, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("interface", interfaceName, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("baud_rate", baudRate, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("data_bits", dataBits, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("stop_bits", stopBits, ruvia::int64), RUVIA_OPTIONAL_FIELD(parity, ruvia::string), RUVIA_OPTIONAL_FIELD(rs485, ruvia::bool_value),
 
-                     RUVIA_OPTIONAL_FIELD(mode, ruvia::string),
-                     RUVIA_OPTIONAL_FIELD(ip, ruvia::string),
-                     RUVIA_OPTIONAL_FIELD(port, ruvia::int64),
-                     RUVIA_OPTIONAL_FIELD(targets, ruvia::boxed_array<LinkTargetDto>));
+            RUVIA_OPTIONAL_FIELD(mode, ruvia::string),
+            RUVIA_OPTIONAL_FIELD(ip, ruvia::string),
+            RUVIA_OPTIONAL_FIELD(port, ruvia::int64),
+            RUVIA_OPTIONAL_FIELD(targets, ruvia::boxed_array<LinkTargetDto>));
 
 RUVIA_MODEL(LinkItemDto, RUVIA_OPTIONAL_FIELD_NAME("debug_enabled", debugEnabled, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(execution, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::string), RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD(protocol, ruvia::string), RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto), RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::string));
 

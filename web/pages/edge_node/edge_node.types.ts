@@ -98,6 +98,7 @@ export namespace Edge {
         log: LogStatus;
     }
     export interface Capability {
+        protocols?: string[];
         nodeIoControl?: boolean;
         externalIo?: {
             supported: boolean;

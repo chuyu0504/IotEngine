@@ -599,6 +599,7 @@ foreach(test_name
         edge-vpn-integration
         entity-schema-audit
         external-io-integration
+        standalone-io-integration
         edge-io-management-integration
         firmware-http-integration
         gb-control-claim-integration

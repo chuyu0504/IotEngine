@@ -8,6 +8,7 @@ enum Transport {
   TRANSPORT_UNSPECIFIED = 0;
   TRANSPORT_ETHERNET = 1;
   TRANSPORT_SERIAL = 2;
+  TRANSPORT_EXTERNAL_IO = 3;
 }
 
 enum LinkMode {
@@ -255,7 +256,7 @@ message VpnCapabilities {
 message CapabilityReport {
   bool supports_external_io = 12;
   repeated ExternalIoChannel external_io_channels = 11 [(nanopb).max_count = 15];
-  repeated Protocol supported_protocols = 7 [(nanopb).max_count = 6];
+  repeated Protocol supported_protocols = 7 [(nanopb).max_count = 7];
   repeated InterfaceCapability interfaces = 1 [(nanopb).max_count = 16];
   repeated SerialCapability serial_ports = 2 [(nanopb).max_count = 8];
   string network_stack = 3 [(nanopb).max_length = 32];

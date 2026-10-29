@@ -1633,7 +1633,7 @@ class ProtocolService {
         using Op = ruvia::db_binary_operator;
         ruvia::db_query query(resource);
         auto builder = transaction.template repository<Device>().query_builder("d");
-        builder.select({ { "primary_id", query.cast(Device::column<"protocol_config_id">().expression(query, "d"), ruvia::db_data_type::text) }, { "primary_config", Model::column<"config">().expression(query, "p") }, { "io_config", Model::column<"config">().expression(query, "i") }, { "derived", Source::column<"derived_config">().expression(query, "s") }, { "device", query.cast(Device::column<"id">().expression(query, "d"), ruvia::db_data_type::text) }, { "node", query.cast(Source::column<"node_id">().expression(query, "s"), ruvia::db_data_type::text) } })
+        builder.select({ { "primary_id", query.cast(Device::column<"protocol_config_id">().expression(query, "d"), ruvia::db_data_type::text) }, { "primary_config", Model::column<"config">().expression(query, "p") }, { "io_config", Model::column<"config">().expression(query, "i") }, { "derived", Source::column<"derived_config">().expression(query, "s") }, { "device", query.cast(Device::column<"id">().expression(query, "d"), ruvia::db_data_type::text) }, { "node", query.cast(Source::column<"node_id">().expression(query, "s"), ruvia::db_data_type::text) }, { "io_id", query.cast(Source::column<"protocol_config_id">().expression(query, "s"), ruvia::db_data_type::text) } })
             .template join<Source>(ruvia::db_join_type::inner, "s", query.binary(Source::column<"device_id">().expression(query, "s"), Op::equal, Device::column<"id">().expression(query, "d")))
             .template join<Model>(ruvia::db_join_type::inner, "p", query.binary(Model::column<"id">().expression(query, "p"), Op::equal, Device::column<"protocol_config_id">().expression(query, "d")))
             .template join<Model>(ruvia::db_join_type::inner, "i", query.binary(Model::column<"id">().expression(query, "i"), Op::equal, Source::column<"protocol_config_id">().expression(query, "s")))
@@ -1642,12 +1642,14 @@ class ProtocolService {
         for (const auto& row : co_await builder.get_raw_many()) {
             const bool primary = row[0].value().value_or("") == configId;
             const auto combined = ruvia::json_value::parse(row[3].value().value_or("{}"));
-            const std::array sources{
-                ruvia::json_value::parse(primary ? replacement.view() : row[1].value().value_or("{}")),
-                ruvia::json_value::parse(primary ? row[2].value().value_or("{}") : replacement.view())
-            };
+            const bool standalone = row[0].value() == row[6].value();
+            std::vector<ruvia::json_value> sources;
+            sources.push_back(ruvia::json_value::parse(primary ? replacement.view() : row[1].value().value_or("{}")));
+            if (!standalone) {
+                sources.push_back(ruvia::json_value::parse(primary ? row[2].value().value_or("{}") : replacement.view()));
+            }
             (void)validateDerivedPoints(combined, sources);
-            if (!primary) {
+            if (!primary || standalone) {
                 co_await requireExternalIoOutputs(transaction, row[5].value().value_or(""), row[4].value().value_or(""), configId, ruvia::from_json<ExternalIoConfig>(replacement.view()));
             }
         }

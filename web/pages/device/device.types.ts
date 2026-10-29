@@ -75,7 +75,7 @@ export interface RegistrationConfig {
     mode: RegistrationMode;
     content?: string;
 }
-export type EdgeTransport = 'serial' | 'tcp';
+export type EdgeTransport = 'serial' | 'tcp' | 'io';
 export type EdgeMode = 'TCP Client' | 'TCP Server';
 export type SerialParity = 'none' | 'even' | 'odd';
 export interface EdgeStatus {
@@ -115,9 +115,18 @@ export interface DeviceExternalIo {
     protocolConfigId: string;
     derivedPoints?: DerivedPoint[];
 }
+export type DeviceEdgeConnection =
+    | Link.SaveDto
+    | {
+          name: string;
+          edge_node_id: string;
+          protocol: 'ExternalIO';
+          endpoint: { transport: 'io' };
+          status: 'enabled' | 'disabled';
+      };
 export interface CreateDeviceDto {
     externalIo?: DeviceExternalIo | null;
-    edge_connection?: Link.SaveDto;
+    edge_connection?: DeviceEdgeConnection;
     name: string;
     device_code: string;
     link_id?: string;
@@ -146,7 +155,7 @@ export interface CreateDeviceDto {
 /** 更新设备 DTO */
 export interface UpdateDeviceDto {
     externalIo?: DeviceExternalIo | null;
-    edge_connection?: Link.SaveDto;
+    edge_connection?: DeviceEdgeConnection;
     name?: string;
     device_code?: string;
     link_id?: string;

@@ -139,24 +139,33 @@ export const saveDeviceSchema = z
             .regex(/^[A-Za-z0-9_-]+$/, '设备编码只能包含字母、数字、连字符和下划线'),
         link_id: z.uuid({ error: '请选择有效本地链路' }).optional(),
         edge_connection: z
-            .object({
-                name: z.string().min(1).max(100),
-                edge_node_id: z.uuid(),
-                protocol: z.enum(['Modbus', 'SL651', 'S7', 'MC', 'FINS', 'DLT645']),
-                endpoint: z.object({
-                    transport: z.enum(['serial', 'tcp']),
-                    interface: z.string().min(1).max(96),
-                    mode: z.enum(['TCP Client', 'TCP Server']),
-                    ip: z.string(),
-                    port: z.number().int(),
-                    targets: z.array(z.never()),
-                    baud_rate: z.number().int().min(300).max(4000000).optional(),
-                    data_bits: z.number().int().min(5).max(8).optional(),
-                    stop_bits: z.number().int().min(1).max(2).optional(),
-                    parity: z.enum(['none', 'even', 'odd']).optional(),
+            .union([
+                z.object({
+                    name: z.string().min(1).max(100),
+                    edge_node_id: z.uuid(),
+                    protocol: z.enum(['Modbus', 'SL651', 'S7', 'MC', 'FINS', 'DLT645']),
+                    endpoint: z.object({
+                        transport: z.enum(['serial', 'tcp']),
+                        interface: z.string().min(1).max(96),
+                        mode: z.enum(['TCP Client', 'TCP Server']),
+                        ip: z.string(),
+                        port: z.number().int(),
+                        targets: z.array(z.never()),
+                        baud_rate: z.number().int().min(300).max(4000000).optional(),
+                        data_bits: z.number().int().min(5).max(8).optional(),
+                        stop_bits: z.number().int().min(1).max(2).optional(),
+                        parity: z.enum(['none', 'even', 'odd']).optional(),
+                    }),
+                    status: statusSchema,
                 }),
-                status: statusSchema,
-            })
+                z.object({
+                    name: z.string().min(1).max(100),
+                    edge_node_id: z.uuid(),
+                    protocol: z.literal('ExternalIO'),
+                    endpoint: z.strictObject({ transport: z.literal('io') }),
+                    status: statusSchema,
+                }),
+            ])
             .optional(),
         target_id: z.string().trim().max(100).optional(),
         protocol_config_id: z.uuid({ error: '请选择有效设备类型' }),

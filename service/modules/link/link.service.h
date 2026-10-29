@@ -669,12 +669,12 @@ return result
         validateNodeId(nodeId);
         const auto& endpoint = body.get<"endpoint">();
         const auto transport = required(endpoint.get<"transport">(), "请选择传输类型");
-        const auto interfaceName = required(endpoint.get<"interfaceName">(), "请选择接口");
+        const auto interfaceName = transport == "io" ? std::string{} : required(endpoint.get<"interfaceName">(), "请选择接口");
         validateEdgeEndpoint(endpoint, protocol, transport, interfaceName);
         ruvia::db_query nodeQuery(c.pool());
         auto nodeQueryBuilder = tx.template repository<service::edge_node::entities::EdgeNodeEntity>().query_builder();
         nodeQueryBuilder.select({ { "value0", db::integer(nodeQuery, 1) } }).where(nodeQuery.binary(service::edge_node::entities::EdgeNodeEntity::column<"id">().expression(nodeQuery), ruvia::db_binary_operator::equal, db::uuid(nodeQuery, nodeId))).and_where(nodeQuery.binary(service::edge_node::entities::EdgeNodeEntity::column<"enrollment_status">().expression(nodeQuery), ruvia::db_binary_operator::equal, nodeQuery.value("approved"))).and_where(nodeQuery.binary(db::jsonText(nodeQuery, service::edge_node::entities::EdgeNodeEntity::column<"capability">().expression(nodeQuery), "deviceConfig"), ruvia::db_binary_operator::equal, nodeQuery.value("true")));
-        if (protocol == "MC" || protocol == "FINS" || protocol == "DLT645") {
+        if (protocol == "MC" || protocol == "FINS" || protocol == "DLT645" || protocol == "ExternalIO") {
             nodeQueryBuilder.and_where(nodeQuery.call("jsonb_exists", { db::jsonValue(nodeQuery, service::edge_node::entities::EdgeNodeEntity::column<"capability">().expression(nodeQuery), "protocols"), nodeQuery.value(protocol) }));
         }
         const auto node = co_await nodeQueryBuilder.get_raw_many();
@@ -689,7 +689,7 @@ return result
             if (serial.empty()) {
                 service::common::fail(15002, "所选串口不存在或当前不可用", 409);
             }
-        } else {
+        } else if (transport == "tcp") {
             ruvia::db_query networkQuery(c.pool());
             auto networkQueryBuilder = tx.template repository<service::edge_node::entities::EdgeNodeInterfaceEntity>().query_builder();
             networkQueryBuilder.select({ { "ipv4", service::edge_node::entities::EdgeNodeInterfaceEntity::column<"ipv4">().expression(networkQuery) } }).where(networkQuery.binary(service::edge_node::entities::EdgeNodeInterfaceEntity::column<"node_id">().expression(networkQuery), ruvia::db_binary_operator::equal, db::uuid(networkQuery, nodeId))).and_where(networkQuery.binary(service::edge_node::entities::EdgeNodeInterfaceEntity::column<"name">().expression(networkQuery), ruvia::db_binary_operator::equal, networkQuery.value(interfaceName))).and_where(networkQuery.binary(networkQuery.coalesce({ service::edge_node::entities::EdgeNodeInterfaceEntity::column<"ipv4">().expression(networkQuery), networkQuery.value("") }), ruvia::db_binary_operator::not_equal, networkQuery.value(""))).limit(1);
@@ -708,9 +708,12 @@ return result
         }
         std::string endpointJson = "{\"transport\":\"";
         service::utils::appendJsonEscaped(endpointJson, transport);
-        endpointJson += "\",\"interface\":\"";
-        service::utils::appendJsonEscaped(endpointJson, interfaceName);
         endpointJson += '"';
+        if (transport != "io") {
+            endpointJson += ",\"interface\":\"";
+            service::utils::appendJsonEscaped(endpointJson, interfaceName);
+            endpointJson += '"';
+        }
         if (transport == "serial") {
             endpointJson += ",\"baud_rate\":" + std::to_string(endpoint.get<"baudRate">().value_or(9600));
             endpointJson += ",\"data_bits\":" + std::to_string(endpoint.get<"dataBits">().value_or(8));
@@ -718,7 +721,7 @@ return result
             endpointJson += ",\"parity\":\"";
             service::utils::appendJsonEscaped(endpointJson, endpoint.get<"parity">() ? endpoint.get<"parity">()->view() : std::string_view("none"));
             endpointJson += endpoint.get<"rs485">().value_or(false) ? "\",\"rs485\":true" : "\",\"rs485\":false";
-        } else {
+        } else if (transport == "tcp") {
             endpointJson += ",\"mode\":\"";
             service::utils::appendJsonEscaped(endpointJson, endpoint.get<"mode">()->view());
             endpointJson += "\",\"ip\":\"";
@@ -726,7 +729,7 @@ return result
             endpointJson += "\",\"port\":" + std::to_string(*endpoint.get<"port">());
         }
         endpointJson += '}';
-        // Serialize endpoint resolution within a node; reuse the same physical endpoint.
+        // Serialize endpoint resolution within a node. IO devices own logical endpoints.
         ruvia::db_query nodeLock(c.pool());
         auto nodeLockBuilder = tx.template repository<service::edge_node::entities::EdgeNodeEntity>().query_builder();
         nodeLockBuilder.select({ { "id", service::edge_node::entities::EdgeNodeEntity::column<"id">().expression(nodeLock) } }).where(nodeLock.binary(service::edge_node::entities::EdgeNodeEntity::column<"id">().expression(nodeLock), ruvia::db_binary_operator::equal, db::uuid(nodeLock, nodeId)));
@@ -747,9 +750,20 @@ return result
         }
         auto existingBuilder = tx.template repository<entities::LinkEntity>().query_builder();
         existingBuilder.select({ { "id", db::text(existing, entities::LinkEntity::column<"id">().expression(existing)) }, { "value1", sameSettings }, { "protocol", entities::LinkEntity::column<"protocol">().expression(existing) } }).where((entities::LinkEntity::column<"execution">() == "edge" && entities::LinkEntity::column<"edge_node_id">() == nodeId && entities::LinkEntity::column<"deleted_at">().is_null()).expression(existing));
-        existingBuilder.and_where(existing.binary(db::jsonText(existing, existingEndpoint, "transport"), ruvia::db_binary_operator::equal, existing.value(transport))).and_where(existing.binary(db::jsonText(existing, existingEndpoint, "interface"), ruvia::db_binary_operator::equal, existing.value(interfaceName)));
+        existingBuilder.and_where(existing.binary(db::jsonText(existing, existingEndpoint, "transport"), ruvia::db_binary_operator::equal, existing.value(transport)));
+        if (transport != "io") {
+            existingBuilder.and_where(existing.binary(db::jsonText(existing, existingEndpoint, "interface"), ruvia::db_binary_operator::equal, existing.value(interfaceName)));
+        }
         if (transport == "tcp") {
             existingBuilder.and_where(existing.binary(db::jsonText(existing, existingEndpoint, "mode"), ruvia::db_binary_operator::equal, existing.value(endpoint.get<"mode">()->view()))).and_where(existing.binary(db::jsonText(existing, existingEndpoint, "ip"), ruvia::db_binary_operator::equal, existing.value(endpoint.get<"ip">()->view()))).and_where(existing.binary(db::jsonText(existing, existingEndpoint, "port"), ruvia::db_binary_operator::equal, existing.value(std::to_string(*endpoint.get<"port">()))));
+        } else if (transport == "io") {
+            if (deviceId.empty()) {
+                existingBuilder.and_where(existing.value(false));
+            } else {
+                ruvia::db_query device(c.pool());
+                device.select(device.value(1)).from(service::device::entities::DeviceEntity::table_name(), "io_device").where(device.binary(service::device::entities::DeviceEntity::column<"id">().expression(device, "io_device"), ruvia::db_binary_operator::equal, db::uuid(device, deviceId))).and_where(device.binary(service::device::entities::DeviceEntity::column<"link_id">().expression(device, "io_device"), ruvia::db_binary_operator::equal, entities::LinkEntity::column<"id">().expression(device, "link")));
+                existingBuilder.and_where(existing.exists(device));
+            }
         }
         existingBuilder.limit(1);
         const auto matches = co_await existingBuilder.get_raw_many();
@@ -833,6 +847,12 @@ return result
     }
 
     static void validateEdgeEndpoint(const LinkEndpointBody& endpoint, std::string_view protocol, std::string_view transport, std::string_view interfaceName) {
+        if (protocol == "ExternalIO" || transport == "io") {
+            if (protocol != "ExternalIO" || transport != "io" || endpoint.get<"interfaceName">() || endpoint.get<"mode">() || endpoint.get<"ip">() || endpoint.get<"port">() || endpoint.get<"targets">() || endpoint.get<"baudRate">() || endpoint.get<"dataBits">() || endpoint.get<"stopBits">() || endpoint.get<"parity">() || endpoint.get<"rs485">()) {
+                service::common::fail(15002, "独立外部 IO 不使用网络或串口参数", 400);
+            }
+            return;
+        }
         if (interfaceName.size() > 96) {
             service::common::fail(15002, "接口名称过长", 400);
         }

@@ -45,10 +45,6 @@ import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
 import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from 'react';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {
-    DerivedPointsEditor,
-    type DerivedPointsEditorHandle,
-} from '@/components/derived_points_editor';
 import type { DeviceCardItem } from '@/components/device_card';
 import DeviceCard from '@/components/device_card';
 import { FormModal } from '@/components/form_modal';
@@ -62,20 +58,14 @@ import { VirtualGrid } from '@/components/virtual_grid';
 import { usePermissions } from '@/hooks/use_permission';
 import { useAuthStore } from '@/store/auth_store';
 import { formatDateTime } from '@/utils/date_time';
-import { derivedPointSchema } from '@/utils/derived_point';
 import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/edge_node.service';
 import type { Edge } from '../edge_node/edge_node.types';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
 import {
     externalIoCompatible,
-    protocolDerivedPoints,
-    protocolPointOptions,
-    useProtocolConfigDetail,
     useProtocolConfigList,
     useProtocolConfigOptions,
-    useProtocolExpressionTest,
-    validateProtocolExpression,
 } from '../protocol/protocol.service';
 import type { ExternalIoConfig, Protocol } from '../protocol/protocol.types';
 import {
@@ -428,18 +418,16 @@ export function DeviceFormModal({
     onFinish,
 }: Props) {
     const [form] = Form.useForm<DeviceFormValues>();
-    const [source, setSource] = useState<'collector' | 'edge'>('collector');
+    const [source, setSource] = useState<'collector' | 'edge' | 'io'>('collector');
     const [nodeId, setNodeId] = useState<string>();
-    const derivedEditor = useRef<DerivedPointsEditorHandle>(null);
-    const expressionTest = useProtocolExpressionTest();
     const { data: node } = useEdgeConfigurationDetail(
-        open && source === 'edge' ? nodeId : undefined
+        open && source !== 'collector' ? nodeId : undefined
     );
     const edgeProtocol = Form.useWatch('edge_protocol', form);
     const edgeTransport = Form.useWatch('edge_transport', form);
     const edgeMode = Form.useWatch('edge_mode', form);
     const { data: nodes = EMPTY_EDGE_NODES, isLoading: loadingNodes } = useEdgeSelectionList(
-        open && source === 'edge'
+        open && source !== 'collector'
     );
     const clearChannel = () =>
         form.setFieldsValue({
@@ -459,36 +447,21 @@ export function DeviceFormModal({
     const ioValue = Form.useWatch('externalIo', { form, preserve: true });
     const { data: ioModels = EMPTY_IO_MODELS } = useProtocolConfigList(
         { protocol: 'ExternalIO' },
-        { enabled: open && source === 'edge' }
+        { enabled: open && source !== 'collector' }
     );
-    const { data: primaryModel } = useProtocolConfigDetail(open ? modelId : undefined);
-    const ioModel = ioModels.find((item) => item.id === ioValue?.protocolConfigId);
+    const selectedIoModelId = source === 'io' ? modelId : ioValue?.protocolConfigId;
+    const ioModel = ioModels.find((item) => item.id === selectedIoModelId);
     const ioPoints = (ioModel?.config as ExternalIoConfig | undefined)?.points ?? [];
-    const ioSupported = node?.capability.externalIo?.supported === true;
-    const sourceOptions = useMemo(
-        () =>
-            [primaryModel, ioModel].flatMap((item) =>
-                item
-                    ? [
-                          ...protocolPointOptions(item).map((point) => ({
-                              ...point,
-                              label: `${item.name} · ${point.label}`,
-                          })),
-                          ...protocolDerivedPoints(item).map((point) => ({
-                              value: point.id,
-                              label: `${item.name} · ${point.name}`,
-                          })),
-                      ]
-                    : []
-            ),
-        [primaryModel, ioModel]
-    );
+    const ioSupported =
+        node?.capability.externalIo?.supported === true &&
+        (source !== 'io' || node.capability.protocols?.includes('ExternalIO') === true);
     const linkId = Form.useWatch('link_id', form);
     const channel = linkOptions.find((value) => value.id === linkId);
-    const protocol = source === 'edge' ? edgeProtocol : channel?.protocol;
+    const protocol =
+        source === 'io' ? 'ExternalIO' : source === 'edge' ? edgeProtocol : channel?.protocol;
     const linkMode = source === 'edge' ? edgeMode : channel?.endpoint.mode;
     const showHeartbeat =
-        (source === 'collector' || edgeTransport === 'tcp') &&
+        (source === 'collector' || (source === 'edge' && edgeTransport === 'tcp')) &&
         linkMode === 'TCP Server' &&
         protocol !== 'SL651';
     const showRegistration = source === 'collector' && showHeartbeat;
@@ -599,9 +572,11 @@ export function DeviceFormModal({
                 if (visible) {
                     const currentLink = linkOptions.find((link) => link.id === editing?.link_id);
                     setSource(
-                        currentLink?.execution === 'edge' || editing?.edge_node_id
-                            ? 'edge'
-                            : 'collector'
+                        editing?.protocol_type === 'ExternalIO'
+                            ? 'io'
+                            : currentLink?.execution === 'edge' || editing?.edge_node_id
+                              ? 'edge'
+                              : 'collector'
                     );
                     setNodeId(currentLink?.edge_node_id ?? editing?.edge_node_id);
                     form.resetFields();
@@ -652,7 +627,8 @@ export function DeviceFormModal({
                     layout="vertical"
                     onFinish={(values) => {
                         values.externalIo = form.getFieldValue('externalIo');
-                        if (source !== 'edge') values.externalIo = null;
+                        if (source === 'collector') values.externalIo = null;
+                        if (source === 'io') values.externalIo = undefined;
                         if (
                             values.externalIo &&
                             (!ioModel ||
@@ -675,7 +651,33 @@ export function DeviceFormModal({
                         ) {
                             values.externalIo = undefined;
                         }
-                        if (source === 'edge') {
+                        if (source === 'io') {
+                            if (
+                                !nodeId ||
+                                !ioSupported ||
+                                !ioModel ||
+                                !externalIoCompatible(ioModel.config as ExternalIoConfig, node)
+                            ) {
+                                form.setFields([
+                                    {
+                                        name: 'protocol_config_id',
+                                        errors: ['请选择支持独立外部 IO 的节点和兼容方案'],
+                                    },
+                                ]);
+                                return;
+                            }
+                            values.link_id = undefined;
+                            values.target_id = undefined;
+                            values.modbus_mode = undefined;
+                            values.slave_id = undefined;
+                            values.edge_connection = {
+                                name: values.name,
+                                edge_node_id: nodeId,
+                                protocol: 'ExternalIO',
+                                status: 'enabled',
+                                endpoint: { transport: 'io' },
+                            };
+                        } else if (source === 'edge') {
                             if (!edgeProtocol || !nodeId) return;
                             values.link_id = undefined;
                             values.target_id = undefined;
@@ -686,7 +688,7 @@ export function DeviceFormModal({
                                 protocol: edgeProtocol,
                                 status: 'enabled',
                                 endpoint: {
-                                    transport: edgeTransport,
+                                    transport: edgeTransport === 'serial' ? 'serial' : 'tcp',
                                     interface: values.edge_interface,
                                     mode: edgeMode ?? 'TCP Client',
                                     ip: values.edge_ip ?? '',
@@ -773,17 +775,25 @@ export function DeviceFormModal({
                             options={[
                                 { value: 'collector', label: '本地链路' },
                                 { value: 'edge', label: '边缘节点' },
+                                { value: 'io', label: '外部 IO' },
                             ]}
                             onChange={(event) => {
                                 setSource(event.target.value);
                                 setNodeId(undefined);
+                                if (edgeTransport === 'io') {
+                                    form.setFieldsValue({
+                                        edge_transport: 'tcp',
+                                        edge_mode: 'TCP Client',
+                                        edge_interface: undefined,
+                                    });
+                                }
                                 form.setFieldValue('externalIo', null);
                                 form.setFieldValue('edge_node_id', undefined);
                                 clearChannel();
                             }}
                         />
                     </Form.Item>
-                    {source === 'edge' && (
+                    {source !== 'collector' && (
                         <Form.Item
                             name="edge_node_id"
                             label="边缘节点"
@@ -977,64 +987,94 @@ export function DeviceFormModal({
                     </Divider>
                     <Form.Item
                         name="protocol_config_id"
-                        label="设备类型"
+                        label={source === 'io' ? '外部 IO 方案' : '设备类型'}
                         rules={[{ required: true }]}
                     >
                         <Select
-                            disabled={!protocol}
-                            options={models?.list.map((m) => ({ value: m.id, label: m.name }))}
+                            disabled={!protocol || (source === 'io' && !ioSupported)}
+                            options={
+                                source === 'io'
+                                    ? ioModels
+                                          .filter(
+                                              (item) =>
+                                                  item.id === modelId ||
+                                                  (item.enabled &&
+                                                      externalIoCompatible(
+                                                          item.config as ExternalIoConfig,
+                                                          node
+                                                      ))
+                                          )
+                                          .map((item) => ({
+                                              value: item.id,
+                                              label: item.name,
+                                              disabled:
+                                                  !item.enabled ||
+                                                  !externalIoCompatible(
+                                                      item.config as ExternalIoConfig,
+                                                      node
+                                                  ),
+                                          }))
+                                    : models?.list.map((m) => ({ value: m.id, label: m.name }))
+                            }
                         />
                     </Form.Item>
-                    {source === 'edge' && nodeId && (
+                    {source !== 'collector' && nodeId && (
                         <div className="col-span-full">
                             <Divider titlePlacement="start">外部 IO</Divider>
                             {!ioSupported && (
                                 <Alert
                                     type="info"
                                     showIcon
-                                    message="当前节点固件未声明外部 IO 能力；升级后可选择外部 IO 方案。"
+                                    message={
+                                        source === 'io'
+                                            ? '当前节点固件尚未声明独立外部 IO 设备能力，请先升级固件。'
+                                            : '当前节点固件未声明外部 IO 能力；升级后可选择外部 IO 方案。'
+                                    }
                                 />
                             )}
-                            <Form.Item label="外部 IO 方案">
-                                <Select
-                                    allowClear
-                                    disabled={!ioSupported}
-                                    value={ioValue?.protocolConfigId}
-                                    options={ioModels
-                                        .filter(
-                                            (item) =>
-                                                item.id === ioValue?.protocolConfigId ||
-                                                (item.enabled &&
-                                                    externalIoCompatible(
+                            {source === 'edge' && (
+                                <Form.Item label="外部 IO 方案">
+                                    <Select
+                                        allowClear
+                                        disabled={!ioSupported}
+                                        value={ioValue?.protocolConfigId}
+                                        options={ioModels
+                                            .filter(
+                                                (item) =>
+                                                    item.id === ioValue?.protocolConfigId ||
+                                                    (item.enabled &&
+                                                        externalIoCompatible(
+                                                            item.config as ExternalIoConfig,
+                                                            node
+                                                        ))
+                                            )
+                                            .map((item) => ({
+                                                value: item.id,
+                                                label: item.name,
+                                                disabled:
+                                                    !item.enabled ||
+                                                    !externalIoCompatible(
                                                         item.config as ExternalIoConfig,
                                                         node
-                                                    ))
-                                        )
-                                        .map((item) => ({
-                                            value: item.id,
-                                            label: item.name,
-                                            disabled:
-                                                !item.enabled ||
-                                                !externalIoCompatible(
-                                                    item.config as ExternalIoConfig,
-                                                    node
-                                                ),
-                                        }))}
-                                    onChange={(id: string | undefined) => {
-                                        const selected = ioModels.find((item) => item.id === id);
-                                        form.setFieldValue(
-                                            'externalIo',
-                                            selected
-                                                ? {
-                                                      protocolConfigId: selected.id,
-                                                      derivedPoints: [],
-                                                  }
-                                                : null
-                                        );
-                                    }}
-                                />
-                            </Form.Item>
-                            {ioValue &&
+                                                    ),
+                                            }))}
+                                        onChange={(id: string | undefined) => {
+                                            const selected = ioModels.find(
+                                                (item) => item.id === id
+                                            );
+                                            form.setFieldValue(
+                                                'externalIo',
+                                                selected
+                                                    ? {
+                                                          protocolConfigId: selected.id,
+                                                      }
+                                                    : null
+                                            );
+                                        }}
+                                    />
+                                </Form.Item>
+                            )}
+                            {selectedIoModelId &&
                                 ioModel &&
                                 !externalIoCompatible(ioModel.config as ExternalIoConfig, node) && (
                                     <Alert
@@ -1043,7 +1083,7 @@ export function DeviceFormModal({
                                         message="当前方案与节点不兼容，请更换方案或节点。"
                                     />
                                 )}
-                            {ioValue && ioPoints.length > 0 && (
+                            {selectedIoModelId && ioPoints.length > 0 && (
                                 <Table
                                     size="small"
                                     rowKey="id"
@@ -1060,29 +1100,6 @@ export function DeviceFormModal({
                                         },
                                     ]}
                                 />
-                            )}
-                            {ioValue && (
-                                <>
-                                    <Button onClick={() => derivedEditor.current?.create()}>
-                                        新增设备派生值
-                                    </Button>
-                                    <DerivedPointsEditor
-                                        ref={derivedEditor}
-                                        points={ioValue.derivedPoints ?? []}
-                                        sourceOptions={sourceOptions}
-                                        editable={true}
-                                        saving={false}
-                                        onSave={async (points) => {
-                                            form.setFieldValue(
-                                                ['externalIo', 'derivedPoints'],
-                                                points
-                                            );
-                                        }}
-                                        validatePoint={derivedPointSchema.safeParse}
-                                        validateExpression={validateProtocolExpression}
-                                        testExpression={expressionTest.mutateAsync}
-                                    />
-                                </>
                             )}
                         </div>
                     )}
@@ -1443,6 +1460,7 @@ const getDeviceDisplayElementCount = (device: Device.Overview) =>
 const edgeNodeLabel = (device: Device.Overview) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
 const edgeEndpointLabel = (device: Device.Overview) => {
+    if (device.edge_transport === 'io') return '外部 IO';
     if (device.edge_transport === 'serial') {
         const parity =
             device.serial_parity === 'even' ? 'E' : device.serial_parity === 'odd' ? 'O' : 'N';

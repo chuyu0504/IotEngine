@@ -232,7 +232,7 @@ inline void decodeModelElements(DeviceModel& model) {
                 }
             }
         }
-    } else {
+    } else if (device.protocol != "ExternalIO") {
         const auto arrayKey = device.protocol == "Modbus" ? "registers" : device.protocol == "S7" ? "areas"
                                                                                                   : "points";
         if (const auto raw = config.get<ruvia::json_value>(arrayKey)) {

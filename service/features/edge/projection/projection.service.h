@@ -1424,6 +1424,9 @@ class ProjectionService final {
                 case pb::PROTOCOL_DLT645:
                     supported.emplace_back("DLT645");
                     break;
+                case pb::PROTOCOL_EXTERNAL_IO:
+                    supported.emplace_back("ExternalIO");
+                    break;
                 default:
                     break;
             }
