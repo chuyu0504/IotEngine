@@ -310,7 +310,9 @@ jobs:
   windows_build:
     name: Windows MSVC build
     needs: vcpkg_revision
-    runs-on: windows-2025
+    # MSVC 14.51 reports C4737 for the projection coroutine under /WX.
+    # Keep the supported VS 2022 toolset until that compiler issue is resolved.
+    runs-on: windows-2022
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_COMMIT: ${{ needs.vcpkg_revision.outputs.commit }}
