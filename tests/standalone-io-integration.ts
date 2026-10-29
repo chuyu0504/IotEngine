@@ -162,7 +162,7 @@ try {
     await until(async () => (await db`SELECT 1 FROM command_operation WHERE id=${operation} AND protocol='ExternalIO' AND model_id=${model} AND status='SUCCEEDED'`).length > 0, 'standalone IO command result missing');
     socket.send(envelope(26, capability(false)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND NOT (capability->'protocols' ? 'ExternalIO')`).length > 0, 'standalone capability revocation missing');
-    await request(`/v1/edge/${node}/sync`, {});
+    await request(`/v1/edge/${node}/sync`, {}, 'POST', 409);
     const rejectedRevision = BigInt((await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`)[0].revision);
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND status->'config'->>'state'='rejected' AND status->'config'->>'message' LIKE '%ExternalIO%'`).length > 0, 'unsupported standalone protocol was not rejected before delivery');
     assert((received.get(31) ?? []).every(item => decode(item).get(1) !== rejectedRevision), 'node without protocol support received an IO endpoint');

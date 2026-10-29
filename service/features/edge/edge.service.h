@@ -607,7 +607,7 @@ class ConfigService final {
 
         auto snapshot = co_await buildSnapshot(c, nodeId, revision);
         if (!snapshot) {
-            service::common::fail(17012, "边缘节点配置条目超过 512 条", 409);
+            service::common::fail(17012, "节点配置无法下发，请查看配置状态中的原因", 409);
         }
 
         if (!service::common::isUuid(actorId)) {

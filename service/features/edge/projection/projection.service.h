@@ -1966,10 +1966,11 @@ class ProjectionService final {
                     throw std::runtime_error("invalid external IO telemetry");
                 }
                 const auto calculation = calculations.find(deviceId);
-                if (calculation == calculations.end() || calculation->second.sources.size() != 2) {
+                const std::size_t expectedSources = device->second.protocol == "ExternalIO" ? 1 : 2;
+                if (calculation == calculations.end() || calculation->second.sources.size() != expectedSources) {
                     throw std::runtime_error("external IO configuration is unavailable");
                 }
-                const auto ioConfig = ruvia::json_value::parse(calculation->second.sources[1]);
+                const auto ioConfig = ruvia::json_value::parse(calculation->second.sources.back());
                 const auto policy = ioConfig.get<ruvia::string>("storagePolicy");
                 if (!policy || (policy->view() != "report" && policy->view() != "change")) {
                     throw std::runtime_error("invalid external IO storage policy");
