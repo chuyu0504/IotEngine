@@ -945,6 +945,9 @@ class ConfigService final {
                 case pb::PROTOCOL_DLT645:
                     requiredProtocols.emplace("DLT645");
                     break;
+                case pb::PROTOCOL_EXTERNAL_IO:
+                    requiredProtocols.emplace("ExternalIO");
+                    break;
                 default:
                     break;
             }
