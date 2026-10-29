@@ -6,7 +6,10 @@ export type JsonValue =
     | JsonValue[]
     | { [key: string]: JsonValue };
 
-export function parseJson(text: string): JsonValue {
+export function parseJson(
+    text: string,
+    visitValue?: (parts: readonly string[], start: number, end: number) => void
+): JsonValue {
     const value = JSON.parse(text) as JsonValue;
     let position = 0;
     const space = () => {
@@ -28,6 +31,7 @@ export function parseJson(text: string): JsonValue {
     const scan = (parts: string[]) => {
         if (parts.length > 32) fail(parts, 'JSON 不能超过 32 层', position);
         space();
+        const start = position;
         if (text[position] === '{') {
             position++;
             space();
@@ -60,6 +64,7 @@ export function parseJson(text: string): JsonValue {
             position++;
         } else if (text[position] === '"') string();
         else while (position < text.length && !/[\s,}\]]/.test(text[position])) position++;
+        visitValue?.(parts, start, position);
     };
     scan([]);
     return value;

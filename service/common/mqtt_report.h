@@ -118,7 +118,7 @@ inline bool mqttReportTopicsOverlap(std::string_view left, std::string_view righ
 }
 
 RUVIA_MODEL(MqttReportField, RUVIA_REQUIRED_FIELD(pointId, ruvia::string), RUVIA_REQUIRED_FIELD(field, ruvia::string));
-RUVIA_MODEL(MqttReport, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string), RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_REQUIRED_FIELD(reportTemplate, ruvia::string), RUVIA_REQUIRED_FIELD(pointFields, ruvia::array<MqttReportField>), RUVIA_OPTIONAL_FIELD(qos, ruvia::int64), RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::string), RUVIA_OPTIONAL_FIELD(identitySource, ruvia::string), RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::int64), RUVIA_OPTIONAL_FIELD(timeField, ruvia::string), RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::string));
+RUVIA_MODEL(MqttReport, RUVIA_REQUIRED_FIELD(id, ruvia::string), RUVIA_REQUIRED_FIELD(name, ruvia::string), RUVIA_REQUIRED_FIELD(topic, ruvia::string), RUVIA_REQUIRED_FIELD(reportTemplate, ruvia::string), RUVIA_REQUIRED_FIELD(pointFields, ruvia::array<MqttReportField>), RUVIA_OPTIONAL_FIELD(qos, ruvia::int64), RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::string), RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::string), RUVIA_OPTIONAL_FIELD(identitySource, ruvia::string), RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::int64), RUVIA_OPTIONAL_FIELD(timeField, ruvia::string), RUVIA_OPTIONAL_FIELD(timeSource, ruvia::string), RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::string));
 
 // 将每条上报配置投影到同一解码契约。旧单消息配置同样只经过这一入口。
 inline std::vector<std::string> mqttReportConfigurations(const ruvia::json_value& config) {
@@ -168,7 +168,7 @@ inline std::vector<std::string> mqttReportConfigurations(const ruvia::json_value
             }
             return true;
         });
-        for (const auto name : { "topic", "recordsPath", "deviceCodeField", "identitySource", "topicDeviceSegment", "payloadFormat", "delimiter", "recordDelimiter", "recordLength", "timeField", "timeFormat", "reportTemplate", "qos" }) {
+        for (const auto name : { "topic", "recordsPath", "deviceCodeField", "identitySource", "topicDeviceSegment", "payloadFormat", "delimiter", "recordDelimiter", "recordLength", "timeField", "timeSource", "timeFormat", "reportTemplate", "qos" }) {
             projected.erase(name);
         }
         // to_json 的内容必须覆盖视图使用期。
@@ -259,6 +259,60 @@ void appendMqttReportPoints(std::vector<MqttReportPoint>& output, const std::opt
     }
 }
 
+inline void findMqttTimeField(const ruvia::json_value& value, const std::string& path, std::string& result, unsigned depth = 0) {
+    if (depth > 32) {
+        throw std::invalid_argument("JSON 不能超过 32 层");
+    }
+    if (const auto text = value.get<ruvia::string>(); text && text->view() == "$time") {
+        if (!result.empty()) {
+            throw std::invalid_argument("$time 只能出现一次");
+        }
+        result = path;
+    } else if (value.is_object()) {
+        (void)value.for_each_field([&](std::string_view key, const ruvia::json_value& child) {
+            std::string escaped;
+            for (const auto ch : key) {
+                escaped += ch == '~' ? "~0" : ch == '/' ? "~1"
+                                                        : std::string(1, ch);
+            }
+            findMqttTimeField(child, path + '/' + escaped, result, depth + 1);
+            return true;
+        });
+    } else if (value.is_array()) {
+        std::size_t index = 0;
+        (void)value.for_each_element([&](const ruvia::json_value& child) {
+            findMqttTimeField(child, path + '/' + std::to_string(index++), result, depth + 1);
+            return true;
+        });
+    }
+}
+
+// 从模板解析时间位置，保留未声明 timeSource 的旧 API 选择器契约。
+template <typename Config>
+std::string mqttReportTimeField(const Config& config) {
+    const auto& source = config.template get<"timeSource">();
+    const auto& configured = config.template get<"timeField">();
+    const auto mode = source ? source->view() : std::string_view{};
+    const auto field = configured ? configured->view() : std::string_view{};
+    std::string marker;
+    if (const auto& text = config.template get<"reportTemplate">(); text) {
+        findMqttTimeField(ruvia::json_value::parse(text->view()), "", marker);
+    }
+    if (source && mode != "payload" && mode != "received") {
+        throw std::invalid_argument("数据时间无效");
+    }
+    if (mode == "received" && (!marker.empty() || !field.empty())) {
+        throw std::invalid_argument("数据时间选择“以上报时间为准”时，不能配置 $time 或时间字段路径");
+    }
+    if (mode == "payload" && marker.empty()) {
+        throw std::invalid_argument("数据时间选择 $time 时，上报模板必须包含一个完整的 \"$time\"");
+    }
+    if (!marker.empty() && !field.empty() && utils::jsonFieldSegments(marker) != utils::jsonFieldSegments(field)) {
+        throw std::invalid_argument("$time 所在位置与保存的时间字段不一致");
+    }
+    return marker.empty() ? std::string(field) : marker;
+}
+
 // 由 mqttReportConfigurations 投影出的单条上报配置模型构造解码参数。
 template <typename Config>
 MqttReportLayout mqttReportLayout(const Config& config) {
@@ -272,7 +326,7 @@ MqttReportLayout mqttReportLayout(const Config& config) {
     layout.recordDelimiter = option(config.template get<"recordDelimiter">(), "\n");
     layout.deviceCodeField = option(config.template get<"deviceCodeField">(), "");
     layout.identitySource = option(config.template get<"identitySource">(), layout.deviceCodeField.empty() ? "bound" : "payload");
-    layout.timeField = option(config.template get<"timeField">(), "");
+    layout.timeField = mqttReportTimeField(config);
     layout.timeFormat = option(config.template get<"timeFormat">(), "unix_ms");
     layout.topicDeviceSegment = static_cast<std::size_t>(config.template get<"topicDeviceSegment">().value_or(ruvia::int64{ 1 }).value_);
     layout.recordLength = static_cast<std::size_t>(config.template get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);

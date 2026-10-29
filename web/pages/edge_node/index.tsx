@@ -1111,7 +1111,12 @@ function NodeIoTab({ scope, canControl }: { scope: Edge.EventScope; canControl: 
     const control = useIoControl(scope.nodeId ?? '');
     const [accepted, setAccepted] = useState<Record<string, string>>({});
     const columns: ColumnsType<Edge.IoChannel> = [
-        { title: '通道', dataIndex: ['state', 'channel'], width: 100 },
+        {
+            title: '通道',
+            dataIndex: ['state', 'channel'],
+            width: 100,
+            render: (channel: string) => channel.toUpperCase(),
+        },
         { title: '类型', dataIndex: ['state', 'kind'], width: 80 },
         {
             title: '状态',
@@ -1168,7 +1173,7 @@ function NodeIoTab({ scope, canControl }: { scope: Edge.EventScope; canControl: 
                     waiting;
                 return (
                     <Popconfirm
-                        title={`确认${row.state.value === '1' ? '关闭' : '开启'} ${row.state.channel}？`}
+                        title={`确认${row.state.value === '1' ? '关闭' : '开启'} ${row.state.channel.toUpperCase()}？`}
                         disabled={disabled}
                         onConfirm={async () => {
                             const result = await control.mutateAsync({

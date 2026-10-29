@@ -136,6 +136,21 @@ void testQos2AndCommand() {
     require(complete.back().kind == ProtocolActionKind::CompleteCommand, "outbound QoS2 did not complete");
 }
 
+void testDataTimeSelection() {
+    for (const bool payloadTime : { true, false }) {
+        Fixture fixture;
+        auto& device = fixture.snapshot->devices.front();
+        const auto report = payloadTime ? R"({"temperature":"$point:温度","clock":"$time"})" : R"({"temperature":"$point:温度","clock":0})";
+        device.calculationConfig = "{\"topic\":\"devices/0\",\"qos\":2,\"timeFormat\":\"unix_s\",\"timeSource\":" + service::utils::jsonQuoted(payloadTime ? "payload" : "received") + ",\"reportTemplate\":" + service::utils::jsonQuoted(report) + R"(,"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE"}]})";
+        fixture.session = userSession(fixture.snapshot);
+        fixture.start();
+        const auto actions = fixture.receive(publication("devices/0", R"({"temperature":8,"clock":1767225600})", 0));
+        require(actions.size() == 2 && actions.front().kind == ProtocolActionKind::PublishParsed, "timed report was not published");
+        require(actions.front().parsed.occurredAtMs == (payloadTime ? 1767225600000LL : 1000LL), "data time selection did not control telemetry timestamp");
+        require(actions.front().parsed.observedAtMs == 1000, "data time changed reception timestamp");
+    }
+}
+
 void testFailuresAndKeepAlive() {
     Fixture fixture;
     fixture.start();
@@ -469,6 +484,7 @@ int main() {
         testConfiguredCommandResponses();
         testFramingAndRouting();
         testQos2AndCommand();
+        testDataTimeSelection();
         testFailuresAndKeepAlive();
         testBatchPathsAndRetries();
         testTextAndBinaryCommands();

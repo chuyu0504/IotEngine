@@ -182,6 +182,7 @@ function mqttReportMappings(
     const value = parseMqttTemplate(text, 'reportTemplate');
     const points = new Map<string, string>();
     let deviceCodeField: string | undefined;
+    let timeField: string | undefined;
     visitMqttTemplate(value, (marker, path) => {
         const name = mqttPointPlaceholder(marker, 'reportTemplate', path);
         if (name !== undefined) {
@@ -192,13 +193,30 @@ function mqttReportMappings(
             if (deviceCodeField)
                 mqttTemplateError('reportTemplate', path, '设备标识固有属性只能出现一次');
             deviceCodeField = path;
+        } else if (marker === '$time') {
+            if (timeField) mqttTemplateError('reportTemplate', path, '$time 只能出现一次');
+            timeField = path;
         } else if (marker.startsWith('$param:') && propertyNames.has(marker.slice(7))) {
             // 其他固有属性只描述固定字段，不从上报覆盖设备值。
         } else if (marker.startsWith('$')) {
             mqttTemplateError('reportTemplate', path, `未知占位符：${marker}`);
         }
     });
-    return { points, deviceCodeField };
+    return { points, deviceCodeField, timeField };
+}
+
+function mqttTimeField(
+    source: 'payload' | 'received' | undefined,
+    marker: string | undefined,
+    field?: string
+) {
+    if (source === 'received' && (marker || field))
+        throw new Error('数据时间选择“以上报时间为准”时，不能配置 $time 或时间字段路径');
+    if (source === 'payload' && !marker)
+        throw new Error('数据时间选择 $time 时，上报模板必须包含一个完整的 "$time"');
+    if (marker && field && marker !== mqttCanonicalField(field))
+        throw new Error('$time 所在位置与保存的时间字段不一致');
+    return marker ?? (field ? mqttCanonicalField(field) : '');
 }
 
 function mqttCommandReferences(text: string, names: ReadonlySet<string>) {
@@ -272,6 +290,7 @@ export const mqttConfigSchema = z
                     identitySource: z.enum(['bound', 'payload', 'topic']).optional(),
                     topicDeviceSegment: z.number().int().min(0).optional(),
                     timeField: mqttPathSchema.optional(),
+                    timeSource: z.enum(['payload', 'received']).optional(),
                     timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
                 })
             )
@@ -294,6 +313,7 @@ export const mqttConfigSchema = z
         recordDelimiter: z.string().min(1).max(8).optional(),
         recordLength: z.number().int().min(0).max(1048576).optional(),
         timeField: mqttPathSchema.optional(),
+        timeSource: z.enum(['payload', 'received']).optional(),
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
@@ -453,11 +473,35 @@ export const mqttConfigSchema = z
         if (config.reportTemplate !== undefined) {
             if (format !== 'json') issue(['reportTemplate'], '上报模板仅用于 JSON');
             try {
-                mqttReportMappings(config.reportTemplate, config.identityProperty, parameterNames);
+                const report = mqttReportMappings(
+                    config.reportTemplate,
+                    config.identityProperty,
+                    parameterNames
+                );
+                mqttTimeField(config.timeSource, report.timeField, config.timeField);
             } catch (error) {
                 issue(['reportTemplate'], (error as Error).message);
             }
         }
+        if (!config.reportTemplate) {
+            try {
+                mqttTimeField(config.timeSource, undefined, config.timeField);
+            } catch (error) {
+                issue(['timeSource'], (error as Error).message);
+            }
+        }
+        config.reports?.forEach((report, index) => {
+            try {
+                const mapping = mqttReportMappings(
+                    report.reportTemplate,
+                    config.identityProperty,
+                    parameterNames
+                );
+                mqttTimeField(report.timeSource, mapping.timeField, report.timeField);
+            } catch (error) {
+                issue(['reports', index, 'reportTemplate'], (error as Error).message);
+            }
+        });
         if (config.commandTemplate) {
             if (format !== 'json') issue(['commandTemplate'], '指令模板仅用于 JSON');
             try {
@@ -652,6 +696,51 @@ function mqttCanonicalField(field: string): string {
     return field;
 }
 
+// 旧配置的时间选择器已经确定字段位置；只替换该 token，保留其他 JSON 原文。
+function mqttRestoreTimeMarker(template: string, field: string): string {
+    const path = mqttCanonicalField(field);
+    const spans = new Map<string, [number, number]>();
+    const root = parseJson(template, (parts, start, end) => {
+        spans.set(parts.length ? mqttPointer(parts) : '', [start, end]);
+    });
+    const parts = path
+        .slice(1)
+        .split('/')
+        .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+    let current = root;
+    for (let index = 0; index < parts.length; index++) {
+        const part = parts[index];
+        if (!current || typeof current !== 'object')
+            throw new Error(`时间字段 ${field} 与现有模板结构冲突`);
+        if (!Object.hasOwn(current, part)) {
+            if (
+                Array.isArray(current) ||
+                parts.slice(index).some((key) => /^(0|[1-9]\d*)$/.test(key))
+            )
+                throw new Error(`时间字段 ${field} 无法安全恢复`);
+            let value = JSON.stringify('$time');
+            for (let next = parts.length - 1; next > index; next--)
+                value = `{${JSON.stringify(parts[next])}:${value}}`;
+            const parent = index ? mqttPointer(parts.slice(0, index)) : '';
+            const span = spans.get(parent);
+            if (!span) throw new Error(`时间字段 ${field} 无法安全恢复`);
+            const end = span[1] - 1;
+            return formatJson(
+                `${template.slice(0, end)}${Object.keys(current).length ? ',' : ''}${JSON.stringify(part)}:${value}${template.slice(end)}`
+            );
+        }
+        current = (current as Record<string, MqttJson>)[part];
+    }
+    if (
+        (typeof current === 'object' && current !== null) ||
+        (typeof current === 'string' && current.startsWith('$') && current !== '$time')
+    )
+        throw new Error(`时间字段 ${field} 与现有模板映射冲突`);
+    const span = spans.get(path);
+    if (!span) throw new Error(`时间字段 ${field} 无法安全恢复`);
+    return template.slice(0, span[0]) + JSON.stringify('$time') + template.slice(span[1]);
+}
+
 function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
     const identifier = draft.parameters?.find(
         (property) => property.name === draft.identityProperty
@@ -663,6 +752,8 @@ function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
         draft.identityProperty,
         new Set(draft.parameters?.map((property) => property.name))
     );
+    const timeSource = draft.timeSource ?? (report.timeField ? 'payload' : 'received');
+    const timeField = mqttTimeField(timeSource, report.timeField);
     const attributeNames = new Set(draft.points.map((point) => point.name));
     for (const name of report.points.keys()) {
         if (!attributeNames.has(name)) throw new Error(`reportTemplate: 请先定义属性：${name}`);
@@ -727,7 +818,8 @@ function compileMqttReport(draft: MqttTemplateDraft): MqttConfig {
         topicDeviceSegment: 0,
         recordsPath: '',
         deviceCodeField: report.deviceCodeField ?? '',
-        timeField: draft.timeField ?? '',
+        timeField,
+        timeSource,
         ...(draft.timeFormat ? { timeFormat: draft.timeFormat } : {}),
         commandTopic: commandTopic ?? '',
         commandTemplate: commandTemplate ?? '',
@@ -782,7 +874,13 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
         names.add(report.name.trim());
         topics.add(report.topic);
         try {
-            const config = compileMqttReport({ ...draft, reports: undefined, ...report });
+            const config = compileMqttReport({
+                ...draft,
+                reports: undefined,
+                ...report,
+                timeSource: report.timeSource,
+                timeFormat: report.timeFormat,
+            });
             if (!config.points.some((point) => point.field))
                 throw new Error('每条上报消息至少绑定一个属性');
             return config;
@@ -807,6 +905,7 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
             identitySource: config.identitySource,
             topicDeviceSegment: config.topicDeviceSegment,
             timeField: config.timeField,
+            timeSource: config.timeSource,
             timeFormat: config.timeFormat,
         })),
     };
@@ -819,6 +918,12 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
                 ...config,
                 reports: undefined,
                 ...report,
+                timeField: report.timeField ?? '',
+                timeSource: report.timeSource,
+                timeFormat: report.timeFormat,
+                deviceCodeField: report.deviceCodeField ?? '',
+                identitySource: report.identitySource,
+                topicDeviceSegment: report.topicDeviceSegment,
                 points: config.points.map((point) => ({
                     ...point,
                     field:
@@ -832,7 +937,7 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
                 reportTemplate: single.reportTemplate,
                 qos: single.qos,
                 timeFormat: single.timeFormat,
-                timeField: single.timeField,
+                timeSource: single.timeSource,
             };
         });
         if (!reports.length) throw new Error('上报消息不能为空');
@@ -891,19 +996,39 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
                     mqttCanonicalField(point.field) === mqttCanonicalField(config.timeField ?? '')
             )
         )
-            insert(config.timeField, 0);
+            insert(config.timeField, '$time');
         config.points.forEach((point) => {
             if (point.field) insert(point.field, `$point:${point.name}`);
         });
         reportTemplate = JSON.stringify(root, null, 2);
     }
+    if (config.timeSource === undefined && config.timeField) {
+        try {
+            const mapping = mqttReportMappings(
+                reportTemplate,
+                config.identityProperty,
+                new Set(config.parameters?.map((property) => property.name))
+            );
+            if (!mapping.timeField)
+                reportTemplate = mqttRestoreTimeMarker(reportTemplate, config.timeField);
+        } catch (error) {
+            return unsupported((error as Error).message);
+        }
+    }
+    const timeMapping = mqttReportMappings(
+        reportTemplate,
+        config.identityProperty,
+        new Set(config.parameters?.map((property) => property.name))
+    );
     const draft: MqttTemplateDraft = {
         ...(config.parameters !== undefined
             ? { parameters: config.parameters.map((parameter) => ({ ...parameter })) }
             : {}),
         topic,
         identityProperty: config.identityProperty,
-        timeField: config.timeField,
+        timeSource:
+            config.timeSource ??
+            (config.timeField || timeMapping.timeField ? 'payload' : 'received'),
         ...(config.derivedPoints ? { derivedPoints: config.derivedPoints } : {}),
         ...(config.pointVisibility ? { pointVisibility: config.pointVisibility } : {}),
         reportTemplate,
@@ -938,7 +1063,10 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         compiled.identitySource !== expectedIdentity ||
         compiled.deviceCodeField !==
             (config.deviceCodeField ? mqttCanonicalField(config.deviceCodeField) : '') ||
-        compiled.timeField !== (config.timeField ? mqttCanonicalField(config.timeField) : '')
+        compiled.timeField !==
+            (config.timeField
+                ? mqttCanonicalField(config.timeField)
+                : (timeMapping.timeField ?? ''))
     )
         unsupported('上报模板与现有设备标识或时间字段不一致');
     if (

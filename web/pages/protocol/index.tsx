@@ -5439,7 +5439,7 @@ export function ExternalIoConfigPage() {
                                     .filter((channel) => channel.kind === selectedKind)
                                     .map((channel) => ({
                                         value: channel.channel,
-                                        label: channel.channel,
+                                        label: channel.channel.toUpperCase(),
                                     }))}
                             />
                         </Form.Item>
@@ -5465,6 +5465,7 @@ const MQTT_POINT_TYPES = [
 const EMPTY_MQTT_POINTS: MqttPoint[] = [];
 const EMPTY_MQTT_COMMANDS: MqttCommandMessage[] = [];
 const EMPTY_MQTT_PROPERTIES: NonNullable<MqttTemplateDraft['parameters']> = [];
+const EMPTY_MQTT_REPORTS: NonNullable<MqttTemplateDraft['reports']> = [];
 
 function MqttMessageInput({
     value = '',
@@ -5485,6 +5486,7 @@ function MqttMessageInput({
 }) {
     const selection = useRef<[number, number] | null>(null);
     const options = [
+        ...(report && !topic ? [{ label: '数据时间：$time', value: '"$time"' }] : []),
         ...properties
             .filter((property) => property.name.trim())
             .map((property) => ({
@@ -5565,6 +5567,8 @@ export function MqttConfigPage() {
         Form.useWatch('commands', { form, preserve: true }) ?? EMPTY_MQTT_COMMANDS;
     const properties: NonNullable<MqttTemplateDraft['parameters']> =
         Form.useWatch('parameters', { form, preserve: true }) ?? EMPTY_MQTT_PROPERTIES;
+    const reports: NonNullable<MqttTemplateDraft['reports']> =
+        Form.useWatch('reports', { form, preserve: true }) ?? EMPTY_MQTT_REPORTS;
     const [formError, setFormError] = useState('');
     const [sampleTopic, setSampleTopic] = useState('');
     const [sampleCode, setSampleCode] = useState('');
@@ -5612,6 +5616,7 @@ export function MqttConfigPage() {
                       parameters: [],
                       commands: [],
                       storagePolicy: 'report',
+                      timeSource: 'received',
                       timeFormat: 'unix_ms',
                       qos: 1,
                       points: [],
@@ -5664,7 +5669,7 @@ export function MqttConfigPage() {
                 reportTemplate: draft.reportTemplate,
                 qos: draft.qos,
                 timeFormat: draft.timeFormat,
-                timeField: draft.timeField,
+                timeSource: draft.timeSource,
             },
         ];
         invalidatePreview();
@@ -6340,9 +6345,15 @@ export function MqttConfigPage() {
                                                                                 'timeFormat',
                                                                             ]}
                                                                             label="设备时间格式"
-                                                                            extra="未配置时间字段路径时，使用接收时间。"
                                                                         >
                                                                             <Select
+                                                                                disabled={
+                                                                                    reports[
+                                                                                        field.name
+                                                                                    ]
+                                                                                        ?.timeSource !==
+                                                                                    'payload'
+                                                                                }
                                                                                 options={[
                                                                                     {
                                                                                         value: 'unix_ms',
@@ -6363,12 +6374,32 @@ export function MqttConfigPage() {
                                                                     <Form.Item
                                                                         name={[
                                                                             field.name,
-                                                                            'timeField',
+                                                                            'timeSource',
                                                                         ]}
-                                                                        label="时间字段路径（可选）"
-                                                                        extra="填写消息中由你定义的时间字段，例如 /timestamp。"
+                                                                        label="数据时间"
+                                                                        rules={[
+                                                                            {
+                                                                                required: true,
+                                                                                message:
+                                                                                    '请选择数据时间',
+                                                                            },
+                                                                        ]}
+                                                                        extra={
+                                                                            '选择 $time 时，上报模板必须包含且只能包含一个完整的 "$time"。'
+                                                                        }
                                                                     >
-                                                                        <Input placeholder="JSON Pointer，例如 /timestamp" />
+                                                                        <Select
+                                                                            options={[
+                                                                                {
+                                                                                    value: 'payload',
+                                                                                    label: '$time',
+                                                                                },
+                                                                                {
+                                                                                    value: 'received',
+                                                                                    label: '以上报时间为准',
+                                                                                },
+                                                                            ]}
+                                                                        />
                                                                     </Form.Item>
                                                                     <Form.Item
                                                                         name={[
@@ -6399,6 +6430,7 @@ export function MqttConfigPage() {
                                                                         reportTemplate: '{}',
                                                                         qos: 1,
                                                                         timeFormat: 'unix_ms',
+                                                                        timeSource: 'received',
                                                                     })
                                                                 }
                                                             >

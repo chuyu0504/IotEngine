@@ -45,6 +45,30 @@ void testFormatsAndTime() {
     require(topicResult.get<"records">()[0].get<"deviceCode">().view() == "D002", "topic identity failed");
 }
 
+void testDataTimeSelection() {
+    const auto templ = service::utils::jsonQuoted(R"({"temperature":"$point:温度","a/b":{"~clock":["$time"]}})");
+    const auto timed = configuration("\"timeSource\":\"payload\",\"timeFormat\":\"unix_s\",\"reportTemplate\":" + templ + ",", "");
+    const auto result = preview(timed, "devices", R"({"temperature":8,"a/b":{"~clock":[1767225600]}})", "D001");
+    require(result.get<"records">().front().get<"time">().view() == "2026-01-01T00:00:00Z", "$time path was not derived for preview");
+    const auto bare = configuration("\"timeSource\":\"payload\",\"timeField\":\"clock\",\"reportTemplate\":" + service::utils::jsonQuoted(R"({"temperature":"$point:温度","clock":"$time"})") + ",", "");
+    (void)preview(bare, "devices", R"({"temperature":8,"clock":1767225600000})", "D001");
+    for (const auto& invalid : {
+             configuration(R"("timeSource":"payload","timeField":"clock",)", ""),
+             configuration(R"("timeSource":"received","timeField":"clock",)", ""),
+             configuration("\"timeSource\":\"received\",\"reportTemplate\":" + templ + ",", ""),
+             configuration("\"timeSource\":\"payload\",\"timeField\":\"wrong\",\"reportTemplate\":" + templ + ",", ""),
+             configuration("\"timeSource\":\"payload\",\"reportTemplate\":" + service::utils::jsonQuoted(R"({"temperature":"$point:温度"})") + ",", ""),
+             configuration(R"("timeSource":"invalid",)", "") }) {
+        bool rejected = false;
+        try {
+            (void)preview(invalid, "devices", R"({"temperature":8})", "D001");
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        require(rejected, "inconsistent data time selection was accepted");
+    }
+}
+
 void testRejectedConfiguration() {
     for (const auto config : {
              configuration(R"("identitySource":"payload",)", ""),
@@ -235,7 +259,7 @@ void testMultipleReports() {
     };
     const auto first = report("00000000-0000-4000-8000-000000000002", "温度", "devices/{param:serial}/temperature", "/value");
     const auto second = report("00000000-0000-4000-8000-000000000003", "另一映射", "devices/{param:serial}/alternate", "/value");
-    const auto config = configuration("\"reports\":[" + first + ',' + second + "],", "");
+    const auto config = configuration("\"timeSource\":\"payload\",\"timeField\":\"ignored-root-clock\",\"reports\":[" + first + ',' + second + "],", "");
     const auto value = preview(config, "devices/D001/alternate", R"({"value":42})", "D001");
     require(value.get<"records">().size() == 1 && value.get<"records">()[0].get<"points">()[0].get<"value">().view() == "42", "preview did not select second report");
     for (const auto& bad : { configuration("\"reports\":[],", ""), configuration("\"reports\":[" + first + ',' + first + "],", ""), configuration("\"reports\":[" + first + ',' + report("00000000-0000-4000-8000-000000000003", "重叠", "devices/+/temperature", "/value") + "],", "") }) {
@@ -254,6 +278,7 @@ int main() {
     try {
         testMultipleReports();
         testFormatsAndTime();
+        testDataTimeSelection();
         testRejectedConfiguration();
         testTemplates();
         testMultipleControlMessages();

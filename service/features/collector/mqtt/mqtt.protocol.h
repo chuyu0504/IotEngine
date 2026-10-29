@@ -178,6 +178,9 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             }
             const auto compileTemplate = [&](std::string_view input, bool report = false, const std::set<std::string, std::less<>>& required = {}) {
                 service::utils::JsonValueTemplate::Tokens allowed, sparse;
+                if (report) {
+                    allowed.insert("$time");
+                }
                 for (const auto& [token, value] : subscription.parameters) {
                     allowed.insert(token);
                 }

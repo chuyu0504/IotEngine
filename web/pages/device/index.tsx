@@ -1053,7 +1053,11 @@ export function DeviceFormModal({
                                     columns={[
                                         { title: '点位', dataIndex: 'name' },
                                         { title: '类型', dataIndex: 'kind' },
-                                        { title: '方案通道', dataIndex: 'channel' },
+                                        {
+                                            title: '方案通道',
+                                            dataIndex: 'channel',
+                                            render: (channel: string) => channel.toUpperCase(),
+                                        },
                                     ]}
                                 />
                             )}

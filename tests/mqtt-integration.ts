@@ -205,8 +205,8 @@ try {
         qos: 1,
         derivedPoints: [{id:derived,name:'温度换算',kind:'expression',valueType:'number',expression:'x * 0.1 - 1',inputs:[{alias:'x',pointId:point}],unit:'℃',unitMode:'fixed',maxAgeSeconds:300,visible:true}],
         reports: [
-            {id:crypto.randomUUID(),name:'测量',topic:'factory/telemetry',qos:1,recordsPath:'/devices',identitySource:'payload',deviceCodeField:'/code',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"code":"$param:serial","time":"0","metrics":{"temperature":"$point:温度"}}',pointFields:[{pointId:point,field:'/metrics/temperature'}]},
-            {id:crypto.randomUUID(),name:'状态',topic:'factory/state',qos:1,identitySource:'payload',deviceCodeField:'/device',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"device":"$param:serial","time":"0","state":{"enabled":"$point:开关"}}',pointFields:[{pointId:enabledPoint,field:'/state/enabled'}]},
+            {id:crypto.randomUUID(),name:'测量',topic:'factory/telemetry',qos:1,recordsPath:'/devices',identitySource:'payload',deviceCodeField:'/code',timeSource:'payload',timeFormat:'unix_ms',reportTemplate:'{"code":"$param:serial","time":"$time","metrics":{"temperature":"$point:温度"}}',pointFields:[{pointId:point,field:'/metrics/temperature'}]},
+            {id:crypto.randomUUID(),name:'状态',topic:'factory/state',qos:1,identitySource:'payload',deviceCodeField:'/device',timeSource:'payload',timeFormat:'unix_ms',reportTemplate:'{"device":"$param:serial","time":"$time","state":{"enabled":"$point:开关"}}',pointFields:[{pointId:enabledPoint,field:'/state/enabled'}]},
         ],
         points: [
             {
@@ -237,6 +237,15 @@ try {
         ).status,
         401
     );
+    for (const invalid of [
+        {timeSource:'payload',reportTemplate:'{"code":"$param:serial","metrics":{"temperature":"$point:温度"}}'},
+        {timeSource:'received'},
+        {timeSource:'payload',timeField:'/wrong'},
+        {timeSource:'payload',reportTemplate:'{"code":"$param:serial","a":"$time","b":"$time","metrics":{"temperature":"$point:温度"}}'},
+    ]) {
+        const rejected = await http('POST','/v1/protocol/configs',{protocol:'MQTT',name:`${name}-invalid-time`,config:{...config,reports:[{...config.reports[0],...invalid}]}});
+        assert.equal(rejected.status,400,'inconsistent data time selection must fail before saving');
+    }
     const preview = await ok('POST', '/v1/protocol/configs/preview-mqtt', {
         config,
         topic: 'factory/telemetry',

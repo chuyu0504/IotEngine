@@ -585,6 +585,9 @@ class ProtocolService {
             }
             const auto validateTemplate = [&](std::string_view input, bool report = false) {
                 service::utils::JsonValueTemplate::Tokens allowed, sparse;
+                if (report) {
+                    allowed.insert("$time");
+                }
                 for (const auto& property : *definitions) {
                     allowed.insert("$param:" + std::string(property.get<"name">().view()));
                 }
@@ -712,6 +715,7 @@ class ProtocolService {
                 }
                 validateTemplate(value->view(), true);
             }
+            (void)service::common::mqttReportTimeField(typed);
         } catch (const std::invalid_argument& error) {
             service::common::fail(16004, error.what(), 400);
         }

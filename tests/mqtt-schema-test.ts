@@ -233,9 +233,8 @@ function templateDraft(overrides: Partial<MqttTemplateDraft> = {}): MqttTemplate
     return {
         identityProperty: 'serial',
         parameters: [{ name: 'serial', dataType: 'STRING' }],
-        timeField: '/time',
         topic: 'devices/{param:serial}/telemetry',
-        reportTemplate: '{"device":"$param:serial","time":"0","metrics":{"temperature":"$point:温度"}}',
+        reportTemplate: '{"device":"$param:serial","time":"$time","metrics":{"temperature":"$point:温度"}}',
         qos: 1,
         storagePolicy: 'report',
         timeFormat: 'unix_ms',
@@ -249,7 +248,7 @@ test('MQTT template compilation escapes paths, preserves constants and supports 
         'a/b': { 'x~y': ['$point:温度', 42, true, null, 'cost $5'] },
         literal: { action: 'report', version: 1 },
         device: '$param:serial',
-        time: '0',
+        time: '$time',
     }, null, 2);
     const compiled = compileMqttTemplate(templateDraft({ reportTemplate }));
     expect(compiled.points[0]).toEqual({ ...point, field: '/a~1b/x~0y/0', writable: false });
@@ -427,12 +426,13 @@ test('MQTT template drafts roundtrip metadata and remove stale commands cleanly'
     expect(cleared.topicDeviceSegment).toBe(0);
     const clearedSelectors = compileMqttTemplate({
         ...draft,
+        timeSource: 'received',
         reportTemplate: '{"value":"$point:温度"}',
         commandTopic: '',
         commandTemplate: '',
     });
     expect(clearedSelectors.deviceCodeField).toBe('');
-    expect(clearedSelectors.timeField).toBe('/time');
+    expect(clearedSelectors.timeField).toBe('');
     expect(clearedSelectors.identitySource).toBe('bound');
     expect(cleared.points[0].writable).toBe(false);
     expect(compileMqttTemplate(mqttTemplateDraft(cleared))).toEqual(cleared);
@@ -447,7 +447,7 @@ test('MQTT legacy JSON drafts reconstruct escaped literal fields and explicit to
     });
     expect(draft.topic).toBe('devices/{param:serial}/telemetry');
     expect(JSON.parse(draft.reportTemplate)).toEqual({
-        meta: { time: 0 },
+        meta: { time: '$time' },
         'literal.name/with~escape': '$point:温度',
     });
     const compiled = compileMqttTemplate(draft);
@@ -585,11 +585,55 @@ test('an untouched empty field preserves an existing explicit null',()=>{expect(
 
 test('clearing an individual JSON parameter removes its null value',()=>{expect(deviceParameterValues([{name:'value',dataType:'JSON'}],{value:''},{value:null})).toEqual({});});
 
+test('MQTT data time selection validates markers and derives escaped nested paths', () => {
+    const draft = templateDraft({ timeSource: 'payload', reportTemplate: '{"a/b":{"~clock":["$time"]},"value":"$point:温度"}' });
+    const compiled = compileMqttTemplate(draft);
+    expect(compiled.timeField).toBe('/a~1b/~0clock/0');
+    expect(compiled.timeSource).toBe('payload');
+    expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
+    for (const reportTemplate of ['{"value":"$point:温度"}', '{"a":"$time","b":"$time","value":"$point:温度"}', '{"clock":"prefix $time","value":"$point:温度"}'])
+        expect(() => compileMqttTemplate({...draft, reportTemplate})).toThrow();
+    expect(() => compileMqttTemplate({...draft, timeSource:'received'})).toThrow('以上报时间为准');
+    const received = compileMqttTemplate({...draft, timeSource:'received', reportTemplate:'{"clock":123,"value":"$point:温度"}'});
+    expect(received.timeField).toBe('');
+    expect(received.timeSource).toBe('received');
+    expect(mqttConfigSchema.safeParse({...compiled, timeField:'/other'}).success).toBe(false);
+    expect(mqttConfigSchema.safeParse({...received, timeField:'/clock'}).success).toBe(false);
+    expect(mqttConfigSchema.safeParse({...received, timeSource:'payload', reportTemplate:undefined, timeField:'/clock'}).success).toBe(false);
+});
+
+test('MQTT legacy time fields reopen without losing raw constants or per-report isolation', () => {
+    const base = compileMqttTemplate(templateDraft());
+    const original = '{"clock":0,"counter":9007199254740993,"tiny":1.234e-20,"value":"$point:温度","raw":"\\u4e2d"}';
+    const legacy = {...base, deviceCodeField:'', reportTemplate:original, timeSource:undefined, timeField:'clock', points:[{...base.points[0],field:'/value'}]};
+    const draft = mqttTemplateDraft(legacy);
+    expect(draft.timeSource).toBe('payload');
+    expect(draft.reportTemplate).toBe(original.replace('"clock":0','"clock":"$time"'));
+    expect(compileMqttTemplate(draft).timeField).toBe('/clock');
+    const missing = mqttTemplateDraft({...legacy,timeField:'/nested/sample'});
+    expect(missing.reportTemplate).toContain('9007199254740993');
+    expect(JSON.parse(missing.reportTemplate).nested.sample).toBe('$time');
+    const array = mqttTemplateDraft({...legacy,timeField:'/a~1b/0',reportTemplate:'{"a/b":[0],"value":"$point:温度"}'});
+    expect(compileMqttTemplate(array).timeField).toBe('/a~1b/0');
+    expect(() => mqttTemplateDraft({...legacy,timeField:'/value'})).toThrow('映射冲突');
+    const compiled = compileMqttTemplate({...templateDraft(), reports:[
+        {id:crypto.randomUUID(),name:'设备时间',topic:'devices/{param:serial}/a',reportTemplate:'{"clock":"$time","value":"$point:温度"}',timeSource:'payload',timeFormat:'iso8601'},
+        {id:crypto.randomUUID(),name:'上报时间',topic:'devices/{param:serial}/b',reportTemplate:'{"value":"$point:温度"}',timeSource:'received'},
+    ]});
+    const reports = compiled.reports;
+    if (!reports) throw new Error('missing reports');
+    expect(reports[1].timeFormat).toBeUndefined();
+    const stored = {...compiled,reports:[reports[0],{...reports[1],timeField:undefined,timeSource:undefined,deviceCodeField:undefined,identitySource:undefined,topicDeviceSegment:undefined}]};
+    const reopened = mqttTemplateDraft(stored);
+    expect(reopened.reports?.map(report=>report.timeSource)).toEqual(['payload','received']);
+    expect(compileMqttTemplate(reopened)).toEqual(compiled);
+});
+
 test('MQTT identifiers and every template reference are defined by the user', () => {
     const draft = templateDraft({
         identityProperty:'硬件序列号', parameters:[{name:'硬件序列号',dataType:'STRING'}],
-        topic:'factory/up', reportTemplate:'{"my_identifier":"$param:硬件序列号","my_clock":0,"reading":"$point:温度"}',
-        timeField:'/my_clock',
+        topic:'factory/up', reportTemplate:'{"my_identifier":"$param:硬件序列号","my_clock":"$time","reading":"$point:温度"}',
+        timeSource:'payload',
     });
     const compiled=compileMqttTemplate(draft);
     expect(compiled.deviceCodeField).toBe('/my_identifier');
@@ -599,10 +643,11 @@ test('MQTT identifiers and every template reference are defined by the user', ()
     expect(()=>compileMqttTemplate({...draft,identityProperty:undefined})).toThrow('设备标识符');
     expect(()=>compileMqttTemplate({...draft,parameters:[]})).toThrow('设备标识符');
     expect(()=>compileMqttTemplate({...draft,parameters:[{name:'硬件序列号',dataType:'DOUBLE'}]})).toThrow('文本类型');
-    for(const token of ['$deviceCode','$deviceId','$commandId','$time','$values']) {
+    for(const token of ['$deviceCode','$deviceId','$commandId','$values']) {
         expect(()=>compileMqttTemplate({...draft,reportTemplate:JSON.stringify({value:token})})).toThrow('未知占位符');
         expect(()=>compileMqttTemplate({...draft,commandTopic:'factory/down',commandTemplate:JSON.stringify({value:token,reading:'$point:温度'})})).toThrow('未知占位符');
     }
+    expect(()=>compileMqttTemplate({...draft,commandTopic:'factory/down',commandTemplate:'{"clock":"$time","reading":"$point:温度"}'})).toThrow('未知占位符');
     expect(()=>compileMqttTemplate({...draft,topic:'factory/{deviceCode}'})).toThrow('用户定义');
     expect(()=>compileMqttTemplate({...draft,commandTopic:'factory/down',commandTemplate:'{"value":"$param:未定义"}'})).toThrow('未定义固有属性');
 });
