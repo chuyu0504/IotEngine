@@ -20,7 +20,7 @@
 
 namespace service::common {
 
-// MQTT 3.1.1 Topic 过滤器匹配；filter 中的 {deviceCode} 须已替换。
+// MQTT 3.1.1 Topic 过滤器匹配；filter 中的固有属性占位符须已展开。
 inline bool mqttTopicMatches(std::string_view filter, std::string_view topic) {
     if (topic.starts_with('$') && !filter.starts_with('$')) {
         return false;
@@ -38,12 +38,67 @@ inline bool mqttTopicMatches(std::string_view filter, std::string_view topic) {
     return index == levels.size();
 }
 
-inline bool mqttReportTopicMatches(std::string filter, std::string_view topic, std::string_view code) {
-    constexpr std::string_view marker = "{deviceCode}";
-    for (auto index = filter.find(marker); index != std::string::npos; index = filter.find(marker, index + code.size())) {
-        filter.replace(index, marker.size(), code);
+inline std::string mqttDeviceIdentifier(std::string_view name, const ruvia::json_value& properties) {
+    const auto value = properties.get<ruvia::string>(name);
+    if (name.empty() || !value || value->view().empty()) {
+        throw std::invalid_argument("设备标识固有属性不能为空: " + std::string(name));
     }
-    return mqttTopicMatches(filter, topic);
+    return std::string(value->view());
+}
+
+inline std::string mqttPropertyTopic(std::string_view topic, const ruvia::json_value& properties, bool controlPoints = false) {
+    std::string result;
+    bool first = true;
+    for (const auto level : utils::splitPayload(topic, "/")) {
+        if (!first) {
+            result += '/';
+        }
+        first = false;
+        if (level.starts_with("{param:") && level.ends_with('}')) {
+            const auto name = level.substr(7, level.size() - 8);
+            const auto value = properties.get<ruvia::json_value>(name);
+            std::optional<utils::PayloadScalar> scalar;
+            if (value) {
+                if (const auto text = value->get<ruvia::string>()) {
+                    scalar = std::string(text->view());
+                } else if (const auto number = value->get<ruvia::double_value>()) {
+                    scalar = number->value_;
+                } else if (const auto flag = value->get<ruvia::bool_value>()) {
+                    scalar = flag->value_;
+                }
+            }
+            if (!scalar) {
+                throw std::invalid_argument("Topic 固有属性缺失或不是标量: " + std::string(name));
+            }
+            const auto text = utils::payloadScalarText(*scalar);
+            if (text.empty() || text.find_first_of("/+#\0", 0, 4) != std::string::npos) {
+                throw std::invalid_argument("Topic 固有属性值无效: " + std::string(name));
+            }
+            result += text;
+        } else {
+            if (level.find_first_of("{}") != std::string_view::npos && !(controlPoints && level.starts_with("{point:") && level.ends_with('}'))) {
+                throw std::invalid_argument("Topic 只能引用用户定义的属性，且须独占一层");
+            }
+            result += level;
+        }
+    }
+    if (result.size() > 1024) {
+        throw std::invalid_argument("Topic 超过 1024 字节");
+    }
+    return result;
+}
+
+inline bool mqttReportTopicMatches(std::string_view filter, std::string_view topic, std::string_view code, std::string_view identityProperty = {}) {
+    std::string expanded;
+    bool first = true;
+    for (const auto level : utils::splitPayload(filter, "/")) {
+        if (!first) {
+            expanded += '/';
+        }
+        first = false;
+        expanded += level.starts_with("{param:") && level.ends_with('}') ? (code.empty() || level.substr(7, level.size() - 8) != identityProperty ? "+" : code) : level;
+    }
+    return mqttTopicMatches(expanded, topic);
 }
 
 inline bool mqttReportTopicsOverlap(std::string_view left, std::string_view right) {
@@ -52,7 +107,7 @@ inline bool mqttReportTopicsOverlap(std::string_view left, std::string_view righ
         if (a[index] == "#" || b[index] == "#") {
             return true;
         }
-        if (a[index] != b[index] && a[index] != "+" && b[index] != "+" && a[index] != "{deviceCode}" && b[index] != "{deviceCode}") {
+        if (a[index] != b[index] && a[index] != "+" && b[index] != "+" && !a[index].starts_with("{param:") && !b[index].starts_with("{param:")) {
             return false;
         }
     }

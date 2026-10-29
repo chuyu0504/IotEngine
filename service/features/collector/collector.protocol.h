@@ -556,7 +556,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device, std::span<const C
             if (mqttMessageId.empty() || selected == commands->end()) {
                 throw std::invalid_argument("command_invalid: 请选择有效的 MQTT 控制消息");
             }
-            service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", "$deviceId", "$commandId" };
+            service::utils::JsonValueTemplate::Tokens allowed;
             for (const auto& point : config.get<"points">()) {
                 allowed.emplace("$point:" + std::string(point.get<"name">().view()));
             }

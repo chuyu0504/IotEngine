@@ -18,7 +18,13 @@ export interface ExternalIoPoint {
 }
 
 export interface ExternalIoConfig extends DeviceTypeTimingConfig {
+    edgeNodeModel?: string;
     points: ExternalIoPoint[];
+}
+
+export interface ExternalIoHardwareModel {
+    model: string;
+    channels: { channel: string; kind: ExternalIoPoint['kind']; controllable: boolean }[];
 }
 
 export interface DeviceParameterDefinition {
@@ -35,6 +41,7 @@ export interface MqttPoint {
     enumValues?: { input: string; output: string }[];
 }
 export interface MqttConfig extends DeviceTypeTimingConfig {
+    identityProperty: string;
     reports?: MqttReportMessage[];
     storagePolicy: 'report' | 'change';
     topic: string;
@@ -87,8 +94,10 @@ export interface MqttTemplateDraft
     extends Pick<DeviceTypeTimingConfig, 'derivedPoints' | 'pointVisibility' | 'parameters'> {
     reports?: Pick<
         MqttReportMessage,
-        'id' | 'name' | 'topic' | 'reportTemplate' | 'qos' | 'timeFormat'
+        'id' | 'name' | 'topic' | 'reportTemplate' | 'qos' | 'timeFormat' | 'timeField'
     >[];
+    identityProperty?: string;
+    timeField?: string;
     topic: string;
     reportTemplate: string;
     commandTopic?: string;
@@ -424,6 +433,7 @@ export interface ProtocolConfigItem {
 export interface ProtocolConfigOption {
     id: string;
     name: string;
+    identityProperty?: string;
     parameters?: DeviceParameterDefinition[];
 }
 /** 协议配置查询参数 */

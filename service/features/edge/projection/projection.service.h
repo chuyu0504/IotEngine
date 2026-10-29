@@ -679,6 +679,9 @@ class ProjectionService final {
             case pb::Envelope::kCapabilityReport:
                 co_await saveCapabilities(context, workerIndex, nodeId, envelope.capability_report());
                 break;
+            case pb::Envelope::kExternalIoStatus:
+                co_await saveIoState(context, nodeId, envelope.session_epoch(), envelope.sequence(), envelope.external_io_status());
+                break;
             case pb::Envelope::kNetworkConfigResult:
                 co_await saveNetworkResult(context, nodeId, envelope.network_config_result());
                 break;
@@ -818,6 +821,10 @@ class ProjectionService final {
                 break;
             }
             case pb::Envelope::kCommandResult:
+                if (!envelope.command_result().node_io_channel().empty()) {
+                    co_await saveIoResult(context, nodeId, envelope.command_result());
+                    break;
+                }
                 if (envelope.command_result().device_id().size() == 16) {
                     const std::string deviceIds[]{ service::common::uuidText(envelope.command_result().device_id()) };
                     co_await ensureMetadata(context, catalog, nodeId, deviceIds);
@@ -910,7 +917,7 @@ class ProjectionService final {
         );
         const auto capability = query.call(
             "jsonb_build_object",
-            { jsonKey("networkConfig"), boolean(hello.supports_network_config()), jsonKey("firmwareUpdate"), boolean(hello.supports_firmware_update()), jsonKey("firmwareStream"), boolean(hello.supports_firmware_stream()), jsonKey("platformConfig"), boolean(hello.supports_platform_config()), jsonKey("deviceConfig"), boolean(hello.supports_device_config()), jsonKey("networkConfigVersion"), integer(hello.network_config_version()), jsonKey("modemControl"), boolean(hello.supports_modem_control()), jsonKey("commandStartBefore"), boolean(hello.supports_command_start_before()), jsonKey("supportsExternalIo"), boolean(hello.supports_external_io() && hello.supports_raw_telemetry()), jsonKey("externalIo"), query.cast(query.value(R"({"supported":false,"channels":[]})"), ruvia::db_data_type::jsonb), jsonKey("logs"), boolean(hello.supports_logs()), jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false), jsonKey("vpn"), vpn }
+            { jsonKey("nodeIoControl"), boolean(hello.supports_node_io() && hello.supports_external_io() && hello.supports_raw_telemetry()), jsonKey("networkConfig"), boolean(hello.supports_network_config()), jsonKey("firmwareUpdate"), boolean(hello.supports_firmware_update()), jsonKey("firmwareStream"), boolean(hello.supports_firmware_stream()), jsonKey("platformConfig"), boolean(hello.supports_platform_config()), jsonKey("deviceConfig"), boolean(hello.supports_device_config()), jsonKey("networkConfigVersion"), integer(hello.network_config_version()), jsonKey("modemControl"), boolean(hello.supports_modem_control()), jsonKey("commandStartBefore"), boolean(hello.supports_command_start_before()), jsonKey("supportsExternalIo"), boolean(hello.supports_external_io() && hello.supports_raw_telemetry()), jsonKey("externalIo"), query.cast(query.value(R"({"supported":false,"channels":[]})"), ruvia::db_data_type::jsonb), jsonKey("logs"), boolean(hello.supports_logs()), jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false), jsonKey("vpn"), vpn }
         );
         const auto signal = query.call(
             "jsonb_build_object",
@@ -2024,6 +2031,71 @@ class ProjectionService final {
     }
 
   private:
+    static ruvia::task<void> saveIoState(ruvia::web_worker_context& context, std::string_view nodeId, std::uint64_t epoch, std::uint64_t sequence, const pb::ExternalIoStatus& status) {
+        if (status.channels_size() > 15 || status.observed_at_ms() <= 0) {
+            throw std::runtime_error("invalid IO status");
+        }
+        const auto lease = co_await context.redis().get(service::message::edge::sessionKey(nodeId));
+        const auto session = lease ? session_state::parse(*lease) : std::nullopt;
+        if (!session || session->epoch != epoch) {
+            co_return;
+        }
+        service::message::edge::IoSnapshot snapshot(ruvia::model_options{ .resource_ = context.pool() });
+        ruvia::array<service::message::edge::IoChannelState> channels(ruvia::model_options{ .resource_ = context.pool() });
+        std::set<std::string> names;
+        for (const auto& channel : status.channels()) {
+            const auto kind = channel.kind() == pb::EXTERNAL_IO_DI ? "DI" : channel.kind() == pb::EXTERNAL_IO_DO ? "DO"
+                : channel.kind() == pb::EXTERNAL_IO_AI                                                           ? "AI"
+                                                                                                                 : "";
+            if (!*kind || channel.channel().empty() || channel.channel().size() > 16 || !names.insert(channel.channel()).second) {
+                throw std::runtime_error("invalid IO channel");
+            }
+            auto& row = channels.emplace_back(ruvia::model_options{ .resource_ = context.pool() });
+            row.set<"channel">(channel.channel()).set<"kind">(kind).set<"available">(channel.available()).set<"controllable">(channel.controllable() && channel.kind() == pb::EXTERNAL_IO_DO);
+            if (channel.available() && channel.has_value()) {
+                row.set<"value">(std::to_string(channel.value()));
+            }
+        }
+        snapshot.set<"channels">(std::move(channels));
+        const auto json = ruvia::to_json(snapshot);
+        const auto key = service::message::edge::ioStateKey(nodeId);
+        const auto leaseKey = service::message::edge::sessionKey(nodeId);
+        const auto topic = service::message::live::channel(context.worker_state<std::optional<service::common::WorkerIdentity>>().value().channels, service::message::live::topic::kEdgeIo);
+        const auto timestamp = std::to_string(status.observed_at_ms());
+        persistence::IoStateEntity stored(ruvia::model_options{ .resource_ = context.pool() });
+        stored.set<"sequence">(std::to_string(sequence)).set<"node_id">(nodeId).set<"session">(*lease).set<"observed_at_ms">(status.observed_at_ms()).set<"snapshot">(std::string_view(json.data(), json.size()));
+        const auto document = ruvia::to_json(stored);
+        const std::string_view keys[]{ key, leaseKey, topic };
+        const auto order = std::to_string(sequence);
+        const std::string_view args[]{ nodeId, *lease, timestamp, std::string_view(json.data(), json.size()), std::string_view(document.data(), document.size()), order };
+        (void)co_await context.redis().eval(persistence::kSaveIoStateScript, keys, args);
+    }
+
+    static ruvia::task<void> saveIoResult(ruvia::web_worker_context& context, std::string_view nodeId, const pb::CommandResult& result) {
+        if (result.command_id().size() != 16 || !result.device_id().empty() || !protocol::persistableCommandResult(result.state(), result.write_ack_missing())) {
+            throw std::runtime_error("invalid node IO result");
+        }
+        using Task = persistence::EdgeTaskEntity;
+        const auto id = service::common::uuidText(result.command_id());
+        std::string json;
+        if (!google::protobuf::util::MessageToJsonString(result, &json).ok()) {
+            throw std::runtime_error("cannot encode IO result");
+        }
+        ruvia::db_query query(context.pool());
+        auto update = context.db().repository<Task>().update_builder();
+        const auto state = protocol::commandResultDomainState(result.state(), result.write_ack_missing(), result.message());
+        update.set(Task::column_name<"status">(), query.value(result.write_ack_missing() ? "running" : state == "SUCCEEDED" ? "succeeded"
+                                                                                                                            : "failed"))
+            .set(Task::column_name<"result">(), query.cast(query.value(json), ruvia::db_data_type::jsonb))
+            .set(Task::column_name<"updated_at">(), query.call("now"))
+            .set(Task::column_name<"completed_at">(), result.write_ack_missing() ? query.null_value() : query.call("now"))
+            .where((Task::column<"id">() == id && Task::column<"node_id">() == nodeId && Task::column<"task_type">() == service::message::edge::kIoTaskType && Task::column<"status">() != std::string_view("succeeded") && Task::column<"status">() != std::string_view("failed")).expression(query))
+            .and_where(query.binary(config::detail::jsonText(query, Task::column<"request">().expression(query), "channel"), ruvia::db_binary_operator::equal, query.value(result.node_io_channel())))
+            .and_where(query.binary(Task::column<"result">().expression(query), ruvia::db_binary_operator::not_equal, query.cast(query.value(json), ruvia::db_data_type::jsonb)));
+        const auto changed = co_await update.execute();
+        (void)changed;
+    }
+
     static ruvia::task<void> saveCommandResult(ruvia::web_worker_context& context, const metadata::Catalog& catalog, std::string_view nodeId, std::int64_t receivedAtMs, const pb::CommandResult& result) {
         if (result.command_id().size() != 16 || result.device_id().size() != 16) {
             co_return;

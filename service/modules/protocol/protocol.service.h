@@ -51,6 +51,36 @@ namespace service::protocol {
 
 class ProtocolService {
   public:
+    static void validateMqttDeviceValues(const ruvia::json_value& config, const ruvia::json_value& values) {
+        const auto typed = ruvia::from_json<MqttConfig>(config.view());
+        (void)service::common::mqttDeviceIdentifier(typed.get<"identityProperty">().view(), values);
+        if (const auto& properties = typed.get<"parameters">()) {
+            for (const auto& property : *properties) {
+                const auto value = values.get<ruvia::json_value>(property.get<"name">().view());
+                if (value && !service::common::deviceParameterValueMatches(property.get<"dataType">().view(), *value)) {
+                    throw std::invalid_argument("固有属性类型不匹配: " + std::string(property.get<"name">().view()));
+                }
+            }
+        }
+        for (const auto& report : service::common::mqttReportConfigurations(config)) {
+            const auto parsed = ruvia::json_value::parse(std::string_view(report));
+            if (const auto topic = parsed.get<ruvia::string>("topic")) {
+                (void)service::common::mqttPropertyTopic(topic->view(), values);
+            }
+        }
+        if (const auto& topic = typed.get<"commandTopic">(); topic && !topic->view().empty()) {
+            (void)service::common::mqttPropertyTopic(topic->view(), values);
+        }
+        if (const auto& commands = typed.get<"commands">()) {
+            for (const auto& command : *commands) {
+                (void)service::common::mqttPropertyTopic(command.get<"topic">().view(), values, true);
+                if (const auto& response = command.get<"response">()) {
+                    (void)service::common::mqttPropertyTopic(response->get<"topic">().view(), values);
+                }
+            }
+        }
+    }
+
     // 校验协议配置。complete 为 false 时是 PATCH 片段：只校验出现的字段，MQTT 在合并后整体校验。
     // 字段约束在 protocol.types.h 的各协议 Model；这里只保留 Model 无法声明的规则：需原文案的必填、
     // 已退役字段、json_value 数字字段（保留指数与字符串写法）以及跨字段规则。
@@ -63,7 +93,7 @@ class ProtocolService {
                 service::common::fail(16004, "原生点位不支持倍率和偏移，请使用派生值表达式", 400);
             }
         }
-        const auto common = parseConfig<ProtocolConfigCommon>(config, { { "storageInterval", "配置不允许 storageInterval，请使用 storagePolicy" }, { "storagePolicy", kStoragePolicyInvalid.view() }, { "deviceParameters", "设备参数请在设备管理中配置" } }, "config 必须是对象");
+        const auto common = parseConfig<ProtocolConfigCommon>(config, { { "storageInterval", "配置不允许 storageInterval，请使用 storagePolicy" }, { "storagePolicy", kStoragePolicyInvalid.view() }, { "deviceParameters", "固有属性请在设备管理中配置" } }, "config 必须是对象");
         if (common.is_present<"storageInterval">()) {
             service::common::fail(16004, "配置不允许 storageInterval，请使用 storagePolicy", 400);
         }
@@ -71,9 +101,9 @@ class ProtocolService {
             service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         }
         if (common.is_present<"deviceParameters">()) {
-            service::common::fail(16004, "设备参数请在设备管理中配置", 400);
+            service::common::fail(16004, "固有属性请在设备管理中配置", 400);
         }
-        const auto parameters = parseConfig<service::common::DeviceParameterConfiguration>(config, {}, "设备参数定义须为数组", false);
+        const auto parameters = parseConfig<service::common::DeviceParameterConfiguration>(config, {}, "固有属性定义须为数组", false);
 
         if (const auto& definitions = parameters.get<"parameters">()) {
             try {
@@ -161,6 +191,21 @@ class ProtocolService {
     }
 
   private:
+    static void validateMqttTopicProperties(std::string_view topic, const ruvia::array<service::common::DeviceParameterDefinition>& properties, bool controlPoints = false) {
+        for (const auto level : utils::splitPayload(topic, "/")) {
+            if (level.starts_with("{param:") && level.ends_with('}')) {
+                const auto name = level.substr(7, level.size() - 8);
+                if (std::none_of(properties.begin(), properties.end(), [name](const auto& property) {
+                        return property.template get<"name">().view() == name && property.template get<"dataType">().view() != "JSON";
+                    })) {
+                    throw std::invalid_argument("Topic 引用了未定义或非标量的固有属性: " + std::string(name));
+                }
+            } else if (level.find_first_of("{}") != std::string_view::npos && !(controlPoints && level.starts_with("{point:") && level.ends_with('}'))) {
+                throw std::invalid_argument("Topic 只能引用当前消息可用的用户属性，且须独占一层");
+            }
+        }
+    }
+
     struct ConfigField {
         std::string_view name;
         std::string_view message;
@@ -277,6 +322,16 @@ class ProtocolService {
         if (!model.get<"points">()) {
             co_return;
         }
+        using Task = service::edge_node::entities::EdgeTaskEntity;
+        const auto pending = co_await database.template repository<Task>().find({ .where_ = Task::column<"node_id">() == nodeId && Task::column<"task_type">() == service::message::edge::kIoTaskType && Task::column<"status">() != std::string_view("succeeded") && Task::column<"status">() != std::string_view("failed") });
+        for (const auto& task : pending) {
+            const auto request = ruvia::from_json<service::message::edge::IoTaskRequest>(task.template get<"request">());
+            for (const auto& point : *model.get<"points">()) {
+                if (point.get<"channel">().view() == request.get<"channel">().view()) {
+                    service::common::fail(16009, "该 IO 通道存在未完成的节点控制，请等待结果", 409);
+                }
+            }
+        }
         for (const auto& point : *model.get<"points">()) {
             if (point.get<"kind">().view() != "DO") {
                 continue;
@@ -291,7 +346,45 @@ class ProtocolService {
         }
     }
 
-    static void validateExternalIoCapability(const ExternalIoConfig& model, const ruvia::json_value& capability) {
+    static std::string_view externalIoModel(const ExternalIoConfig& config) {
+        const auto& model = config.get<"edgeNodeModel">();
+        return model ? model->view() : kLegacyExternalIoModel;
+    }
+
+    // Historical IO schemes were authored for the sole supported ECM30 layout.
+    // Expose that model explicitly while retaining unknown JSON fields and point IDs.
+    static std::string externalIoConfigJson(std::string_view text) {
+        const auto config = ruvia::json_value::parse(text);
+        if (config.get<ruvia::string>("edgeNodeModel")) {
+            return std::string(text);
+        }
+        std::string result = "{\"edgeNodeModel\":" + service::utils::jsonQuoted(kLegacyExternalIoModel);
+        (void)config.for_each_field([&](std::string_view key, const ruvia::json_value& value) {
+            if (key == "edgeNodeModel") {
+                return true;
+            }
+            result += ',' + service::utils::jsonQuoted(key) + ':' + std::string(value.view());
+            return true;
+        });
+        return result + '}';
+    }
+
+    static ruvia::array<ExternalIoHardwareModel> externalIoModels(std::pmr::memory_resource* resource) {
+        ruvia::array<ExternalIoHardwareModel> result(ruvia::model_options{ .resource_ = resource });
+        ruvia::array<ExternalIoHardwareChannel> channels(ruvia::model_options{ .resource_ = resource });
+        for (const auto& range : kEcm30IoChannels) {
+            for (int index = 0; index < range.count; ++index) {
+                channels.emplace_back(ruvia::model_options{ .resource_ = resource }).set<"channel">(std::string(range.prefix) + std::to_string(index)).set<"kind">(range.kind).set<"controllable">(range.kind == "DO");
+            }
+        }
+        result.emplace_back(ruvia::model_options{ .resource_ = resource }).set<"model">(kLegacyExternalIoModel).set<"channels">(std::move(channels));
+        return result;
+    }
+
+    static void validateExternalIoCapability(const ExternalIoConfig& model, std::string_view nodeModel, const ruvia::json_value& capability) {
+        if (externalIoModel(model) != nodeModel) {
+            service::common::fail(16009, "外部 IO 方案的边缘节点型号不匹配", 400);
+        }
         const auto io = capability.get<ruvia::json_value>("externalIo");
         const auto channels = io ? io->get<ruvia::json_value>("channels") : std::nullopt;
         const auto& points = model.get<"points">();
@@ -317,6 +410,9 @@ class ProtocolService {
   private:
     static void validateExternalIo(const ruvia::json_value& config, bool complete) {
         const auto model = parseConfig<ExternalIoConfig>(config, { { "points", "外部 IO 点位配置无效" } }, "外部 IO 配置无效");
+        if (externalIoModel(model) != kLegacyExternalIoModel) {
+            fail("不支持该边缘节点型号的外部 IO");
+        }
         const auto& points = model.get<"points">();
         if (complete && !points) {
             fail("外部 IO 点位配置无效");
@@ -349,6 +445,12 @@ class ProtocolService {
             if (!channels.emplace(channel).second) {
                 fail("外部 IO 通道重复");
             }
+            const auto range = std::ranges::find(kEcm30IoChannels, kind, &ExternalIoChannelRange::kind);
+            int number = -1;
+            const auto parsed = std::from_chars(channel.data() + 2, channel.data() + channel.size(), number);
+            if (range == kEcm30IoChannels.end() || parsed.ec != std::errc{} || number < 0 || number >= range->count || channel != std::string(range->prefix) + std::to_string(number)) {
+                fail("该边缘节点型号不支持所选 IO 通道");
+            }
             if (const auto& unit = point.get<"unit">(); unit && !unit->view().empty() &&
                 (point.get<"kind">().view() != "AI" || unit->view() != "uA")) {
                 fail("外部 IO 原始单位无效，请使用派生值换算");
@@ -378,6 +480,13 @@ class ProtocolService {
             return;
         }
         const auto typed = parseConfig<MqttConfig>(config, {}, "MQTT 配置字段类型无效", false);
+        const auto& definitions = typed.get<"parameters">();
+        const auto identityProperty = typed.get<"identityProperty">().view();
+        if (!definitions || std::none_of(definitions->begin(), definitions->end(), [&](const auto& property) {
+                return property.template get<"name">().view() == identityProperty && property.template get<"dataType">().view() == "STRING";
+            })) {
+            service::common::fail(16004, "请选择文本类型的固有属性作为设备标识符", 400);
+        }
         const auto& topic = typed.get<"topic">();
         if (!topic) {
             service::common::fail(16004, "MQTT Topic 过滤器无效", 400);
@@ -470,21 +579,21 @@ class ProtocolService {
             }
         }
         try {
-            const auto validateTemplate = [&](std::string_view input, bool report = false, bool legacyValues = true) {
-                service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
-                if (!report) {
-                    allowed.insert("$deviceId");
-                    allowed.insert("$commandId");
-                }
-                if (!report && !legacyValues) {
-                    allowed.erase("$values");
+            validateMqttTopicProperties(topic->view(), *definitions);
+            if (commandTopic) {
+                validateMqttTopicProperties(commandTopic->view(), *definitions);
+            }
+            const auto validateTemplate = [&](std::string_view input, bool report = false) {
+                service::utils::JsonValueTemplate::Tokens allowed, sparse;
+                for (const auto& property : *definitions) {
+                    allowed.insert("$param:" + std::string(property.get<"name">().view()));
                 }
                 for (const auto& [name, writable] : templatePoints) {
                     const auto token = "$point:" + name;
                     allowed.insert(token);
                     sparse.insert(token);
                 }
-                const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report, 16384, 32, report ? utils::JsonValueTemplate::Tokens{} : utils::JsonValueTemplate::Tokens{ "$param:" });
+                const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report, 16384, 32);
                 for (const auto& [name, writable] : templatePoints) {
                     if (!parsed.references("$point:" + name)) {
                         continue;
@@ -504,10 +613,11 @@ class ProtocolService {
                     if (!messageIds.emplace(message.get<"id">().view()).second || !messageNames.emplace(message.get<"name">().view()).second) {
                         fail(kMqttCommandInvalid);
                     }
-                    const auto parsed = validateTemplate(message.get<"templateText">().view(), false, false);
+                    validateMqttTopicProperties(message.get<"topic">().view(), *definitions, true);
+                    const auto parsed = validateTemplate(message.get<"templateText">().view());
                     std::set<std::string, std::less<>> referenced, topicNames, requiredIds;
                     for (const auto level : utils::splitPayload(message.get<"topic">().view(), "/")) {
-                        if (level == "{deviceCode}") {
+                        if (level.starts_with("{param:") && level.ends_with('}')) {
                             continue;
                         }
                         if (level.starts_with("{point:") && level.ends_with('}')) {
@@ -530,9 +640,7 @@ class ProtocolService {
                         throw std::invalid_argument("控制消息至少需要引用一个属性");
                     }
                     if (const auto& response = message.get<"response">(); response) {
-                        if (!parsed.references("$commandId")) {
-                            throw std::invalid_argument("设备回执需要固定设备 Topic 及 $commandId");
-                        }
+                        validateMqttTopicProperties(response->get<"topic">().view(), *definitions);
                         std::set<std::string> selectors;
                         bool matchesId = false;
                         const utils::PayloadRecord source(message.get<"templateText">().view(), "json", ",");
@@ -545,16 +653,23 @@ class ProtocolService {
                             if (!value) {
                                 throw std::invalid_argument("回执关联字段须出现在指令模板中");
                             }
-                            if (const auto* text = std::get_if<std::string>(&*value); text && *text == "$commandId") {
-                                matchesId = true;
+                            if (const auto* text = std::get_if<std::string>(&*value); text && text->starts_with("$point:")) {
+                                for (const auto& point : *points) {
+                                    if (point.template get<"name">().view() == std::string_view(*text).substr(7)) {
+                                        matchesId = std::any_of(message.get<"requiredPointIds">().begin(), message.get<"requiredPointIds">().end(), [&](const auto& id) {
+                                                        return id.view() == point.template get<"id">().view();
+                                                    }) ||
+                                            matchesId;
+                                    }
+                                }
                             }
                         }
                         if (!matchesId) {
-                            throw std::invalid_argument("回执关联字段须包含 $commandId 所在路径");
+                            throw std::invalid_argument("回执关联字段须包含用户定义的必填控制属性路径");
                         }
                         (void)utils::jsonFieldSegments(response->get<"codeField">().view());
                     }
-                    utils::JsonValueTemplate::Values requiredValues{ { "$deviceCode", "\"device\"" }, { "$deviceId", "\"device-id\"" }, { "$commandId", "1" } };
+                    utils::JsonValueTemplate::Values requiredValues;
                     for (const auto& token : parsed.references()) {
                         if (token.starts_with("$param:")) {
                             requiredValues.emplace(token, "null");
@@ -1021,7 +1136,7 @@ class ProtocolService {
             const auto selected = std::find_if(reports.begin(), reports.end(), [&](const std::string& wire) {
                 const auto report = ruvia::json_value::parse(std::string_view(wire));
                 const auto topic = report.get<ruvia::string>("topic");
-                return topic && service::common::mqttReportTopicMatches(std::string(topic->view()), requestedTopic, requestedCode ? requestedCode->view() : std::string_view{});
+                return topic && service::common::mqttReportTopicMatches(std::string(topic->view()), requestedTopic, requestedCode ? requestedCode->view() : std::string_view{}, rawConfig.get<ruvia::string>("identityProperty")->view());
             });
             if (selected == reports.end()) {
                 throw std::invalid_argument("示例 Topic 未匹配上报消息");
@@ -1171,6 +1286,9 @@ class ProtocolService {
             result += "{\"id\":" + service::utils::jsonQuoted(row.template get<"id">()) +
                 ",\"name\":" + service::utils::jsonQuoted(row.template get<"name">());
             const auto config = ruvia::from_json<service::common::DeviceParameterConfiguration>(row.template get<"config">());
+            if (const auto& identityProperty = config.template get<"identityProperty">()) {
+                result += ",\"identityProperty\":" + service::utils::jsonQuoted(identityProperty->view());
+            }
             result += ",\"parameters\":";
             if (config.template get<"parameters">()) {
                 const auto json = ruvia::to_json(*config.template get<"parameters">());
@@ -1211,7 +1329,7 @@ class ProtocolService {
         configuration.set<"protocol">(protocol);
         configuration.set<"name">(name);
         configuration.set<"enabled">(enabled);
-        configuration.set<"config">(config->view());
+        configuration.set<"config">(protocol == "ExternalIO" ? externalIoConfigJson(config->view()) : std::string(config->view()));
         configuration.set<"created_by">(c.userId);
         if (remark && !remark->view().empty()) {
             configuration.set<"remark">(remark->view());
@@ -1280,6 +1398,7 @@ class ProtocolService {
 
             if (protocol == "MQTT") {
                 validateConfig(protocol, mergedConfig, true);
+                co_await validateMqttDeviceProperties(transaction, c.pool(), id, mergedConfig);
             }
             if (validateDerivedPoints(mergedConfig)) {
                 co_await requireDerivedSupport(transaction, c.pool(), id);
@@ -1295,7 +1414,7 @@ class ProtocolService {
                     if (!node) {
                         service::common::fail(16009, "关联边缘节点不存在", 409);
                     }
-                    validateExternalIoCapability(io, ruvia::json_value::parse(node->template get<"capability">()));
+                    validateExternalIoCapability(io, node->template get<"model">(), ruvia::json_value::parse(node->template get<"capability">()));
                 }
             }
             co_await validateDeviceDerivedConfigurations(transaction, c.pool(), id, mergedConfig);
@@ -1481,6 +1600,28 @@ class ProtocolService {
     }
 
   private:
+    static ruvia::task<void> validateMqttDeviceProperties(ruvia::db_transaction& transaction, std::pmr::memory_resource* resource, std::string_view configId, const ruvia::json_value& config) {
+        using Device = service::device::entities::DeviceEntity;
+        ruvia::db_query query(resource);
+        auto builder = transaction.template repository<Device>().query_builder();
+        builder.select({ { "parameters", query.column(Device::column_name<"protocol_params">()) } })
+            .where(query.binary(query.column(Device::column_name<"protocol_config_id">()), ruvia::db_binary_operator::equal, query.cast(query.value(configId), ruvia::db_data_type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, query.column(Device::column_name<"deleted_at">())));
+        const auto rows = co_await builder.get_raw_many();
+        for (const auto& row : rows) {
+            try {
+                const auto parameters = ruvia::json_value::parse(row[0].value().value_or("{}"));
+                const auto values = parameters.get<ruvia::json_value>("parameters");
+                if (!values) {
+                    throw std::invalid_argument("请填写设备标识固有属性");
+                }
+                validateMqttDeviceValues(config, *values);
+            } catch (const std::invalid_argument& error) {
+                service::common::fail(16004, "已有绑定设备的固有属性无效: " + std::string(error.what()), 400);
+            }
+        }
+    }
+
     static ruvia::task<void> validateDeviceDerivedConfigurations(ruvia::db_transaction& transaction, std::pmr::memory_resource* resource, std::string_view configId, const ruvia::json_value& replacement) {
         using Device = service::device::entities::DeviceEntity;
         using Source = service::device::entities::ExternalIoSourceEntity;
@@ -1588,7 +1729,7 @@ class ProtocolService {
             service::utils::jsonQuoted(row[1].value().value_or("")) +
             ",\"name\":" + service::utils::jsonQuoted(row[2].value().value_or("")) +
             ",\"enabled\":" + (enabled ? "true" : "false") +
-            ",\"config\":" + std::string(row[4].value().value_or("{}")) +
+            ",\"config\":" + (row[1].value().value_or("") == "ExternalIO" ? externalIoConfigJson(row[4].value().value_or("{}")) : std::string(row[4].value().value_or("{}"))) +
             ",\"remark\":" + service::utils::jsonQuoted(row[5].value().value_or("")) +
             ",\"created_at\":" +
             service::utils::jsonQuoted(row[6].value().value_or("")) +

@@ -37,6 +37,7 @@
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/edge.types.h"
+#include "service/features/edge/projection/projection.entity.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/packet_log/packet_log.service.h"
@@ -1392,6 +1393,24 @@ class ConfigService final {
 
 class EdgeControlService final {
   public:
+    static ruvia::task<std::optional<std::chrono::milliseconds>> expirePendingIo(ruvia::web_worker_context& context) {
+        using Task = persistence::EdgeTaskEntity;
+        ruvia::db_query query(context.pool());
+        const auto pending = (Task::column<"task_type">() == service::message::edge::kIoTaskType && Task::column<"status">() == std::string_view("pending")).expression(query);
+        const auto deadline = query.cast(config::detail::jsonText(query, Task::column<"request">().expression(query), "startBeforeMs"), ruvia::db_data_type::big_int);
+        const auto now = query.binary(query.extract(ruvia::db_date_part::epoch, query.call("clock_timestamp")), ruvia::db_binary_operator::multiply, query.value(std::int64_t{ 1000 }));
+        auto expired = context.db().repository<Task>().update_builder();
+        expired.set(Task::column_name<"status">(), query.value("failed")).set(Task::column_name<"result">(), query.cast(query.value(R"({"message":"控制发送期限已过，未执行"})"), ruvia::db_data_type::jsonb)).set(Task::column_name<"updated_at">(), query.call("now")).set(Task::column_name<"completed_at">(), query.call("now")).where(pending).and_where(query.binary(deadline, ruvia::db_binary_operator::less_equal, now));
+        (void)co_await expired.execute();
+        auto next = context.db().repository<Task>().query_builder();
+        next.select({ { "delay", query.cast(query.binary(query.aggregate("min", { deadline }), ruvia::db_binary_operator::subtract, now), ruvia::db_data_type::big_int) } }).where(pending);
+        const auto rows = co_await next.get_raw_many();
+        if (rows.empty() || !rows.front()[0].value()) {
+            co_return std::nullopt;
+        }
+        co_return std::chrono::milliseconds(rows.front()[0].as<std::int64_t>().value());
+    }
+
     static ruvia::task<std::string> executeOperation(ruvia::web_worker_context& context, std::string_view operation, std::string_view payload, ruvia::stop_token stop) {
         if (stop.stop_requested()) {
             service::common::fail(10004, "Edge operation cancelled", 503);
@@ -1432,6 +1451,26 @@ class EdgeControlService final {
             if (parsed) {
                 *envelope.mutable_network_config_request() = std::move(request);
             }
+        } else if (operation == service::message::edge::kQueueIoOperation) {
+            pb::CommandRequest command;
+            parsed = command.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));
+            if (!parsed || command.command_id().size() != 16 || !command.device_id().empty() || !command.external_io() || command.node_io_channel().empty() || command.values_size() != 1 || !command.values(0).has_expected()) {
+                service::common::fail(10002, "Invalid node IO request", 400);
+            }
+            using Task = persistence::EdgeTaskEntity;
+            const auto task = co_await context.db().repository<Task>().find_one({ .where_ = Task::column<"id">() == service::common::uuidText(command.command_id()) && Task::column<"node_id">() == nodeId && Task::column<"task_type">() == service::message::edge::kIoTaskType && Task::column<"status">() == std::string_view("pending") });
+            if (!task) {
+                service::common::fail(10002, "Node IO task is unavailable", 409);
+            }
+            const auto stored = ruvia::from_json<service::message::edge::IoTaskRequest>(task->get<"request">());
+            const auto lease = co_await context.redis().get(service::message::edge::sessionKey(nodeId));
+            const auto session = lease ? session_state::parse(*lease) : std::nullopt;
+            if (!session || *lease != stored.get<"session">().view() || stored.get<"channel">().view() != command.node_io_channel() || command.start_before_ms() != stored.get<"startBeforeMs">().value_ || command.values(0).element_id() != command.node_io_channel() || command.values(0).expected().kind() != pb::VALUE_STRING || command.values(0).expected().string_value() != (stored.get<"value">().value_ ? "1" : "0")) {
+                service::common::fail(10002, "Node IO task or session changed", 409);
+            }
+            envelope.set_session_epoch(session->epoch);
+            envelope.set_protocol_version(session->protocolVersion);
+            *envelope.mutable_command_request() = std::move(command);
         } else if (operation == "queue-firmware") {
             pb::FirmwareUpdateRequest request;
             parsed = request.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));

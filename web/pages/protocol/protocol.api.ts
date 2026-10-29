@@ -12,10 +12,14 @@ import type {
     ExpressionTestRequest,
     ExpressionTestResult,
     ExpressionValidateRequest,
+    ExternalIoHardwareModel,
     MqttPreviewRequest,
     MqttPreviewResult,
     Protocol,
 } from './protocol.types';
+
+export const getExternalIoModels = (signal?: AbortSignal) =>
+    request.get<ExternalIoHardwareModel[]>('/v1/protocol/configs/external-io-models', { signal });
 
 export const getList = (params?: Protocol.Query, config?: RequestConfig) =>
     request.get<PaginatedResult<Protocol.Item>>('/v1/protocol/configs', {

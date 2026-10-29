@@ -140,7 +140,7 @@ export interface CreateDeviceDto {
     /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
-    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    /** 设备固有属性，控制模板通过 $param:名称 引用。 */
     parameters?: Record<string, unknown>;
 }
 /** 更新设备 DTO */
@@ -169,7 +169,7 @@ export interface UpdateDeviceDto {
     /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
-    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    /** 设备固有属性，控制模板通过 $param:名称 引用。 */
     parameters?: Record<string, unknown>;
 }
 /** 设备静态数据（不包含实时数据） */
@@ -178,6 +178,7 @@ export interface DeviceStaticData extends EdgeConnection {
     /** MQTT 卡片展示的上报点位及可见派生值 UUID。 */
     cardPointIds?: string[];
     parameterDefinitions?: DeviceParameterDefinition[];
+    identityProperty?: string;
     debug_enabled?: boolean;
     link_debug_enabled?: boolean;
     // 基本信息
@@ -218,7 +219,7 @@ export interface DeviceStaticData extends EdgeConnection {
     can_share?: boolean;
     can_command?: boolean;
     access_level?: DeviceAccessLevel;
-    /** 设备固有参数，控制模板通过 $param:名称 引用。 */
+    /** 设备固有属性，控制模板通过 $param:名称 引用。 */
     parameters?: Record<string, unknown>;
 }
 /** 服务端遥测运行投影计算的在线状态，到期离线由服务端推送 */

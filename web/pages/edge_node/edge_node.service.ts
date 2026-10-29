@@ -15,6 +15,7 @@ import {
     closeTerminal,
     configureDebugErrorNotification,
     configureNetwork,
+    controlIo,
     createEdgeGroup,
     createEdgeVpnPeer,
     deleteDtuChannel,
@@ -33,6 +34,7 @@ import {
     keepTerminalAlive,
     observeDtuChannels,
     observeEdgeDetail,
+    observeIoState,
     openSerialDebug,
     openTerminal,
     queryEdgeList,
@@ -1053,3 +1055,16 @@ export function dtuTraceHex(payload = '') {
         return '';
     }
 }
+
+export const useEdgeIo = (scope: Edge.EventScope) =>
+    useSnapshotQuery({
+        queryKey: edgeLiveQueryKeys.io(scope.nodeId),
+        streamKey: scope,
+        queryFn: () => observeIoState(scope),
+        enabled: Boolean(scope.nodeId && scope.io),
+    });
+export const useIoControl = (id: string) =>
+    useMutationWithMessage({
+        mutationFn: (data: Edge.IoControl) => controlIo(id, data),
+        successMessage: 'IO 控制已提交，请以执行结果和实时状态为准',
+    });

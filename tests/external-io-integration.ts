@@ -65,7 +65,7 @@ try {
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('Hello timeout')),10000);
-        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'io-test'),field(3,'0.3.65'),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
+        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.65'),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
         socket!.onerror=()=>reject(Error('WebSocket error'));
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));
@@ -171,7 +171,7 @@ try {
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('reconnect Hello timeout')),10000);
-        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'io-test'),field(3,'0.3.65'),field(8,desiredRevision),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
+        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.65'),field(8,desiredRevision),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
         socket!.onerror=()=>reject(Error('WebSocket reconnect error'));
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));

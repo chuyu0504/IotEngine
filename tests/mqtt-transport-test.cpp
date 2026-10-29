@@ -26,7 +26,8 @@ void testBrokerReconnect() {
     LinkDefinition link{ .id = "wire-link", .mode = "TCP Client", .protocol = "MQTT", .status = "enabled" };
     link.targets.push_back({ .id = "broker", .ip = "localhost", .port = broker.local_endpoint().port(), .status = "enabled", .mqttConfig = R"({"clientId":"platform-wire-test","keepAliveSeconds":60})" });
     snapshot.links.push_back(link);
-    snapshot.devices.push_back({ .calculationConfig = R"({"topic":"devices/0","qos":1,"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE"}]})", .id = "wire-device", .code = "0", .linkId = "wire-link", .targetId = "broker", .protocol = "MQTT" });
+    snapshot.devices.push_back({ .calculationConfig = R"({"identityProperty":"serial","topic":"devices/0","qos":1,"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE"}]})", .id = "wire-device", .code = "0", .linkId = "wire-link", .targetId = "broker", .protocol = "MQTT" });
+    snapshot.devices.front().parameters = R"({"serial":"0"})";
     ProtocolSessionFactoryRegistry registry;
     registry.add(std::make_unique<mqtt::Factory>());
     ProtocolEngine engine(std::move(registry));

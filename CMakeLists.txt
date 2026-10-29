@@ -599,6 +599,7 @@ foreach(test_name
         edge-vpn-integration
         entity-schema-audit
         external-io-integration
+        edge-io-management-integration
         firmware-http-integration
         gb-control-claim-integration
         gb28181-disabled-health-integration
@@ -608,6 +609,7 @@ foreach(test_name
         industrial-protocol-integration
         link-edge-debug-integration
         mqtt-integration
+        mqtt-intrinsic-migration-integration
         native-points-migration-integration
         packet-debug-collector-integration
         packet-debug-storage-integration
@@ -685,6 +687,9 @@ iot_engine_add_integration(mqtt-migration-integration
 iot_engine_add_integration(entity-live-changes-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
 iot_engine_add_integration(edge-snapshot-migration-integration
+    FIXTURE migration MIGRATION_FAILURE "already exists")
+
+iot_engine_add_integration(edge-io-management-migration-integration
     FIXTURE migration MIGRATION_FAILURE "already exists")
 
 iot_engine_add_integration(external-io-migration-integration

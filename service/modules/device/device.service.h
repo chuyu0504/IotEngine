@@ -1445,6 +1445,9 @@ return result
         ownedParameters = std::move(parameters);
         item.template set<"parameters">(std::move(ownedParameters));
         auto parameterConfig = ruvia::from_json<service::common::DeviceParameterConfiguration>(row[45].value().value_or("{}"), { .resource_ = c.arena() });
+        if (parameterConfig.template get<"identityProperty">()) {
+            item.template set<"identityProperty">(*parameterConfig.template get<"identityProperty">());
+        }
         if (parameterConfig.template get<"parameters">()) {
             item.template set<"parameterDefinitions">(std::move(*parameterConfig.template get<"parameters">()));
         }
@@ -1932,7 +1935,7 @@ return result
         using Op = ruvia::db_binary_operator;
         ruvia::db_query query(c.pool());
         auto builder = transaction.template repository<Link>().query_builder("l");
-        builder.select({ { "node", db::text(query, Link::column<"edge_node_id">().expression(query, "l")) }, { "capability", Node::column<"capability">().expression(query, "n") } })
+        builder.select({ { "node", db::text(query, Link::column<"edge_node_id">().expression(query, "l")) }, { "capability", Node::column<"capability">().expression(query, "n") }, { "model", Node::column<"model">().expression(query, "n") } })
             .template join<Node>(ruvia::db_join_type::inner, "n", query.binary(Node::column<"id">().expression(query, "n"), Op::equal, Link::column<"edge_node_id">().expression(query, "l")))
             .where(db::andAll(query, query.binary(Link::column<"id">().expression(query, "l"), Op::equal, db::uuid(query, linkId)), query.binary(Link::column<"execution">().expression(query, "l"), Op::equal, query.value("edge"))))
             .set_lock(ruvia::db_lock_options{});
@@ -1965,7 +1968,7 @@ return result
             service::common::fail(18002, "采集协议或外部 IO 配置不存在或未启用", 400);
         }
         const auto io = ruvia::from_json<service::protocol::ExternalIoConfig>(ioConfig);
-        service::protocol::ProtocolService::validateExternalIoCapability(io, capability);
+        service::protocol::ProtocolService::validateExternalIoCapability(io, nodes.front()[2].value().value_or(""), capability);
         co_await service::protocol::ProtocolService::requireExternalIoOutputs(transaction, nodeId, id, ioModelId, io);
         service::protocol::DerivedPointsConfig derived(ruvia::model_options{ .resource_ = c.arena() });
         if (input.template get<"derivedPoints">()) {
@@ -1985,7 +1988,7 @@ return result
     ruvia::task<void> validate(Context& c, ruvia::db_transaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required, std::string_view currentConfigId = {}) {
         if (const auto& parameters = body.template get<"parameters">(); parameters) {
             if (parameters->view().size() > 262144) {
-                service::common::fail(18002, "设备参数最多 256 KiB", 400);
+                service::common::fail(18002, "固有属性最多 256 KiB", 400);
             }
             std::set<std::string> names;
             const bool valid = parameters->for_each_field([&](std::string_view name, const ruvia::json_value&) {
@@ -1993,7 +1996,7 @@ return result
                     name.find_first_of("\r\n\t") == std::string_view::npos && names.emplace(name).second && names.size() <= 256;
             });
             if (!valid) {
-                service::common::fail(18002, "设备参数名须为 1–100 字节且不能重复，最多 256 项", 400);
+                service::common::fail(18002, "固有属性名须为 1–100 字节且不能重复，最多 256 项", 400);
             }
         }
         service::device::validatePacket(body.template get<"heartbeat">());
@@ -2046,7 +2049,8 @@ return result
         if (relation.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
         }
-        if (const auto& values = body.template get<"parameters">(); values) {
+        const std::string configProtocol(relation.front()[0].value().value_or(""));
+        if (const auto& values = body.template get<"parameters">(); values && configProtocol != "MQTT") {
             const auto definition = ruvia::from_json<service::common::DeviceParameterConfiguration>(relation.front()[1].value().value_or("{}"));
 
             if (const auto& fields = definition.template get<"parameters">(); fields) {
@@ -2054,12 +2058,23 @@ return result
                     const auto name = field.template get<"name">().view();
                     const auto value = values->template get<ruvia::json_value>(name);
                     if (value && !service::common::deviceParameterValueMatches(field.template get<"dataType">().view(), *value)) {
-                        service::common::fail(18002, "设备参数类型不匹配: " + std::string(name), 400);
+                        service::common::fail(18002, "固有属性类型不匹配: " + std::string(name), 400);
                     }
                 }
             }
         }
-        const std::string configProtocol(relation.front()[0].value().value_or(""));
+        if (configProtocol == "MQTT" && (required || body.template get<"parameters">())) {
+            try {
+                if (!body.template get<"parameters">()) {
+                    throw std::invalid_argument("请填写设备标识固有属性");
+                }
+                const auto values = ruvia::json_value::parse(body.template get<"parameters">()->view());
+                const auto config = ruvia::json_value::parse(relation.front()[1].value().value_or("{}"));
+                service::protocol::ProtocolService::validateMqttDeviceValues(config, values);
+            } catch (const std::invalid_argument& error) {
+                service::common::fail(18002, error.what(), 400);
+            }
+        }
         if (configProtocol == "SL651" &&
             (packetEnabled(body.template get<"heartbeat">()) || packetEnabled(body.template get<"registration">()))) {
             service::common::fail(18002, "SL651 设备不支持配置注册包或心跳包", 400);

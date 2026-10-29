@@ -58,11 +58,13 @@ import {
     useEdgeGroupDelete,
     useEdgeGroupSave,
     useEdgeGroupTree,
+    useEdgeIo,
     useEdgeVpn,
     useEdgeVpnPeerCreate,
     useEdgeVpnPeerRevoke,
     useEdgeVpnPeerSync,
     useEdgeVpnRouteUpdate,
+    useIoControl,
     windowsClientDownloadUrl,
 } from './edge_node.service';
 import type { Edge, EdgeVpn } from './edge_node.types';
@@ -1104,6 +1106,170 @@ function TerminalModal({
         </Modal>
     );
 }
+function NodeIoTab({ scope, canControl }: { scope: Edge.EventScope; canControl: boolean }) {
+    const { data, error, connectionError, isLoading, isFetching, refetch } = useEdgeIo(scope);
+    const control = useIoControl(scope.nodeId ?? '');
+    const [accepted, setAccepted] = useState<Record<string, string>>({});
+    const columns: ColumnsType<Edge.IoChannel> = [
+        { title: '通道', dataIndex: ['state', 'channel'], width: 100 },
+        { title: '类型', dataIndex: ['state', 'kind'], width: 80 },
+        {
+            title: '状态',
+            width: 130,
+            render: (_, row) =>
+                !row.state.available ? (
+                    <Tag>不可用</Tag>
+                ) : row.state.value === undefined ? (
+                    '尚未上报'
+                ) : row.state.kind === 'AI' ? (
+                    `${row.state.value} μA`
+                ) : (
+                    <Tag color={row.state.value === '1' ? 'success' : 'default'}>
+                        {row.state.kind === 'DO'
+                            ? row.state.value === '1'
+                                ? '开启'
+                                : '关闭'
+                            : row.state.value}
+                    </Tag>
+                ),
+        },
+        {
+            title: '设备绑定',
+            width: 190,
+            render: (_, row) =>
+                row.bindings.length ? (
+                    row.bindings.map((binding) => binding.deviceName).join('、')
+                ) : (
+                    <span className="text-slate-500">未绑定</span>
+                ),
+        },
+        {
+            title: '控制',
+            width: 150,
+            render: (_, row) => {
+                if (row.bindings.length) return <Tag>已绑定设备，只读</Tag>;
+                if (row.state.kind !== 'DO') return '只读';
+                const waiting = Boolean(
+                    row.pending ||
+                        (accepted[row.state.channel] &&
+                            row.lastControl?.id !== accepted[row.state.channel])
+                );
+                const disabled =
+                    !canControl ||
+                    !data?.online ||
+                    !data.current ||
+                    !data.controlSupported ||
+                    !row.state.available ||
+                    !row.state.controllable ||
+                    Boolean(connectionError || error) ||
+                    isLoading ||
+                    isFetching ||
+                    control.isPending ||
+                    waiting;
+                return (
+                    <Popconfirm
+                        title={`确认${row.state.value === '1' ? '关闭' : '开启'} ${row.state.channel}？`}
+                        disabled={disabled}
+                        onConfirm={async () => {
+                            const result = await control.mutateAsync({
+                                channel: row.state.channel,
+                                value: row.state.value !== '1',
+                                idempotencyKey: createUuid(),
+                            });
+                            setAccepted((current) => ({
+                                ...current,
+                                [row.state.channel]: result.id,
+                            }));
+                        }}
+                    >
+                        <Button
+                            size="small"
+                            disabled={disabled}
+                            loading={
+                                (waiting && !row.lastControl?.uncertain) ||
+                                (control.isPending &&
+                                    control.variables?.channel === row.state.channel)
+                            }
+                        >
+                            {row.lastControl?.uncertain
+                                ? '结果待确认'
+                                : row.state.value === '1'
+                                  ? '关闭'
+                                  : '开启'}
+                        </Button>
+                    </Popconfirm>
+                );
+            },
+        },
+        {
+            title: '最近操作',
+            width: 220,
+            render: (_, row) =>
+                row.lastControl ? (
+                    <Tooltip title={row.lastControl.message}>
+                        <Tag
+                            color={
+                                row.lastControl.uncertain
+                                    ? 'warning'
+                                    : row.lastControl.status === 'succeeded'
+                                      ? 'success'
+                                      : row.lastControl.status === 'failed'
+                                        ? 'error'
+                                        : 'processing'
+                            }
+                        >
+                            {row.lastControl.uncertain
+                                ? '结果待确认'
+                                : row.lastControl.status === 'succeeded'
+                                  ? '执行成功'
+                                  : row.lastControl.status === 'failed'
+                                    ? '执行失败'
+                                    : '等待执行结果'}
+                        </Tag>
+                        {row.lastControl.message}
+                    </Tooltip>
+                ) : (
+                    '—'
+                ),
+        },
+    ];
+    return (
+        <Flex vertical gap={12}>
+            <LiveQueryError error={error} retry={refetch} loading={isLoading} />
+            {!data?.controlSupported && data && (
+                <Alert
+                    type="info"
+                    showIcon
+                    message="当前固件尚未提供节点 IO 实时状态与独立控制，请升级固件。"
+                />
+            )}
+            {data && (!data.online || !data.current) && (
+                <Alert
+                    type="warning"
+                    showIcon
+                    message={
+                        data.online
+                            ? '等待当前会话的 IO 状态，暂不可控制。'
+                            : '节点已离线，以下为最近状态。'
+                    }
+                />
+            )}
+            <span className="text-xs text-slate-500">
+                已绑定设备的通道仅可查看，请在设备页面操作。模拟量显示原始电流值。
+            </span>
+            <Table
+                rowKey={(row) => row.state.channel}
+                size="small"
+                loading={isLoading}
+                columns={columns}
+                dataSource={data?.channels}
+                pagination={false}
+                scroll={{ x: 870, y: 360 }}
+            />
+        </Flex>
+    );
+}
+
 export function EdgeNodePage() {
     const { has } = usePermissions();
     const canQuery = has('iot:edge:query');
@@ -1148,6 +1314,7 @@ export function EdgeNodePage() {
     const { message, modal } = App.useApp();
     const eventScope: Edge.EventScope = {
         dtu: Boolean(selectedId && detailTab === 'dtu'),
+        io: Boolean(selectedId && detailTab === 'io'),
         nodeId: selectedId,
         logs: selectedId && detailTab === 'events' ? { limit: 48, level: logLevel } : undefined,
         vpn: Boolean(selectedId && detailTab === 'vpn' && has('iot:vpn:query')),
@@ -1975,6 +2142,21 @@ export function EdgeNodePage() {
                             activeKey={detailTab}
                             onChange={setDetailTab}
                             items={[
+                                ...(detail.capability.externalIo?.supported
+                                    ? [
+                                          {
+                                              key: 'io',
+                                              label: 'IO',
+                                              children: (
+                                                  <NodeIoTab
+                                                      key={detail.id}
+                                                      scope={eventScope}
+                                                      canControl={canConfig}
+                                                  />
+                                              ),
+                                          },
+                                      ]
+                                    : []),
                                 {
                                     key: 'networks',
                                     label: `逻辑接口 (${detail.networks?.length ?? 0})`,

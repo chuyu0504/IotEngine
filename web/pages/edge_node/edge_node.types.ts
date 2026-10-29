@@ -52,8 +52,9 @@ export namespace Edge {
         rs485: boolean;
     }
     export interface Task {
+        uncertain?: boolean;
         id: string;
-        taskType: 'network' | 'firmware' | 'modem' | 'platform_upsert' | 'platform_delete';
+        taskType: 'network' | 'firmware' | 'modem' | 'platform_upsert' | 'platform_delete' | 'io';
         status: 'pending' | 'accepted' | 'running' | 'succeeded' | 'failed';
         message: string;
         progressPercent: number;
@@ -97,6 +98,7 @@ export namespace Edge {
         log: LogStatus;
     }
     export interface Capability {
+        nodeIoControl?: boolean;
         externalIo?: {
             supported: boolean;
             channels: {
@@ -198,7 +200,32 @@ export namespace Edge {
         supported: boolean;
         channels: DtuChannel[];
     }
+    export interface IoChannel {
+        state: {
+            channel: string;
+            kind: 'DI' | 'DO' | 'AI';
+            available: boolean;
+            controllable: boolean;
+            value?: string;
+        };
+        bindings: { deviceId: string; deviceName: string; pointId: string }[];
+        pending?: Task;
+        lastControl?: Task;
+    }
+    export interface IoState {
+        online: boolean;
+        current: boolean;
+        controlSupported: boolean;
+        observedAtMs?: number;
+        channels: IoChannel[];
+    }
+    export interface IoControl {
+        channel: string;
+        value: boolean;
+        idempotencyKey: string;
+    }
     export interface EventScope {
+        io?: boolean;
         dtu?: boolean;
         nodeId?: string;
         logs?: LogsQuery;
@@ -331,6 +358,7 @@ export const edgeLiveQueryKeys = {
         [...edgeLiveQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
     vpn: (id?: string) => [...edgeLiveQueryKeys.all, 'vpn', id ?? ''] as const,
     dtu: (id?: string) => [...edgeLiveQueryKeys.all, 'dtu', id ?? ''] as const,
+    io: (id?: string) => [...edgeLiveQueryKeys.all, 'io', id ?? ''] as const,
 };
 
 export namespace EdgeVpn {

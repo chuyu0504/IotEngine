@@ -13,10 +13,31 @@
 #include <vector>
 
 #include <ruvia/web/db/db_entity.h>
+#include <ruvia/web/model.h>
 
 #include "service/common/message.h"
 
 namespace service::edge::persistence {
+
+// Redis ORM does not expose its encoded physical key for a fenced Lua write.
+// This fixed-key JSON mapping is used by GET and the atomic compare-and-publish.
+RUVIA_MODEL(IoStateEntity, RUVIA_OPTIONAL_FIELD(sequence, ruvia::string), RUVIA_REQUIRED_FIELD(node_id, ruvia::string), RUVIA_REQUIRED_FIELD(session, ruvia::string), RUVIA_REQUIRED_FIELD(observed_at_ms, ruvia::int64), RUVIA_REQUIRED_FIELD(snapshot, ruvia::string));
+
+inline constexpr std::string_view kSaveIoStateScript = R"lua(
+if redis.call('GET',KEYS[2]) ~= ARGV[2] then return 0 end
+local previous=redis.call('GET',KEYS[1])
+if previous then
+ local old=cjson.decode(previous)
+ if old.session == ARGV[2] then
+  local sequence=old.sequence
+  if sequence and (#sequence > #ARGV[6] or (#sequence == #ARGV[6] and sequence >= ARGV[6])) then return 0 end
+  if old.snapshot == ARGV[4] then redis.call('SET',KEYS[1],ARGV[5]); return 0 end
+ end
+end
+redis.call('SET',KEYS[1],ARGV[5])
+redis.call('PUBLISH',KEYS[3],ARGV[1])
+return 1
+)lua";
 
 RUVIA_DB_ENTITY(
     EdgeDtuEntity,

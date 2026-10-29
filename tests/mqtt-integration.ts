@@ -190,6 +190,8 @@ async function reconnectFixtureSubscribers() {
 
 try {
     const config = {
+        identityProperty:'serial',
+        parameters:[{name:'serial',dataType:'STRING'},{name:'uuid',dataType:'STRING'},{name:'address',dataType:'STRING'},{name:'channel',dataType:'DOUBLE'},{name:'enabled',dataType:'BOOL'},{name:'metadata',dataType:'JSON'}],
         storagePolicy: 'report',
         topic: 'factory/telemetry',
         payloadFormat: 'json',
@@ -199,12 +201,12 @@ try {
         timeField: '/time',
         timeFormat: 'unix_ms',
         commandTopic: 'factory/commands',
-        commandTemplate: '{"cmd":"set","device":"$deviceCode","control":{"targetTemperature":"$point:温度","enabled":"$point:开关"}}',
+        commandTemplate: '{"cmd":"set","device":"$param:serial","control":{"targetTemperature":"$point:温度","enabled":"$point:开关"}}',
         qos: 1,
         derivedPoints: [{id:derived,name:'温度换算',kind:'expression',valueType:'number',expression:'x * 0.1 - 1',inputs:[{alias:'x',pointId:point}],unit:'℃',unitMode:'fixed',maxAgeSeconds:300,visible:true}],
         reports: [
-            {id:crypto.randomUUID(),name:'测量',topic:'factory/telemetry',qos:1,recordsPath:'/devices',identitySource:'payload',deviceCodeField:'/code',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"code":"$deviceCode","time":"$time","metrics":{"temperature":"$point:温度"}}',pointFields:[{pointId:point,field:'/metrics/temperature'}]},
-            {id:crypto.randomUUID(),name:'状态',topic:'factory/state',qos:1,identitySource:'payload',deviceCodeField:'/device',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"device":"$deviceCode","time":"$time","state":{"enabled":"$point:开关"}}',pointFields:[{pointId:enabledPoint,field:'/state/enabled'}]},
+            {id:crypto.randomUUID(),name:'测量',topic:'factory/telemetry',qos:1,recordsPath:'/devices',identitySource:'payload',deviceCodeField:'/code',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"code":"$param:serial","time":"0","metrics":{"temperature":"$point:温度"}}',pointFields:[{pointId:point,field:'/metrics/temperature'}]},
+            {id:crypto.randomUUID(),name:'状态',topic:'factory/state',qos:1,identitySource:'payload',deviceCodeField:'/device',timeField:'/time',timeFormat:'unix_ms',reportTemplate:'{"device":"$param:serial","time":"0","state":{"enabled":"$point:开关"}}',pointFields:[{pointId:enabledPoint,field:'/state/enabled'}]},
         ],
         points: [
             {
@@ -276,7 +278,7 @@ try {
             protocol_config_id: model,
             online_timeout: 60,
             remote_control: true,
-            parameters: { address: code === 'D001' ? 'A001' : 'A002', channel: 2, enabled: true, metadata: { type: 'water' } },
+            parameters: { serial:code, uuid:`user-${code}`, address: code === 'D001' ? 'A001' : 'A002', channel: 2, enabled: true, metadata: { type: 'water' } },
             timezone: '+08:00',
             status: 'enabled',
         });
@@ -330,12 +332,13 @@ try {
                 ?.status === 'SUCCEEDED',
         'MQTT command did not complete after PUBACK'
     );
+    const requestPoint = crypto.randomUUID();
     const responseConfig = {
         ...config, commandTopic: '', commandTemplate: '',
         commands: [{id: commandMessageId, name: '设置并确认', topic: 'factory/commands',
-            template: '{"requestId":"$commandId","address":"$param:address","deviceUuid":"$deviceId","deviceCode":"$deviceCode","channel":"$param:channel","enabled":"$param:enabled","metadata":"$param:metadata","cmd":"set","value":"$point:温度"}',
-            requiredPointIds: [point], response: {topic: 'factory/{deviceCode}/result', matchFields: ['/requestId','/address','/cmd'], codeField: '/body/code', successCode: 0, timeoutMs: 1000}}],
-        points: [{...config.points[0], writable: true}, {...config.points[1], writable: false}],
+            template: '{"requestId":"$point:请求编号","address":"$param:address","deviceUuid":"$param:uuid","deviceCode":"$param:serial","channel":"$param:channel","enabled":"$param:enabled","metadata":"$param:metadata","cmd":"set","value":"$point:温度"}',
+            requiredPointIds: [point, requestPoint], response: {topic: 'factory/{param:serial}/result', matchFields: ['/requestId','/address','/cmd'], codeField: '/body/code', successCode: 0, timeoutMs: 1000}}],
+        points: [{...config.points[0], writable: true}, {...config.points[1], writable: false},{id:requestPoint,name:'请求编号',field:'',dataType:'DOUBLE',writable:true}],
     };
     const reportConnection = await redis.send('HGET', [connectionKey, 'connection_id']);
     await ok('PUT', `/v1/protocol/configs/${model}`, {config: responseConfig});
@@ -343,7 +346,8 @@ try {
         const connection = await redis.send('HGET', [connectionKey, 'connection_id']);
         return resultSubscriptions >= 2 && !!connection && connection !== reportConnection;
     }, 'result subscriptions and device connection were not projected');
-    const submit = () => ok('POST', `/v1/device/${devices[0]}/commands`, {idempotency_key: crypto.randomUUID(), mqttMessageId: commandMessageId, elements: [{elementId: point, value: '15'}]});
+    let requestNumber=1000;
+    const submit = () => ok('POST', `/v1/device/${devices[0]}/commands`, {idempotency_key: crypto.randomUUID(), mqttMessageId: commandMessageId, elements: [{elementId: point, value: '15'},{elementId:requestPoint,value:String(++requestNumber)}]});
     const status = async (id: string) => (await db`SELECT status,reason FROM command_operation WHERE id=${id}`)[0];
     const reply = (body: unknown, topic = 'factory/D001/result') => {
         assert(pendingResult);
@@ -354,7 +358,7 @@ try {
     await until(async () => !!pendingResult, 'generic control not published');
     assert.notEqual((await status(confirmed.command_ids[0])).status, 'SUCCEEDED', 'PUBACK reported execution success');
     const sent = pendingResult!.payload;
-    assert.equal(sent.deviceUuid, devices[0]);
+    assert.equal(sent.deviceUuid, 'user-D001');
     assert.equal(sent.deviceCode, 'D001');
     assert.equal(sent.address, 'A001');
     assert.equal(sent.channel, 2);

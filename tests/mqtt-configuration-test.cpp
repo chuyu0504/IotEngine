@@ -19,7 +19,7 @@ service::protocol::MqttPreviewResult preview(std::string_view config, std::strin
 }
 
 std::string configuration(std::string_view options, std::string_view pointOptions, std::string_view field = "temperature", std::string_view type = "DOUBLE") {
-    return "{\"storagePolicy\":\"report\",\"topic\":\"devices\",\"qos\":1," + std::string(options) + "\"points\":[{\"id\":\"" + std::string(kPoint) + "\",\"name\":\"温度\",\"field\":" + service::utils::jsonQuoted(field) + ",\"dataType\":" + service::utils::jsonQuoted(type) + std::string(pointOptions) + "}]}";
+    return "{\"identityProperty\":\"serial\",\"parameters\":[{\"name\":\"serial\",\"dataType\":\"STRING\"},{\"name\":\"uuid\",\"dataType\":\"STRING\"},{\"name\":\"route\",\"dataType\":\"STRING\"}],\"storagePolicy\":\"report\",\"topic\":\"devices\",\"qos\":1," + std::string(options) + "\"points\":[{\"id\":\"" + std::string(kPoint) + "\",\"name\":\"温度\",\"field\":" + service::utils::jsonQuoted(field) + ",\"dataType\":" + service::utils::jsonQuoted(type) + std::string(pointOptions) + "}]}";
 }
 
 void testFormatsAndTime() {
@@ -82,13 +82,13 @@ void testTemplates() {
     const auto withTemplate = [](std::string_view value, bool writable = true) {
         return configuration("\"commandTopic\":\"commands\",\"commandTemplate\":" + service::utils::jsonQuoted(value) + ",", writable ? R"(,"writable":true)" : "");
     };
-    const auto valid = withTemplate(R"({"device":"$deviceCode","set":{"target":"$point:温度"},"again":"$point:温度","constant":false,"$point:温度":"key remains literal"})");
+    const auto valid = withTemplate(R"({"device":"$param:serial","set":{"target":"$point:温度"},"again":"$point:温度","constant":false,"$point:温度":"key remains literal"})");
     const auto namedResult = preview(valid, "devices", R"({"temperature":8})", "D001");
     require(namedResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "named template altered report value");
-    const auto legacyResult = preview(withTemplate(R"({"values":"$values"})"), "devices", R"({"temperature":8})", "D001");
+    const auto legacyResult = preview(withTemplate(R"({"values":{"temperature":"$point:温度"}})"), "devices", R"({"temperature":8})", "D001");
     require(legacyResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "legacy values template altered report value");
 
-    const std::string report = " {\"code\":\"$deviceCode\",\"temperature\":\"$point:温度\",\"at\":\"$time\",\"constant\":42} ";
+    const std::string report = " {\"code\":\"$param:serial\",\"temperature\":\"$point:温度\",\"at\":0,\"constant\":42} ";
     const auto metadata = configuration("\"reportTemplate\":" + service::utils::jsonQuoted(report) + ",", "");
     const auto typed = ruvia::from_json<service::protocol::MqttConfig>(metadata);
     require(typed.get<"reportTemplate">() && typed.get<"reportTemplate">()->view() == report, "report template metadata was dropped or normalized");
@@ -116,7 +116,7 @@ void testTemplates() {
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$point:温度"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$values"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:不存在"})") + ",", ""),
-        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$deviceCode","c":"$deviceCode"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$param:serial","c":"$param:serial"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$time","c":"$time"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(deep) + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted("[]") + ",", "")
@@ -144,8 +144,8 @@ void testMultipleControlMessages() {
     constexpr std::string_view firstId = "00000000-0000-7000-8000-000000000010";
     constexpr std::string_view secondId = "00000000-0000-7000-8000-000000000011";
     const auto required = "[" + service::utils::jsonQuoted(kPoint) + "]";
-    const auto first = command(firstId, "设置温度", "commands/{deviceCode}", R"({"set":"$point:温度"})", required);
-    const auto second = command(secondId, "温度校准", "calibrate/{deviceCode}", R"({"calibrate":"$point:温度"})", "[]");
+    const auto first = command(firstId, "设置温度", "commands/{param:serial}", R"({"set":"$point:温度"})", required);
+    const auto second = command(secondId, "温度校准", "calibrate/{param:serial}", R"({"calibrate":"$point:温度"})", "[]");
     const auto valid = configuration("\"commands\":[" + first + "," + second + "],", R"(,"writable":true)");
     const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
     require(parsed.get<"commands">() && parsed.get<"commands">()->size() == 2, "multiple command configuration lost");
@@ -167,7 +167,7 @@ void testMultipleControlMessages() {
         command(firstId, "设置", "commands", R"({"set":"$point:不存在"})", "[]"),
         command(firstId, "设置", "commands", R"({"set":["$point:温度"]})", "[]"),
         command(firstId, "设置", "commands/{point:温度}", "{}", "[]"),
-        command(firstId, "设置", "commands/prefix{deviceCode}", R"({"set":"$point:温度"})", required),
+        command(firstId, "设置", "commands/prefix{param:serial}", R"({"set":"$point:温度"})", required),
         command(firstId, "设置", "commands", R"({"set":"$values"})", required),
     };
     for (const auto& list : invalidLists) {
@@ -184,14 +184,14 @@ void testMultipleControlMessages() {
 void testTemplateValueSemantics() {
     using Template = service::utils::JsonValueTemplate;
     const auto compile = [] {
-        const std::string input = R"({"z":{"items":[{"target":"$point:温度","optional":"$optional"},[true,null,{}]]},"a":[],"escaped\"key":"$deviceCode"})";
-        return Template(input, { "$point:温度", "$optional", "$deviceCode" }, { "$optional" });
+        const std::string input = R"({"z":{"items":[{"target":"$point:温度","optional":"$optional"},[true,null,{}]]},"a":[],"escaped\"key":"$param:serial"})";
+        return Template(input, { "$point:温度", "$optional", "$param:serial" }, { "$optional" });
     };
-    const Template::Values values{ { "$point:温度", "12.5" }, { "$deviceCode", R"("D001")" } };
+    const Template::Values values{ { "$point:温度", "12.5" }, { "$param:serial", R"("D001")" } };
     constexpr std::string_view expected = R"({"z":{"items":[{"target":12.5},[true,null,{}]]},"a":[],"escaped\"key":"D001"})";
     const auto verify = [&](const Template& value) {
         require(value.render(values) == expected, "template ownership, member order, or nested rendering changed");
-        require(value.references() == Template::Tokens({ "$point:温度", "$optional", "$deviceCode" }), "template references lost after copy or move");
+        require(value.references() == Template::Tokens({ "$point:温度", "$optional", "$param:serial" }), "template references lost after copy or move");
     };
 
     auto original = compile();
@@ -208,8 +208,8 @@ void testTemplateValueSemantics() {
 }
 
 void testCommandResponseConfiguration() {
-    const auto make = [](std::string_view fields, std::string_view topic = "devices/{deviceCode}/result", int timeout = 10000) {
-        const auto command = "{\"id\":\"00000000-0000-7000-8000-000000000010\",\"name\":\"设置\",\"topic\":\"devices/{deviceCode}/down\",\"template\":" + service::utils::jsonQuoted(R"({"id":"$commandId","route":"$param:route","uuid":"$deviceId","value":"$point:温度"})") +
+    const auto make = [](std::string_view fields, std::string_view topic = "devices/{param:serial}/result", int timeout = 10000) {
+        const auto command = "{\"id\":\"00000000-0000-7000-8000-000000000010\",\"name\":\"设置\",\"topic\":\"devices/{param:serial}/down\",\"template\":" + service::utils::jsonQuoted(R"({"id":"$point:温度","route":"$param:route","uuid":"$param:uuid","value":"$point:温度"})") +
             ",\"requiredPointIds\":[" + service::utils::jsonQuoted(kPoint) + "],\"response\":{\"topic\":" + service::utils::jsonQuoted(topic) + ",\"matchFields\":" + std::string(fields) + ",\"codeField\":\"/code\",\"successCode\":0,\"timeoutMs\":" + std::to_string(timeout) + "}}";
         return configuration("\"commands\":[" + command + "],", R"(,"writable":true)");
     };
@@ -217,7 +217,7 @@ void testCommandResponseConfiguration() {
     (void)preview(valid, "devices", R"({"temperature":8})", "D001");
     const auto parsed = ruvia::from_json<service::protocol::MqttConfig>(valid);
     require(parsed.get<"commands">()->front().get<"response">().has_value(), "generic result configuration lost");
-    for (const auto& invalid : { make(R"(["/route"])"), make(R"(["/id","/unknown"])"), make(R"(["/id","/id"])"), make(R"(["/id"])", "devices/+/result"), make(R"(["/id"])", "devices/{deviceCode}/result", 0) }) {
+    for (const auto& invalid : { make(R"(["/route"])"), make(R"(["/id","/unknown"])"), make(R"(["/id","/id"])"), make(R"(["/id"])", "devices/+/result"), make(R"(["/id"])", "devices/{param:serial}/result", 0) }) {
         bool rejected = false;
         try {
             (void)preview(invalid, "devices", "{}", "D001");
@@ -233,8 +233,8 @@ void testMultipleReports() {
         return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" + service::utils::jsonQuoted(name) + ",\"topic\":" + service::utils::jsonQuoted(topic) +
             ",\"qos\":1,\"reportTemplate\":\"{\\\"value\\\":\\\"$point:温度\\\"}\",\"pointFields\":[{\"pointId\":" + service::utils::jsonQuoted(kPoint) + ",\"field\":" + service::utils::jsonQuoted(field) + "}]}";
     };
-    const auto first = report("00000000-0000-4000-8000-000000000002", "温度", "devices/{deviceCode}/temperature", "/value");
-    const auto second = report("00000000-0000-4000-8000-000000000003", "另一映射", "devices/{deviceCode}/alternate", "/value");
+    const auto first = report("00000000-0000-4000-8000-000000000002", "温度", "devices/{param:serial}/temperature", "/value");
+    const auto second = report("00000000-0000-4000-8000-000000000003", "另一映射", "devices/{param:serial}/alternate", "/value");
     const auto config = configuration("\"reports\":[" + first + ',' + second + "],", "");
     const auto value = preview(config, "devices/D001/alternate", R"({"value":42})", "D001");
     require(value.get<"records">().size() == 1 && value.get<"records">()[0].get<"points">()[0].get<"value">().view() == "42", "preview did not select second report");

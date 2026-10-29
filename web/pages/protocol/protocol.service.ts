@@ -32,10 +32,11 @@ import type {
 
 export function externalIoCompatible(
     config: ExternalIoConfig,
-    capability?: Edge.Capability
+    node?: Pick<Edge.Node, 'model' | 'capability'>
 ): boolean {
-    const io = capability?.externalIo;
+    const io = node?.capability.externalIo;
     return (
+        config.edgeNodeModel === node?.model &&
         io?.supported === true &&
         config.points.length > 0 &&
         config.points.every((point) =>
@@ -47,6 +48,14 @@ export function externalIoCompatible(
             )
         )
     );
+}
+
+export function useExternalIoModels(enabled: boolean) {
+    return useQuery({
+        queryKey: ['protocol-external-io-models'],
+        queryFn: ({ signal }) => api.getExternalIoModels(signal),
+        enabled,
+    });
 }
 
 const MAX_PAGE_SIZE = 1000;

@@ -57,7 +57,6 @@ import { usePermissions } from '@/hooks/use_permission';
 import { derivedPointSchema } from '@/utils/derived_point';
 import { normalizeGroupName } from '@/utils/group_key';
 import { createUuid } from '@/utils/uuid';
-import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/edge_node.service';
 import {
     checkAddressConflict,
     compileMqttTemplate,
@@ -99,6 +98,7 @@ import {
     supportsBitAddress,
     supportsS7Decimals,
     useDlt645PointCreate,
+    useExternalIoModels,
     useMqttPayloadPreview,
     useProtocolConfigDelete,
     useProtocolConfigImport,
@@ -5083,19 +5083,28 @@ export const Dlt645ConfigPage = () => <IndustrialConfigPage protocol="DLT645" />
 export function ExternalIoConfigPage() {
     const shell = useProtocolConfigShell('ExternalIO');
     const [open, setOpen] = useState(false);
-    const [referenceNodeId, setReferenceNodeId] = useState<string>();
-    const { data: referenceNodes = [] } = useEdgeSelectionList(open);
-    const { data: referenceNode } = useEdgeConfigurationDetail(open ? referenceNodeId : undefined);
-    const referenceChannels = referenceNode?.capability.externalIo?.channels ?? [];
+    const {
+        data: hardwareModels = [],
+        isLoading: loadingModels,
+        error: modelsError,
+    } = useExternalIoModels(open);
 
     const [editing, setEditing] = useState<Protocol.Item>();
-    const [form] = Form.useForm<{ name: string; enabled: boolean; points: ExternalIoPoint[] }>();
+    const [form] = Form.useForm<{
+        name: string;
+        enabled: boolean;
+        edgeNodeModel: string;
+        points: ExternalIoPoint[];
+    }>();
+    const selectedModel = Form.useWatch('edgeNodeModel', form);
+    const hardware = hardwareModels.find((item) => item.model === selectedModel);
     const show = (item?: Protocol.Item) => {
         setEditing(item);
         form.resetFields();
         form.setFieldsValue({
             name: item?.name ?? '',
             enabled: item?.enabled ?? true,
+            edgeNodeModel: (item?.config as ExternalIoConfig | undefined)?.edgeNodeModel,
             points: item ? (item.config as ExternalIoConfig).points : [],
         });
         setOpen(true);
@@ -5106,13 +5115,17 @@ export function ExternalIoConfigPage() {
             shell={shell}
             title="外部 IO 配置"
             typeSummary={(item) =>
-                `${(item.config as ExternalIoConfig).points?.length ?? 0} 个点位`
+                `${(item.config as ExternalIoConfig).edgeNodeModel ?? '未选择型号'} · ${(item.config as ExternalIoConfig).points?.length ?? 0} 个点位`
             }
             onCreateType={() => show()}
             onEditType={show}
             heading={shell.activeType?.name}
             body={(derivedPoints) => (
                 <div className="flex flex-col gap-4">
+                    <Tag>
+                        {(shell.activeType?.config as ExternalIoConfig | undefined)
+                            ?.edgeNodeModel ?? '未选择型号'}
+                    </Tag>
                     <Table<ExternalIoPoint>
                         rowKey="id"
                         dataSource={points}
@@ -5143,8 +5156,15 @@ export function ExternalIoConfigPage() {
                     form={form}
                     layout="vertical"
                     onFinish={async (values) => {
+                        if (!hardware) {
+                            form.setFields([
+                                { name: 'edgeNodeModel', errors: ['请选择受支持的边缘节点型号'] },
+                            ]);
+                            return;
+                        }
                         const config = {
                             ...(editing?.config as ExternalIoConfig | undefined),
+                            edgeNodeModel: values.edgeNodeModel,
                             points: values.points.map((point) => ({
                                 ...point,
                                 unit: point.kind === 'AI' ? 'uA' : '',
@@ -5178,24 +5198,44 @@ export function ExternalIoConfigPage() {
                         <Switch />
                     </Form.Item>
                     <Form.Item
-                        label="参考边缘节点"
-                        extra="从节点上报的能力中选择通道；保存的方案可由具备相同能力的其他节点使用。"
+                        name="edgeNodeModel"
+                        label="边缘节点型号"
+                        rules={[{ required: true, message: '请选择边缘节点型号' }]}
+                        extra="方案仅用于同型号边缘节点，设备绑定时还会检查实际通道能力。"
                     >
                         <Select
-                            allowClear
-                            value={referenceNodeId}
-                            onChange={setReferenceNodeId}
-                            options={referenceNodes.map((node) => ({
-                                value: node.id,
-                                label: node.name || node.imei,
+                            loading={loadingModels}
+                            placeholder="请选择边缘节点型号"
+                            options={hardwareModels.map((item) => ({
+                                value: item.model,
+                                label: item.model,
                             }))}
+                            onChange={(value) => {
+                                const channels =
+                                    hardwareModels.find((item) => item.model === value)?.channels ??
+                                    [];
+                                const current = form.getFieldValue('points') as ExternalIoPoint[];
+                                form.setFieldValue(
+                                    'points',
+                                    (current ?? []).map((point) => ({
+                                        ...point,
+                                        channel: channels.some(
+                                            (channel) =>
+                                                channel.channel === point.channel &&
+                                                channel.kind === point.kind
+                                        )
+                                            ? point.channel
+                                            : '',
+                                    }))
+                                );
+                            }}
                         />
                     </Form.Item>
-                    {referenceNode && !referenceNode.capability.externalIo?.supported && (
+                    {modelsError && (
                         <Alert
-                            type="info"
+                            type="error"
                             showIcon
-                            message="该节点尚未声明外部 IO 能力，请选择支持外部 IO 的节点。"
+                            message="边缘节点型号加载失败，请重新打开表单重试。"
                         />
                     )}
                     <Form.List name="points">
@@ -5220,6 +5260,12 @@ export function ExternalIoConfigPage() {
                                         >
                                             <Select
                                                 style={{ width: 100 }}
+                                                onChange={() =>
+                                                    form.setFieldValue(
+                                                        ['points', field.name, 'channel'],
+                                                        ''
+                                                    )
+                                                }
                                                 options={['DI', 'DO', 'AI'].map((value) => ({
                                                     value,
                                                     label: value,
@@ -5233,30 +5279,15 @@ export function ExternalIoConfigPage() {
                                                     field.name,
                                                     'kind',
                                                 ]);
-                                                const current = form.getFieldValue([
-                                                    'points',
-                                                    field.name,
-                                                    'channel',
-                                                ]) as string | undefined;
-                                                const channels = referenceChannels.filter(
+                                                const channels = (hardware?.channels ?? []).filter(
                                                     (channel) =>
                                                         channel.kind === kind &&
                                                         (kind !== 'DO' || channel.controllable)
                                                 );
                                                 const options = channels.map((channel) => ({
                                                     value: channel.channel,
-                                                    label: `${channel.channel}${channel.available ? '' : '（暂不可用）'}`,
+                                                    label: channel.channel,
                                                 }));
-                                                if (
-                                                    current &&
-                                                    !options.some(
-                                                        (option) => option.value === current
-                                                    )
-                                                )
-                                                    options.push({
-                                                        value: current,
-                                                        label: current,
-                                                    });
                                                 return (
                                                     <Form.Item
                                                         name={[field.name, 'channel']}
@@ -5266,12 +5297,27 @@ export function ExternalIoConfigPage() {
                                                                 required: true,
                                                                 message: '请选择通道',
                                                             },
+                                                            {
+                                                                validator: (_, value) =>
+                                                                    !value ||
+                                                                    options.some(
+                                                                        (option) =>
+                                                                            option.value === value
+                                                                    )
+                                                                        ? Promise.resolve()
+                                                                        : Promise.reject(
+                                                                              new Error(
+                                                                                  '该型号不支持此通道'
+                                                                              )
+                                                                          ),
+                                                            },
                                                         ]}
                                                     >
                                                         <Select
                                                             style={{ width: 160 }}
                                                             options={options}
-                                                            placeholder="先选择参考节点"
+                                                            disabled={!hardware}
+                                                            placeholder="先选择边缘节点型号"
                                                         />
                                                     </Form.Item>
                                                 );
@@ -5283,7 +5329,9 @@ export function ExternalIoConfigPage() {
                                     </Space>
                                 ))}
                                 <Button
-                                    disabled={fields.length >= 15}
+                                    disabled={
+                                        !hardware || fields.length >= hardware.channels.length
+                                    }
                                     onClick={() =>
                                         add({
                                             id: createUuid(),
@@ -5305,15 +5353,6 @@ export function ExternalIoConfigPage() {
     );
 }
 
-const MQTT_REPORT_EXAMPLE = JSON.stringify(
-    {
-        deviceId: '$deviceCode',
-        timestamp: '$time',
-        data: { temperature: '$point:温度', humidity: '$point:湿度', online: '$point:在线' },
-    },
-    null,
-    2
-);
 const MQTT_POINT_TYPES = [
     { value: 'DOUBLE', label: '数值' },
     { value: 'BOOL', label: '布尔' },
@@ -5321,11 +5360,13 @@ const MQTT_POINT_TYPES = [
 ];
 const EMPTY_MQTT_POINTS: MqttPoint[] = [];
 const EMPTY_MQTT_COMMANDS: MqttCommandMessage[] = [];
+const EMPTY_MQTT_PROPERTIES: NonNullable<MqttTemplateDraft['parameters']> = [];
 
 function MqttMessageInput({
     value = '',
     onChange,
     points,
+    properties,
     label,
     topic = false,
     report = false,
@@ -5333,15 +5374,21 @@ function MqttMessageInput({
     value?: string;
     onChange?: (value: string) => void;
     points: readonly MqttPoint[];
+    properties: NonNullable<MqttTemplateDraft['parameters']>;
     label: string;
     topic?: boolean;
     report?: boolean;
 }) {
     const selection = useRef<[number, number] | null>(null);
     const options = [
-        { label: '设备编码', value: topic ? '{deviceCode}' : '"$deviceCode"' },
-        ...(!topic && report ? [{ label: '设备时间', value: '"$time"' }] : []),
-        ...(!topic && !report ? [{ label: '自动指令编号', value: '"$commandId"' }] : []),
+        ...properties
+            .filter((property) => property.name.trim())
+            .map((property) => ({
+                label: `固有属性：${property.name}`,
+                value: topic
+                    ? `{param:${property.name}}`
+                    : JSON.stringify(`$param:${property.name}`),
+            })),
         ...(topic && report
             ? []
             : points
@@ -5385,7 +5432,7 @@ function MqttMessageInput({
             <Select<string>
                 className="mt-2 w-full"
                 aria-label={`${label}插入属性`}
-                placeholder="在光标处插入属性或设备变量"
+                placeholder="在光标处插入用户定义的属性"
                 value={undefined}
                 options={options}
                 onSelect={(token: string) => {
@@ -5412,9 +5459,11 @@ export function MqttConfigPage() {
         Form.useWatch('points', { form, preserve: true }) ?? EMPTY_MQTT_POINTS;
     const commands: MqttCommandMessage[] =
         Form.useWatch('commands', { form, preserve: true }) ?? EMPTY_MQTT_COMMANDS;
+    const properties: NonNullable<MqttTemplateDraft['parameters']> =
+        Form.useWatch('parameters', { form, preserve: true }) ?? EMPTY_MQTT_PROPERTIES;
     const [formError, setFormError] = useState('');
-    const [sampleTopic, setSampleTopic] = useState('devices/D001/telemetry');
-    const [sampleCode, setSampleCode] = useState('D001');
+    const [sampleTopic, setSampleTopic] = useState('');
+    const [sampleCode, setSampleCode] = useState('');
     const [sampleTimezone, setSampleTimezone] = useState('+08:00');
     const [samplePayload, setSamplePayload] = useState(
         '{"deviceId":"D001","timestamp":1790740800123,"data":{"temperature":25.6,"humidity":60,"online":true}}'
@@ -5454,31 +5503,16 @@ export function MqttConfigPage() {
             draft = item
                 ? mqttTemplateDraft(item.config as MqttConfig)
                 : {
-                      topic: 'devices/{deviceCode}/telemetry',
-                      reportTemplate: MQTT_REPORT_EXAMPLE,
+                      topic: '',
+                      reportTemplate: '{}',
+                      parameters: [],
                       commands: [],
                       storagePolicy: 'report',
                       timeFormat: 'unix_ms',
                       qos: 1,
-                      points: [
-                          {
-                              id: crypto.randomUUID(),
-                              name: '温度',
-                              field: '',
-                              dataType: 'DOUBLE',
-                              unit: '℃',
-                          },
-                          {
-                              id: crypto.randomUUID(),
-                              name: '湿度',
-                              field: '',
-                              dataType: 'DOUBLE',
-                              unit: '%',
-                          },
-                          { id: crypto.randomUUID(), name: '在线', field: '', dataType: 'BOOL' },
-                      ],
+                      points: [],
                   };
-            draft.points = compileMqttTemplate(draft).points;
+            if (item) draft.points = compileMqttTemplate(draft).points;
             if (!draft.commands) {
                 draft.commands =
                     draft.commandTopic && draft.commandTemplate
@@ -5526,6 +5560,7 @@ export function MqttConfigPage() {
                 reportTemplate: draft.reportTemplate,
                 qos: draft.qos,
                 timeFormat: draft.timeFormat,
+                timeField: draft.timeField,
             },
         ];
         invalidatePreview();
@@ -5968,10 +6003,35 @@ export function MqttConfigPage() {
                                             >
                                                 添加属性
                                             </Button>
-                                            <Divider titlePlacement="start">设备参数</Divider>
+                                            <Divider titlePlacement="start">固有属性</Divider>
+                                            <Form.Item
+                                                name="identityProperty"
+                                                label="设备标识符"
+                                                rules={[
+                                                    {
+                                                        required: true,
+                                                        message: '请选择设备标识固有属性',
+                                                    },
+                                                ]}
+                                                extra="自行定义一个文本固有属性，再选择它作为设备标识符；具体值在设备管理中填写。"
+                                            >
+                                                <Select
+                                                    placeholder="选择用户定义的固有属性"
+                                                    options={properties
+                                                        .filter(
+                                                            (property) =>
+                                                                property.dataType === 'STRING' &&
+                                                                property.name.trim()
+                                                        )
+                                                        .map((property) => ({
+                                                            value: property.name,
+                                                            label: property.name,
+                                                        }))}
+                                                />
+                                            </Form.Item>
                                             <p className="mb-3 text-sm text-slate-500">
-                                                在这里定义参数名称和类型，具体值在设备管理中逐项填写。控制消息用
-                                                "$param:参数名" 引用。
+                                                在这里定义固有属性名称和类型，具体值在设备管理中逐项填写。控制消息用
+                                                "$param:固有属性名" 引用。
                                             </p>
                                             <Form.List name="parameters">
                                                 {(fields, { add, remove }) => (
@@ -5984,7 +6044,7 @@ export function MqttConfigPage() {
                                                             scroll={{ x: 480 }}
                                                             columns={[
                                                                 {
-                                                                    title: '参数名称',
+                                                                    title: '固有属性名称',
                                                                     render: (_, field) => (
                                                                         <Form.Item
                                                                             name={[
@@ -5997,12 +6057,12 @@ export function MqttConfigPage() {
                                                                                     required: true,
                                                                                     whitespace: true,
                                                                                     message:
-                                                                                        '请输入参数名称',
+                                                                                        '请输入固有属性名称',
                                                                                 },
                                                                             ]}
                                                                         >
                                                                             <Input
-                                                                                aria-label={`参数 ${field.name + 1} 名称`}
+                                                                                aria-label={`固有属性 ${field.name + 1} 名称`}
                                                                                 maxLength={100}
                                                                                 placeholder="例如 stationAddress"
                                                                             />
@@ -6024,7 +6084,7 @@ export function MqttConfigPage() {
                                                                             ]}
                                                                         >
                                                                             <Select
-                                                                                aria-label={`参数 ${field.name + 1} 类型`}
+                                                                                aria-label={`固有属性 ${field.name + 1} 类型`}
                                                                                 options={[
                                                                                     ...MQTT_POINT_TYPES,
                                                                                     {
@@ -6063,7 +6123,7 @@ export function MqttConfigPage() {
                                                                 })
                                                             }
                                                         >
-                                                            添加参数
+                                                            添加固有属性
                                                         </Button>
                                                     </>
                                                 )}
@@ -6141,11 +6201,12 @@ export function MqttConfigPage() {
                                                                     <Form.Item
                                                                         name={[field.name, 'topic']}
                                                                         label="上报 Topic"
-                                                                        extra="用 {deviceCode} 标记设备编码；共享 Topic 时，在消息中使用 $deviceCode。"
+                                                                        extra="Topic 用 {param:固有属性名} 引用设备值；共享 Topic 时，在模板中引用所选设备标识固有属性。"
                                                                     >
                                                                         <MqttMessageInput
                                                                             label={`上报消息 ${field.name + 1} Topic`}
                                                                             points={points}
+                                                                            properties={properties}
                                                                             topic
                                                                             report
                                                                         />
@@ -6173,7 +6234,7 @@ export function MqttConfigPage() {
                                                                                 'timeFormat',
                                                                             ]}
                                                                             label="设备时间格式"
-                                                                            extra="未配置 $time 时，使用接收时间。"
+                                                                            extra="未配置时间字段路径时，使用接收时间。"
                                                                         >
                                                                             <Select
                                                                                 options={[
@@ -6196,14 +6257,25 @@ export function MqttConfigPage() {
                                                                     <Form.Item
                                                                         name={[
                                                                             field.name,
+                                                                            'timeField',
+                                                                        ]}
+                                                                        label="时间字段路径（可选）"
+                                                                        extra="填写消息中由你定义的时间字段，例如 /timestamp。"
+                                                                    >
+                                                                        <Input placeholder="JSON Pointer，例如 /timestamp" />
+                                                                    </Form.Item>
+                                                                    <Form.Item
+                                                                        name={[
+                                                                            field.name,
                                                                             'reportTemplate',
                                                                         ]}
                                                                         label="上报消息模板"
-                                                                        extra="用 $point:属性名称 绑定属性；$time 为设备时间。每条消息可绑定不同属性或字段路径。"
+                                                                        extra="用 $point:属性名 绑定消息属性，$param:固有属性名 标记设备标识。所有 JSON 字段均由你定义。"
                                                                     >
                                                                         <MqttMessageInput
                                                                             label={`上报消息 ${field.name + 1} 模板`}
                                                                             points={points}
+                                                                            properties={properties}
                                                                             report
                                                                         />
                                                                     </Form.Item>
@@ -6261,11 +6333,11 @@ export function MqttConfigPage() {
                                                                         />
                                                                     </Form.Item>
                                                                     <Form.Item
-                                                                        label="测试设备编码"
+                                                                        label="测试设备标识符"
                                                                         extra="共享 Topic 时可留空，查看所有设备记录。"
                                                                     >
                                                                         <Input
-                                                                            aria-label="测试设备编码"
+                                                                            aria-label="测试设备标识符"
                                                                             value={sampleCode}
                                                                             onChange={(event) => {
                                                                                 invalidatePreview();
@@ -6448,11 +6520,12 @@ export function MqttConfigPage() {
                                                                     <Form.Item
                                                                         name={[field.name, 'topic']}
                                                                         label="控制 Topic"
-                                                                        extra="可插入 {deviceCode} 或 {point:属性名称}，每个占位符独占一层。"
+                                                                        extra="可插入 {param:固有属性名} 或 {point:属性名}，每个占位符独占一层。"
                                                                     >
                                                                         <MqttMessageInput
                                                                             label={`控制消息 ${field.name + 1} Topic`}
                                                                             points={points}
+                                                                            properties={properties}
                                                                             topic
                                                                         />
                                                                     </Form.Item>
@@ -6463,12 +6536,13 @@ export function MqttConfigPage() {
                                                                         ]}
                                                                         label="控制消息模板"
                                                                         extra={
-                                                                            '属性值按类型生成 JSON；"$deviceId" 为设备 UUID，"$deviceCode" 为设备编码，"$commandId" 自动生成整数编号，"$param:参数名" 引用设备管理中的参数。'
+                                                                            '使用 "$point:属性名" 引用本次填写的控制值，"$param:固有属性名" 引用设备固有属性。字段名称、结构和指令关联值均由你定义。'
                                                                         }
                                                                     >
                                                                         <MqttMessageInput
                                                                             label={`控制消息 ${field.name + 1} 模板`}
                                                                             points={points}
+                                                                            properties={properties}
                                                                         />
                                                                     </Form.Item>
                                                                     <Form.Item
@@ -6477,7 +6551,7 @@ export function MqttConfigPage() {
                                                                             'response',
                                                                         ]}
                                                                         label="设备回执规则（JSON，可选）"
-                                                                        extra="配置后等待设备回执；matchFields 与原指令同路径字段比较，必须包含指令编号。超时不会自动重发。留空时仅确认 Broker 接收。"
+                                                                        extra="matchFields 与原指令同路径字段比较，须包含用户定义的必填控制属性；关联值应在每次操作中唯一。超时不会自动重发。留空时仅确认 Broker 接收。"
                                                                         getValueProps={(
                                                                             value: unknown
                                                                         ) => ({
@@ -6497,7 +6571,7 @@ export function MqttConfigPage() {
                                                                         <JsonEditor
                                                                             label={`${command?.name || `控制消息 ${field.name + 1}`}回执规则 JSON`}
                                                                             placeholder={
-                                                                                '{"topic":"devices/{deviceCode}/result","matchFields":["/id"],"codeField":"/code","successCode":0,"timeoutMs":10000}'
+                                                                                '{"topic":"用户定义的设备回执 Topic","matchFields":["/用户定义的关联字段"],"codeField":"/用户定义的结果字段","successCode":0,"timeoutMs":10000}'
                                                                             }
                                                                         />
                                                                     </Form.Item>
@@ -6527,7 +6601,7 @@ export function MqttConfigPage() {
                                                                 add({
                                                                     id: crypto.randomUUID(),
                                                                     name: '',
-                                                                    topic: 'devices/{deviceCode}/command',
+                                                                    topic: '',
                                                                     template: '{}',
                                                                     requiredPointIds: [],
                                                                 });

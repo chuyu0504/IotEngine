@@ -62,12 +62,8 @@ inline bool validText(std::string_view text) {
     return true;
 }
 
-inline std::string deviceTopic(std::string topic, std::string_view code, bool filter = false) {
-    constexpr std::string_view marker = "{deviceCode}";
-    for (auto position = topic.find(marker); position != std::string::npos;
-         position = topic.find(marker, position + code.size())) {
-        topic.replace(position, marker.size(), code);
-    }
+inline std::string deviceTopic(std::string_view input, const ruvia::json_value& properties, bool filter = false, bool controlPoints = false) {
+    auto topic = service::common::mqttPropertyTopic(input, properties, controlPoints);
     if (topic.empty() || !validText(topic) || (!filter && topic.find_first_of("+#") != std::string::npos)) {
         throw std::invalid_argument("MQTT topic must be a concrete UTF-8 topic");
     }
@@ -157,7 +153,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             subscription.recordDelimiter = stringOption(config.get<"recordDelimiter">(), "\n");
             const auto parameters = ruvia::json_value::parse(std::string_view(device->parameters));
             if (!parameters.is_object()) {
-                throw std::invalid_argument("设备参数必须是 JSON 对象");
+                throw std::invalid_argument("固有属性必须是 JSON 对象");
             }
             (void)parameters.for_each_field([&](std::string_view name, const ruvia::json_value& value) {
                 subscription.parameters.emplace("$param:" + std::string(name), value.view());
@@ -165,7 +161,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             });
             subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::int64{ 0 }).value_);
             if (const auto& topic = config.get<"commandTopic">(); topic && !topic->view().empty()) {
-                subscription.commandTopic = deviceTopic(std::string(topic->view()), device->code);
+                subscription.commandTopic = deviceTopic(topic->view(), parameters);
             }
             std::map<std::string, bool, std::less<>> templatePoints;
             for (const auto& point : config.get<"points">()) {
@@ -180,14 +176,10 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                     }
                 }
             }
-            const auto compileTemplate = [&](std::string_view input, bool report = false, const std::set<std::string, std::less<>>& required = {}, bool legacyValues = true) {
-                service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
-                if (!report) {
-                    allowed.insert("$deviceId");
-                    allowed.insert("$commandId");
-                }
-                if (!report && !legacyValues) {
-                    allowed.erase("$values");
+            const auto compileTemplate = [&](std::string_view input, bool report = false, const std::set<std::string, std::less<>>& required = {}) {
+                service::utils::JsonValueTemplate::Tokens allowed, sparse;
+                for (const auto& [token, value] : subscription.parameters) {
+                    allowed.insert(token);
                 }
                 for (const auto& [name, writable] : templatePoints) {
                     const auto token = "$point:" + name;
@@ -196,7 +188,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         sparse.insert(token);
                     }
                 }
-                service::utils::JsonValueTemplate result(input, allowed, sparse, report, 16384, 32, report ? service::utils::JsonValueTemplate::Tokens{} : service::utils::JsonValueTemplate::Tokens{ "$param:" });
+                service::utils::JsonValueTemplate result(input, allowed, sparse, report, 16384, 32, { "$param:" });
                 for (const auto& [name, writable] : templatePoints) {
                     if (!result.references("$point:" + name)) {
                         continue;
@@ -228,9 +220,9 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         }
                     }
                     const auto topic = std::string(message.get<"topic">().view());
-                    (void)deviceTopic(topic, device->code);
+                    (void)deviceTopic(topic, parameters, false, true);
                     for (const auto level : service::utils::splitPayload(topic, "/")) {
-                        if (level == "{deviceCode}") {
+                        if (level.starts_with("{param:") && level.ends_with('}')) {
                             continue;
                         }
                         if (level.starts_with("{point:") && level.ends_with('}')) {
@@ -243,8 +235,8 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                             throw std::invalid_argument("Topic 占位符须独占一层");
                         }
                     }
-                    auto compiled = compileTemplate(message.get<"templateText">().view(), false, required, false);
-                    service::utils::JsonValueTemplate::Values requiredValues{ { "$deviceCode", "\"device\"" }, { "$deviceId", "\"device-id\"" }, { "$commandId", "1" } };
+                    auto compiled = compileTemplate(message.get<"templateText">().view(), false, required);
+                    service::utils::JsonValueTemplate::Values requiredValues = subscription.parameters;
                     for (const auto& token : compiled.references()) {
                         if (token.starts_with("$param:")) {
                             requiredValues.emplace(token, "null");
@@ -260,7 +252,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                     std::optional<Response> response;
                     if (const auto& configured = message.get<"response">(); configured) {
                         response = Response{};
-                        response->topic = deviceTopic(std::string(configured->get<"topic">().view()), device->code);
+                        response->topic = deviceTopic(configured->get<"topic">().view(), parameters);
                         response->codeField = configured->get<"codeField">().view();
                         response->successCode = configured->get<"successCode">().value_;
                         response->timeoutMs = configured->get<"timeoutMs">().value_or(ruvia::int64{ 10000 }).value_;
@@ -283,12 +275,12 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             for (const auto& wire : reports) {
                 const auto reportConfig = ruvia::from_json<Config>(wire);
 
-                auto report = reportFor(reportConfig, device);
+                auto report = reportFor(reportConfig, device, parameters);
                 for (const auto& previous : subscriptions_) {
                     for (const auto& existing : previous.reports) {
                         if (existing.topic == report.topic && existing.layout.recordsPath == report.layout.recordsPath &&
                             (report.layout.identitySource == "bound" || existing.layout.identitySource == "bound" ||
-                             (existing.layout.deviceCodeField == report.layout.deviceCodeField && existing.device->code == device->code))) {
+                             (existing.layout.deviceCodeField == report.layout.deviceCodeField && existing.identifier == report.identifier))) {
                             throw std::invalid_argument("shared MQTT topic requires a consistent device code field and unique device codes");
                         }
                     }
@@ -441,20 +433,12 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             }
             const auto* commandTemplate = selected ? &selected->payload : (subscription->commandTemplate ? &*subscription->commandTemplate : nullptr);
             PayloadObject payloadObject;
-            service::utils::JsonValueTemplate::Values namedValues{ { "$deviceId", service::utils::jsonQuoted(subscription->device->id) } };
-            if (commandTemplate && commandTemplate->references("$commandId")) {
-                const auto now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                lastCommandNumber_ = std::max(lastCommandNumber_ + 1, now);
-                if (lastCommandNumber_ < 0 || lastCommandNumber_ > 9007199254740991LL) {
-                    throw std::invalid_argument("command_invalid: 指令编号超出 JSON 安全整数范围");
-                }
-                namedValues.emplace("$commandId", std::to_string(lastCommandNumber_));
-            }
+            service::utils::JsonValueTemplate::Values namedValues;
             for (const auto& [token, value] : subscription->parameters) {
                 namedValues.emplace(token, value);
             }
             std::map<std::string, std::string, std::less<>> topicValues;
-            const bool fieldPayload = !commandTemplate || commandTemplate->references("$values");
+            const bool fieldPayload = !commandTemplate;
             std::map<std::size_t, std::string> columns;
             std::string payload;
             std::vector<bool> occupied;
@@ -500,7 +484,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                     }
                 }
                 const auto token = "$point:" + mapping->name;
-                if (commandTemplate && !commandTemplate->references("$values") && !commandTemplate->references(token) && !(selected && selected->topicTokens.contains(token))) {
+                if (commandTemplate && !commandTemplate->references(token) && !(selected && selected->topicTokens.contains(token))) {
                     throw std::invalid_argument("请求点位未出现在指令模板中: " + mapping->name);
                 }
                 if (commandTemplate && commandTemplate->references(token)) {
@@ -518,16 +502,10 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 }
             }
             if (fieldPayload && subscription->identitySource == "payload") {
-                assign(subscription->deviceCodeField, service::utils::PayloadScalar{ subscription->device->code });
+                assign(subscription->deviceCodeField, service::utils::PayloadScalar{ subscription->reports.front().identifier });
             }
             if (subscription->format == "json") {
                 if (commandTemplate) {
-                    if (commandTemplate->references("$values")) {
-                        namedValues.emplace("$values", payloadObject.json(true));
-                    }
-                    if (commandTemplate->references("$deviceCode")) {
-                        namedValues.emplace("$deviceCode", service::utils::jsonQuoted(subscription->device->code));
-                    }
                     payload = commandTemplate->render(namedValues);
                 } else {
                     payload = payloadObject.json(true);
@@ -555,14 +533,14 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             std::string topic = subscription->commandTopic;
             if (selected) {
                 bool first = true;
-                for (const auto level : service::utils::splitPayload(selected->topic, "/")) {
+                const auto properties = ruvia::json_value::parse(std::string_view(subscription->device->parameters));
+                const auto resolvedTopic = deviceTopic(selected->topic, properties, false, true);
+                for (const auto level : service::utils::splitPayload(resolvedTopic, "/")) {
                     if (!first) {
                         topic += '/';
                     }
                     first = false;
-                    if (level == "{deviceCode}") {
-                        topic += subscription->device->code;
-                    } else if (level.starts_with("{point:") && level.ends_with('}')) {
+                    if (level.starts_with("{point:") && level.ends_with('}')) {
                         topic += topicValues.at("$point:" + std::string(level.substr(7, level.size() - 8)));
                     } else {
                         topic += level;
@@ -587,6 +565,18 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         throw std::invalid_argument("command_invalid: 回执关联字段不在指令中");
                     }
                     pending.matches.emplace_back(field, *value);
+                }
+                for (const auto& [packetId, previous] : outbound_) {
+                    if (!previous.completed && previous.deviceId == pending.deviceId && previous.response && previous.response->topic == pending.response->topic) {
+                        const bool distinct = std::any_of(pending.matches.begin(), pending.matches.end(), [&](const auto& match) {
+                            return std::any_of(previous.matches.begin(), previous.matches.end(), [&](const auto& old) {
+                                return old.first == match.first && old.second != match.second;
+                            });
+                        });
+                        if (!distinct) {
+                            throw std::invalid_argument("command_invalid: 回执关联值与在途指令不能区分");
+                        }
+                    }
                 }
             }
             const auto timeout = pending.response ? pending.response->timeoutMs : std::max<std::int64_t>(1, request.timeout.count());
@@ -720,6 +710,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
     struct Report {
         const DeviceDefinition* device;
         std::string topic;
+        std::string identifier;
         std::uint8_t qos;
         service::common::MqttReportLayout layout;
     };
@@ -737,12 +728,12 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::size_t recordLength = 0;
     };
 
-    static Report reportFor(const Config& config, const DeviceDefinition* device) {
+    static Report reportFor(const Config& config, const DeviceDefinition* device, const ruvia::json_value& properties) {
         const auto qos = config.get<"qos">().value_or(ruvia::int64{ 1 }).value_;
         if (!config.get<"topic">() || qos < 0 || qos > 2) {
             throw std::invalid_argument("invalid MQTT report Topic or QoS");
         }
-        return { .device = device, .topic = deviceTopic(std::string(config.get<"topic">()->view()), device->code, true), .qos = static_cast<std::uint8_t>(qos), .layout = service::common::mqttReportLayout(config) };
+        return { .device = device, .topic = deviceTopic(config.get<"topic">()->view(), properties, true), .identifier = service::common::mqttDeviceIdentifier(config.get<"identityProperty">().view(), properties), .qos = static_cast<std::uint8_t>(qos), .layout = service::common::mqttReportLayout(config) };
     }
 
     struct Inbound {
@@ -762,8 +753,6 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::vector<std::pair<std::string, service::utils::PayloadScalar>> matches;
         bool brokerAcknowledged = false, completed = false;
     };
-
-    std::int64_t lastCommandNumber_ = 0;
 
     static constexpr std::uint64_t kHandshake = 1, kKeepAlive = 2, kPing = 3, kCommandBase = 65536;
 
@@ -981,11 +970,11 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                     continue;
                 }
                 // Topic 身份不符时不解析载荷。
-                if (item.layout.identitySource == "topic" && service::common::mqttReportTopicDeviceCode(item.layout, message.topic) != item.device->code) {
+                if (item.layout.identitySource == "topic" && service::common::mqttReportTopicDeviceCode(item.layout, message.topic) != item.identifier) {
                     continue;
                 }
                 try {
-                    for (const auto& record : service::common::decodeMqttReport(item.layout, message.topic, message.payload, item.device->code, item.device->timezone, message.time)) {
+                    for (const auto& record : service::common::decodeMqttReport(item.layout, message.topic, message.payload, item.identifier, item.device->timezone, message.time)) {
                         publishRecord(item, record, message, id, actions);
                     }
                 } catch (const std::invalid_argument&) { /* 无效业务负载不推进遥测，但仍确认 MQTT。 */
@@ -1002,7 +991,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
 
     void publishRecord(const Report& item, const service::common::MqttReportRecord& record, Inbound& message, std::uint16_t id, std::vector<ProtocolAction>& actions) {
         // 设备编码不符或设备时间无效的记录不进入业务流。
-        if (record.deviceCode != item.device->code || !record.timeValid) {
+        if (record.deviceCode != item.identifier || !record.timeValid) {
             return;
         }
         const auto occurredAt = record.occurredAtMs;

@@ -349,3 +349,9 @@ export const dtuChannelSchema = z
             });
         }
     });
+
+export const ioControlSchema = z.object({
+    channel: z.string().min(3).max(16),
+    value: z.boolean(),
+    idempotencyKey: z.uuid(),
+});

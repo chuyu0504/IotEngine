@@ -13,6 +13,7 @@ import {
     edgeIdSchema,
     edgeListQuerySchema,
     firmwareUpgradeSchema,
+    ioControlSchema,
     logLevelSchema,
     logsQuerySchema,
     networkSchema,
@@ -37,6 +38,7 @@ const eventParams = (scope?: Edge.EventScope) => ({
     logs: scope?.logs ? true : undefined,
     vpn: scope?.vpn ? true : undefined,
     dtu: scope?.dtu ? true : undefined,
+    io: scope?.io ? true : undefined,
     ...(scope?.logs ? logsQuerySchema.parse(scope.logs) : {}),
 });
 export const getEdgeInventory = (scope?: Edge.EventScope) =>
@@ -252,3 +254,8 @@ export const saveDtuChannel = (id: string, data: Edge.DtuChannel) =>
     request.put<void>(`${edgePath(id)}/dtu`, dtuChannelSchema.parse(data));
 export const deleteDtuChannel = (id: string, channelId: string) =>
     request.delete<void>(`${edgePath(id)}/dtu/${edgeIdSchema.parse(channelId)}`);
+
+export const observeIoState = (scope: Edge.EventScope) =>
+    createSseSnapshotStream<Edge.IoState>('/v1/edge/events', eventParams(scope), 'io');
+export const controlIo = (id: string, data: Edge.IoControl) =>
+    request.post<Edge.Task>(`${edgePath(id)}/io`, ioControlSchema.parse(data));

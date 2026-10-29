@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -60,6 +61,7 @@
 #include "service/common/worker.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/request_context.h"
+#include "service/modules/device/device.entity.h"
 #include "service/modules/edge_node/edge_node.entity.h"
 #include "service/modules/edge_node/edge_node.types.h"
 #include "service/modules/system/outbox/outbox.service.h"
@@ -490,6 +492,83 @@ class EdgeService {
             result += config + ",\"status\":" + std::string(row[1].value().value_or("{}")) + "}";
         }
         co_return result + "]}";
+    }
+
+    template <typename Context>
+    ruvia::task<IoStateDto> ioState(Context& c, std::string_view nodeId) {
+        auto database = c.db();
+        co_return co_await loadIoState(c, database, nodeId);
+    }
+
+    template <typename Context>
+    ruvia::task<TaskDto> controlIo(Context& c, std::string_view nodeId, const IoControlBody& body) {
+        using Task = entities::EdgeTaskEntity;
+        const auto id = body.template get<"idempotencyKey">().view();
+        const auto channel = body.template get<"channel">().view();
+        auto transaction = co_await c.db().begin_transaction();
+        co_await transaction.advisory_lock(service::message::lock::kAcquisitionConfiguration);
+        ruvia::db_find_options existing;
+        existing.where_ = Task::column<"id">() == id;
+        if (const auto previous = co_await transaction.template repository<Task>().find_one(existing)) {
+            if (previous->template get<"node_id">() != nodeId || std::string_view(previous->template get<"created_by">()) != std::string_view(c.userId) || previous->template get<"task_type">() != service::message::edge::kIoTaskType) {
+                service::common::fail(17003, "该操作标识已被其他请求使用", 409);
+            }
+            const auto request = ruvia::from_json<service::message::edge::IoTaskRequest>(previous->template get<"request">());
+            if (request.template get<"channel">().view() != channel || request.template get<"value">().value_ != body.template get<"value">().value_) {
+                service::common::fail(17003, "该操作标识已被其他请求使用", 409);
+            }
+            TaskDto answer(ruvia::model_options{ .resource_ = c.arena() });
+            answer.template set<"id">(id).template set<"taskType">(service::message::edge::kIoTaskType).template set<"status">(previous->template get<"status">());
+            co_await transaction.commit();
+            co_return answer;
+        }
+        std::string validatedSession;
+        const auto state = co_await loadIoState(c, transaction, nodeId, &validatedSession);
+        if (!state.template get<"online">().value_ || !state.template get<"current">().value_ || !state.template get<"controlSupported">().value_) {
+            service::common::fail(17004, "节点离线、状态尚未就绪或固件不支持节点 IO 控制", 409);
+        }
+        const auto& channels = state.template get<"channels">();
+        const auto target = std::ranges::find_if(channels, [&](const auto& row) {
+            return row.template get<"state">().template get<"channel">().view() == channel;
+        });
+        if (target == channels.end() || target->template get<"state">().template get<"kind">().view() != "DO" || !target->template get<"state">().template get<"available">().value_ || !target->template get<"state">().template get<"controllable">().value_) {
+            service::common::fail(17004, "该 IO 通道不可控制", 409);
+        }
+        if (!target->template get<"bindings">().empty() || target->template get<"pending">()) {
+            service::common::fail(17003, "该 IO 通道已绑定设备或有未完成的控制操作", 409);
+        }
+        const auto lease = co_await c.redis().get(service::message::edge::sessionKey(nodeId));
+        if (!lease || std::string_view(*lease) != std::string_view(validatedSession)) {
+            service::common::fail(17019, "节点会话已变化，请刷新后重试", 409);
+        }
+        ruvia::db_query clock(c.pool());
+        clock.select({ clock.alias(clock.cast(clock.binary(clock.extract(ruvia::db_date_part::epoch, clock.call("clock_timestamp")), Op::multiply, clock.value(std::int64_t{ 1000 })), Type::big_int), "now") });
+        const auto statement = clock.compile(ruvia::db_driver::postgresql, c.pool());
+        const auto times = co_await transaction.query(statement.sql(), statement.params());
+        const auto startBefore = times.front()[0].template as<std::int64_t>().value() + 10000;
+        service::message::edge::IoTaskRequest request(ruvia::model_options{ .resource_ = c.arena() });
+        request.template set<"channel">(channel).template set<"value">(body.template get<"value">().value_).template set<"session">(*lease).template set<"startBeforeMs">(startBefore);
+        const auto json = ruvia::to_json(request);
+        Task task(c.pool());
+        task.template set<"id">(id).template set<"node_id">(nodeId).template set<"task_type">(service::message::edge::kIoTaskType).template set<"created_by">(c.userId).template set<"request">(std::string_view(json.data(), json.size()));
+        (void)co_await transaction.template repository<Task>().insert(task);
+        co_await transaction.commit();
+        module_pb::CommandRequest command;
+        std::uint8_t bytes[16]{};
+        (void)service::common::uuidBytes(id, bytes);
+        command.set_command_id(binary(bytes, sizeof(bytes)));
+        command.set_external_io(true);
+        command.set_node_io_channel(std::string(channel));
+        command.set_start_before_ms(startBefore);
+        command.set_timeout_ms(3000);
+        auto* value = command.add_values();
+        value->set_element_id(std::string(channel));
+        value->mutable_expected()->set_kind(module_pb::VALUE_STRING);
+        value->mutable_expected()->set_string_value(body.template get<"value">().value_ ? "1" : "0");
+        co_await queueControl(c, nodeId, service::message::edge::kQueueIoOperation, command);
+        TaskDto answer(ruvia::model_options{ .resource_ = c.arena() });
+        answer.template set<"id">(id).template set<"taskType">(service::message::edge::kIoTaskType).template set<"status">("pending");
+        co_return answer;
     }
 
     template <typename Context>
@@ -1063,12 +1142,13 @@ class EdgeService {
         if (removed->empty()) {
             service::common::fail(17021, "注册状态已变化，请刷新后重试", 409);
         }
-        const std::array<std::string, 5> keys{
+        const std::array<std::string, 6> keys{
             service::message::edge::sessionKey(id),
             service::message::edge::metadataKey(id),
             service::message::edge::egressKey(id),
             service::message::edge::configKey(id),
             service::message::edge::configRevisionKey(id),
+            service::message::edge::ioStateKey(id),
         };
         co_await c.redis().set(service::message::edge::authKey(imei), std::string(id) + "|pending");
         for (const auto& key : keys) {
@@ -2126,6 +2206,107 @@ class EdgeService {
         (void)co_await service::utils::callRpc(context, "edge", operation, service::message::rpc::encodeLinePair(nodeId, requestPayload));
     }
 
+    template <typename Context, typename Database>
+    static ruvia::task<IoStateDto> loadIoState(Context& c, Database& database, std::string_view nodeId, std::string* validatedSession = nullptr) {
+        using Node = entities::EdgeNodeEntity;
+        using Binding = service::device::entities::ExternalIoBindingEntity;
+        using Device = service::device::entities::DeviceEntity;
+        using Task = entities::EdgeTaskEntity;
+        using State = entities::IoStateEntity;
+        ruvia::db_find_options nodeOptions;
+        nodeOptions.where_ = Node::column<"id">() == nodeId;
+        const auto node = co_await database.template repository<Node>().find_one(nodeOptions);
+        if (!node) {
+            service::common::fail(17001, "边缘节点不存在", 404);
+        }
+        if (node->template get<"enrollment_status">() != "approved") {
+            service::common::fail(17002, "边缘节点尚未批准注册", 409);
+        }
+        const auto capability = ruvia::from_json<CapabilityDto>(node->template get<"capability">());
+        const auto session = co_await c.redis().get(service::message::edge::sessionKey(nodeId));
+        const auto storedJson = co_await c.redis().get(service::message::edge::ioStateKey(nodeId));
+        const auto stored = storedJson ? std::optional(ruvia::from_json<State>(std::string_view(*storedJson))) : std::nullopt;
+        const bool ioSupported = capability.template get<"externalIo">() && capability.template get<"externalIo">()->template get<"supported">().value_or(false);
+        const bool current = ioSupported && session && stored && stored->template get<"session">().view() == std::string_view(*session);
+        if (validatedSession && current) {
+            *validatedSession = *session;
+        }
+        service::message::edge::IoSnapshot snapshot(ruvia::model_options{ .resource_ = c.arena() });
+        if (stored) {
+            snapshot = ruvia::from_json<service::message::edge::IoSnapshot>(stored->template get<"snapshot">().view());
+        }
+        std::map<std::string, std::vector<IoBindingDto>> bindings;
+        ruvia::db_query query(c.pool());
+        auto bindingQuery = database.template repository<Binding>().query_builder("b");
+        bindingQuery.select({ { "channel", Binding::column<"channel">().expression(query, "b") }, { "device", db::text(query, Binding::column<"device_id">().expression(query, "b")) }, { "name", Device::column<"name">().expression(query, "d") }, { "point", db::text(query, Binding::column<"point_id">().expression(query, "b")) } })
+            .template join<Device>(ruvia::db_join_type::inner, "d", query.binary(Device::column<"id">().expression(query, "d"), Op::equal, Binding::column<"device_id">().expression(query, "b")))
+            .where(query.binary(Binding::column<"node_id">().expression(query, "b"), Op::equal, query.cast(query.value(nodeId), Type::uuid)))
+            .and_where(query.unary(ruvia::db_unary_operator::is_null, Device::column<"deleted_at">().expression(query, "d")));
+        for (const auto& row : co_await bindingQuery.get_raw_many()) {
+            IoBindingDto binding(ruvia::model_options{ .resource_ = c.arena() });
+            binding.template set<"deviceId">(row[1].value().value_or("")).template set<"deviceName">(row[2].value().value_or("")).template set<"pointId">(row[3].value().value_or(""));
+            bindings[std::string(row[0].value().value_or(""))].push_back(std::move(binding));
+        }
+        ruvia::db_query documents(c.pool());
+        documents.select({ documents.alias(Task::column<"id">().expression(documents), "id"), documents.alias(Task::column<"status">().expression(documents), "status"), documents.alias(db::jsonText(documents, Task::column<"request">().expression(documents), "channel"), "channel"), documents.alias(db::jsonText(documents, Task::column<"result">().expression(documents), "message"), "message"), documents.alias(db::jsonText(documents, Task::column<"result">().expression(documents), "writeAckMissing"), "uncertain"), documents.alias(Task::column<"updated_at">().expression(documents), "updated_at"), documents.alias((Task::column<"status">() != std::string_view("succeeded") && Task::column<"status">() != std::string_view("failed")).expression(documents), "active") })
+            .from(Task::table_name())
+            .where((Task::column<"node_id">() == nodeId && Task::column<"task_type">() == service::message::edge::kIoTaskType).expression(documents));
+        ruvia::db_query recent(c.pool());
+        const auto taskChannel = recent.column("channel", "task");
+        recent.select({ recent.column("id", "task"), recent.column("status", "task"), taskChannel, recent.column("message", "task"), recent.column("uncertain", "task") })
+            .distinct_on({ taskChannel })
+            .from(documents, "task")
+            .order_by(taskChannel)
+            .add_order_by(recent.column("active", "task"), ruvia::db_order_direction::desc)
+            .add_order_by(recent.column("updated_at", "task"), ruvia::db_order_direction::desc)
+            .add_order_by(recent.column("id", "task"), ruvia::db_order_direction::desc);
+        const auto taskStatement = recent.compile(ruvia::db_driver::postgresql, c.pool());
+        const auto tasks = co_await database.query(taskStatement.sql(), taskStatement.params());
+        ruvia::array<IoChannelDto> rows(ruvia::model_options{ .resource_ = c.arena() });
+        const ruvia::array<ExternalIoChannelDto> emptyChannels(ruvia::model_options{ .resource_ = c.arena() });
+        const auto advertisedChannels = capability.template get<"externalIo">() ? &capability.template get<"externalIo">()->template get<"channels">() : nullptr;
+        for (const auto& channel : advertisedChannels && *advertisedChannels ? **advertisedChannels : emptyChannels) {
+            const auto name = channel.template get<"channel">()->view();
+            service::message::edge::IoChannelState value(ruvia::model_options{ .resource_ = c.arena() });
+            value.template set<"channel">(name).template set<"kind">(channel.template get<"kind">()->view()).template set<"available">(channel.template get<"available">().value_or(false)).template set<"controllable">(channel.template get<"controllable">().value_or(false));
+            if (stored) {
+                for (const auto& item : snapshot.template get<"channels">()) {
+                    if (item.template get<"channel">().view() == name && item.template get<"kind">().view() == channel.template get<"kind">()->view()) {
+                        value.template set<"available">(channel.template get<"available">().value_or(false) && item.template get<"available">().value_).template set<"controllable">(channel.template get<"controllable">().value_or(false) && item.template get<"controllable">().value_);
+                        if (item.template get<"value">()) {
+                            value.template set<"value">(item.template get<"value">()->view());
+                        }
+                        break;
+                    }
+                }
+            }
+            ruvia::array<IoBindingDto> assigned(ruvia::model_options{ .resource_ = c.arena() });
+            for (auto& binding : bindings[std::string(name)]) {
+                assigned.push_back(std::move(binding));
+            }
+            auto& row = rows.emplace_back(ruvia::model_options{ .resource_ = c.arena() });
+            row.template set<"state">(std::move(value)).template set<"bindings">(std::move(assigned));
+            for (const auto& task : tasks) {
+                if (task[2].value().value_or("") != name) {
+                    continue;
+                }
+                const auto status = task[1].value().value_or("");
+                TaskDto taskDto(ruvia::model_options{ .resource_ = c.arena() });
+                taskDto.template set<"id">(task[0].value().value_or("")).template set<"taskType">(service::message::edge::kIoTaskType).template set<"status">(status).template set<"message">(task[3].value().value_or("")).template set<"uncertain">(task[4].value().value_or("") == "true");
+                if (status != "succeeded" && status != "failed") {
+                    row.template set<"pending">(taskDto);
+                }
+                row.template set<"lastControl">(std::move(taskDto));
+            }
+        }
+        IoStateDto result(ruvia::model_options{ .resource_ = c.arena() });
+        result.template set<"online">(session.has_value()).template set<"current">(current).template set<"controlSupported">(ioSupported && capability.template get<"nodeIoControl">().value_or(false)).template set<"channels">(std::move(rows));
+        if (stored) {
+            result.template set<"observedAtMs">(stored->template get<"observed_at_ms">().value_);
+        }
+        co_return result;
+    }
+
     static std::string binary(const std::uint8_t* data, std::size_t size) {
         return { reinterpret_cast<const char*>(data), size };
     }
@@ -2323,7 +2504,7 @@ class EdgeService {
             return query.column(name, "firmware");
         };
         auto queryBuilder = database.template repository<entities::EdgeNodeEntity>().query_builder("node");
-        queryBuilder.select({ { "value0", query.cast(nodeId, Type::text) }, { "imei", nodeColumn(entities::EdgeNodeEntity::column_name<"imei">()) }, { "name", textDefault(query, nodeColumn(entities::EdgeNodeEntity::column_name<"name">())) }, { "model", nodeColumn(entities::EdgeNodeEntity::column_name<"model">()) }, { "software_version", nodeColumn(entities::EdgeNodeEntity::column_name<"software_version">()) }, { "hostname", nodeColumn(entities::EdgeNodeEntity::column_name<"hostname">()) }, { "architecture", nodeColumn(entities::EdgeNodeEntity::column_name<"architecture">()) }, { "openwrt_release", nodeColumn(entities::EdgeNodeEntity::column_name<"openwrt_release">()) }, { "enrollment_status", nodeColumn(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "value9", query.cast(query.value(false), Type::boolean) }, { "last_seen_at", textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"last_seen_at">()) })) }, { "created_at", query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"created_at">()) }) }, { "value12", safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0) }, { "value13", safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0) }, { "value14", textDefault(query, db::jsonText(query, config, "state"), "idle") }, { "value15", textDefault(query, db::jsonText(query, config, "message")) }, { "value16", safeBigInt(query, db::jsonText(query, outbox, "records"), 0) }, { "value17", safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0) }, { "value18", textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info") }, { "value19", booleanText(query, db::jsonText(query, capability, "networkConfig")) }, { "value20", safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0) }, { "value21", booleanText(query, db::jsonText(query, capability, "firmwareUpdate")) }, { "value22", booleanText(query, db::jsonText(query, capability, "deviceConfig")) }, { "value23", booleanText(query, db::jsonText(query, capability, "modemControl")) }, { "value24", booleanText(query, db::jsonText(query, capability, "terminal")) }, { "value25", booleanText(query, db::jsonText(query, capability, "logs")) }, { "value26", booleanText(query, db::jsonText(query, mobile, "available")) }, { "value27", textDefault(query, db::jsonText(query, mobile, "simState"), "unknown") }, { "value28", textDefault(query, db::jsonText(query, mobile, "iccid")) }, { "value29", safeBigInt(query, db::jsonText(query, signal, "csq"), 99) }, { "value30", safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1) }, { "value31", safeBigInt(query, db::jsonText(query, signal, "percent"), 0) }, { "value32", booleanText(query, db::jsonText(query, mobile, "registered")) }, { "value33", safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1) }, { "value34", textDefault(query, db::jsonText(query, mobile, "apn")) }, { "value35", textDefault(query, db::jsonText(query, mobile, "operator")) }, { "value36", booleanText(query, db::jsonText(query, mobile, "connected")) }, { "value37", textDefault(query, db::jsonText(query, mobile, "ipv4")) }, { "status", textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column_name<"status">())) }, { "value39", safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0) }, { "value40", safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0) }, { "value41", safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0) }, { "value42", textDefault(query, firmwareColumn(kMessageColumn)) }, { "value43", booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")) }, { "value44", textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")) }, { "value45", textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")) }, { "value46", textDefault(query, db::jsonText(query, vpnCapability, "publicKey")) }, { "group_id", textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Type::text)) }, { "value48", textDefault(query, query.column(entities::EdgeNodeGroupEntity::column_name<"name">(), "group_item")) }, { "value49", textDefault(query, query.subquery(vpn)) }, { "value50", booleanText(query, db::jsonText(query, capability, "serialDebug")) }, { "value51", db::jsonText(query, tcpTraffic, "uploadBytes") }, { "value52", db::jsonText(query, tcpTraffic, "downloadBytes") }, { "value53", db::jsonText(query, tcpTraffic, "intervalMs") }, { "value54", db::jsonText(query, tcpTraffic, "sampleId") }, { "value55", db::jsonText(query, tcpTraffic, "month") }, { "value56", db::jsonText(query, tcpTraffic, "monthlyUploadBytes") }, { "value57", db::jsonText(query, tcpTraffic, "monthlyDownloadBytes") }, { "value58", db::jsonText(query, tcpTraffic, "day") }, { "value59", db::jsonText(query, tcpTraffic, "dailyUploadBytes") }, { "value60", db::jsonText(query, tcpTraffic, "dailyDownloadBytes") }, { "value61", db::jsonText(query, vpnTraffic, "uploadBytes") }, { "value62", db::jsonText(query, vpnTraffic, "downloadBytes") }, { "value63", db::jsonText(query, vpnTraffic, "intervalMs") }, { "value64", db::jsonText(query, vpnTraffic, "sampleId") }, { "value65", db::jsonText(query, vpnTraffic, "month") }, { "value66", db::jsonText(query, vpnTraffic, "monthlyUploadBytes") }, { "value67", db::jsonText(query, vpnTraffic, "monthlyDownloadBytes") }, { "value68", db::jsonText(query, vpnTraffic, "day") }, { "value69", db::jsonText(query, vpnTraffic, "dailyUploadBytes") }, { "value70", db::jsonText(query, vpnTraffic, "dailyDownloadBytes") }, { "value71", db::jsonValue(query, capability, "externalIo") } }).template join<entities::EdgeNodeGroupEntity>(ruvia::db_join_type::left, "group_item", query.binary(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Op::equal, query.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item"))).join(ruvia::db_join_type::left, latestBuilder, "firmware", query.cast(query.value(true), Type::boolean), { .lateral_ = true });
+        queryBuilder.select({ { "value0", query.cast(nodeId, Type::text) }, { "imei", nodeColumn(entities::EdgeNodeEntity::column_name<"imei">()) }, { "name", textDefault(query, nodeColumn(entities::EdgeNodeEntity::column_name<"name">())) }, { "model", nodeColumn(entities::EdgeNodeEntity::column_name<"model">()) }, { "software_version", nodeColumn(entities::EdgeNodeEntity::column_name<"software_version">()) }, { "hostname", nodeColumn(entities::EdgeNodeEntity::column_name<"hostname">()) }, { "architecture", nodeColumn(entities::EdgeNodeEntity::column_name<"architecture">()) }, { "openwrt_release", nodeColumn(entities::EdgeNodeEntity::column_name<"openwrt_release">()) }, { "enrollment_status", nodeColumn(entities::EdgeNodeEntity::column_name<"enrollment_status">()) }, { "value9", query.cast(query.value(false), Type::boolean) }, { "last_seen_at", textDefault(query, query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"last_seen_at">()) })) }, { "created_at", query.call("iot_utc_timestamp", { nodeColumn(entities::EdgeNodeEntity::column_name<"created_at">()) }) }, { "value12", safeBigInt(query, db::jsonText(query, config, "activeVersion"), 0) }, { "value13", safeBigInt(query, db::jsonText(query, config, "desiredVersion"), 0) }, { "value14", textDefault(query, db::jsonText(query, config, "state"), "idle") }, { "value15", textDefault(query, db::jsonText(query, config, "message")) }, { "value16", safeBigInt(query, db::jsonText(query, outbox, "records"), 0) }, { "value17", safeBigInt(query, db::jsonText(query, outbox, "bytes"), 0) }, { "value18", textDefault(query, db::jsonText(query, db::jsonValue(query, status, "log"), "level"), "info") }, { "value19", booleanText(query, db::jsonText(query, capability, "networkConfig")) }, { "value20", safeBigInt(query, db::jsonText(query, capability, "networkConfigVersion"), 0) }, { "value21", booleanText(query, db::jsonText(query, capability, "firmwareUpdate")) }, { "value22", booleanText(query, db::jsonText(query, capability, "deviceConfig")) }, { "value23", booleanText(query, db::jsonText(query, capability, "modemControl")) }, { "value24", booleanText(query, db::jsonText(query, capability, "terminal")) }, { "value25", booleanText(query, db::jsonText(query, capability, "logs")) }, { "value26", booleanText(query, db::jsonText(query, mobile, "available")) }, { "value27", textDefault(query, db::jsonText(query, mobile, "simState"), "unknown") }, { "value28", textDefault(query, db::jsonText(query, mobile, "iccid")) }, { "value29", safeBigInt(query, db::jsonText(query, signal, "csq"), 99) }, { "value30", safeBigInt(query, db::jsonText(query, signal, "rssiDbm"), -1) }, { "value31", safeBigInt(query, db::jsonText(query, signal, "percent"), 0) }, { "value32", booleanText(query, db::jsonText(query, mobile, "registered")) }, { "value33", safeBigInt(query, db::jsonText(query, mobile, "registrationStatus"), -1) }, { "value34", textDefault(query, db::jsonText(query, mobile, "apn")) }, { "value35", textDefault(query, db::jsonText(query, mobile, "operator")) }, { "value36", booleanText(query, db::jsonText(query, mobile, "connected")) }, { "value37", textDefault(query, db::jsonText(query, mobile, "ipv4")) }, { "status", textDefault(query, firmwareColumn(entities::EdgeTaskEntity::column_name<"status">())) }, { "value39", safeBigInt(query, firmwareColumn(kProgressPercentColumn), 0) }, { "value40", safeBigInt(query, firmwareColumn(kDownloadedBytesColumn), 0) }, { "value41", safeBigInt(query, firmwareColumn(kTotalBytesColumn), 0) }, { "value42", textDefault(query, firmwareColumn(kMessageColumn)) }, { "value43", booleanText(query, db::jsonText(query, vpnCapability, "supportsVpn")) }, { "value44", textDefault(query, db::jsonText(query, vpnCapability, "wireguardVersion")) }, { "value45", textDefault(query, db::jsonText(query, vpnCapability, "agentVersion")) }, { "value46", textDefault(query, db::jsonText(query, vpnCapability, "publicKey")) }, { "group_id", textDefault(query, query.cast(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Type::text)) }, { "value48", textDefault(query, query.column(entities::EdgeNodeGroupEntity::column_name<"name">(), "group_item")) }, { "value49", textDefault(query, query.subquery(vpn)) }, { "value50", booleanText(query, db::jsonText(query, capability, "serialDebug")) }, { "value51", db::jsonText(query, tcpTraffic, "uploadBytes") }, { "value52", db::jsonText(query, tcpTraffic, "downloadBytes") }, { "value53", db::jsonText(query, tcpTraffic, "intervalMs") }, { "value54", db::jsonText(query, tcpTraffic, "sampleId") }, { "value55", db::jsonText(query, tcpTraffic, "month") }, { "value56", db::jsonText(query, tcpTraffic, "monthlyUploadBytes") }, { "value57", db::jsonText(query, tcpTraffic, "monthlyDownloadBytes") }, { "value58", db::jsonText(query, tcpTraffic, "day") }, { "value59", db::jsonText(query, tcpTraffic, "dailyUploadBytes") }, { "value60", db::jsonText(query, tcpTraffic, "dailyDownloadBytes") }, { "value61", db::jsonText(query, vpnTraffic, "uploadBytes") }, { "value62", db::jsonText(query, vpnTraffic, "downloadBytes") }, { "value63", db::jsonText(query, vpnTraffic, "intervalMs") }, { "value64", db::jsonText(query, vpnTraffic, "sampleId") }, { "value65", db::jsonText(query, vpnTraffic, "month") }, { "value66", db::jsonText(query, vpnTraffic, "monthlyUploadBytes") }, { "value67", db::jsonText(query, vpnTraffic, "monthlyDownloadBytes") }, { "value68", db::jsonText(query, vpnTraffic, "day") }, { "value69", db::jsonText(query, vpnTraffic, "dailyUploadBytes") }, { "value70", db::jsonText(query, vpnTraffic, "dailyDownloadBytes") }, { "value71", db::jsonValue(query, capability, "externalIo") }, { "value72", booleanText(query, db::jsonText(query, capability, "nodeIoControl")) } }).template join<entities::EdgeNodeGroupEntity>(ruvia::db_join_type::left, "group_item", query.binary(nodeColumn(entities::EdgeNodeEntity::column_name<"group_id">()), Op::equal, query.column(entities::EdgeNodeGroupEntity::column_name<"id">(), "group_item"))).join(ruvia::db_join_type::left, latestBuilder, "firmware", query.cast(query.value(true), Type::boolean), { .lateral_ = true });
         return queryBuilder;
     }
 
@@ -2441,6 +2622,7 @@ class EdgeService {
         vpn.template set<"publicKey">(row[46].value().value_or(std::string_view{}));
         capability.template set<"vpn">(std::move(vpn));
         capability.template set<"externalIo">(ruvia::from_json<ExternalIoCapabilityDto>(row[71].value().value_or("{}")));
+        capability.template set<"nodeIoControl">(row[72].value().value_or("") == "t");
 
         SignalDto signal(ruvia::model_options{ .resource_ = c.arena() });
         signal.template set<"csq">(integer(row[29].value().value_or(std::string_view{})));
@@ -2516,7 +2698,7 @@ class EdgeService {
         ruvia::db_query query(resource);
         const auto result = query.column(entities::EdgeTaskEntity::column_name<"result">(), "task");
         auto queryBuilder = database.template repository<entities::EdgeTaskEntity>().query_builder("task");
-        queryBuilder.select({ { "id", query.cast(query.column(entities::EdgeTaskEntity::column_name<"id">(), "task"), Type::text) }, { "task_type", query.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task") }, { "status", query.column(entities::EdgeTaskEntity::column_name<"status">(), "task") }, { "value3", textDefault(query, db::jsonText(query, result, "message")) }, { "value4", safeBigInt(query, db::jsonText(query, result, "progressPercent"), 0) }, { "value5", safeBigInt(query, db::jsonText(query, result, "downloadedBytes"), 0) }, { "value6", safeBigInt(query, db::jsonText(query, result, "totalBytes"), 0) }, { "created_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task") }) }, { "updated_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"updated_at">(), "task") }) } }).where(query.binary(query.column(entities::EdgeTaskEntity::column_name<"node_id">(), "task"), Op::equal, query.cast(query.value(nodeId), Type::uuid))).order_by(query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc).limit(50);
+        queryBuilder.select({ { "id", query.cast(query.column(entities::EdgeTaskEntity::column_name<"id">(), "task"), Type::text) }, { "task_type", query.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task") }, { "status", query.column(entities::EdgeTaskEntity::column_name<"status">(), "task") }, { "value3", textDefault(query, db::jsonText(query, result, "message")) }, { "value4", safeBigInt(query, db::jsonText(query, result, "progressPercent"), 0) }, { "value5", safeBigInt(query, db::jsonText(query, result, "downloadedBytes"), 0) }, { "value6", safeBigInt(query, db::jsonText(query, result, "totalBytes"), 0) }, { "created_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task") }) }, { "updated_at", query.call("iot_utc_timestamp", { query.column(entities::EdgeTaskEntity::column_name<"updated_at">(), "task") }) } }).where(query.binary(query.column(entities::EdgeTaskEntity::column_name<"node_id">(), "task"), Op::equal, query.cast(query.value(nodeId), Type::uuid))).and_where(query.binary(query.column(entities::EdgeTaskEntity::column_name<"task_type">(), "task"), Op::not_equal, query.value(service::message::edge::kIoTaskType))).order_by(query.column(entities::EdgeTaskEntity::column_name<"created_at">(), "task"), ruvia::db_order_direction::desc).limit(50);
         return queryBuilder;
     }
 

@@ -257,7 +257,7 @@ class GatewayService final {
         const ConnectionIdentity& identity,
         std::uint64_t now
     ) {
-        return !envelope.has_serial_debug_request() ||
+        return !(envelope.has_serial_debug_request() || (envelope.has_command_request() && !envelope.command_request().node_io_channel().empty())) ||
             (envelope.session_epoch() == identity.epoch &&
              envelope.protocol_version() == identity.protocolVersion &&
              envelope.created_at_ms() <= now && now - envelope.created_at_ms() <= 15000);
@@ -290,7 +290,18 @@ class GatewayService final {
             !queuedEnvelopeIsCurrent(result.envelope, identity, service::message::utcNowMilliseconds())) {
             co_return result;
         }
-        if (result.envelope.has_command_request()) {
+        if (result.envelope.has_command_request() && !result.envelope.command_request().node_io_channel().empty()) {
+            using Task = persistence::EdgeTaskEntity;
+            ruvia::db_query query(c.pool());
+            auto claim = c.db().repository<Task>().update_builder();
+            const auto id = service::common::uuidText(result.envelope.command_request().command_id());
+            const auto deadline = query.cast(config::detail::jsonText(query, Task::column<"request">().expression(query), "startBeforeMs"), ruvia::db_data_type::big_int);
+            const auto now = query.binary(query.extract(ruvia::db_date_part::epoch, query.call("clock_timestamp")), ruvia::db_binary_operator::multiply, query.value(std::int64_t{ 1000 }));
+            claim.set(Task::column_name<"status">(), query.value("running")).set(Task::column_name<"updated_at">(), query.call("now")).where((Task::column<"id">() == id && Task::column<"node_id">() == identity.nodeId && Task::column<"task_type">() == service::message::edge::kIoTaskType && Task::column<"status">() == std::string_view("pending")).expression(query)).and_where(query.binary(deadline, ruvia::db_binary_operator::greater, now));
+            if (!(co_await claim.execute()).affected_rows()) {
+                co_return result;
+            }
+        } else if (result.envelope.has_command_request()) {
             const auto id = service::common::uuidText(result.envelope.command_request().command_id());
             const auto deadlineMs = co_await claimCommand(c, id, identity.nodeId);
             if (!deadlineMs) {
@@ -757,6 +768,7 @@ class GatewayService final {
             case pb::Envelope::kCommandResult:
             case pb::Envelope::kDeviceStatusReport:
             case pb::Envelope::kDtuStatus:
+            case pb::Envelope::kExternalIoStatus:
                 return true;
             default:
                 return false;

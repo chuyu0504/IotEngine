@@ -2278,7 +2278,69 @@ END $schema$;
             auto result = schema.compile("0062_acquisition_epoch_and_history");
             return std::move(result.front());
         }(),
+        ruvia::db_migration({ .id_ = "0063_edge_io_management", .sql_ = std::string(R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE edge_task DROP CONSTRAINT edge_task_task_type_check;
+ALTER TABLE edge_task ADD CONSTRAINT edge_task_task_type_check
+ CHECK (task_type IN ('network','firmware','modem','vpn','platform_upsert','platform_delete','io'));
+CREATE UNIQUE INDEX edge_io_pending_channel ON edge_task(node_id, (request->>'channel'))
+ WHERE task_type='io' AND status NOT IN ('succeeded','failed');
+CREATE FUNCTION guard_edge_io_control_ownership() RETURNS trigger LANGUAGE plpgsql AS $guard$
+BEGIN
+ PERFORM pg_advisory_xact_lock()sql") +
+                                  std::to_string(service::message::lock::kAcquisitionConfiguration) + R"sql();
+ IF TG_TABLE_NAME='edge_task' THEN
+  IF NEW.task_type='io' AND EXISTS(SELECT 1 FROM device_external_io_binding
+    WHERE node_id=NEW.node_id AND channel=NEW.request->>'channel') THEN
+   RAISE EXCEPTION 'IO channel is assigned to a device' USING ERRCODE='23514';
+  END IF;
+ ELSE
+  IF EXISTS(SELECT 1 FROM edge_task WHERE node_id=NEW.node_id AND task_type='io'
+    AND request->>'channel'=NEW.channel AND status NOT IN ('succeeded','failed')) THEN
+   RAISE EXCEPTION 'IO channel has an unfinished node control' USING ERRCODE='23514';
+  END IF;
+ END IF;
+ RETURN NEW;
+END $guard$;
+CREATE TRIGGER guard_node_io_control BEFORE INSERT ON edge_task
+ FOR EACH ROW WHEN (NEW.task_type='io') EXECUTE FUNCTION guard_edge_io_control_ownership();
+CREATE TRIGGER guard_io_binding_control BEFORE INSERT OR UPDATE ON device_external_io_binding
+ FOR EACH ROW EXECUTE FUNCTION guard_edge_io_control_ownership();
+-- IO task changes only affect the IO view. Other management tasks retain edge notifications.
+DO $triggers$ DECLARE trigger_name TEXT; BEGIN
+ FOR trigger_name IN SELECT tgname FROM pg_trigger WHERE tgrelid='edge_task'::regclass AND tgfoid='publish_query_change()'::regprocedure AND NOT tgisinternal LOOP
+  EXECUTE format('DROP TRIGGER %I ON edge_task',trigger_name);
+ END LOOP;
+END $triggers$;
+CREATE FUNCTION publish_edge_task_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE changed RECORD;
+BEGIN
+ FOR changed IN SELECT CASE WHEN task_type='io' THEN TG_ARGV[0] ELSE 'edge' END AS topic, string_agg(DISTINCT node_id::text,',') AS ids FROM query_changed_rows GROUP BY 1 LOOP
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+   VALUES(gen_random_uuid(),'query.changed',changed.topic,changed.ids,TG_OP,2);
+ END LOOP;
+ RETURN NULL;
+END $fn$;
+CREATE TRIGGER edge_task_io_insert AFTER INSERT ON edge_task REFERENCING NEW TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_edge_task_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(');
+CREATE TRIGGER edge_task_io_update AFTER UPDATE ON edge_task REFERENCING NEW TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_edge_task_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(');
+CREATE TRIGGER edge_task_io_delete AFTER DELETE ON edge_task REFERENCING OLD TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_edge_task_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(');
+CREATE TRIGGER edge_io_binding_insert AFTER INSERT ON device_external_io_binding REFERENCING NEW TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(','node_id');
+CREATE TRIGGER edge_io_binding_delete AFTER DELETE ON device_external_io_binding REFERENCING OLD TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(','node_id');
+CREATE TRIGGER edge_io_binding_update AFTER UPDATE ON device_external_io_binding REFERENCING NEW TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(')sql" +
+                                  std::string(service::message::live::topic::kEdgeIo) + R"sql(','node_id');
+
+CREATE INDEX edge_io_pending_deadline ON edge_task(((request->>'startBeforeMs')::bigint)) WHERE task_type='io' AND status='pending';
+
+END $schema$;
+)sql" }),
     };
+    migrations.emplace_back(ruvia::db_migration({ .id_ = "0064_mqtt_intrinsic_properties", .sql_ = std::string(kMqttIntrinsicPropertiesMigration) }));
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.
     ruvia::db_schema adoption({ .driver_ = ruvia::db_driver::postgresql });

@@ -499,6 +499,9 @@ export function DeviceFormModal({
         models?.list.find((model) => model.id === modelId)?.parameters ??
         (modelId === editing?.protocol_config_id ? editing?.parameterDefinitions : undefined) ??
         [];
+    const identityProperty =
+        models?.list.find((model) => model.id === modelId)?.identityProperty ??
+        (modelId === editing?.protocol_config_id ? editing?.identityProperty : undefined);
     const flatten = (
         nodes: DeviceGroup.TreeItem[]
     ): {
@@ -653,10 +656,7 @@ export function DeviceFormModal({
                         if (
                             values.externalIo &&
                             (!ioModel ||
-                                !externalIoCompatible(
-                                    ioModel.config as ExternalIoConfig,
-                                    node?.capability
-                                ))
+                                !externalIoCompatible(ioModel.config as ExternalIoConfig, node))
                         ) {
                             form.setFields([
                                 {
@@ -732,7 +732,18 @@ export function DeviceFormModal({
                     </Form.Item>
                     <Form.Item
                         name="device_code"
-                        label={protocol === 'DLT645' ? '电表地址（12 位数字）' : '设备编码'}
+                        label={
+                            protocol === 'DLT645'
+                                ? '电表地址（12 位数字）'
+                                : protocol === 'MQTT'
+                                  ? '管理编码'
+                                  : '设备编码'
+                        }
+                        extra={
+                            protocol === 'MQTT'
+                                ? 'MQTT 设备识别使用下方由设备类型指定的固有属性。'
+                                : undefined
+                        }
                         rules={[
                             { required: true },
                             ...(protocol === 'DLT645'
@@ -996,7 +1007,7 @@ export function DeviceFormModal({
                                                 (item.enabled &&
                                                     externalIoCompatible(
                                                         item.config as ExternalIoConfig,
-                                                        node?.capability
+                                                        node
                                                     ))
                                         )
                                         .map((item) => ({
@@ -1006,7 +1017,7 @@ export function DeviceFormModal({
                                                 !item.enabled ||
                                                 !externalIoCompatible(
                                                     item.config as ExternalIoConfig,
-                                                    node?.capability
+                                                    node
                                                 ),
                                         }))}
                                     onChange={(id: string | undefined) => {
@@ -1025,10 +1036,7 @@ export function DeviceFormModal({
                             </Form.Item>
                             {ioValue &&
                                 ioModel &&
-                                !externalIoCompatible(
-                                    ioModel.config as ExternalIoConfig,
-                                    node?.capability
-                                ) && (
+                                !externalIoCompatible(ioModel.config as ExternalIoConfig, node) && (
                                     <Alert
                                         type="error"
                                         showIcon
@@ -1145,11 +1153,11 @@ export function DeviceFormModal({
                         />
                     </Form.Item>
                     <Divider className="col-span-full" titlePlacement="start">
-                        设备参数
+                        固有属性
                     </Divider>
                     {!parameterDefinitions.length && (
                         <p className="col-span-full text-sm text-slate-500">
-                            该设备类型尚未定义参数，可在协议配置的设备属性中添加。
+                            该设备类型尚未定义固有属性，可在协议配置的设备属性中添加。
                         </p>
                     )}
                     {parameterDefinitions.map((parameter) => {
@@ -1170,13 +1178,25 @@ export function DeviceFormModal({
                             <Form.Item
                                 key={`${modelId}:${parameter.name}:${parameter.dataType}`}
                                 name={['parameterInputs', parameter.name]}
-                                label={parameter.name}
+                                label={
+                                    parameter.name === identityProperty
+                                        ? `${parameter.name}（设备标识符）`
+                                        : parameter.name
+                                }
                                 className={
                                     parameter.dataType === 'JSON' ? 'col-span-full' : undefined
                                 }
                                 initialValue={initialValue}
                                 preserve={false}
                                 rules={[
+                                    ...(parameter.name === identityProperty
+                                        ? [
+                                              {
+                                                  required: true,
+                                                  message: '请输入设备标识符',
+                                              },
+                                          ]
+                                        : []),
                                     {
                                         validator: (_, value) => {
                                             const parsed = deviceParameterInputSchema(
@@ -1203,9 +1223,12 @@ export function DeviceFormModal({
                                         ]}
                                     />
                                 ) : parameter.dataType === 'JSON' ? (
-                                    <JsonEditor label={`${parameter.name}参数值`} height="140px" />
+                                    <JsonEditor
+                                        label={`${parameter.name}固有属性值`}
+                                        height="140px"
+                                    />
                                 ) : (
-                                    <Input placeholder="请输入参数值" />
+                                    <Input placeholder="请输入固有属性值" />
                                 )}
                             </Form.Item>
                         );
@@ -2742,7 +2765,7 @@ const DevicePage = () => {
     const save = (values: DeviceFormValues) => {
         const parsed = saveDeviceSchema.safeParse(values);
         if (!parsed.success) {
-            message.error(parsed.error.issues[0]?.message ?? '设备参数无效');
+            message.error(parsed.error.issues[0]?.message ?? '固有属性无效');
             return;
         }
         saveMutation.mutate(

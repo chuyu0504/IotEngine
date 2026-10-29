@@ -11,10 +11,38 @@ void require(bool value, const char* message) {
     }
 }
 
+std::unique_ptr<ProtocolSession> userSession(const std::shared_ptr<RuntimeSnapshot>& snapshot) {
+    for (auto& device : snapshot->devices) {
+        const auto config = ruvia::json_value::parse(std::string_view(device.calculationConfig));
+        if (!config.get<ruvia::string>("identityProperty")) {
+            device.calculationConfig.insert(1, "\"identityProperty\":\"serial\",");
+        }
+        if (device.calculationConfig.find("$point:请求编号") != std::string::npos && std::none_of(device.elements.begin(), device.elements.end(), [](const auto& point) {
+                return point.id == "request";
+            })) {
+            device.elements.push_back({ .id = "request", .name = "请求编号", .dataType = "DOUBLE", .writable = true });
+            const auto offset = device.calculationConfig.find("\"points\":[") + 10;
+            device.calculationConfig.insert(offset, R"({"id":"request","name":"请求编号","field":"","dataType":"DOUBLE","writable":true},)");
+        }
+        const auto properties = ruvia::json_value::parse(std::string_view(device.parameters));
+        std::string updated = "{";
+        (void)properties.for_each_field([&](std::string_view name, const ruvia::json_value& value) {
+            if (name != "serial" && name != "uuid") {
+                updated += service::utils::jsonQuoted(name) + ':' + std::string(value.view()) + ',';
+            }
+            return true;
+        });
+        updated += "\"serial\":" + service::utils::jsonQuoted(device.code) + ",\"uuid\":" + service::utils::jsonQuoted(device.id) + '}';
+        device.parameters = std::move(updated);
+    }
+    return mqtt::Factory{}.createSession(snapshot->links.front(), "connection", "broker", snapshot);
+}
+
 struct Fixture {
     std::shared_ptr<RuntimeSnapshot> snapshot = std::make_shared<RuntimeSnapshot>();
     std::unique_ptr<ProtocolSession> session;
     unsigned packetSequence = 0;
+    unsigned requestSequence = 1000;
 
     explicit Fixture(bool shared = false) {
         LinkDefinition link{ .id = "link", .mode = "TCP Client", .protocol = "MQTT", .status = "enabled" };
@@ -33,7 +61,7 @@ struct Fixture {
             device.elements.push_back({ .id = "temperature", .name = "温度", .dataType = "DOUBLE", .mqttField = "temperature", .writable = true });
             snapshot->devices.push_back(std::move(device));
         }
-        session = mqtt::Factory{}.createSession(snapshot->links.front(), "connection", "broker", snapshot);
+        session = userSession(snapshot);
     }
 
     std::vector<ProtocolAction> receive(const mqtt::Bytes& bytes) {
@@ -42,6 +70,11 @@ struct Fixture {
     }
 
     std::vector<ProtocolAction> execute(ProtocolCommand command) {
+        if (snapshot->devices.front().calculationConfig.find("$point:请求编号") != std::string::npos && std::none_of(command.elements.begin(), command.elements.end(), [](const auto& point) {
+                return point.elementId == "request";
+            })) {
+            command.elements.push_back({ "request", std::to_string(++requestSequence) });
+        }
         return dynamic_cast<CommandCapabilitySession*>(session.get())->execute(std::move(command));
     }
 
@@ -125,7 +158,7 @@ void testBatchPathsAndRetries() {
         device.calculationConfig = R"({"topic":"devices","recordsPath":"/payload/devices","deviceCodeField":"/meta/code","commandTopic":"commands","qos":2,"points":[{"id":"temperature","name":"温度","field":"/metrics/temperature","dataType":"DOUBLE"}]})";
         device.elements.front().mqttField = "/metrics/temperature";
     }
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.session = userSession(fixture.snapshot);
     fixture.start();
     const auto bytes = publication("devices", R"({"payload":{"devices":[{"meta":{"code":"0"},"metrics":{"temperature":20}},{"meta":{"code":"1"},"metrics":{"temperature":21}}]}})", 1);
     const ProtocolInput input{ .messageId = "durable-input", .receivedAtMs = 1000, .bytes = bytes };
@@ -158,7 +191,7 @@ void testTextAndBinaryCommands() {
             ? R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0:4:UTF8","payloadFormat":"binary","recordLength":6,"commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"4:2:UINT:LE","dataType":"DOUBLE"}]})"
             : R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0","payloadFormat":"text","delimiter":",","recordDelimiter":";","commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"1","dataType":"DOUBLE"}]})";
         device.elements.front().mqttField = binary ? "4:2:UINT:LE" : "1";
-        fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+        fixture.session = userSession(fixture.snapshot);
         fixture.start();
         const auto payload = binary ? std::string("0\0\0\0\0\1", 6) : "0,256;unknown,100";
         const auto actions = fixture.receive(publication("devices/0", payload, 0));
@@ -204,7 +237,7 @@ void configureNamed(Fixture& fixture, std::string_view commandTemplate, std::str
         { .id = "mode", .name = "模式", .dataType = "BOOL", .mqttField = "/report/mode", .writable = true },
         { .id = "other", .name = "其他", .dataType = "DOUBLE", .mqttField = "/report/other", .writable = true }
     };
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.session = userSession(fixture.snapshot);
 }
 
 void requireCommandFailure(const std::vector<ProtocolAction>& actions) {
@@ -212,7 +245,7 @@ void requireCommandFailure(const std::vector<ProtocolAction>& actions) {
 }
 
 void testNamedTemplates() {
-    constexpr std::string_view templateJson = R"({"device":"$deviceCode","set":{"temperature":"$point:温度","enabled":"$point:开关","label":"$point:名称","mode":"$point:模式"},"again":"$point:温度","constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
+    constexpr std::string_view templateJson = R"({"device":"$param:serial","set":{"temperature":"$point:温度","enabled":"$point:开关","label":"$point:名称","mode":"$point:模式"},"again":"$point:温度","constant":[7,false,null,"prefix $point:温度"],"$param:serial":"literal"})";
     Fixture fixture;
     configureNamed(fixture, templateJson);
     fixture.start();
@@ -221,11 +254,11 @@ void testNamedTemplates() {
     const std::string label = "quote\" slash\\ line\nnext";
     const auto command = fixture.execute({ .id = "named", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "1" }, { "label", label }, { "mode", "1" } } });
     const auto payload = publishedPayload(command);
-    const auto expected = R"({"device":"device\"\\code","set":{"temperature":15,"enabled":true,"label":)" + service::utils::jsonQuoted(label) + R"(,"mode":"ON"},"again":15,"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
+    const auto expected = R"({"device":"device\"\\code","set":{"temperature":15,"enabled":true,"label":)" + service::utils::jsonQuoted(label) + R"(,"mode":"ON"},"again":15,"constant":[7,false,null,"prefix $point:温度"],"$param:serial":"literal"})";
     require(payload == expected, "named template typed raw values, escaping or constants incorrect");
     require(payload.find("\"report\"") == std::string::npos && payload.find("\"other\"") == std::string::npos, "report paths leaked into command");
     const auto partial = publishedPayload(fixture.execute({ .id = "partial", .deviceId = "0", .elements = { { "enabled", "0" } } }));
-    require(partial == R"({"device":"device\"\\code","set":{"enabled":false},"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})", "partial command filled absent fields or unresolved placeholders");
+    require(partial == R"({"device":"device\"\\code","set":{"enabled":false},"constant":[7,false,null,"prefix $point:温度"],"$param:serial":"literal"})", "partial command filled absent fields or unresolved placeholders");
     requireCommandFailure(fixture.execute({ .id = "unrepresented", .deviceId = "0", .elements = { { "other", "1" } } }));
     requireCommandFailure(fixture.execute({ .id = "invalid-value", .deviceId = "0", .elements = { { "enabled", "invalid" } } }));
     fixture.snapshot->devices.front().elements[1].writable = false;
@@ -238,7 +271,7 @@ void testNamedTemplates() {
     require(publishedPayload(array.execute({ .id = "all-slots", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "0" } } })) == R"({"set":[15,false]})", "fixed array template shifted slots");
 
     Fixture legacy;
-    configureNamed(legacy, R"({"device":"$deviceCode","body":"$values"})");
+    configureNamed(legacy, R"({"device":"$param:serial","body":{"report":{"temperature":"$point:温度"}}})");
     legacy.start();
     const auto legacyPayloadText = publishedPayload(legacy.execute({ .id = "legacy", .deviceId = "0", .elements = { { "temperature", "15" } } }));
     const auto legacyPayload = ruvia::json_value::parse(legacyPayloadText);
@@ -260,13 +293,13 @@ void testNamedTemplates() {
 void testMultipleMessagesAndRequiredPoints() {
     Fixture fixture;
     auto& device = fixture.snapshot->devices.front();
-    device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{deviceCode}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
+    device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{param:serial}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{param:serial}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
     device.elements = {
         { .id = "temperature", .name = "温度", .dataType = "DOUBLE", .mqttField = "temperature", .writable = true },
         { .id = "enabled", .name = "开关", .dataType = "BOOL", .writable = true },
         { .id = "channel", .name = "通道", .dataType = "STRING", .size = 256, .writable = true },
     };
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.session = userSession(fixture.snapshot);
     fixture.start();
     const auto selected = fixture.execute({ .id = "set-1", .deviceId = "0", .elements = { { "temperature", "15" }, { "channel", "zone-a" } }, .mqttMessageId = "set" });
     require(publishedPayload(selected) == R"({"action":"set","values":{"temperature":15}})", "optional property was filled or required value not converted");
@@ -313,12 +346,12 @@ void testMultipleMessagesAndRequiredPoints() {
 
 void testConfiguredCommandResponses() {
     Fixture fixture(true);
-    const std::string config = R"({"topic":"devices/{deviceCode}/up","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","points":[{"id":"temperature","name":"温度","field":"value","dataType":"DOUBLE","writable":true}],"commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/down","template":"{\"id\":\"$commandId\",\"route\":\"$param:route\",\"uuid\":\"$deviceId\",\"code\":\"$deviceCode\",\"channel\":\"$param:channel\",\"enabled\":\"$param:enabled\",\"meta\":\"$param:meta\",\"operation\":\"set\",\"value\":\"$point:温度\"}","requiredPointIds":["temperature"],"response":{"topic":"devices/{deviceCode}/result","matchFields":["/id","/route","/operation"],"codeField":"/result/code","successCode":0,"timeoutMs":10000}}]})";
+    const std::string config = R"({"topic":"devices/{param:serial}/up","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","points":[{"id":"temperature","name":"温度","field":"value","dataType":"DOUBLE","writable":true}],"commands":[{"id":"set","name":"设置","topic":"devices/{param:serial}/down","template":"{\"id\":\"$point:请求编号\",\"route\":\"$param:route\",\"uuid\":\"$param:uuid\",\"code\":\"$param:serial\",\"channel\":\"$param:channel\",\"enabled\":\"$param:enabled\",\"meta\":\"$param:meta\",\"operation\":\"set\",\"value\":\"$point:温度\"}","requiredPointIds":["temperature"],"response":{"topic":"devices/{param:serial}/result","matchFields":["/id","/route","/operation"],"codeField":"/result/code","successCode":0,"timeoutMs":10000}}]})";
     for (auto& device : fixture.snapshot->devices) {
         device.calculationConfig = config;
         device.parameters = "{\"route\":\"A" + device.code + "\",\"channel\":2,\"enabled\":true,\"meta\":{\"type\":\"water\"}}";
     }
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.session = userSession(fixture.snapshot);
     (void)fixture.session->connected();
     const auto subscriptions = fixture.receive({ 0x20, 2, 0, 0 });
     const std::string subscriptionBytes(subscriptions.front().bytes.begin(), subscriptions.front().bytes.end());
@@ -380,7 +413,7 @@ void testConfiguredCommandResponses() {
     const service::utils::PayloadRecord otherSent(payload, "json", ",");
     require(otherSent.field("route") == service::utils::PayloadScalar{ "A1" } && otherSent.field("uuid") == service::utils::PayloadScalar{ "1" }, "another device reused parameters or identity");
     fixture.snapshot->devices.front().parameters = "{}";
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.session = userSession(fixture.snapshot);
     (void)fixture.session->connected();
     (void)fixture.receive({ 0x20, 2, 0, 0 });
     (void)fixture.receive({ 0x90, 6, 0, 1, 1, 1, 1, 1 });
@@ -391,8 +424,8 @@ void testConfiguredCommandResponses() {
 void testMultipleReports() {
     Fixture fixture;
     auto& device = fixture.snapshot->devices.front();
-    device.calculationConfig = R"json({"reports":[{"id":"00000000-0000-4000-8000-000000000001","name":"温度","topic":"devices/{deviceCode}/temperature","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","pointFields":[{"pointId":"temperature","field":"/value"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"状态","topic":"devices/{deviceCode}/state","qos":1,"reportTemplate":"{\"enabled\":\"$point:开关\"}","pointFields":[{"pointId":"enabled","field":"/enabled"}]}],"points":[{"id":"temperature","name":"温度","field":"","dataType":"DOUBLE"},{"id":"enabled","name":"开关","field":"","dataType":"BOOL"}]})json";
-    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    device.calculationConfig = R"json({"reports":[{"id":"00000000-0000-4000-8000-000000000001","name":"温度","topic":"devices/{param:serial}/temperature","qos":1,"reportTemplate":"{\"value\":\"$point:温度\"}","pointFields":[{"pointId":"temperature","field":"/value"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"状态","topic":"devices/{param:serial}/state","qos":1,"reportTemplate":"{\"enabled\":\"$point:开关\"}","pointFields":[{"pointId":"enabled","field":"/enabled"}]}],"points":[{"id":"temperature","name":"温度","field":"","dataType":"DOUBLE"},{"id":"enabled","name":"开关","field":"","dataType":"BOOL"}]})json";
+    fixture.session = userSession(fixture.snapshot);
     (void)fixture.session->connected();
     const auto subscribe = fixture.receive({ 0x20, 2, 0, 0 });
     require(subscribe.front().bytes.front() == 0x82, "multiple report topics not subscribed");
@@ -404,8 +437,34 @@ void testMultipleReports() {
     require(state.size() == 2 && state.front().parsed.valuesJson.find("true") != std::string::npos && state.front().parsed.valuesJson.find("temperature") == std::string::npos, "second report used another message mapping");
 }
 
+void testUserDefinedIdentity() {
+    Fixture fixture;
+    auto& device = fixture.snapshot->devices.front();
+    device.code = "management-code";
+    device.parameters = R"({"硬件序列号":"hardware-7"})";
+    device.calculationConfig = R"({"identityProperty":"硬件序列号","topic":"factory/{param:硬件序列号}/up","qos":1,"commandTopic":"factory/{param:硬件序列号}/set","commandTemplate":"{\"my_device\":\"$param:硬件序列号\",\"value\":\"$point:温度\"}","points":[{"id":"temperature","name":"温度","field":"reading","dataType":"DOUBLE","writable":true}]})";
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    (void)fixture.session->connected();
+    (void)fixture.receive({ 0x20, 2, 0, 0 });
+    (void)fixture.receive({ 0x90, 3, 0, 1, 1 });
+    require(fixture.receive(publication("factory/management-code/up", R"({"reading":8})", 0)).empty(), "management code identified a custom device");
+    const auto report = fixture.receive(publication("factory/hardware-7/up", R"({"reading":8})", 0));
+    require(report.size() == 2 && report.front().deviceId == device.id && report.front().parsed.deviceCode == "management-code", "custom identifier failed or overwrote platform metadata");
+    const auto command = fixture.execute({ .id = "custom", .deviceId = device.id, .elements = { { "temperature", "12" } } });
+    require(publishedPayload(command) == R"({"my_device":"hardware-7","value":12})", "user property was not encoded");
+    device.parameters = R"({"硬件序列号":null})";
+    bool rejected = false;
+    try {
+        (void)mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected, "missing identifier fell back to a platform field");
+}
+
 int main() {
     try {
+        testUserDefinedIdentity();
         testMultipleReports();
         testConfiguredCommandResponses();
         testFramingAndRouting();

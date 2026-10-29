@@ -266,6 +266,9 @@ class OutboxService {
                         }
                     }
                     co_await service::live::publish(context.redis(), identity.channels, event.aggregate, ids);
+                    if (event.aggregate == service::message::live::topic::kEdgeIo) {
+                        co_await service::messaging::stream::wakeWorker(context.redis(), identity.channels, std::nullopt, service::message::WorkerStreamTask::EdgeIoDeadline, identity.instanceId);
+                    }
                 } else if (event.aggregate == "command") {
                     const auto publication = service::message::access::stream::eventPublication(
                         identity.channels,

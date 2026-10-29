@@ -18,6 +18,8 @@ const point = {
     dataType: 'DOUBLE' as const,
 };
 const config = {
+    identityProperty: 'serial',
+    parameters: [{ name: 'serial', dataType: 'STRING' as const }],
     storagePolicy: 'report' as const,
     topic: 'devices/+/telemetry',
     identitySource: 'topic' as const,
@@ -29,8 +31,8 @@ const config = {
 test('MQTT properties can be shared by multiple control messages or used only for control', () => {
     const enabled = { ...point, id: crypto.randomUUID(), name: '开关', field: '', dataType: 'BOOL' as const };
     const commands = [
-        { id: crypto.randomUUID(), name: '设置温度', topic: 'devices/{deviceCode}/set', template: '{"temperature":"$point:温度","enabled":"$point:开关"}', requiredPointIds: [point.id] },
-        { id: crypto.randomUUID(), name: '切换开关', topic: 'devices/{deviceCode}/switch', template: '{"switch":"$point:开关"}', requiredPointIds: [enabled.id] },
+        { id: crypto.randomUUID(), name: '设置温度', topic: 'devices/{param:serial}/set', template: '{"temperature":"$point:温度","enabled":"$point:开关"}', requiredPointIds: [point.id] },
+        { id: crypto.randomUUID(), name: '切换开关', topic: 'devices/{param:serial}/switch', template: '{"switch":"$point:开关"}', requiredPointIds: [enabled.id] },
     ];
     const compiled = compileMqttTemplate(templateDraft({ points: [point, enabled], commands }));
     expect(compiled.commands).toEqual(commands);
@@ -48,7 +50,7 @@ test('MQTT properties can be shared by multiple control messages or used only fo
 });
 
 test('MQTT control message names, IDs, membership and required flags are validated independently', () => {
-    const command = { id: crypto.randomUUID(), name: '设置', topic: 'commands/{deviceCode}', template: '{"value":"$point:温度"}', requiredPointIds: [point.id] };
+    const command = { id: crypto.randomUUID(), name: '设置', topic: 'commands/{param:serial}', template: '{"value":"$point:温度"}', requiredPointIds: [point.id] };
     const draft = templateDraft({ commands: [command] });
     for (const commands of [
         [command, { ...command, name: '重复标识' }],
@@ -65,7 +67,7 @@ test('MQTT control message names, IDs, membership and required flags are validat
 
 test('MQTT Topic and array references require a value without forcing unrelated properties', () => {
     const channel = { ...point, id: crypto.randomUUID(), name: '通道', field: '', dataType: 'STRING' as const };
-    const command = { id: crypto.randomUUID(), name: '通道设置', topic: 'devices/{deviceCode}/{point:通道}', template: '{"value":"$point:温度"}', requiredPointIds: [channel.id] };
+    const command = { id: crypto.randomUUID(), name: '通道设置', topic: 'devices/{param:serial}/{point:通道}', template: '{"value":"$point:温度"}', requiredPointIds: [channel.id] };
     const draft = templateDraft({ points: [point, channel], commands: [command] });
     expect(compileMqttTemplate(draft).points.every((point) => point.writable)).toBe(true);
     expect(() => compileMqttTemplate({ ...draft, commands: [{ ...command, requiredPointIds: [] }] })).toThrow('Topic 或数组');
@@ -152,7 +154,7 @@ test('MQTT writable mappings require command topics, raw values and unique enums
     expect(
         mqttConfigSchema.safeParse({
             ...config,
-            commandTopic: 'commands/{deviceCode}',
+            commandTopic: 'commands/{param:serial}',
             points: [{ ...point, writable: true, scale: 0 }],
         }).success
     ).toBe(false);
@@ -211,8 +213,11 @@ test('Broker connections accept domains and keep other protocols restricted to I
 
 function templateDraft(overrides: Partial<MqttTemplateDraft> = {}): MqttTemplateDraft {
     return {
-        topic: 'devices/{deviceCode}/telemetry',
-        reportTemplate: '{"device":"$deviceCode","time":"$time","metrics":{"temperature":"$point:温度"}}',
+        identityProperty: 'serial',
+        parameters: [{ name: 'serial', dataType: 'STRING' }],
+        timeField: '/time',
+        topic: 'devices/{param:serial}/telemetry',
+        reportTemplate: '{"device":"$param:serial","time":"0","metrics":{"temperature":"$point:温度"}}',
         qos: 1,
         storagePolicy: 'report',
         timeFormat: 'unix_ms',
@@ -225,8 +230,8 @@ test('MQTT template compilation escapes paths, preserves constants and supports 
     const reportTemplate = JSON.stringify({
         'a/b': { 'x~y': ['$point:温度', 42, true, null, 'cost $5'] },
         literal: { action: 'report', version: 1 },
-        device: '$deviceCode',
-        time: '$time',
+        device: '$param:serial',
+        time: '0',
     }, null, 2);
     const compiled = compileMqttTemplate(templateDraft({ reportTemplate }));
     expect(compiled.points[0]).toEqual({ ...point, field: '/a~1b/x~0y/0', writable: false });
@@ -281,7 +286,7 @@ test('MQTT message editing never invents properties or transfers another propert
 test('MQTT report placeholders and duplicate JSON keys cannot silently lose mappings', () => {
     for (const reportTemplate of [
         '{"a":"$point:温度","b":"$point:温度"}',
-        '{"a":"$deviceCode","b":"$deviceCode","c":"$point:温度"}',
+        '{"a":"$param:serial","b":"$param:serial","c":"$point:温度"}',
         '{"a":"$time","b":"$time","c":"$point:温度"}',
         '{"a":"$unknown","b":"$point:温度"}',
         '{"a":"$values","b":"$point:温度"}',
@@ -318,16 +323,16 @@ test('MQTT JSON templates reject malformed roots, excessive depth and UTF-8 size
         reportTemplate: large,
     }).success).toBe(false);
     expect(() => compileMqttTemplate(templateDraft({
-        commandTopic: 'commands/{deviceCode}',
+        commandTopic: 'commands/{param:serial}',
         commandTemplate: '{"literal":"' + '中'.repeat(6000) + '"}',
     }))).toThrow('UTF-8');
 });
 
 test('MQTT command references alone determine writable points and keep literal constants', () => {
-    const commandTemplate = '{ "action":"set", "device":"$deviceCode", "a":"$point:温度", "b":["$point:温度",7] }';
+    const commandTemplate = '{ "action":"set", "device":"$param:serial", "a":"$point:温度", "b":["$point:温度",7] }';
     const compiled = compileMqttTemplate(templateDraft({
         reportTemplate: '{"temperature":"$point:温度","humidity":"$point:湿度"}',
-        commandTopic: 'commands/{deviceCode}',
+        commandTopic: 'commands/{param:serial}',
         commandTemplate,
         points: [
             { ...point, writable: false },
@@ -348,7 +353,7 @@ test('MQTT command references alone determine writable points and keep literal c
         '{broken}',
     ]) {
         expect(() => compileMqttTemplate(templateDraft({
-            commandTopic: 'commands/{deviceCode}',
+            commandTopic: 'commands/{param:serial}',
             commandTemplate,
         }))).toThrow('commandTemplate');
     }
@@ -364,8 +369,8 @@ test('MQTT templates require paired control settings and unambiguous topic ident
         commandTemplate: '{"value":"$point:温度"}',
     }))).toThrow('commandTopic');
     for (const topic of [
-        'devices/prefix{deviceCode}/telemetry',
-        'devices/{deviceCode}/{deviceCode}',
+        'devices/prefix{param:serial}/telemetry',
+        'devices/{param:serial}/{param:serial}',
         'devices/+/telemetry',
     ]) {
         expect(() => compileMqttTemplate(templateDraft({
@@ -386,7 +391,7 @@ test('MQTT templates require paired control settings and unambiguous topic ident
 
 test('MQTT template drafts roundtrip metadata and remove stale commands cleanly', () => {
     const compiled = compileMqttTemplate(templateDraft({
-        commandTopic: 'commands/{deviceCode}',
+        commandTopic: 'commands/{param:serial}',
         commandTemplate: '{"value":"$point:温度"}',
         points: [{ ...point, unit: '℃' }],
     }));
@@ -409,7 +414,7 @@ test('MQTT template drafts roundtrip metadata and remove stale commands cleanly'
         commandTemplate: '',
     });
     expect(clearedSelectors.deviceCodeField).toBe('');
-    expect(clearedSelectors.timeField).toBe('');
+    expect(clearedSelectors.timeField).toBe('/time');
     expect(clearedSelectors.identitySource).toBe('bound');
     expect(cleared.points[0].writable).toBe(false);
     expect(compileMqttTemplate(mqttTemplateDraft(cleared))).toEqual(cleared);
@@ -422,9 +427,9 @@ test('MQTT legacy JSON drafts reconstruct escaped literal fields and explicit to
         timeField: '/meta/time',
         timeFormat: 'iso8601',
     });
-    expect(draft.topic).toBe('devices/{deviceCode}/telemetry');
+    expect(draft.topic).toBe('devices/{param:serial}/telemetry');
     expect(JSON.parse(draft.reportTemplate)).toEqual({
-        meta: { time: '$time' },
+        meta: { time: 0 },
         'literal.name/with~escape': '$point:温度',
     });
     const compiled = compileMqttTemplate(draft);
@@ -445,7 +450,7 @@ test('MQTT legacy or stale configurations fail explicitly instead of discarding 
         { ...config, commandTopic: 'commands/device' },
         { ...config, commandTopic: 'commands/device', commandTemplate: '{"values":"$values"}' },
         { ...compiled, reportTemplate: '{"other":"$point:温度"}' },
-        { ...compiled, reportTemplate: '{"device":"$deviceCode","time":"$time","other":"$point:其他"}' },
+        { ...compiled, reportTemplate: '{"device":"$param:serial","time":"0","other":"$point:其他"}' },
         { ...compiled, points: [{ ...compiled.points[0], writable: true }] },
     ]) {
         expect(() => mqttTemplateDraft(invalid)).toThrow('不能自动丢弃映射');
@@ -454,11 +459,12 @@ test('MQTT legacy or stale configurations fail explicitly instead of discarding 
 
 test('MQTT device identity and parameter references survive editing', () => {
     const draft = {
-        topic: 'devices/{deviceCode}/up', reportTemplate: '{"value":"$point:温度"}',
+        identityProperty: 'serial', parameters: [{name:'serial',dataType:'STRING' as const},{name:'address',dataType:'STRING' as const},{name:'uuid',dataType:'STRING' as const}],
+        topic: 'devices/{param:serial}/up', reportTemplate: '{"value":"$point:温度"}',
         storagePolicy: 'report' as const, qos: 1 as const, points: [point],
-        commands: [{id: crypto.randomUUID(), name: 'Set', topic: 'devices/{deviceCode}/down',
-            template: '{"id":"$commandId","address":"$param:address","deviceUuid":"$deviceId","deviceCode":"$deviceCode","value":"$point:温度"}', requiredPointIds: [point.id],
-            response: {topic: 'devices/{deviceCode}/result', matchFields: ['/id','/address'], codeField: '/result/code', successCode: 0, timeoutMs: 10000}}],
+        commands: [{id: crypto.randomUUID(), name: 'Set', topic: 'devices/{param:serial}/down',
+            template: '{"id":"$point:温度","address":"$param:address","deviceUuid":"$param:uuid","deviceCode":"$param:serial","value":"$point:温度"}', requiredPointIds: [point.id],
+            response: {topic: 'devices/{param:serial}/result', matchFields: ['/id','/address'], codeField: '/result/code', successCode: 0, timeoutMs: 10000}}],
     };
     const compiled = compileMqttTemplate(draft);
     expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
@@ -469,12 +475,12 @@ test('MQTT device identity and parameter references survive editing', () => {
     ]) expect(() => compileMqttTemplate({...draft, ...changes})).toThrow();
 });
 
-test('MQTT canonical named commands validate known and unique names without removing legacy APIs', () => {
+test('MQTT named commands validate user fields and reject built-in aggregate variables', () => {
     expect(mqttConfigSchema.safeParse({
         ...config,
         commandTopic: 'commands/device',
-        commandTemplate: '{"values":"$values","device":"$deviceCode"}',
-    }).success).toBe(true);
+        commandTemplate: '{"values":"$values","device":"$param:serial"}',
+    }).success).toBe(false);
     expect(mqttConfigSchema.safeParse({
         ...config,
         commandTopic: 'commands/device',
@@ -513,8 +519,8 @@ test('MQTT editing retains shared derived calculations and visibility', () => {
 
 test('multiple MQTT reports keep independent topics and mappings and can be removed', () => {
     const reports = [
-        {id:crypto.randomUUID(),name:'温度',topic:'devices/{deviceCode}/temperature',qos:1 as const,reportTemplate:'{"temperature":"$point:温度"}'},
-        {id:crypto.randomUUID(),name:'状态',topic:'devices/{deviceCode}/state',qos:2 as const,reportTemplate:'{"nested":{"value":"$point:温度"}}'},
+        {id:crypto.randomUUID(),name:'温度',topic:'devices/{param:serial}/temperature',qos:1 as const,reportTemplate:'{"temperature":"$point:温度"}'},
+        {id:crypto.randomUUID(),name:'状态',topic:'devices/{param:serial}/state',qos:2 as const,reportTemplate:'{"nested":{"value":"$point:温度"}}'},
     ];
     const draft = {...templateDraft(),reports};
     const compiled = compileMqttTemplate(draft);
@@ -544,7 +550,7 @@ test('device parameters are object values owned by each device', () => {
 
 
 test('MQTT parameter definitions survive editing and validate names and types', () => {
-    const configured={...config,parameters:[{name:'stationAddress',dataType:'STRING' as const},{name:'channel',dataType:'DOUBLE' as const}]};
+    const configured={...config,parameters:[{name:'serial',dataType:'STRING' as const},{name:'stationAddress',dataType:'STRING' as const},{name:'channel',dataType:'DOUBLE' as const}]};
     expect(compileMqttTemplate(mqttTemplateDraft(configured)).parameters).toEqual(configured.parameters);
     expect(mqttConfigSchema.safeParse({...config,parameters:[{name:'same',dataType:'STRING'},{name:'same',dataType:'BOOL'}]}).success).toBe(false);
     expect(mqttConfigSchema.safeParse({...config,parameters:[{name:'x',dataType:'unknown'}]}).success).toBe(false);
@@ -560,3 +566,25 @@ test('device parameter fields keep JSON types, clear one value and retain unrela
 test('an untouched empty field preserves an existing explicit null',()=>{expect(deviceParameterValues([{name:'nullable',dataType:'STRING'}],{},{nullable:null})).toEqual({nullable:null});});
 
 test('clearing an individual JSON parameter removes its null value',()=>{expect(deviceParameterValues([{name:'value',dataType:'JSON'}],{value:''},{value:null})).toEqual({});});
+
+test('MQTT identifiers and every template reference are defined by the user', () => {
+    const draft = templateDraft({
+        identityProperty:'硬件序列号', parameters:[{name:'硬件序列号',dataType:'STRING'}],
+        topic:'factory/up', reportTemplate:'{"my_identifier":"$param:硬件序列号","my_clock":0,"reading":"$point:温度"}',
+        timeField:'/my_clock',
+    });
+    const compiled=compileMqttTemplate(draft);
+    expect(compiled.deviceCodeField).toBe('/my_identifier');
+    expect(compiled.identitySource).toBe('payload');
+    expect(compiled.timeField).toBe('/my_clock');
+    expect(compileMqttTemplate(mqttTemplateDraft(compiled))).toEqual(compiled);
+    expect(()=>compileMqttTemplate({...draft,identityProperty:undefined})).toThrow('设备标识符');
+    expect(()=>compileMqttTemplate({...draft,parameters:[]})).toThrow('设备标识符');
+    expect(()=>compileMqttTemplate({...draft,parameters:[{name:'硬件序列号',dataType:'DOUBLE'}]})).toThrow('文本类型');
+    for(const token of ['$deviceCode','$deviceId','$commandId','$time','$values']) {
+        expect(()=>compileMqttTemplate({...draft,reportTemplate:JSON.stringify({value:token})})).toThrow('未知占位符');
+        expect(()=>compileMqttTemplate({...draft,commandTopic:'factory/down',commandTemplate:JSON.stringify({value:token,reading:'$point:温度'})})).toThrow('未知占位符');
+    }
+    expect(()=>compileMqttTemplate({...draft,topic:'factory/{deviceCode}'})).toThrow('用户定义');
+    expect(()=>compileMqttTemplate({...draft,commandTopic:'factory/down',commandTemplate:'{"value":"$param:未定义"}'})).toThrow('未定义固有属性');
+});

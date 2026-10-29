@@ -65,7 +65,7 @@ export const deviceParametersSchema = z.preprocess(
                         name === name.trim() &&
                         !/[\r\n\t]/.test(name) &&
                         new TextEncoder().encode(name).length <= 100,
-                    '设备参数名须为 1–100 字节且不能有首尾空格'
+                    '固有属性名须为 1–100 字节且不能有首尾空格'
                 ),
             z.unknown()
         )
@@ -74,7 +74,7 @@ export const deviceParametersSchema = z.preprocess(
                 Object.keys(value).length > 256 ||
                 new TextEncoder().encode(JSON.stringify(value)).length > 262144
             )
-                context.addIssue({ code: 'custom', message: '设备参数最多 256 项、256 KiB' });
+                context.addIssue({ code: 'custom', message: '固有属性最多 256 项、256 KiB' });
         })
 );
 export function deviceParameterInputSchema(type: DeviceParameterDefinition['dataType']) {

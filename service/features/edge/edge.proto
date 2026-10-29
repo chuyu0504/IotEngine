@@ -143,6 +143,7 @@ enum PlatformConfigOperation {
 message Empty {}
 
 message Hello {
+  bool supports_node_io = 40;
   // Advertised only when this node can access the local IO service.
   bool supports_external_io = 39;
   // Enables paired raw business requests/responses; field absent in deployed firmware.
@@ -191,6 +192,7 @@ message Hello {
 }
 
 message HelloAck {
+  bool node_io = 10;
   // Both ends must opt in before IO configuration, commands or samples.
   bool external_io = 9;
   // Negotiated only with a node advertising supports_raw_telemetry.
@@ -270,6 +272,12 @@ message ExternalIoChannel {
   ExternalIoKind kind = 2;
   bool available = 3;
   bool controllable = 4;
+  optional sint64 value = 5;
+}
+
+message ExternalIoStatus {
+  int64 observed_at_ms = 1;
+  repeated ExternalIoChannel channels = 2 [(nanopb).max_count = 15];
 }
 
 // Per-platform conntrack IP-byte deltas, including TCP/IP headers and retransmits.
@@ -745,6 +753,8 @@ message CommandValue {
 }
 
 message CommandRequest {
+  // Direct node IO is negotiated separately; device_id must be absent.
+  string node_io_channel = 10 [(nanopb).max_length = 16];
   // Explicit source discriminator; valid only after external_io negotiation.
   bool external_io = 9;
   bytes command_id = 1 [(nanopb).max_size = 16];
@@ -765,6 +775,7 @@ message CommandProgress {
 }
 
 message CommandResult {
+  string node_io_channel = 8 [(nanopb).max_length = 16];
   bytes command_id = 1 [(nanopb).max_size = 16];
   CommandState state = 2;
   string message = 3 [(nanopb).max_length = 256];
@@ -1073,6 +1084,7 @@ message Envelope {
     SerialDebugRequest serial_debug_request = 86;
     SerialDebugEvent serial_debug_event = 87;
     DtuStatus dtu_status = 88;
+    ExternalIoStatus external_io_status = 89;
     Error error = 90;
   }
 }

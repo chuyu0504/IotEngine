@@ -86,17 +86,17 @@ void testCommonFields() {
              { "SL651", R"({"storagePolicy":null})", false, "配置的 storagePolicy 无效" },
              { "SL651", R"({"responseMode":"M3","funcs":[]})", true, "配置的 storagePolicy 不能为空" },
              { "SL651", R"({"responseMode":"M3"})", false, kAccepted },
-             { "SL651", R"({"deviceParameters":[]})", false, "设备参数请在设备管理中配置" },
-             { "SL651", R"({"deviceParameters":null})", false, "设备参数请在设备管理中配置" },
-             { "SL651", R"({"parameters":"x"})", false, "设备参数定义须为数组" },
-             { "SL651", R"({"parameters":[{"name":"a"}]})", false, "设备参数定义须为数组" },
-             { "SL651", R"({"parameters":[{"name":"a","dataType":"INT"}]})", false, "设备参数类型无效" },
-             { "SL651", R"({"parameters":[{"name":" a","dataType":"STRING"}]})", false, "设备参数名须唯一且为 1–100 字节，不能有首尾空格" },
+             { "SL651", R"({"deviceParameters":[]})", false, "固有属性请在设备管理中配置" },
+             { "SL651", R"({"deviceParameters":null})", false, "固有属性请在设备管理中配置" },
+             { "SL651", R"({"parameters":"x"})", false, "固有属性定义须为数组" },
+             { "SL651", R"({"parameters":[{"name":"a"}]})", false, "固有属性定义须为数组" },
+             { "SL651", R"({"parameters":[{"name":"a","dataType":"INT"}]})", false, "固有属性类型无效" },
+             { "SL651", R"({"parameters":[{"name":" a","dataType":"STRING"}]})", false, "固有属性名须唯一且为 1–100 字节，不能有首尾空格" },
              { "SL651", R"({"parameters":[{"name":"a","dataType":"STRING"}],"unknownField":{"kept":true}})", false, kAccepted },
              // 顶层重复键以最后一次出现为准；parameters 仍按整体公共契约解析，重复即无效。
              { "SL651", R"({"storagePolicy":"daily","storagePolicy":"report"})", false, kAccepted },
              { "SL651", R"({"storagePolicy":"report","storagePolicy":"daily"})", false, "配置的 storagePolicy 无效" },
-             { "SL651", R"({"parameters":[],"parameters":[]})", false, "设备参数定义须为数组" },
+             { "SL651", R"({"parameters":[],"parameters":[]})", false, "固有属性定义须为数组" },
          }) {
         check(item);
     }
@@ -396,19 +396,19 @@ void testDlt645() {
 void testMqtt() {
     const std::string point = R"({"id":")" + std::string(kPoint) + R"(","name":"温度","field":"temperature","dataType":"DOUBLE"})";
     const auto config = [&](std::string_view extra, std::string_view entry) {
-        return R"({"storagePolicy":"report","topic":"devices",)" + std::string(extra) + R"("points":[)" + std::string(entry) + "]}";
+        return R"({"identityProperty":"serial","parameters":[{"name":"serial","dataType":"STRING"}],"storagePolicy":"report","topic":"devices",)" + std::string(extra) + R"("points":[)" + std::string(entry) + "]}";
     };
     const auto withPoint = [&](std::string_view from, std::string_view to) {
         return config("", replaced(point, from, to));
     };
     const auto withTopic = [&](std::string_view topic) {
-        return R"({"storagePolicy":"report","topic":")" + std::string(topic) + R"(","points":[)" + point + "]}";
+        return R"({"identityProperty":"serial","parameters":[{"name":"serial","dataType":"STRING"}],"storagePolicy":"report","topic":")" + std::string(topic) + R"(","points":[)" + point + "]}";
     };
     const std::string pointInvalid = "MQTT 点位名称、标识、JSON 字段或类型无效";
     for (const auto& item : std::vector<ConfigCase>{
              { "MQTT", config("", point), true, kAccepted },
              { "MQTT", R"({"qos":7,"topic":"a/#/b"})", false, kAccepted },
-             { "MQTT", R"({"storagePolicy":"report","points":[]})", true, "MQTT Topic 过滤器无效" },
+             { "MQTT", R"({"identityProperty":"serial","parameters":[{"name":"serial","dataType":"STRING"}],"storagePolicy":"report","points":[]})", true, "MQTT Topic 过滤器无效" },
              { "MQTT", withTopic("a/#/b"), true, "MQTT Topic 过滤器无效" },
              { "MQTT", config(R"("qos":3,)", point), true, "MQTT QoS 必须是 0、1 或 2" },
              { "MQTT", config(R"("qos":"1",)", point), true, "MQTT 配置字段类型无效" },
@@ -421,7 +421,7 @@ void testMqtt() {
              { "MQTT", config(R"("timeFormat":"rfc",)", point), true, "时间格式无效" },
              { "MQTT", config(R"("payloadFormat":"text","recordsPath":"/a",)", replaced(point, "temperature", "1")), true, "记录路径仅用于 JSON" },
              { "MQTT", config(R"("commandTopic":"cmd/+",)", point), true, "MQTT 指令 Topic 无效" },
-             { "MQTT", R"({"storagePolicy":"report","topic":"devices"})", true, "MQTT 点位配置无效" },
+             { "MQTT", R"({"identityProperty":"serial","parameters":[{"name":"serial","dataType":"STRING"}],"storagePolicy":"report","topic":"devices"})", true, "MQTT 点位配置无效" },
              { "MQTT", withPoint(kPoint, "not-a-uuid"), true, pointInvalid },
              { "MQTT", withPoint("DOUBLE", "INT"), true, pointInvalid },
              { "MQTT", withPoint(R"("name":"温度")", R"("name":"")"), true, pointInvalid },

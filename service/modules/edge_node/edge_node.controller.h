@@ -80,6 +80,8 @@ class EdgeManagementController final {
     RUVIA_PUT("/:id/name", renameNode, service::middleware::PermissionMiddleware<"iot:edge:edit">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<NodeNameBody>);
     RUVIA_PUT("/:id/group", setNodeGroup, service::middleware::PermissionMiddleware<"iot:edge:edit">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<NodeGroupBody>);
     RUVIA_POST("/:id/network", network, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<NetworkBody>);
+    RUVIA_GET("/:id/io", ioState, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<EdgeIdParams>);
+    RUVIA_POST("/:id/io", controlIo, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<IoControlBody>);
     RUVIA_GET("/:id/dtu", dtuChannels, service::middleware::PermissionMiddleware<"iot:edge:query">, ruvia::path_model<EdgeIdParams>);
     RUVIA_PUT("/:id/dtu", saveDtuChannel, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<EdgeIdParams>, ruvia::json_body<DtuChannelBody>);
     RUVIA_DELETE("/:id/dtu/:channelId", deleteDtuChannel, service::middleware::PermissionMiddleware<"iot:edge:config">, ruvia::path_model<DtuChannelParams>);
@@ -125,11 +127,23 @@ class EdgeManagementController final {
         return rows;
     }
 
+    ruvia::task<ruvia::http_response> ioState(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto result = co_await EdgeService::instance().ioState(request, c.req().validated<EdgeIdParams>().get<"id">().view());
+        co_return c.json(service::common::ok<IoStateResponse>(request, result));
+    }
+
+    ruvia::task<ruvia::http_response> controlIo(ruvia::context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto result = co_await EdgeService::instance().controlIo(request, c.req().validated<EdgeIdParams>().get<"id">().view(), c.req().validated<IoControlBody>());
+        co_return c.json(service::common::ok<IoControlResponse>(request, result));
+    }
+
     ruvia::task<void> pageEvents(ruvia::context& c) {
         namespace topic = service::message::live::topic;
         const auto& scope = c.req().validated<EdgeEventsQuery>();
         const auto nodeId = text(scope.get<"nodeId">());
-        if ((*scope.get<"logs">() || *scope.get<"vpn">()) && !nodeId) {
+        if ((*scope.get<"logs">() || *scope.get<"vpn">() || *scope.get<"io">()) && !nodeId) {
             service::common::fail(17003, "实时范围缺少节点 ID", 400);
         }
 
@@ -197,6 +211,39 @@ class EdgeManagementController final {
                                     }
                                     co_return co_await detail(request);
                                 } });
+            if (*scope.get<"io">()) {
+                struct IoView final {
+                    std::string payload;
+                    service::message::live::ChangeSet::Ids devices;
+                };
+
+                const auto view = std::make_shared<IoView>();
+                auto io = [id, view](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
+                    co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");
+                    const auto state = co_await EdgeService::instance().ioState(request, id);
+                    view->devices.clear();
+                    for (const auto& channel : state.get<"channels">()) {
+                        for (const auto& binding : channel.get<"bindings">()) {
+                            view->devices.emplace(binding.get<"deviceId">().view());
+                        }
+                    }
+                    view->payload = service::middleware::dataJson(service::middleware::modelJson(state));
+                    co_return view->payload;
+                };
+                channels.push_back({ "io", { std::string(topic::kEdgeIo), std::string(topic::kEdge), std::string(topic::kDevice) }, io, [io, id, view](service::middleware::RequestContext& request, const service::message::live::ChangeSet& changes) -> ruvia::task<std::optional<std::string>> {
+                                        const auto* devices = changes.find(topic::kDevice);
+                                        const bool boundDeviceChanged = devices && (!*devices || touchesAny(**devices, view->devices));
+                                        if (!touches(changes, topic::kEdgeIo, id) && !touches(changes, topic::kEdge, id) && !boundDeviceChanged) {
+                                            co_return std::nullopt;
+                                        }
+                                        const auto previous = view->payload;
+                                        auto next = co_await io(request);
+                                        if (next == previous) {
+                                            co_return std::nullopt;
+                                        }
+                                        co_return next;
+                                    } });
+            }
             if (*scope.get<"dtu">()) {
                 auto dtu = [id](service::middleware::RequestContext& request) -> ruvia::task<std::string> {
                     co_await service::middleware::authPort(request).requirePermission(request, request.userId, "iot:edge:query");

@@ -18,6 +18,7 @@
 #include <ruvia/web/model.h>
 #include <ruvia/web/validation.h>
 
+#include "service/common/message.h"
 #include "service/common/uuid.h"
 
 namespace service::edge_node {
@@ -28,6 +29,7 @@ struct FirmwareStorageConfig final {
 };
 
 inline constexpr auto kDefaultDtu = RUVIA_DEFAULT(false){};
+inline constexpr auto kDefaultIo = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultLogs = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultVpn = RUVIA_DEFAULT(false){};
 inline constexpr auto kDefaultPage = RUVIA_DEFAULT(1){};
@@ -72,7 +74,7 @@ inline bool isEdgeGroupFilter(const ruvia::string& value) {
 
 RUVIA_MODEL(DebugAuthenticationBody, RUVIA_REQUIRED_FIELD(token, ruvia::string, RUVIA_MIN(1, "令牌不能为空")));
 
-RUVIA_MODEL(EdgeEventsQuery, RUVIA_OPTIONAL_FIELD(dtu, ruvia::bool_value, decltype(kDefaultDtu)), RUVIA_OPTIONAL_FIELD(nodeId, ruvia::string, RUVIA_CUSTOM("nodeId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value, decltype(kDefaultLogs)), RUVIA_OPTIONAL_FIELD(vpn, ruvia::bool_value, decltype(kDefaultVpn)));
+RUVIA_MODEL(EdgeEventsQuery, RUVIA_OPTIONAL_FIELD(io, ruvia::bool_value, decltype(kDefaultIo)), RUVIA_OPTIONAL_FIELD(dtu, ruvia::bool_value, decltype(kDefaultDtu)), RUVIA_OPTIONAL_FIELD(nodeId, ruvia::string, RUVIA_CUSTOM("nodeId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value, decltype(kDefaultLogs)), RUVIA_OPTIONAL_FIELD(vpn, ruvia::bool_value, decltype(kDefaultVpn)));
 
 RUVIA_MODEL(EdgeListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::int64, decltype(kDefaultPage), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::int64, decltype(kDefaultPageSize), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string, RUVIA_ONE_OF("注册状态无效", "pending", "approved")), RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::string, RUVIA_CUSTOM("节点分组筛选无效", isEdgeGroupFilter)));
 
@@ -123,7 +125,7 @@ RUVIA_MODEL(VpnCapabilityDto, RUVIA_OPTIONAL_FIELD_NAME("supportsVpn", supportsV
 
 RUVIA_MODEL(ExternalIoChannelDto, RUVIA_OPTIONAL_FIELD(channel, ruvia::string), RUVIA_OPTIONAL_FIELD(kind, ruvia::string), RUVIA_OPTIONAL_FIELD(available, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(controllable, ruvia::bool_value));
 RUVIA_MODEL(ExternalIoCapabilityDto, RUVIA_OPTIONAL_FIELD(supported, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(channels, ruvia::array<ExternalIoChannelDto>));
-RUVIA_MODEL(CapabilityDto, RUVIA_OPTIONAL_FIELD(serialDebug, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(terminal, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(vpn, VpnCapabilityDto), RUVIA_OPTIONAL_FIELD(externalIo, ExternalIoCapabilityDto));
+RUVIA_MODEL(CapabilityDto, RUVIA_OPTIONAL_FIELD(nodeIoControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(serialDebug, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::bool_value), RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(terminal, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(logs, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(vpn, VpnCapabilityDto), RUVIA_OPTIONAL_FIELD(externalIo, ExternalIoCapabilityDto));
 
 RUVIA_MODEL(SerialDebugOpenRequest, RUVIA_REQUIRED_FIELD(path, ruvia::string, RUVIA_MAX(96, "串口路径过长")));
 
@@ -147,7 +149,12 @@ RUVIA_MODEL(MobileDto, RUVIA_OPTIONAL_FIELD(available, ruvia::bool_value), RUVIA
 
 RUVIA_MODEL(FirmwareStatusDto, RUVIA_OPTIONAL_FIELD(state, ruvia::string), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("progressPercent", progressPercent, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("downloadedBytes", downloadedBytes, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("totalBytes", totalBytes, ruvia::int64));
 
-RUVIA_MODEL(TaskDto, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("taskType", taskType, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("progressPercent", progressPercent, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("downloadedBytes", downloadedBytes, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("totalBytes", totalBytes, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("updatedAt", updatedAt, ruvia::string));
+RUVIA_MODEL(TaskDto, RUVIA_OPTIONAL_FIELD(uncertain, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("taskType", taskType, ruvia::string), RUVIA_OPTIONAL_FIELD(status, ruvia::string), RUVIA_OPTIONAL_FIELD(message, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("progressPercent", progressPercent, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("downloadedBytes", downloadedBytes, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("totalBytes", totalBytes, ruvia::int64), RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("updatedAt", updatedAt, ruvia::string));
+
+RUVIA_MODEL(IoBindingDto, RUVIA_REQUIRED_FIELD(deviceId, ruvia::string), RUVIA_REQUIRED_FIELD(deviceName, ruvia::string), RUVIA_REQUIRED_FIELD(pointId, ruvia::string));
+RUVIA_MODEL(IoChannelDto, RUVIA_REQUIRED_FIELD(state, service::message::edge::IoChannelState), RUVIA_REQUIRED_FIELD(bindings, ruvia::array<IoBindingDto>), RUVIA_OPTIONAL_FIELD(pending, TaskDto), RUVIA_OPTIONAL_FIELD(lastControl, TaskDto));
+RUVIA_MODEL(IoStateDto, RUVIA_REQUIRED_FIELD(online, ruvia::bool_value), RUVIA_REQUIRED_FIELD(current, ruvia::bool_value), RUVIA_REQUIRED_FIELD(controlSupported, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(observedAtMs, ruvia::int64), RUVIA_REQUIRED_FIELD(channels, ruvia::array<IoChannelDto>));
+RUVIA_MODEL(IoControlBody, RUVIA_REQUIRED_FIELD(channel, ruvia::string, RUVIA_MIN(3, "请选择输出通道"), RUVIA_MAX(16, "IO 通道无效")), RUVIA_REQUIRED_FIELD(value, ruvia::bool_value), RUVIA_REQUIRED_FIELD(idempotencyKey, ruvia::string, RUVIA_CUSTOM("控制操作标识必须是 UUID", service::common::isUuidField)));
 
 RUVIA_MODEL(EdgeNodeDto, RUVIA_OPTIONAL_FIELD(id, ruvia::string), RUVIA_OPTIONAL_FIELD(imei, ruvia::string), RUVIA_OPTIONAL_FIELD(name, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("groupName", groupName, ruvia::string), RUVIA_OPTIONAL_FIELD(model, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("softwareVersion", softwareVersion, ruvia::string), RUVIA_OPTIONAL_FIELD(hostname, ruvia::string), RUVIA_OPTIONAL_FIELD(architecture, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("openwrtRelease", openwrtRelease, ruvia::string), RUVIA_OPTIONAL_FIELD_NAME("enrollmentStatus", enrollmentStatus, ruvia::string), RUVIA_OPTIONAL_FIELD(status, NodeStatusDto), RUVIA_OPTIONAL_FIELD(capability, CapabilityDto), RUVIA_OPTIONAL_FIELD(mobile, MobileDto), RUVIA_OPTIONAL_FIELD(firmware, FirmwareStatusDto), RUVIA_OPTIONAL_FIELD_NAME("vpnVirtualCidrs", vpnVirtualCidrs, ruvia::boxed_array<ruvia::string>), RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::string), RUVIA_OPTIONAL_FIELD(interfaces, ruvia::boxed_array<InterfaceDto>), RUVIA_OPTIONAL_FIELD(networks, ruvia::boxed_array<NetworkDto>), RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::boxed_array<SerialDto>), RUVIA_OPTIONAL_FIELD(tasks, ruvia::boxed_array<TaskDto>));
 
@@ -162,6 +169,9 @@ RUVIA_MODEL(LogsDto, RUVIA_OPTIONAL_FIELD(lines, ruvia::boxed_array<LogLineDto>)
 RUVIA_MODEL(EdgeGroupsResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, ruvia::boxed_array<EdgeGroupDto>));
 
 RUVIA_MODEL(EdgeNodeResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, EdgeNodeDto));
+
+RUVIA_MODEL(IoStateResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, IoStateDto));
+RUVIA_MODEL(IoControlResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, TaskDto));
 
 RUVIA_MODEL(EdgePageResponse, RUVIA_REQUIRED_FIELD(code, ruvia::int64), RUVIA_REQUIRED_FIELD(message, ruvia::string), RUVIA_REQUIRED_FIELD(data, EdgePageDto));
 

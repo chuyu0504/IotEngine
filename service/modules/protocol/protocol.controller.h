@@ -23,6 +23,7 @@ class ProtocolController final {
     RUVIA_ROUTES_BEGIN(ProtocolController)
     RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::query_model<ProtocolListQuery>);
     RUVIA_GET("/options", options, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::query_model<ProtocolListQuery>);
+    RUVIA_GET("/external-io-models", externalIoModels, service::middleware::PermissionMiddleware<"iot:protocol:query">);
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::path_model<ProtocolIdParams>);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"iot:protocol:add">, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::json_body<CreateProtocolBody>);
     RUVIA_POST("/:id/points", createDlt645Point, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::path_model<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16004>, ruvia::json_body<CreateDlt645PointBody>);
@@ -34,6 +35,11 @@ class ProtocolController final {
     RUVIA_ROUTES_END
 
   private:
+    ruvia::task<ruvia::http_response> externalIoModels(ruvia::context& c) {
+        const auto models = ProtocolService::externalIoModels(c.pool());
+        co_return c.json(service::common::ok<ExternalIoModelsResponse>(c, models));
+    }
+
     static std::string id(ruvia::context& c) {
         return std::string(c.req().validated<ProtocolIdParams>().get<"id">().view());
     }

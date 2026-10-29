@@ -147,14 +147,14 @@ void testSl651(const DeviceModel& model) {
 }
 
 void testMqtt() {
-    const auto model = project("MQTT", R"({"points":[
+    const auto model = project("MQTT", R"({"identityProperty":"deviceId","points":[
         {"id":"z","name":"first","field":"values.high","dataType":"NUMBER"},
         {"id":"a","name":"second","field":"values.low","dataType":"BOOLEAN","unit":"state","writable":true}]})");
     const auto& e = model.device.elements;
     require(e.size() == 2 && e[0].id == "z" && e[1].id == "a" && e[0].name == "first" && e[0].mqttField == "values.high" && e[0].dataType == "NUMBER" && e[0].unit.empty() && !e[0].writable && e[0].size == 65535 && e[0].decimals == -1 && e[0].configKey == "element:z" && e[1].name == "second" && e[1].mqttField == "values.low" && e[1].dataType == "BOOLEAN" && e[1].unit == "state" && e[1].writable && e[1].size == 65535, "MQTT point required fields, optional defaults, or native order changed");
     for (const auto field : { "id", "name", "field", "dataType" }) {
         for (const bool null : { false, true }) {
-            std::string json = "{\"points\":[{";
+            std::string json = "{\"identityProperty\":\"deviceId\",\"points\":[{";
             bool separator = false;
             for (const auto key : { "id", "name", "field", "dataType" }) {
                 if (std::string_view(key) == field && !null) {

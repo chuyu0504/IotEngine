@@ -120,6 +120,17 @@ inline std::optional<Ipv4Cidr> mappedVirtualCidr(const Ipv4Cidr& real) noexcept 
 namespace service::message {
 
 namespace edge {
+inline constexpr char kIoStatePrefix[] = "iot:edge:io:";
+inline constexpr std::string_view kQueueIoOperation = "queue-io";
+inline constexpr std::string_view kIoTaskType = "io";
+
+inline std::string ioStateKey(std::string_view nodeId) {
+    return std::string(kIoStatePrefix) + std::string(nodeId);
+}
+
+RUVIA_MODEL(IoChannelState, RUVIA_REQUIRED_FIELD(channel, ruvia::string), RUVIA_REQUIRED_FIELD(kind, ruvia::string), RUVIA_REQUIRED_FIELD(available, ruvia::bool_value), RUVIA_REQUIRED_FIELD(controllable, ruvia::bool_value), RUVIA_OPTIONAL_FIELD(value, ruvia::string));
+RUVIA_MODEL(IoSnapshot, RUVIA_REQUIRED_FIELD(channels, ruvia::array<IoChannelState>));
+RUVIA_MODEL(IoTaskRequest, RUVIA_REQUIRED_FIELD(channel, ruvia::string), RUVIA_REQUIRED_FIELD(value, ruvia::bool_value), RUVIA_REQUIRED_FIELD(startBeforeMs, ruvia::int64), RUVIA_REQUIRED_FIELD(session, ruvia::string));
 inline constexpr std::uint32_t kProtocolVersion = 6;
 inline constexpr std::uint32_t kOldestCompatibleProtocolVersion = 2;
 inline constexpr std::string_view kDefaultPlatformId{
@@ -762,6 +773,7 @@ inline constexpr std::string_view kProtocol{ "protocol" };
 inline constexpr std::string_view kEdge{ "edge" };
 inline constexpr std::string_view kEdgeGroup{ "edge-group" };
 inline constexpr std::string_view kEdgeDtu{ "edge-dtu" };
+inline constexpr std::string_view kEdgeIo{ "edge-io" };
 inline constexpr std::string_view kEdgeLogs{ "edge-logs" };
 inline constexpr std::string_view kAlert{ "alert" };
 inline constexpr std::string_view kAlertRule{ "alert-rule" };
@@ -1243,6 +1255,7 @@ enum class WorkerStreamTask : std::uint8_t {
     EdgeProjector,
     EdgeDispatcher,
     Gb28181Projector,
+    EdgeIoDeadline,
     Count,
 };
 
@@ -1262,7 +1275,7 @@ inline std::string workerWakeStream(std::optional<std::size_t> workerIndex, std:
 }
 
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(WorkerStreamTask::Count)>
-    kWorkerStreamTaskNames{ "telemetry", "telemetry-history", "telemetry-latest", "telemetry-alerts", "telemetry-delivery", "freshness", "freshness-alerts", "command-result", "webhook", "reconciler", "edge-projector", "edge-dispatcher", "gb28181-projector" };
+    kWorkerStreamTaskNames{ "telemetry", "telemetry-history", "telemetry-latest", "telemetry-alerts", "telemetry-delivery", "freshness", "freshness-alerts", "command-result", "webhook", "reconciler", "edge-projector", "edge-dispatcher", "gb28181-projector", "edge-io-deadline" };
 
 inline constexpr std::string_view workerStreamTaskName(WorkerStreamTask task) {
     return kWorkerStreamTaskNames.at(static_cast<std::size_t>(task));
