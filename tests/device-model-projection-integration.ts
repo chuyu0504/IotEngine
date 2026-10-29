@@ -173,6 +173,7 @@ function configuration(protocol: Protocol, explicit: boolean) {
         }
         case 'MQTT':
             config = { ...common, topic: `${tag}/telemetry`, payloadFormat: 'json', identitySource: 'payload', deviceCodeField: '/code',
+                identityProperty: 'serial', parameters: [{ name: 'serial', dataType: 'STRING' }],
                 ...(explicit ? { qos: 1, recordsPath: '/records', timeField: '/time', timeFormat: 'unix_ms' } : {}),
                 points: points.map((point, index) => ({ ...point, field: `/values/${index ? 'first' : 'last'}`, dataType: 'DOUBLE', ...(explicit ? { writable: false } : {}) })) };
             break;
@@ -680,6 +681,7 @@ try {
                 VALUES(${link},${`${name}-${execution}`},${protocol},${connection}::jsonb,'enabled',${execution},${execution === 'edge' ? node : null}::uuid,${admin})`;
             const parameters = { device_code: protocol === 'DLT645' ? explicit ? '000000000002' : '000000000001'
                 : protocol === 'SL651' ? explicit ? '0000000002' : '0000000001' : `${execution}-${protocol}-${Number(explicit)}`,
+                ...(protocol === 'MQTT' ? { parameters: { serial: `${execution}-${protocol}-${Number(explicit)}` } } : {}),
                 ...(execution === 'collector' && protocol !== 'SL651' ? { target_id: fixture.target } : {}),
                 ...(explicit ? { online_timeout: '123', timezone: '+00:00', slave_id: '7', modbus_mode: 'RTU', remote_control: true,
                     heartbeat: { mode: 'ASCII', content: 'PING\\r\\n' }, registration: { mode: 'ASCII', content: 'REGISTER' } } : {}) };
