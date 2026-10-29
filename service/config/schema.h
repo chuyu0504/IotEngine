@@ -2350,6 +2350,22 @@ END $schema$;
         auto result = schema.compile("0065_standalone_external_io");
         migrations.emplace_back(std::move(result.front()));
     }
+    // Schema API cannot extend a deployed CHECK expression in place. Preserve
+    // its collector/TCP/serial predicate and add only the logical IO endpoint.
+    migrations.emplace_back(ruvia::db_migration({ .id_ = "0066_standalone_io_endpoint", .sql_ = R"sql(
+DO $migration$
+DECLARE previous_expression TEXT;
+BEGIN
+    SELECT pg_get_expr(conbin, conrelid) INTO STRICT previous_expression
+    FROM pg_constraint
+    WHERE conrelid = 'link'::regclass AND conname = 'ck_link_endpoint' AND contype = 'c';
+    ALTER TABLE link DROP CONSTRAINT ck_link_endpoint;
+    EXECUTE format(
+        'ALTER TABLE link ADD CONSTRAINT ck_link_endpoint CHECK ((%s) OR (execution = ''edge'' AND edge_node_id IS NOT NULL AND protocol = ''ExternalIO'' AND endpoint = ''{"transport":"io"}''::jsonb))',
+        previous_expression
+    );
+END $migration$;
+)sql" }));
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.
     ruvia::db_schema adoption({ .driver_ = ruvia::db_driver::postgresql });
