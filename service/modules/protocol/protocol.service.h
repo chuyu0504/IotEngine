@@ -327,7 +327,7 @@ class ProtocolService {
         for (const auto& task : pending) {
             const auto request = ruvia::from_json<service::message::edge::IoTaskRequest>(task.template get<"request">());
             for (const auto& point : *model.get<"points">()) {
-                if (point.get<"channel">().view() == request.get<"channel">().view()) {
+                if (point.get<"channel">().view() == request.template get<"channel">().view()) {
                     service::common::fail(16009, "该 IO 通道存在未完成的节点控制，请等待结果", 409);
                 }
             }
