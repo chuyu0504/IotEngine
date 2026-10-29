@@ -114,11 +114,15 @@ try {
     model = (await db`SELECT id FROM protocol_config WHERE name=${name}`)[0].id;
     const connection = { name, edge_node_id: node, protocol: 'ExternalIO', endpoint: { transport: 'io' }, status: 'enabled' };
     const body = { name, device_code: name, protocol_config_id: model, edge_connection: connection };
+    const legacyDetail = await request(`/v1/edge/${node}`);
+    assert.deepEqual([...legacyDetail.data.capability.protocols].sort(), ['Modbus', 'S7', 'SL651', 'MC', 'FINS', 'DLT645'].sort());
     await request('/v1/device', body, 'POST', 400);
     socket.send(envelope(26, capability(true)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'protocols' ? 'ExternalIO'`).length > 0, 'standalone capability missing');
     const detail = await request(`/v1/edge/${node}`);
     assert(detail.data.capability.protocols.includes('ExternalIO'));
+    const inventory = await request('/v1/edge');
+    assert(inventory.data.list.find((item: any) => item.id === node).capability.protocols.includes('ExternalIO'));
     await request('/v1/device', { ...body, edge_connection: { ...connection, endpoint: { transport: 'io', ip: '127.0.0.1' } } }, 'POST', 400);
     await request('/v1/device', body);
     ({ id: device, link_id: link } = (await db`SELECT id,link_id FROM device WHERE name=${name} AND deleted_at IS NULL`)[0]);
