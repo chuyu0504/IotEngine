@@ -60,6 +60,7 @@ import { createUuid } from '@/utils/uuid';
 import {
     checkAddressConflict,
     compileMqttTemplate,
+    formatMqttFieldPath,
     formatMqttTemplate,
     formatTsapValue,
     industrialConfigSchema,
@@ -504,7 +505,7 @@ function ProtocolConfigLayout({
                         ) : activeType ? (
                             body(
                                 <DerivedPointsEditor
-                                    key={activeType.id}
+                                    key={`derived-points:${activeType.id}`}
                                     ref={derivedEditor}
                                     points={derivedPoints}
                                     sourceOptions={sourceOptions}
@@ -5648,11 +5649,10 @@ export function MqttConfigPage() {
     };
     const columns: ColumnsType<MqttPoint> = [
         { title: '名称', dataIndex: 'name', width: 160 },
-        { title: '点位标识', dataIndex: 'id', width: 170, ellipsis: true },
         {
             title: '消息路径',
             dataIndex: 'field',
-            width: 200,
+            width: 260,
             ellipsis: true,
             render: (value, point) =>
                 config?.reports
@@ -5660,10 +5660,13 @@ export function MqttConfigPage() {
                           .flatMap((report) =>
                               report.pointFields
                                   .filter((field) => field.pointId === point.id)
-                                  .map((field) => `${report.name}：${field.field}`)
+                                  .map(
+                                      (field) =>
+                                          `${report.name}：${formatMqttFieldPath(field.field)}`
+                                  )
                           )
                           .join('；') || '—'
-                    : value || '—',
+                    : formatMqttFieldPath(value) || '—',
         },
         {
             title: '数据类型',
@@ -5730,7 +5733,7 @@ export function MqttConfigPage() {
                             size="small"
                             columns={columns}
                             dataSource={config?.points ?? EMPTY_MQTT_POINTS}
-                            scroll={{ x: 890, y: bodyHeight }}
+                            scroll={{ x: 720, y: bodyHeight }}
                             pagination={{
                                 pageSize: 20,
                                 showSizeChanger: false,

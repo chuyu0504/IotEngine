@@ -95,6 +95,23 @@ const mqttPathSchema = z
         'JSON Pointer 转义无效或超过 32 层'
     );
 
+export function formatMqttFieldPath(field: string): string {
+    if (!field) return '';
+    const parts = field.startsWith('/')
+        ? field
+              .slice(1)
+              .split('/')
+              .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))
+        : [field];
+    return parts.reduce((path, part) => {
+        if (/^[$_\p{ID_Start}](?:[$_\p{ID_Continue}]|\u200C|\u200D)*$/u.test(part))
+            return path ? `${path}.${part}` : part;
+        if (/^(0|[1-9]\d*)$/.test(part) && Number.isSafeInteger(Number(part)))
+            return `${path}[${part}]`;
+        return `${path}[${JSON.stringify(part)}]`;
+    }, '');
+}
+
 const mqttPointer = (parts: readonly string[]) =>
     `/${parts.map((part) => part.replace(/~/g, '~0').replace(/\//g, '~1')).join('/')}`;
 const mqttTemplateError = (template: string, path: string, message: string, offset = 0): never => {

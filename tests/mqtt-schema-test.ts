@@ -2,6 +2,7 @@ import { deviceParametersSchema, deviceParameterValues } from '../web/pages/devi
 import { expect, test } from 'bun:test';
 import {
     compileMqttTemplate,
+    formatMqttFieldPath,
     formatMqttTemplate,
     mqttCommandPoints,
     mqttConfigSchema,
@@ -17,6 +18,23 @@ const point = {
     field: '/metrics/temperature',
     dataType: 'DOUBLE' as const,
 };
+
+test('MQTT message paths display JavaScript property access including arrays and escaped keys', () => {
+    for (const [field, display] of [
+        ['/body/water_level', 'body.water_level'],
+        ['/data/0/value', 'data[0].value'],
+        ['/body/sensor-name', 'body["sensor-name"]'],
+        ['/body/a~1b/~0key', 'body["a/b"]["~key"]'],
+        ['/body/01', 'body["01"]'],
+        ['/body/9007199254740993', 'body["9007199254740993"]'],
+        ['/body/水位', 'body.水位'],
+        ['/body/a"b', 'body["a\\"b"]'],
+        ['/', '[""]'],
+        ['literal.key', '["literal.key"]'],
+        ['temperature', 'temperature'],
+        ['', ''],
+    ]) expect(formatMqttFieldPath(field)).toBe(display);
+});
 const config = {
     identityProperty: 'serial',
     parameters: [{ name: 'serial', dataType: 'STRING' as const }],
