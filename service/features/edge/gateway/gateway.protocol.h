@@ -209,7 +209,7 @@ class GatewayProtocol final {
         ack->set_session_epoch(session.epoch);
         ack->set_negotiated_protocol_version(session.protocolVersion);
         ack->set_raw_telemetry(input.hello().supports_raw_telemetry());
-        ack->set_external_io(input.hello().supports_external_io() && input.hello().supports_raw_telemetry());
+        ack->set_external_io(input.hello().supports_external_io() && input.hello().supports_external_io_milliamps() && input.hello().supports_raw_telemetry());
         ack->set_node_io(ack->external_io() && input.hello().supports_node_io());
         // Keep the deployed wire field, including old firmware's 300s cadence.
         ack->set_heartbeat_interval_sec(session.statusReporting ? 900 : 300);

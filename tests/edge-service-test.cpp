@@ -137,6 +137,19 @@ int main() {
                 reply.hello_ack().max_message_size() != service::message::edge::kMaxMessageSize) {
                 throw std::runtime_error("gateway changed the deployed hello acknowledgement contract");
             }
+            input.mutable_hello()->set_supports_external_io(true);
+            input.mutable_hello()->set_supports_node_io(true);
+            reply.Clear();
+            service::edge::gateway::GatewayProtocol::helloAcknowledgement(session, input, reply, 5000);
+            if (reply.hello_ack().external_io() || reply.hello_ack().node_io()) {
+                throw std::runtime_error("gateway enabled the old external IO wire format");
+            }
+            input.mutable_hello()->set_supports_external_io_milliamps(true);
+            reply.Clear();
+            service::edge::gateway::GatewayProtocol::helloAcknowledgement(session, input, reply, 5000);
+            if (!reply.hello_ack().external_io() || !reply.hello_ack().node_io()) {
+                throw std::runtime_error("gateway failed to negotiate mA external IO");
+            }
         }
         service::edge::pb::CommandRequest capableCommand;
         capableCommand.set_timeout_ms(5000);

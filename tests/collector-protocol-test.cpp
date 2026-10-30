@@ -3414,6 +3414,65 @@ void testEdgeRawAcquisitionContract() {
     check("\"00001.521\"");
 }
 
+void testExternalIoCurrentUnit() {
+    namespace pb = service::edge::pb;
+    constexpr std::string_view nodeId = "019f8c99-913c-7a0c-b6ad-c43bb9b12764";
+    constexpr std::string_view deviceId = "019f91bf-6f83-7491-8a53-cd4fde034b72";
+    constexpr std::string_view pointId = "00000000-0000-4000-8000-000000000001";
+    service::edge::metadata::Catalog catalog;
+    catalog[std::string(nodeId)][std::string(deviceId)] = {
+        .linkId = "019f91bf-6f83-7491-8a53-cd4fde034b73",
+        .deviceCode = "IO",
+        .protocol = "ExternalIO",
+        .storagePolicy = "report",
+        .onlineWindowMs = 60000
+    };
+    pb::TelemetryBatch batch;
+    auto* record = batch.add_records();
+    std::uint8_t deviceBytes[16]{};
+    require(service::common::uuidBytes(deviceId, deviceBytes), "invalid IO device id");
+    record->set_record_id(std::string(16, '\x01'));
+    record->set_device_id(deviceBytes, 16);
+    record->set_model_id(std::string(16, '\x02'));
+    record->set_protocol(pb::PROTOCOL_EXTERNAL_IO);
+    record->set_observed_at_ms(1784856700000);
+    auto* point = record->add_values();
+    point->set_element_id(pointId.data(), pointId.size());
+    point->mutable_value()->set_kind(pb::VALUE_DOUBLE);
+    point->mutable_value()->set_double_value(12.345);
+    std::vector<pb::ConfigItem> items(1);
+    auto* binding = items[0].mutable_external_io();
+    binding->set_device_id(record->device_id());
+    binding->set_model_id(record->model_id());
+    binding->set_point_id(point->element_id());
+    binding->set_kind(pb::EXTERNAL_IO_AI);
+    binding->set_name("current");
+    binding->set_unit("mA");
+    std::map<std::string, service::configuration::DerivedConfiguration> calculations;
+    auto& sources = calculations[std::string(deviceId)].sources;
+    const auto collect = [&]() {
+        std::vector<service::message::ParsedDeviceMessage> output;
+        service::edge::projection::ProjectionService::collectTelemetry(catalog, nodeId, 1784856700000, batch, output, items, calculations);
+        require(output.size() == 1, "IO current projection missing");
+        return output.front().valuesJson;
+    };
+    sources = { R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","kind":"AI","unit":"mA"}]})" };
+    const auto milliamps = collect();
+    require(milliamps.find("\"value\":12.345") != std::string::npos && milliamps.find("\"unit\":\"mA\"") != std::string::npos, "mA sample was changed during projection");
+    sources = { R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","kind":"AI","unit":"uA"}]})" };
+    const auto existing = collect();
+    require(existing.find("\"value\":12345") != std::string::npos && existing.find("\"unit\":\"uA\"") != std::string::npos, "existing configured unit changed its formula input");
+    point->mutable_value()->set_kind(pb::VALUE_SIGNED);
+    point->mutable_value()->set_signed_value(12345);
+    bool rejected = false;
+    try {
+        (void)collect();
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require(rejected, "old firmware IO scalar was accepted");
+}
+
 void testEdgeParsedMessageContract() {
     namespace pb = service::edge::pb;
     service::message::ParsedDeviceMessage parsed;
@@ -3719,6 +3778,7 @@ int main() {
         run("alert schedule invalid stored duration",
             testAlertScheduleSkipsInvalidStoredDuration);
         run("command value decimal parsing", testCommandValueDecimalParsing);
+        run("external IO current unit", testExternalIoCurrentUnit);
         run("edge parsed message contract", testEdgeParsedMessageContract);
         run("edge raw acquisition six protocols", testEdgeRawAcquisitionContract);
         run("atomic pending command dispatch", testAtomicPendingCommandDispatch);

@@ -1127,7 +1127,7 @@ function NodeIoTab({ scope, canControl }: { scope: Edge.EventScope; canControl: 
                 ) : row.state.value === undefined ? (
                     '尚未上报'
                 ) : row.state.kind === 'AI' ? (
-                    `${row.state.value} μA`
+                    `${row.state.value} mA`
                 ) : (
                     <Tag color={row.state.value === '1' ? 'success' : 'default'}>
                         {row.state.kind === 'DO'
@@ -1260,7 +1260,7 @@ function NodeIoTab({ scope, canControl }: { scope: Edge.EventScope; canControl: 
                 />
             )}
             <span className="text-xs text-slate-500">
-                已绑定设备的通道仅可查看，请在设备页面操作。模拟量显示原始电流值。
+                已绑定设备的通道仅可查看，请在设备页面操作。ECM30 模拟量以 mA 显示。
             </span>
             <Table
                 rowKey={(row) => row.state.channel}

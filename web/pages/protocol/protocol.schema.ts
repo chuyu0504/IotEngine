@@ -31,8 +31,10 @@ const externalIoConfigSchema = z
                         visible: z.boolean().optional(),
                     })
                     .refine(
-                        (point) => !point.unit || (point.kind === 'AI' && point.unit === 'uA'),
-                        'AI 原始单位为 uA，DI 和 DO 不设置单位'
+                        (point) =>
+                            !point.unit ||
+                            (point.kind === 'AI' && (point.unit === 'uA' || point.unit === 'mA')),
+                        'AI 单位须为 mA 或旧版 uA，DI 和 DO 不设置单位'
                     )
                     .refine(
                         (point) =>

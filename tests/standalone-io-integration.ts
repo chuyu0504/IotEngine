@@ -30,6 +30,11 @@ function field(tag: number, value: bigint | number | string | Buffer) {
     const data = typeof value === 'string' ? Buffer.from(value) : value;
     return Buffer.concat([integer(tag * 8 + 2), integer(data.length), data]);
 }
+function doubleField(tag: number, value: number) {
+    const bytes = Buffer.alloc(8);
+    bytes.writeDoubleLE(value);
+    return Buffer.concat([integer(tag * 8 + 1), bytes]);
+}
 function decode(data: Buffer) {
     const result = new Map<number, bigint | Buffer>();
     let position = 0;
@@ -95,7 +100,7 @@ try {
     socket.binaryType = 'arraybuffer';
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(Error('IO Hello timeout')), 10000);
-        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, identity), field(2, 'Ebyte T113-I ECM30'), field(3, '0.3.75'), field(23, 1), field(36, 1), field(37, 1), field(38, 1), field(39, 1)])));
+        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, identity), field(2, 'Ebyte T113-I ECM30'), field(3, '0.3.78'), field(23, 1), field(36, 1), field(37, 1), field(38, 1), field(39, 1), field(40, 1), field(41, 1)])));
         socket!.onerror = () => reject(Error('IO WebSocket error'));
         socket!.onmessage = event => {
             const message = decode(Buffer.from(event.data as ArrayBuffer));
@@ -110,7 +115,7 @@ try {
     });
     socket.send(envelope(26, capability(false)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'externalIo'->>'supported'='true'`).length > 0, 'IO capability missing');
-    await request('/v1/protocol/configs', { name, protocol: 'ExternalIO', config: { edgeNodeModel: 'Ebyte T113-I ECM30', readInterval: 1, storagePolicy: 'report', points: [{ id: analog, name: 'current', kind: 'AI', channel: 'AI0', unit: 'uA' }, { id: output, name: 'switch', kind: 'DO', channel: 'do0' }], derivedPoints: [{ id: derived, name: 'double current', kind: 'expression', valueType: 'number', expression: 'x * 2', inputs: [{ alias: 'x', pointId: analog }], unit: 'uA', unitMode: 'fixed', maxAgeSeconds: 30, visible: true }] } });
+    await request('/v1/protocol/configs', { name, protocol: 'ExternalIO', config: { edgeNodeModel: 'Ebyte T113-I ECM30', readInterval: 1, storagePolicy: 'report', points: [{ id: analog, name: 'current', kind: 'AI', channel: 'AI0', unit: 'mA' }, { id: output, name: 'switch', kind: 'DO', channel: 'do0' }], derivedPoints: [{ id: derived, name: 'double current', kind: 'expression', valueType: 'number', expression: 'x * 2', inputs: [{ alias: 'x', pointId: analog }], unit: 'mA', unitMode: 'fixed', maxAgeSeconds: 30, visible: true }] } });
     model = (await db`SELECT id FROM protocol_config WHERE name=${name}`)[0].id;
     const connection = { name, edge_node_id: node, protocol: 'ExternalIO', endpoint: { transport: 'io' }, status: 'enabled' };
     const body = { name, device_code: name, protocol_config_id: model, edge_connection: connection };
@@ -119,6 +124,16 @@ try {
     await request('/v1/device', body, 'POST', 400);
     socket.send(envelope(26, capability(true)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'protocols' ? 'ExternalIO'`).length > 0, 'standalone capability missing');
+    socket.send(envelope(89, Buffer.concat([
+        field(1, Date.now()),
+        field(2, Buffer.concat([field(1, 'AI0'), field(2, 3), field(3, 1), doubleField(7, 12.345)])),
+        field(2, Buffer.concat([field(1, 'do0'), field(2, 2), field(3, 1), field(4, 1), field(6, 0)])),
+    ])));
+    await until(async () => {
+        const io = await request(`/v1/edge/${node}/io`);
+        return io.data.channels.some((row: any) => row.state.channel === 'AI0' && row.state.value === '12.345') &&
+            io.data.channels.some((row: any) => row.state.channel === 'do0' && row.state.value === '0');
+    }, 'node IO state did not preserve mA current and off output');
     const detail = await request(`/v1/edge/${node}`);
     assert(detail.data.capability.protocols.includes('ExternalIO'));
     const inventory = await request('/v1/edge');
@@ -134,7 +149,7 @@ try {
     await request('/v1/device', { ...body, name: crypto.randomUUID(), device_code: crypto.randomUUID() }, 'POST', 409);
     await request(`/v1/device/${device}`, { ...body, name: name + ' edited' }, 'PUT');
     assert.equal((await db`SELECT link_id FROM device WHERE id=${device}`)[0].link_id, link, 'editing duplicated the logical endpoint');
-    await request(`/v1/protocol/configs/${model}`, { config: { points: [{ id: analog, name: 'current renamed', kind: 'AI', channel: 'AI0', unit: 'uA' }, { id: output, name: 'switch', kind: 'DO', channel: 'do0' }] } }, 'PUT');
+    await request(`/v1/protocol/configs/${model}`, { config: { points: [{ id: analog, name: 'current renamed', kind: 'AI', channel: 'AI0', unit: 'mA' }, { id: output, name: 'switch', kind: 'DO', channel: 'do0' }] } }, 'PUT');
     await request(`/v1/edge/${node}/sync`, {});
     const revision = BigInt((await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`)[0].revision);
     await until(async () => (received.get(32) ?? []).some(item => decode(item).get(1) === revision), 'IO config commit missing');
@@ -143,13 +158,15 @@ try {
     assert.equal(endpoint.get(3), 3n);
     assert(!endpoint.has(4) && !endpoint.has(6) && !endpoint.has(7) && !endpoint.has(8) && !endpoint.has(10), 'IO endpoint contains network or serial settings');
     assert.equal(items.filter(item => item.has(20)).length, 2);
+    const current = decode(items.find(item => item.has(20) && (decode(item.get(20) as Buffer).get(3) as Buffer).toString() === analog)!.get(20) as Buffer);
+    assert.equal((current.get(7) as Buffer).toString(), 'mA', 'firmware was not configured to report mA');
     assert.equal(items.filter(item => item.has(19)).length, 1, 'IO derived definition duplicated');
     const commit = decode((received.get(32) ?? []).find(item => decode(item).get(1) === revision)!);
     const digest = commit.get(2) as Buffer;
     socket.send(envelope(33, Buffer.concat([field(1, revision), field(2, digest)])));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND status->'config'->>'state'='applied' AND status->'config'->>'activeVersion'=status->'config'->>'desiredVersion'`).length > 0, 'IO config not applied');
     const sample = crypto.randomUUID();
-    const value = Buffer.concat([field(1, analog), field(4, Buffer.concat([field(1, 2), field(3, 10)]))]);
+    const value = Buffer.concat([field(1, analog), field(4, Buffer.concat([field(1, 4), doubleField(5, 5)]))]);
     socket.send(envelope(40, field(1, Buffer.concat([field(1, bytes(sample)), field(2, bytes(device)), field(3, bytes(link)), field(4, 7), field(8, Date.now()), field(9, value), field(12, bytes(model)), field(21, digest)]))));
     await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND source='derived' AND data->'values'->${derived}->>'value'='10'`).length > 0, 'standalone derived history missing');
     await until(async () => JSON.parse(String(await redis.send('HGET', [`iot:v2:device:${device}:latest`, derived]) ?? '{}')).value === '10', 'standalone derived latest missing');

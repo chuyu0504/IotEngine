@@ -194,13 +194,14 @@ try {
                     Buffer.concat([
                         field(1, identity),
                         field(2, 'Ebyte T113-I ECM30'),
-                        field(3, '0.3.74'),
+                        field(3, '0.3.78'),
                         field(23, 1),
                         field(36, 1),
                         field(37, 1),
                         field(38, 1),
                         field(39, 1),
                         field(40, 1),
+                        field(41, 1),
                     ])
                 )
             );
@@ -223,7 +224,7 @@ try {
             field(2, channel.kind === 'DI' ? 1 : 2),
             field(3, 1),
             field(4, Number(channel.controllable)),
-            field(5, value ? 2 : 0),
+            field(6, Number(value)),
         ]);
     device.send(
         envelope(

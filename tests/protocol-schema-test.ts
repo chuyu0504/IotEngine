@@ -16,7 +16,8 @@ test('外部 IO 与采集协议平级，校验点位类型、单位和唯一标�
     expect(protocolCreateSchema.safeParse({ ...input, config: { points: [point, point] } }).success).toBe(false);
     expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, channel: 'di0' }] } }).success).toBe(false);
     expect(protocolCreateSchema.safeParse({ ...input, config: { points: [point, { ...point, id: '00000000-0000-4000-8000-000000000002' }] } }).success).toBe(false);
-    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, unit: 'mA' }] } }).success).toBe(false);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, unit: 'mA' }] } }).success).toBe(true);
+    expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, unit: 'A' }] } }).success).toBe(false);
     expect(protocolCreateSchema.safeParse({ ...input, config: { points: [{ ...point, kind: 'DO' }] } }).success).toBe(false);
 });
 

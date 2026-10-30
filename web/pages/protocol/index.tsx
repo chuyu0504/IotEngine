@@ -5219,7 +5219,8 @@ export function ExternalIoConfigPage() {
                             {
                                 title: '单位',
                                 width: 80,
-                                render: (_, point) => (point.kind === 'AI' ? 'μA' : '—'),
+                                render: (_, point) =>
+                                    point.kind === 'AI' ? point.unit || 'uA' : '—',
                             },
                             {
                                 title: '读写',
@@ -5390,8 +5391,17 @@ export function ExternalIoConfigPage() {
                             ]);
                             return;
                         }
-                        const point = { ...values, unit: values.kind === 'AI' ? 'uA' : '' };
                         const previous = pointConfig?.points ?? [];
+                        const oldPoint = previous.find((item) => item.id === editingPointId);
+                        const point = {
+                            ...values,
+                            unit:
+                                values.kind === 'AI'
+                                    ? oldPoint?.kind === 'AI'
+                                        ? oldPoint.unit || 'uA'
+                                        : 'mA'
+                                    : '',
+                        };
                         await savePoints(
                             pointType,
                             editingPointId
@@ -5446,7 +5456,7 @@ export function ExternalIoConfigPage() {
                     </div>
                     <p className="mb-4 text-sm text-slate-500">
                         {selectedKind === 'AI'
-                            ? 'AI 采集原始电流，单位为 μA；工程量通过派生值换算。'
+                            ? 'ECM30 AI 量程为 4～20 mA；新增点位以 mA 采集，旧版点位保留原单位。'
                             : selectedKind === 'DO'
                               ? 'DO 为布尔输出，可在设备管理中控制。'
                               : 'DI 为布尔输入，只读采集。'}

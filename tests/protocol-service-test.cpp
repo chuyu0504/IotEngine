@@ -564,7 +564,8 @@ void testExternalIo() {
     check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"not-a-uuid","name":"输入","kind":"DI","channel":"di0"}]})", true, "外部 IO 点位标识无效" });
     check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"输入","kind":"AO","channel":"di0"}]})", true, "外部 IO 点位类型无效" });
     check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"uA"}]})", true, kAccepted });
-    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"mA"}]})", true, "外部 IO 原始单位无效，请使用派生值换算" });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"mA"}]})", true, kAccepted });
+    check({ "ExternalIO", R"({"storagePolicy":"report","points":[{"id":"00000000-0000-4000-8000-000000000001","name":"电流","kind":"AI","channel":"AI0","unit":"A"}]})", true, "AI 单位须为 mA 或旧版 uA，DI 和 DO 不设置单位" });
 }
 
 // ---- 请求模型 ----

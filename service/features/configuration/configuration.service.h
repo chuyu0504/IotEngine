@@ -340,8 +340,10 @@ ruvia::task<std::vector<DeviceModel>> loadDeviceModels(Database& database, const
                     const auto name = point.get<ruvia::string>("name");
                     const auto unit = point.get<ruvia::string>("unit");
                     bound.name = name ? std::string(name->view()) : bound.id;
-                    bound.unit = bound.kind == "AI" ? "uA" : unit ? std::string(unit->view())
-                                                                  : std::string{};
+                    bound.unit = bound.kind == "AI"
+                        ? unit && !unit->view().empty() ? std::string(unit->view()) : "uA"
+                        : unit ? std::string(unit->view())
+                               : std::string{};
                     bound.visible = static_cast<bool>(point.get<ruvia::bool_value>("visible").value_or(ruvia::bool_value{ true }));
                     model.points.push_back({ bound.id, bound.name, bound.unit });
                 }

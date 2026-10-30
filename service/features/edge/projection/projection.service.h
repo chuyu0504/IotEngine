@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <google/protobuf/util/json_util.h>
 #include <limits>
@@ -917,7 +918,7 @@ class ProjectionService final {
         );
         const auto capability = query.call(
             "jsonb_build_object",
-            { jsonKey("nodeIoControl"), boolean(hello.supports_node_io() && hello.supports_external_io() && hello.supports_raw_telemetry()), jsonKey("networkConfig"), boolean(hello.supports_network_config()), jsonKey("firmwareUpdate"), boolean(hello.supports_firmware_update()), jsonKey("firmwareStream"), boolean(hello.supports_firmware_stream()), jsonKey("platformConfig"), boolean(hello.supports_platform_config()), jsonKey("deviceConfig"), boolean(hello.supports_device_config()), jsonKey("networkConfigVersion"), integer(hello.network_config_version()), jsonKey("modemControl"), boolean(hello.supports_modem_control()), jsonKey("commandStartBefore"), boolean(hello.supports_command_start_before()), jsonKey("supportsExternalIo"), boolean(hello.supports_external_io() && hello.supports_raw_telemetry()), jsonKey("externalIo"), query.cast(query.value(R"({"supported":false,"channels":[]})"), ruvia::db_data_type::jsonb), jsonKey("logs"), boolean(hello.supports_logs()), jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false), jsonKey("vpn"), vpn }
+            { jsonKey("nodeIoControl"), boolean(hello.supports_node_io() && hello.supports_external_io() && hello.supports_external_io_milliamps() && hello.supports_raw_telemetry()), jsonKey("networkConfig"), boolean(hello.supports_network_config()), jsonKey("firmwareUpdate"), boolean(hello.supports_firmware_update()), jsonKey("firmwareStream"), boolean(hello.supports_firmware_stream()), jsonKey("platformConfig"), boolean(hello.supports_platform_config()), jsonKey("deviceConfig"), boolean(hello.supports_device_config()), jsonKey("networkConfigVersion"), integer(hello.network_config_version()), jsonKey("modemControl"), boolean(hello.supports_modem_control()), jsonKey("commandStartBefore"), boolean(hello.supports_command_start_before()), jsonKey("supportsExternalIo"), boolean(hello.supports_external_io() && hello.supports_external_io_milliamps() && hello.supports_raw_telemetry()), jsonKey("externalIo"), query.cast(query.value(R"({"supported":false,"channels":[]})"), ruvia::db_data_type::jsonb), jsonKey("logs"), boolean(hello.supports_logs()), jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false), jsonKey("vpn"), vpn }
         );
         const auto signal = query.call(
             "jsonb_build_object",
@@ -1976,6 +1977,20 @@ class ProjectionService final {
                     throw std::runtime_error("invalid external IO storage policy");
                 }
                 parsed.storagePolicy = policy->view();
+                std::map<std::string, std::string, std::less<>> units;
+                const auto configuredPoints = ioConfig.get<ruvia::json_value>("points");
+                if (!configuredPoints) {
+                    throw std::runtime_error("external IO points are unavailable");
+                }
+                (void)configuredPoints->for_each_element([&](const ruvia::json_value& configuredPoint) {
+                    const auto id = configuredPoint.get<ruvia::string>("id");
+                    const auto kind = configuredPoint.get<ruvia::string>("kind");
+                    if (id && kind && kind->view() == "AI") {
+                        const auto unit = configuredPoint.get<ruvia::string>("unit");
+                        units.emplace(std::string(id->view()), unit && !unit->view().empty() ? std::string(unit->view()) : "uA");
+                    }
+                    return true;
+                });
                 auto verified = record;
                 std::set<std::string> seen;
                 for (auto& point : *verified.mutable_values()) {
@@ -1986,11 +2001,36 @@ class ProjectionService final {
                         throw std::runtime_error("external IO point is not bound to this device and node");
                     }
                     const auto& config = binding->external_io();
-                    if (point.has_value() && ((config.kind() == pb::EXTERNAL_IO_AI && point.value().value_case() != pb::ScalarValue::kSignedValue) || (config.kind() != pb::EXTERNAL_IO_AI && point.value().value_case() != pb::ScalarValue::kBoolValue))) {
-                        throw std::runtime_error("external IO scalar type mismatch");
+                    if (config.kind() == pb::EXTERNAL_IO_AI) {
+                        const auto desired = units.find(point.element_id());
+                        if (desired == units.end() || (desired->second != "uA" && desired->second != "mA") || config.unit() != "mA") {
+                            throw std::runtime_error("external IO current unit mismatch");
+                        }
+                        if (point.has_value()) {
+                            if (point.value().kind() != pb::VALUE_DOUBLE || point.value().value_case() != pb::ScalarValue::kDoubleValue || !std::isfinite(point.value().double_value())) {
+                                throw std::runtime_error("external IO scalar type mismatch");
+                            }
+                            if (desired->second == "uA") {
+                                const double scaled = point.value().double_value() * 1000.0;
+                                const double rounded = std::round(scaled);
+                                if (!std::isfinite(scaled) || std::abs(scaled - rounded) > 0.000001 ||
+                                    rounded <= static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+                                    rounded >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+                                    throw std::runtime_error("external IO current cannot be represented in the configured unit");
+                                }
+                                auto* value = point.mutable_value();
+                                value->set_kind(pb::VALUE_SIGNED);
+                                value->set_signed_value(static_cast<std::int64_t>(rounded));
+                            }
+                        }
+                        point.set_unit(desired->second);
+                    } else {
+                        if (point.has_value() && (point.value().kind() != pb::VALUE_BOOL || point.value().value_case() != pb::ScalarValue::kBoolValue)) {
+                            throw std::runtime_error("external IO scalar type mismatch");
+                        }
+                        point.set_unit(config.unit());
                     }
                     point.set_name(config.name());
-                    point.set_unit(config.unit());
                     point.set_hidden(config.hidden());
                 }
                 parsed.valuesJson = protocol::TelemetryValues::telemetryJson(verified);
@@ -2056,8 +2096,25 @@ class ProjectionService final {
             }
             auto& row = channels.emplace_back(ruvia::model_options{ .resource_ = context.pool() });
             row.set<"channel">(channel.channel()).set<"kind">(kind).set<"available">(channel.available()).set<"controllable">(channel.controllable() && channel.kind() == pb::EXTERNAL_IO_DO);
-            if (channel.available() && channel.has_value()) {
-                row.set<"value">(std::to_string(channel.value()));
+            if (channel.available()) {
+                if (channel.kind() == pb::EXTERNAL_IO_AI) {
+                    if (channel.value_case() != pb::ExternalIoChannel::kMilliamps || !std::isfinite(channel.milliamps())) {
+                        throw std::runtime_error("invalid IO current");
+                    }
+                    char buffer[64];
+                    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), channel.milliamps());
+                    if (result.ec != std::errc{}) {
+                        throw std::runtime_error("cannot encode IO current");
+                    }
+                    row.set<"value">(std::string_view(buffer, result.ptr - buffer));
+                } else {
+                    if (channel.value_case() != pb::ExternalIoChannel::kDigitalValue) {
+                        throw std::runtime_error("invalid IO digital state");
+                    }
+                    row.set<"value">(channel.digital_value() ? "1" : "0");
+                }
+            } else if (channel.value_case() != pb::ExternalIoChannel::VALUE_NOT_SET) {
+                throw std::runtime_error("unavailable IO channel has a value");
             }
         }
         snapshot.set<"channels">(std::move(channels));

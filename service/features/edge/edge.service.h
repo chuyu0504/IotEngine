@@ -1282,7 +1282,7 @@ class ConfigService final {
                     target->set_kind(point.kind == "DI" ? pb::EXTERNAL_IO_DI : point.kind == "DO" ? pb::EXTERNAL_IO_DO
                                                                                                   : pb::EXTERNAL_IO_AI);
                     target->set_name(point.name);
-                    target->set_unit(point.unit);
+                    target->set_unit(point.kind == "AI" ? "mA" : point.unit);
                     target->set_hidden(!point.visible);
                     items.push_back(std::move(io));
                 }

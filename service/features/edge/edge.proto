@@ -144,6 +144,8 @@ enum PlatformConfigOperation {
 message Empty {}
 
 message Hello {
+  // Required to negotiate the mA external IO protocol.
+  bool supports_external_io_milliamps = 41;
   bool supports_node_io = 40;
   // Advertised only when this node can access the local IO service.
   bool supports_external_io = 39;
@@ -273,7 +275,11 @@ message ExternalIoChannel {
   ExternalIoKind kind = 2;
   bool available = 3;
   bool controllable = 4;
-  optional sint64 value = 5;
+  reserved 5;
+  oneof value {
+    bool digital_value = 6;
+    double milliamps = 7;
+  }
 }
 
 message ExternalIoStatus {

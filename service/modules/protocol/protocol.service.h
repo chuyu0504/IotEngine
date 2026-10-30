@@ -452,8 +452,8 @@ class ProtocolService {
                 fail("该边缘节点型号不支持所选 IO 通道");
             }
             if (const auto& unit = point.get<"unit">(); unit && !unit->view().empty() &&
-                (point.get<"kind">().view() != "AI" || unit->view() != "uA")) {
-                fail("外部 IO 原始单位无效，请使用派生值换算");
+                (point.get<"kind">().view() != "AI" || (unit->view() != "uA" && unit->view() != "mA"))) {
+                fail("AI 单位须为 mA 或旧版 uA，DI 和 DO 不设置单位");
             }
         }
     }

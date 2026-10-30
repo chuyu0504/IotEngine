@@ -18,6 +18,10 @@ function field(tag: number, value: bigint | number | string | Buffer) {
     const buffer = typeof value === 'string' ? Buffer.from(value) : value;
     return Buffer.concat([integer(tag*8+2),integer(buffer.length),buffer]);
 }
+function doubleField(tag: number, value: number) {
+    const bytes = Buffer.alloc(8); bytes.writeDoubleLE(value);
+    return Buffer.concat([integer(tag * 8 + 1), bytes]);
+}
 function decode(data: Buffer) {
     const result = new Map<number, bigint | Buffer>(); let position = 0;
     const read = () => { let n = 0n, shift = 0n; for (;;) { const b = data[position++]; assert(b !== undefined); n |= BigInt(b&127)<<shift; if (!(b&128)) return n; shift+=7n; } };
@@ -65,7 +69,7 @@ try {
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('Hello timeout')),10000);
-        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.65'),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
+        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.78'),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1),field(41,1)])));
         socket!.onerror=()=>reject(Error('WebSocket error'));
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));
@@ -110,7 +114,7 @@ try {
     const t=Date.now();
     const common=(id:string,protocol:number,model:string,time:number,digest=previousDigest)=>[field(1,bytes(id)),field(2,bytes(device)),field(3,bytes(link)),field(4,protocol),field(8,time),field(12,bytes(model)),field(21,digest)];
     sendRecord(Buffer.concat([...common(crypto.randomUUID(),2,primary,t),field(14,Buffer.from([0,7,0,0,0,5,1,3,2,0,10])),field(20,Buffer.from([0,7,0,0,0,6,1,3,0,100,0,1]))]));
-    const aiValue=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,2),field(3,4)]))]);
+    const aiValue=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,4),doubleField(5,0.002)]))]);
     sendRecord(Buffer.concat([...common(crypto.randomUUID(),7,io,t+1),field(9,aiValue)]));
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->${derived}->>'value'='12'`).length>0,'cross-source derived value not persisted');
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->${combined}->>'value'='14'`).length>0,'chained cross-source value not persisted');
@@ -132,7 +136,7 @@ try {
     // An older sample must be retained in history without moving the combined
     // calculation backwards or replacing the newer live value.
     const late=crypto.randomUUID();
-    const oldAi=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,2),field(3,2)]))]);
+    const oldAi=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,4),doubleField(5,0.001)]))]);
     sendRecord(Buffer.concat([...common(late,7,io,t-1000),field(9,oldAi)]));
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->${analog}->>'value'='1'`).length>0,'late IO sample missing from history');
     await until(async()=> {
@@ -171,7 +175,7 @@ try {
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('reconnect Hello timeout')),10000);
-        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.65'),field(8,desiredRevision),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1)])));
+        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'Ebyte T113-I ECM30'),field(3,'0.3.78'),field(8,desiredRevision),field(23,1),field(36,1),field(37,1),field(38,1),field(39,1),field(41,1)])));
         socket!.onerror=()=>reject(Error('WebSocket reconnect error'));
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));
@@ -189,13 +193,13 @@ try {
     await until(async()=> (await db`SELECT 1 FROM edge_node WHERE id=${node} AND status->'config'->>'state'='applied' AND status->'config'->>'activeVersion'=status->'config'->>'desiredVersion'`).length>0,'replacement configuration not applied');
     const nextTime=Date.now();
     sendRecord(Buffer.concat([...common(crypto.randomUUID(),2,primary,nextTime,nextDigest),field(14,Buffer.from([0,8,0,0,0,5,1,3,2,0,11])),field(20,Buffer.from([0,8,0,0,0,6,1,3,0,101,0,1]))]));
-    const nextAi=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,2),field(3,10)]))]);
+    const nextAi=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,4),doubleField(5,0.005)]))]);
     sendRecord(Buffer.concat([...common(crypto.randomUUID(),7,io,nextTime+1,nextDigest),field(9,nextAi)]));
     await until(async()=>{const value=await redis.send('HGET',[`iot:v2:device:${device}:latest`,derived]);return value!==null&&JSON.parse(String(value)).value==='16';},'new configuration did not calculate its own values');
     const oldRaw=crypto.randomUUID(),oldIo=crypto.randomUUID(),lateTime=Date.now();
     const replayedRaw=Buffer.concat([...common(oldRaw,2,primary,lateTime,previousDigest),field(14,Buffer.from([0,9,0,0,0,5,1,3,2,0,99])),field(20,Buffer.from([0,9,0,0,0,6,1,3,0,100,0,1]))]);
     sendRecord(replayedRaw);sendRecord(replayedRaw);
-    const oldIoValue=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,2),field(3,198)]))]);
+    const oldIoValue=Buffer.concat([field(1,analog),field(4,Buffer.concat([field(1,4),doubleField(5,0.099)]))]);
     sendRecord(Buffer.concat([...common(oldIo,7,io,lateTime,previousDigest),field(9,oldIoValue)]));
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE id=${oldRaw} AND data->'values'->${point}->>'value'='99'`).length>0 && (await db`SELECT 1 FROM device_data WHERE id=${oldIo} AND data->'values'->${analog}->>'value'='99'`).length>0,'old snapshot samples did not replay into history');
     await until(async()=> (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND source='derived' AND configuration_digest=${previousDigest.toString('hex')} AND data->'values'->${derived}->>'value'='198'`).length>0,'old snapshot cross-source derived history was not recomputed');
