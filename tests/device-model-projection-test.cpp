@@ -219,6 +219,51 @@ void configureIdentity(DeviceModel& model, std::size_t index) {
     model.enabled = index % 2 == 0;
 }
 
+void testDisabledExternalIoProjection() {
+    constexpr std::string_view pointId = "00000000-0000-4000-8000-000000000101";
+    constexpr std::string_view derivedId = "00000000-0000-4000-8000-000000000102";
+    for (const auto protocol : { "ExternalIO", "Modbus" }) {
+        DeviceModel model;
+        model.device.protocol = protocol;
+        configureIdentity(model, 0);
+        model.externalIoModelId = "00000000-0000-4000-8000-000000000103";
+        model.externalIo.push_back({ .id = std::string(pointId), .channel = "AI0", .kind = "AI", .name = "current", .unit = "mA" });
+        service::common::DerivedPoint derived;
+        derived.id = derivedId;
+        derived.name = "current derived";
+        derived.kind = "expression";
+        derived.expression = "x";
+        derived.valueType = "number";
+        derived.inputs.emplace_back("x", pointId);
+        model.derivedPoints.push_back(std::move(derived));
+        if (model.device.protocol == "ExternalIO") {
+            model.endpoint.transport = "io";
+        }
+        const auto projectItems = [&] {
+            std::vector<pb::ConfigItem> items;
+            service::edge::ConfigService::appendConfiguredDevices(items, { model }, true, true);
+            return items;
+        };
+        const auto count = [](const auto& items, auto kind) {
+            return std::ranges::count_if(items, [kind](const auto& item) {
+                return item.kind() == kind;
+            });
+        };
+        const auto enabled = projectItems();
+        require(count(enabled, pb::CONFIG_ITEM_EXTERNAL_IO) == 1 && count(enabled, pb::CONFIG_ITEM_DERIVED_POINT) == 1, "enabled external IO and its derived point must both be emitted");
+        model.enabled = false;
+        const auto disabled = projectItems();
+        require(count(disabled, pb::CONFIG_ITEM_EXTERNAL_IO) == 0 && count(disabled, pb::CONFIG_ITEM_DERIVED_POINT) == 0, "disabled external IO must not emit derived points whose inputs were omitted");
+        const auto device = std::ranges::find_if(disabled, [](const auto& item) {
+            return item.kind() == pb::CONFIG_ITEM_DEVICE;
+        });
+        require(device != disabled.end() && !device->device().enabled(), "disabled device state must still be delivered");
+        model.enabled = true;
+        const auto restored = projectItems();
+        require(count(restored, pb::CONFIG_ITEM_EXTERNAL_IO) == 1 && count(restored, pb::CONFIG_ITEM_DERIVED_POINT) == 1, "re-enabled external IO and derived points must be restored");
+    }
+}
+
 void testNumericPointValues() {
     const auto model = project("Modbus", R"({"registers":[
         {"id":"z","address":1e3,"quantity":2.0,"decimals":"0"},
@@ -933,6 +978,7 @@ int main() {
         testDecoderDefaultsAndOrder(models);
         testSl651(models.back());
         testMqtt();
+        testDisabledExternalIoProjection();
         testNumericPointValues();
         testRealtimeReadModel();
         testEdgeProjectionAndDigest(models);

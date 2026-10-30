@@ -1288,6 +1288,10 @@ class ConfigService final {
                 }
             }
             for (const auto& point : model.derivedPoints) {
+                // 停用时外部 IO 点不下发，派生定义也不能引用被省略的输入。
+                if (!model.enabled && !model.externalIo.empty()) {
+                    continue;
+                }
                 if (!derivedSupported) {
                     throw std::runtime_error("边缘固件尚不支持派生点，请先升级固件");
                 }

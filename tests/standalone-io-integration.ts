@@ -177,6 +177,20 @@ try {
     assert.equal(command.get(9), 1n);
     socket.send(envelope(52, Buffer.concat([field(1, bytes(operation)), field(2, 3), field(6, Date.now()), field(7, bytes(device))])));
     await until(async () => (await db`SELECT 1 FROM command_operation WHERE id=${operation} AND protocol='ExternalIO' AND model_id=${model} AND status='SUCCEEDED'`).length > 0, 'standalone IO command result missing');
+    for (const enabled of [false, true]) {
+        await request(`/v1/device/${device}`, { status: enabled ? 'enabled' : 'disabled' }, 'PUT');
+        await request(`/v1/edge/${node}/sync`, {});
+        const version = BigInt((await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`)[0].revision);
+        await until(async () => (received.get(32) ?? []).some(item => decode(item).get(1) === version), 'device state config commit missing');
+        const snapshot = (received.get(31) ?? []).map(decode).filter(item => item.get(1) === version);
+        const projectedDevice = decode(snapshot.find(item => item.has(11))!.get(11) as Buffer);
+        assert.equal(projectedDevice.get(24) === 1n, enabled, 'device enable state was not projected');
+        assert.equal(snapshot.filter(item => item.has(20)).length, enabled ? 2 : 0, 'disabled IO bindings were projected');
+        assert.equal(snapshot.filter(item => item.has(19)).length, enabled ? 1 : 0, 'disabled IO-derived point has no projected source');
+        const stateCommit = decode((received.get(32) ?? []).find(item => decode(item).get(1) === version)!);
+        socket.send(envelope(33, Buffer.concat([field(1, version), field(2, stateCommit.get(2) as Buffer)])));
+        await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND status->'config'->>'state'='applied' AND status->'config'->>'activeVersion'=${String(version)}`).length > 0, 'device state config was not applied');
+    }
     socket.send(envelope(26, capability(false)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND NOT (capability->'protocols' ? 'ExternalIO')`).length > 0, 'standalone capability revocation missing');
     await request(`/v1/edge/${node}/sync`, {}, 'POST', 409);
