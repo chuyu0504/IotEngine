@@ -235,6 +235,7 @@ try {
     assert.equal(JSON.parse(String(await redis.send('HGET',[`iot:v2:device:${device}:latest`,point]))).value,'11','queued old version overwrote realtime values');
     assert.notEqual((await db`SELECT data->'values'->${point}->>'value' AS value FROM alert_input_state WHERE device_id=${device}`)[0]?.value,'777','queued old version entered current alert evaluation');
 
+    // Firmware without mA IO can still support derived points for other protocols.
     const oldSocket=socket; socket=undefined; oldSocket.onclose=null;
     await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('edge close timeout')),5000);oldSocket.addEventListener('close',()=>{clearTimeout(timer);resolve();},{once:true});oldSocket.close();});
     await until(async()=>Number(await redis.send('EXISTS',[`iot:edge:session:${node}`]))===0,'old edge session survived');
@@ -242,7 +243,7 @@ try {
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('legacy Hello timeout')),10000);
-        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'legacy-test'),field(3,'0.3.44'),field(23,1)])));
+        socket!.onopen=()=>socket!.send(envelope(20,Buffer.concat([field(1,identity),field(2,'legacy-test'),field(3,'0.3.77'),field(23,1),field(38,1),field(39,1)])));
         socket!.onerror=()=>reject(Error('legacy WebSocket error'));
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));
@@ -251,8 +252,8 @@ try {
             for(const tag of [30,31,32])if(message.has(tag)){const queue=received.get(tag)??[];queue.push(message.get(tag) as Buffer);received.set(tag,queue);}
         };
     });
-    socket.send(envelope(26,field(7,Buffer.from([1,2,3,4,5,6]))));
-    await until(async()=> (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'externalIo'->>'supported'='false'`).length>0,'legacy capability not reset');
+    socket.send(envelope(26,Buffer.concat([field(7,Buffer.from([1,2,3,4,5,6])),field(10,1)])));
+    await until(async()=> (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'externalIo'->>'supported'='false' AND capability->>'derivedPoints'='true'`).length>0,'legacy capability not reset');
     received.clear();await request(`/v1/edge/${node}/sync`,{});
     const [revisionRow]=await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`;
     const revision=BigInt(revisionRow.revision);
