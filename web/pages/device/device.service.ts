@@ -13,6 +13,24 @@ export const getDeviceCardElements = (device: Device.Overview) => {
         (element) => element.visible !== false && (!ids || (element.id && ids.has(element.id)))
     );
 };
+export const getExternalIoDerivedStart = (
+    device: Device.Overview,
+    elements: ReturnType<typeof getDeviceCardElements>
+) => {
+    const count = device.element_count;
+    if (
+        device.protocol_type !== 'ExternalIO' ||
+        count === undefined ||
+        !Number.isInteger(count) ||
+        count < 0 ||
+        !device.elements ||
+        count > device.elements.length
+    ) {
+        return -1;
+    }
+    const native = new Set(device.elements.slice(0, count));
+    return elements.findIndex((element) => !native.has(element));
+};
 /** 在线状态由服务端遥测运行投影计算，上报与到期离线均经实时推送更新。 */
 export const isDeviceOnline = (device: Pick<Device.Overview, 'runtimeState'>) =>
     device.runtimeState === 'online';

@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { getDeviceCardElements, isDeviceOnline } from '../web/pages/device/device.service';
+import {
+    getDeviceCardElements,
+    getExternalIoDerivedStart,
+    isDeviceOnline,
+} from '../web/pages/device/device.service';
 import { type Device } from '../web/pages/device/device.types';
 
 const device = (values: Partial<Device.Overview>): Device.Overview =>
@@ -77,4 +81,24 @@ test('MQTT cards exclude control-only values even when they have cached telemetr
     ]);
     expect(getDeviceCardElements({ ...value, cardPointIds: [] })).toEqual([]);
     expect(getDeviceCardElements({ ...value, cardPointIds: undefined })).toHaveLength(4);
+});
+
+test('external IO cards locate derived values after all configured native points', () => {
+    const value = device({
+        protocol_type: 'ExternalIO',
+        element_count: 3,
+        elements: [
+            { id: 'raw-a', name: 'DI0', value: 0 },
+            { id: 'raw-hidden', name: 'DI1', value: 0, visible: false },
+            { id: 'raw-b', name: 'DO0', value: 0 },
+            { id: 'derived-a', name: '派生一', value: 1 },
+            { id: 'derived-b', name: '派生二', value: 2 },
+        ],
+    });
+    const visible = getDeviceCardElements(value);
+    expect(visible.map((element) => element.id)).toEqual(['raw-a', 'raw-b', 'derived-a', 'derived-b']);
+    expect(getExternalIoDerivedStart(value, visible)).toBe(2);
+    expect(getExternalIoDerivedStart({ ...value, protocol_type: 'Modbus' }, visible)).toBe(-1);
+    expect(getExternalIoDerivedStart({ ...value, element_count: undefined }, visible)).toBe(-1);
+    expect(getExternalIoDerivedStart({ ...value, element_count: 9 }, visible)).toBe(-1);
 });

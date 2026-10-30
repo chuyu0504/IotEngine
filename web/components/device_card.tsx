@@ -8,6 +8,7 @@ export interface DeviceCardItem {
     children: ReactNode;
     span?: number;
     group?: string;
+    startNewRow?: boolean;
     tooltipLabel?: string;
 }
 
@@ -61,7 +62,13 @@ const DeviceValues = ({
             <div
                 key={item.key}
                 className="min-w-0 rounded bg-slate-50/70 px-1 py-0.5 text-xs leading-4"
-                style={item.span && item.span > 1 ? { gridColumn: '1 / -1' } : undefined}
+                style={
+                    item.span && item.span > 1
+                        ? { gridColumn: '1 / -1' }
+                        : item.startNewRow
+                          ? { gridColumnStart: 1 }
+                          : undefined
+                }
             >
                 <Tooltip title={item.tooltipLabel ?? item.label}>
                     <dt

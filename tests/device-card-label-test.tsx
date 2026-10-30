@@ -40,3 +40,19 @@ test('clickable device cards expose an accessible detail entry', () => {
     expect(markup).toContain('>查看详情<');
     expect(markup).toContain('h-full w-full');
 });
+
+test('a derived value can start below an incomplete native point row', () => {
+    const markup = renderToStaticMarkup(
+        <DeviceCard
+            title="外部 IO"
+            items={[
+                { key: 'raw-a', label: 'DI0', children: 0 },
+                { key: 'raw-b', label: 'DO0', children: 0 },
+                { key: 'derived', label: '派生值', children: 1, startNewRow: true },
+            ]}
+        />
+    );
+
+    expect(markup).toMatch(/style="grid-column-start:1"[^>]*>.*派生值/);
+    expect(markup.indexOf('>DO0<')).toBeLessThan(markup.indexOf('>派生值<'));
+});

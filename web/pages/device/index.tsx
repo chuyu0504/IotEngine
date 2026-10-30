@@ -75,6 +75,7 @@ import {
 } from './device.schema';
 import {
     getDeviceCardElements,
+    getExternalIoDerivedStart,
     isDeviceOnline,
     summarizeDeviceCommandResult,
     useDeviceCommand,
@@ -1445,11 +1446,14 @@ const formatElementValue = (element: Device.Element) => {
 };
 const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     if (device.elements?.length) {
-        return getDeviceCardElements(device).map((element, index) => ({
+        const elements = getDeviceCardElements(device);
+        const derivedStart = getExternalIoDerivedStart(device, elements);
+        return elements.map((element, index) => ({
             key: index,
             label: element.name,
             children: formatElementValue(element),
             group: element.group,
+            startNewRow: index === derivedStart,
         }));
     }
     const count = device.element_count ?? 0;
