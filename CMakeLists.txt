@@ -592,10 +592,8 @@ foreach(test_name
         edge-firmware-integration
         edge-http-sse-integration
         edge-recovery-integration
-        edge-serial-debug-integration
         edge-session-integration
         edge-telemetry-upload-integration
-        edge-terminal-integration
         edge-vpn-integration
         entity-schema-audit
         external-io-integration
@@ -707,6 +705,13 @@ iot_engine_add_integration(upload-recovery-integration
 # controlled window, so use a fresh fixture and serialize the test.
 iot_engine_add_integration_fixture(link-sse PER_TEST)
 iot_engine_add_integration(link-http-sse-integration FIXTURE link-sse RUN_SERIAL)
+
+# These tests inspect and disconnect Redis Pub/Sub clients by ID.  A private
+# Redis instance prevents clients started by other fixtures from affecting the
+# subscription count or being selected for a disconnect.
+iot_engine_add_integration_fixture(edge-debug PER_TEST)
+iot_engine_add_integration(edge-serial-debug-integration FIXTURE edge-debug)
+iot_engine_add_integration(edge-terminal-integration FIXTURE edge-debug)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")
     add_custom_target(iot-engine-env ALL
