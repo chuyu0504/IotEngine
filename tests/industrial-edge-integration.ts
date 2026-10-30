@@ -74,7 +74,6 @@ try {
     const envelope=(tag:number,payload:Buffer)=>Buffer.concat([field(1,6),field(2,bytes(crypto.randomUUID())),field(3,bytes(node)),field(4,bytes(platform)),field(5,epoch),field(6,Date.now()),field(8,sequence++),field(tag,payload)]);
     let nextHeartbeatNonce=BigInt(Date.now())+17n;
     const sendHeartbeat=()=>socket!.send(envelope(24,field(26,nextHeartbeatNonce++)));
-    let currentEnvelope=envelope;
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
         const timer=setTimeout(()=>reject(Error('Hello timeout')),10000);
@@ -211,7 +210,6 @@ try {
     const legacy=await enqueueDatabaseCommand(legacyFixture.device,'MC',node);
     received.clear();let legacySequence=1n,legacyEpoch=0n;
     const legacyEnvelope=(tag:number,payload:Buffer)=>Buffer.concat([field(1,6),field(2,bytes(crypto.randomUUID())),field(3,bytes(node)),field(4,bytes(platform)),field(5,legacyEpoch),field(6,Date.now()),field(8,legacySequence++),field(tag,payload)]);
-    currentEnvelope=legacyEnvelope;
     let legacyHelloAck:Map<number,bigint|Buffer>|undefined;
     socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
     await new Promise<void>((resolve,reject)=>{
@@ -221,6 +219,7 @@ try {
         socket!.onmessage=event=>{
             const message=decode(Buffer.from(event.data as ArrayBuffer));
             if(message.has(21)){legacyHelloAck=decode(message.get(21) as Buffer);legacyEpoch=message.get(5) as bigint;clearTimeout(timer);resolve();}
+            if(message.has(80))socket!.send(legacyEnvelope(81,message.get(80) as Buffer));
             for(const tag of [25,50])if(message.has(tag)){const queue=received.get(tag)??[];queue.push(message.get(tag) as Buffer);received.set(tag,queue);}
         };
     });
@@ -241,9 +240,90 @@ try {
         FROM command_attempt WHERE operation_id=${legacy.commandId}`;
     assert.equal(legacyClaim.sent,true,'legacy command send claim was not persisted');
     assert.equal(BigInt(legacyClaim.deadline_ms),BigInt(legacy.deadlineMs),'legacy attempt deadline changed during send claim');
+
+    const legacyClosed=new Promise<void>(resolve=>socket!.addEventListener('close',()=>resolve(),{once:true}));
+    socket.close();await legacyClosed;
+    await until(async()=>Number(await redis.send('EXISTS',[`iot:edge:session:${node}`]))===0,'legacy session did not close');
+    const recovery=await enqueueDatabaseCommand(legacyFixture.device,'MC',node);
+    let recoverySequence=1n,recoveryEpoch=0n,probe:Buffer|undefined;
+    const attempted:Buffer[]=[];
+    const recoveryEnvelope=(tag:number,payload:Buffer)=>Buffer.concat([
+        field(1,6),field(2,bytes(crypto.randomUUID())),field(3,bytes(node)),field(4,bytes(platform)),
+        field(5,recoveryEpoch),field(6,Date.now()),field(8,recoverySequence++),field(tag,payload)]);
+    socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
+    const unresponsiveClosed=new Promise<void>(resolve=>socket!.addEventListener('close',()=>resolve(),{once:true}));
+    await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('unresponsive Hello timeout')),10000);
+        socket!.onopen=()=>socket!.send(recoveryEnvelope(20,Buffer.concat([field(1,identity),field(2,'fixture'),field(3,'0.3.79'),field(23,1),field(36,1)])));
+        socket!.onerror=()=>reject(Error('unresponsive WebSocket error'));
+        socket!.onmessage=event=>{
+            const message=decode(Buffer.from(event.data as ArrayBuffer));
+            if(message.has(21)){recoveryEpoch=message.get(5) as bigint;clearTimeout(timer);resolve();}
+            if(message.has(80))probe=message.get(80) as Buffer;
+            if(message.has(50))attempted.push(message.get(50) as Buffer);
+        };
+    });
+    await until(async()=>probe!==undefined,'pending command did not trigger a connection probe');
+    const nonce=decode(probe!).get(1) as bigint;
+    socket.send(recoveryEnvelope(81,field(1,nonce+1n)));
+    await Bun.sleep(250);
+    assert.equal(attempted.length,0,'an unrelated Pong released the physical command');
+    let [unsent]=await db`SELECT sent_at IS NULL AS unsent FROM command_attempt WHERE operation_id=${recovery.commandId}`;
+    assert.equal(unsent.unsent,true,'the gateway claimed an unconfirmed connection');
+    assert.equal(Number(await redis.send('LLEN',[`iot:v2:edge:commands:${node}`])),1,'probe removed the pending command');
+    await Promise.race([unresponsiveClosed,Bun.sleep(12000).then(()=>{throw Error('unresponsive command probe did not close the connection');})]);
+    assert.equal(attempted.length,0,'an unresponsive connection received the physical command');
+    [unsent]=await db`SELECT sent_at IS NULL AS unsent FROM command_attempt WHERE operation_id=${recovery.commandId}`;
+    assert.equal(unsent.unsent,true,'probe timeout marked the command as sent');
+    await until(async()=>Number(await redis.send('EXISTS',[`iot:edge:session:${node}`]))===0,'unresponsive session retained its lease');
+    await redis.send('LPUSH',[`iot:v2:edge:commands:${node}`,'invalid-envelope']);
+
+    recoverySequence=1n;recoveryEpoch=0n;
+    socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
+    await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('recovery Hello timeout')),10000);
+        socket!.onopen=()=>socket!.send(recoveryEnvelope(20,Buffer.concat([field(1,identity),field(2,'fixture'),field(3,'0.3.79'),field(23,1),field(36,1)])));
+        socket!.onerror=()=>reject(Error('recovery WebSocket error'));
+        socket!.onmessage=event=>{
+            const message=decode(Buffer.from(event.data as ArrayBuffer));
+            if(message.has(21)){recoveryEpoch=message.get(5) as bigint;clearTimeout(timer);resolve();}
+            if(message.has(80))socket!.send(recoveryEnvelope(81,message.get(80) as Buffer));
+            if(message.has(50))attempted.push(message.get(50) as Buffer);
+        };
+    });
+    await until(async()=>attempted.length===1,'a discarded invalid entry blocked the queued command after reconnect');
+    assert((decode(attempted[0]).get(1) as Buffer).equals(bytes(recovery.commandId)),'reconnect changed the command identity');
+    const sentClosed=new Promise<void>(resolve=>socket!.addEventListener('close',()=>resolve(),{once:true}));
+    socket.close();await sentClosed;
+    await until(async()=>Number(await redis.send('EXISTS',[`iot:edge:session:${node}`]))===0,'sent session retained its lease');
+
+    recoverySequence=1n;recoveryEpoch=0n;
+    socket=new WebSocket(apiBase.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
+    await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('result replay Hello timeout')),10000);
+        socket!.onopen=()=>socket!.send(recoveryEnvelope(20,Buffer.concat([field(1,identity),field(2,'fixture'),field(3,'0.3.79'),field(23,1),field(36,1)])));
+        socket!.onerror=()=>reject(Error('result replay WebSocket error'));
+        socket!.onmessage=event=>{
+            const message=decode(Buffer.from(event.data as ArrayBuffer));
+            if(message.has(21)){recoveryEpoch=message.get(5) as bigint;clearTimeout(timer);resolve();}
+            if(message.has(80))socket!.send(recoveryEnvelope(81,message.get(80) as Buffer));
+            if(message.has(50))attempted.push(message.get(50) as Buffer);
+        };
+    });
+    const replayedResult=Buffer.concat([field(1,bytes(recovery.commandId)),field(2,3),field(3,'readback verified'),
+        field(6,Date.now()),field(7,bytes(legacyFixture.device))]);
+    socket.send(recoveryEnvelope(52,replayedResult));
+    await until(async()=>(await db`SELECT status FROM command_operation WHERE id=${recovery.commandId}`)[0]?.status==='SUCCEEDED',
+        'replayed command result was not persisted after reconnect');
+    socket.send(recoveryEnvelope(52,replayedResult));
+    await Bun.sleep(250);
+    assert.equal(attempted.length,1,'a claimed physical command was resent after reconnect');
+    assert.equal((await db`SELECT status FROM command_operation WHERE id=${recovery.commandId}`)[0]?.status,'SUCCEEDED');
+    console.log('PASS command waits for the matching Pong, survives an unresponsive connection and accepts a replayed result without resending the physical command');
+
     await db`UPDATE device SET deleted_at=NOW() WHERE id=${legacyFixture.device}`;
     await db`UPDATE link SET deleted_at=NOW(),status='disabled' WHERE id=${legacyFixture.link}`;
     console.log('PASS persisted command deadline milliseconds, one-time send claim and 0.3.44-compatible wire behavior');
-    socket.send(currentEnvelope(26,Buffer.alloc(0)));
+    socket.send(recoveryEnvelope(26,Buffer.alloc(0)));
     await until(async()=> (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->'protocols'='[]'::jsonb`).length>0,'legacy capability did not clear new protocols');
 } finally {socket?.close();await redis.send('DEL',[`iot:edge:auth:${identity}`]);redis.close();await db.close();}

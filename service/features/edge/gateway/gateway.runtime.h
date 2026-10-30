@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <future>
@@ -40,6 +41,10 @@ class GatewayRuntime final {
         bool active{ true };
         bool flushPending{};
         bool flushing{};
+        std::uint64_t commandProbeNonce{};
+        bool commandProbeReady{};
+        std::chrono::steady_clock::time_point commandProbeConfirmedAt{};
+        std::shared_ptr<ruvia::stop_source> commandProbeStop;
     };
 
   public:
@@ -231,6 +236,16 @@ class GatewayRuntime final {
                 }
                 session.inboundSequence = input.sequence();
                 session.lastInbound = std::chrono::steady_clock::now();
+                if (live->active && input.has_pong() && live->commandProbeNonce != 0 &&
+                    input.pong().nonce() == live->commandProbeNonce) {
+                    live->commandProbeNonce = 0;
+                    live->commandProbeReady = true;
+                    live->commandProbeConfirmedAt = std::chrono::steady_clock::now();
+                    if (live->commandProbeStop) {
+                        live->commandProbeStop->request_stop();
+                        live->commandProbeStop.reset();
+                    }
+                }
                 if (telemetry.acknowledge) {
                     co_await handle(c, session, input, telemetry.publish);
                 }
@@ -371,6 +386,37 @@ class GatewayRuntime final {
         }
     }
 
+    static ruvia::task<void> expireCommandProbe(
+        std::shared_ptr<LiveSession> live,
+        std::uint64_t nonce,
+        std::shared_ptr<ruvia::stop_source> stop
+    ) {
+        const auto result = co_await ruvia::sleep_for(
+            live->context->worker(),
+            std::chrono::seconds(8),
+            ruvia::combine_stop_tokens(live->scope->get_stop_token(), stop->token())
+        );
+        if (result == ruvia::timer_sleep_result::elapsed && live->active &&
+            live->commandProbeNonce == nonce) {
+            live->active = false;
+            live->socket->abort();
+        }
+    }
+
+    static void startCommandProbe(const std::shared_ptr<LiveSession>& live) {
+        auto probe = makeEnvelope(*live->context, *live->session);
+        const auto nonce = probe.sequence();
+        if (nonce == 0) {
+            throw std::runtime_error("edge command probe sequence exhausted");
+        }
+        probe.mutable_ping()->set_nonce(nonce);
+        auto stop = std::make_shared<ruvia::stop_source>();
+        live->commandProbeNonce = nonce;
+        live->commandProbeStop = stop;
+        GatewayProtocol::enqueue(*live->session, probe);
+        live->scope->spawn(expireCommandProbe(live, nonce, std::move(stop)));
+    }
+
     static ruvia::task<void> flushEgress(std::shared_ptr<LiveSession> live) {
         auto& c = *live->context;
         auto& socket = *live->socket;
@@ -382,6 +428,9 @@ class GatewayRuntime final {
                    live->flushPending) {
                 live->flushPending = false;
                 for (;;) {
+                    if (!live->active || live->scope->stop_requested()) {
+                        break;
+                    }
                     int replies = 0;
                     while (replies < 64) {
                         auto envelope = GatewayProtocol::nextOutbound(session);
@@ -400,11 +449,32 @@ class GatewayRuntime final {
                         co_await drainQueue(c, socket, session, queues.terminal, 64);
                     const auto serialRequests =
                         co_await drainQueue(c, socket, session, queues.serialDebug, 64);
-                    const auto commands =
-                        co_await drainQueue(c, socket, session, queues.command, 64);
+                    if (!live->active || live->scope->stop_requested()) {
+                        break;
+                    }
+                    int commands = 0;
+                    bool attemptedCommand = false;
+                    if (live->commandProbeReady &&
+                        std::chrono::steady_clock::now() - live->commandProbeConfirmedAt >= std::chrono::seconds(2)) {
+                        live->commandProbeReady = false;
+                    }
+                    if (live->commandProbeReady && live->active && !live->scope->stop_requested()) {
+                        live->commandProbeReady = false;
+                        attemptedCommand = true;
+                        commands = co_await drainQueue(c, socket, session, queues.command, 1);
+                    } else if (live->commandProbeNonce == 0) {
+                        const auto pending = co_await c.redis().lrange(queues.command, 0, 0);
+                        if (!pending.empty() && live->active && !live->scope->stop_requested()) {
+                            // Do not claim a physical command until this connection has
+                            // completed an on-demand round trip. The queue survives an
+                            // unresponsive connection and wakes the next owner.
+                            startCommandProbe(live);
+                            continue;
+                        }
+                    }
                     const auto tasks =
                         co_await drainQueue(c, socket, session, queues.task, 64);
-                    if (replies + configs + keystrokes + serialRequests + commands + tasks == 0) {
+                    if (replies + configs + keystrokes + serialRequests + commands + tasks == 0 && !attemptedCommand) {
                         break;
                     }
                 }
